@@ -10244,7 +10244,6 @@ export default function App({
               onOpenDiff={onOpenWorkingTreeDiff}
               onOpenAllChanges={onOpenAllChanges}
               onOpenCommit={onOpenCommit}
-              onShowSourceControl={onToggleChanges}
               selectedDiffPath={
                 activeTab ? selectedChangePath(activeTab, gitCwd) : undefined
               }
