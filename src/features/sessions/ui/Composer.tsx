@@ -152,6 +152,7 @@ import {
 import {
   BTW_COMMAND,
   consumeBtwCommand,
+  consumeBtwPrefix,
   supportsBtwHarness,
 } from "../model/btw";
 import { COMPACT_COMMAND, isCompactCommand } from "../model/compact";
@@ -203,6 +204,8 @@ type Props = {
   handoffCard?: HandoffComposerCard;
   question?: UserQuestionPrompt;
   busy?: boolean;
+  /** Allow typed text to replace Stop with Send while a turn is running. */
+  allowBusySubmit?: boolean;
   editLastTurnSupported?: boolean;
   lastTurnRecall?: LastTurnRecall | null;
   queuedMessages?: QueuedMessage[];
@@ -235,7 +238,11 @@ type Props = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
-  onBtwCommand?: (text: string) => boolean | void;
+  /** `draft` opens the side question with the text unsent, for a typed `/btw `. */
+  onBtwCommand?: (
+    text: string,
+    options?: { draft?: boolean },
+  ) => boolean | void;
   canSaveDraft?: boolean;
   onSaveDraft?: (text: string, attachments: Attachment[]) => boolean | void;
   onStop?: () => void;
@@ -488,6 +495,7 @@ export function Composer({
   handoffCard,
   question,
   busy = false,
+  allowBusySubmit = true,
   editLastTurnSupported = false,
   lastTurnRecall = null,
   queuedMessages = [],
@@ -965,6 +973,36 @@ export function Composer({
     onQuoteRequestConsumed?.(quoteRequest.id);
   }, [onQuoteRequestConsumed, quoteRequest, syncHasValue]);
 
+  // `/btw ` opens the side conversation as soon as it is typed, carrying any
+  // text after it over as the unsent side question.
+  const enterBtwFromPrefix = useCallback(
+    (el: HTMLTextAreaElement) => {
+      if (!onBtwCommand || inboxCard || noteCard || handoffCard) return false;
+      if (attachmentsRef.current.length > 0) return false;
+      const rest = consumeBtwPrefix(el.value);
+      if (rest == null || onBtwCommand(rest, { draft: true }) === false) {
+        return false;
+      }
+      el.value = "";
+      resizeComposer(el);
+      draftRevisionRef.current += 1;
+      setDraft("");
+      onDraftChange?.("");
+      syncHasValue("", attachmentsRef.current);
+      setSlash(null);
+      setMention(null);
+      return true;
+    },
+    [
+      handoffCard,
+      inboxCard,
+      noteCard,
+      onBtwCommand,
+      onDraftChange,
+      syncHasValue,
+    ],
+  );
+
   const pickSkill = useCallback(
     (skill: Skill) => {
       const el = ref.current;
@@ -1034,6 +1072,9 @@ export function Composer({
       syncHasValue(next, attachmentsRef.current);
       setSlash(null);
       setCreatingSkill(false);
+      if (skill.kind === "builtin" && skill.name === BTW_COMMAND.name) {
+        enterBtwFromPrefix(el);
+      }
       if (planCommand) {
         setPlanSelected(true);
         setOperatorSelected(false);
@@ -1042,6 +1083,7 @@ export function Composer({
       el.focus();
     },
     [
+      enterBtwFromPrefix,
       onPlaceInFolder,
       onResumeProviderSession,
       openSessionFolderPicker,
@@ -1972,6 +2014,7 @@ export function Composer({
               onSelect={(e) => syncTokensFromTextarea(e.currentTarget)}
               onInput={(e) => {
                 const el = e.currentTarget;
+                if (enterBtwFromPrefix(el)) return;
                 resizeComposer(el);
                 draftRevisionRef.current += 1;
                 setDraft(el.value);
@@ -2281,6 +2324,7 @@ export function Composer({
                 busy={busy}
                 disabled={disabled}
                 hasValue={hasValue && !worktreeRemoved}
+                allowBusySubmit={allowBusySubmit}
                 label={draftSelected ? "Save draft" : "Send"}
                 onSend={() => submit(ref.current?.value ?? "")}
                 onStop={() => onStop?.()}
@@ -2373,6 +2417,7 @@ export function ComposerAction({
   busy,
   disabled = false,
   hasValue,
+  allowBusySubmit = true,
   label = "Send",
   onSend,
   onStop,
@@ -2380,6 +2425,7 @@ export function ComposerAction({
   busy: boolean;
   disabled?: boolean;
   hasValue: boolean;
+  allowBusySubmit?: boolean;
   label?: string;
   onSend: () => void;
   onStop: () => void;
@@ -2398,7 +2444,7 @@ export function ComposerAction({
     );
   }
   if (busy) {
-    return hasValue ? (
+    return hasValue && allowBusySubmit ? (
       <button
         type="button"
         title={label}
