@@ -877,7 +877,7 @@ function GeneralPage({
         <Row
           id="working-agents"
           label="Working agents"
-          description="A card on the project rail lists chats that are working or just finished while you are looking at something else, so you can jump across projects. Finished turns stay until you open that session."
+          description="A card on the project rail lists working or just-finished chats you are not looking at, so you can jump across projects. Finished turns stay until you open that session."
         >
           <Toggle
             label="Working agents"
