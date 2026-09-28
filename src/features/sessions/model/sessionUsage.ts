@@ -24,14 +24,19 @@ export function mergeSessionUsage(
   const base = previous ?? EMPTY_USAGE;
   const next = { ...base };
   if (turn.processCostUsd != null) {
-    next.costUsd += turn.processCostUsd - base.lastProcessCostUsd;
+    next.costUsd += processDelta(turn.processCostUsd, base.lastProcessCostUsd);
     next.lastProcessCostUsd = turn.processCostUsd;
   }
   if (turn.processApiMs != null) {
-    next.apiMs += turn.processApiMs - base.lastProcessApiMs;
+    next.apiMs += processDelta(turn.processApiMs, base.lastProcessApiMs);
     next.lastProcessApiMs = turn.processApiMs;
   }
   return next;
+}
+
+/** A reading below the last one comes from a new process whose counter restarted. */
+function processDelta(reading: number, last: number): number {
+  return reading < last ? Math.max(0, reading) : reading - last;
 }
 
 export function resetProcessCounters(usage: SessionUsage): SessionUsage {
@@ -57,7 +62,6 @@ export function sessionUsageTooltip(usage: SessionUsage): {
 } {
   return {
     headline: `Total cost: ${formatCost(usage.costUsd)}`,
-    details:
-      usage.apiMs > 0 ? [`API time: ${formatApiTime(usage.apiMs)}`] : [],
+    details: usage.apiMs > 0 ? [`API time: ${formatApiTime(usage.apiMs)}`] : [],
   };
 }

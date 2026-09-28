@@ -45,9 +45,10 @@ export function ContextMeter({
 
   const { headline, detail } = contextTooltip(usage);
   const session = sessionUsage ? sessionUsageTooltip(sessionUsage) : null;
-  const label = session
-    ? `${headline}, ${detail}. ${session.headline}`
-    : `${headline}, ${detail}`;
+  const label = [
+    `${headline}, ${detail}`,
+    ...(session ? [session.headline, ...session.details] : []),
+  ].join(". ");
   const actionsOpen = open && onCompact != null;
 
   return (

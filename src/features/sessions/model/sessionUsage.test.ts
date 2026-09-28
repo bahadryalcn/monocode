@@ -39,6 +39,21 @@ describe("mergeSessionUsage", () => {
     expect(usage.lastProcessCostUsd).toBe(0.2);
   });
 
+  it("counts a lower reading as a new process and never lowers the total", () => {
+    let usage = mergeSessionUsage(undefined, {
+      processCostUsd: 0.5,
+      processApiMs: 9_000,
+    });
+    usage = mergeSessionUsage(usage, {
+      processCostUsd: 0.2,
+      processApiMs: 1_000,
+    });
+    expect(usage.costUsd).toBeCloseTo(0.7);
+    expect(usage.apiMs).toBe(10_000);
+    usage = mergeSessionUsage(usage, { processCostUsd: -1 });
+    expect(usage.costUsd).toBeCloseTo(0.7);
+  });
+
   it("leaves untouched fields alone when a result omits them", () => {
     const usage = mergeSessionUsage(
       mergeSessionUsage(undefined, { processCostUsd: 0.3 }),
