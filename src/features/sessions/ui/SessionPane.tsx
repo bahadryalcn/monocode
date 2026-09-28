@@ -526,6 +526,7 @@ export const SessionPane = memo(function SessionPane({
       hideBranchPicker={!!session.inboxAsk || managed}
       hideTopBar={!!session.inboxAsk}
       context={session.context}
+      sessionUsage={session.usage}
       quoteRequest={quoteRequest}
       initialDraft={
         draftRef.current ??
