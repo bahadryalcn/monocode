@@ -20,6 +20,7 @@ import { joinStreamText } from "./streamText";
 import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
+import { loadResumeAtReset } from "../../../features/settings/model/settings";
 import type { HarnessEvent } from "./types";
 
 /** Apply one delivery batch without copying the transcript for every token. */
@@ -190,7 +191,11 @@ export function applyHarnessEvent(
     case "usage.limited":
       return {
         ...session,
-        usageLimit: event.resetsAt != null ? { resetsAt: event.resetsAt } : {},
+        usageLimit: {
+          ...(event.resetsAt != null ? { resetsAt: event.resetsAt } : {}),
+          // Armed even before the reset time is known; a later lookup fills it in.
+          resumeAtReset: loadResumeAtReset(),
+        },
       };
     case "interjection":
       // A visible boundary the user must not miss, so unlike status it never

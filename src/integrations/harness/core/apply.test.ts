@@ -406,11 +406,28 @@ describe("usage limits", () => {
       type: "usage.limited",
       resetsAt: 5_000,
     });
-    expect(limited.usageLimit).toEqual({ resetsAt: 5_000 });
+    expect(limited.usageLimit).toEqual({
+      resetsAt: 5_000,
+      resumeAtReset: true,
+    });
     expect(
       applyHarnessEvent(newSession("codex", "/tmp"), { type: "usage.limited" })
         .usageLimit,
-    ).toEqual({});
+    ).toEqual({ resumeAtReset: true });
+  });
+
+  it("leaves the notice unarmed when resume at reset is off", () => {
+    vi.stubGlobal("localStorage", { getItem: () => "0" });
+    try {
+      expect(
+        applyHarnessEvent(newSession("codex", "/tmp"), {
+          type: "usage.limited",
+          resetsAt: 5_000,
+        }).usageLimit,
+      ).toEqual({ resetsAt: 5_000, resumeAtReset: false });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
