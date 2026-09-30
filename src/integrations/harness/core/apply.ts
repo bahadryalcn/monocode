@@ -52,9 +52,15 @@ export function applyHarnessEvents(
   return next;
 }
 
+export type ApplyHarnessEventOptions = {
+  /** The desktop's "Resume at reset" setting, for callers that cannot read it. */
+  resumeAtReset?: boolean;
+};
+
 export function applyHarnessEvent(
   session: Session,
   event: HarnessEvent,
+  options: ApplyHarnessEventOptions = {},
 ): Session {
   switch (event.type) {
     case "message.delta":
@@ -194,7 +200,11 @@ export function applyHarnessEvent(
         usageLimit: {
           ...(event.resetsAt != null ? { resetsAt: event.resetsAt } : {}),
           // Armed even before the reset time is known; a later lookup fills it in.
-          resumeAtReset: loadResumeAtReset(),
+          // A repeated limit event keeps the choice already made for this one.
+          resumeAtReset:
+            session.usageLimit?.resumeAtReset ??
+            options.resumeAtReset ??
+            loadResumeAtReset(),
         },
       };
     case "interjection":
