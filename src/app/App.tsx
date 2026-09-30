@@ -1,7 +1,13 @@
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import {
+  cancelScheduledFlush,
+  scheduleHarnessFlush,
+  type ScheduledFlush,
+} from "./model/harnessFlush";
+import {
   handleAgentApp,
   type AppSessionListing,
+  type AppSessionPlacement,
 } from "../features/agent-app/model/agentApp";
 import { submitWithSettlement } from "./model/managedSubmission";
 import {
@@ -132,7 +138,7 @@ import {
 import {
   basename,
   notifyGitChanged,
-  pickFolder,
+  pickFolders,
   type GitFileDiffKind,
   type GitHistoryCommit,
 } from "../platform/tauri/fs";
@@ -229,6 +235,7 @@ import {
 } from "../features/terminal/model/terminalTab";
 import {
   applyHarnessEvent,
+  applyHarnessEvents,
   appendUser,
   appendSteerUser,
   bindHarnessSession,
@@ -355,6 +362,8 @@ import {
   forgetProject,
   lastProjectPath,
   loadRecents,
+  isLocalProject,
+  isRemoteProjectPath,
   looksLikeProject,
   normalizeProjectPath,
   projectRailItems,
@@ -396,7 +405,6 @@ import {
   sessionNeedsInput,
   newDefaultSession,
   newSession,
-  newSessionForProject,
   retargetSessionToProject,
   removeSessionDraft,
   sessionDisplayTitle,
@@ -436,6 +444,7 @@ import { exhaustedWindowResetAt } from "../features/providers/model/rateLimits";
 import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
   discardDraftSessionRecord,
+  deleteSession,
   getSession,
   listLinkedSessions,
   listSessionsByProject,
@@ -537,15 +546,28 @@ import { PaneTree } from "../features/workspace/ui/PaneTree";
 import { SessionPane } from "../features/sessions/ui/SessionPane";
 import { SessionSurface } from "../features/sessions/ui/SessionSurface";
 import { ProjectTerminalDock } from "../features/terminal/ui/ProjectTerminalDock";
-import { SearchView } from "../features/search/ui/SearchView";
+import { lazySurface } from "../shared/ui/lazySurface";
 import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
-import { SettingsView, type SettingsAnchor } from "../features/settings/ui/SettingsView";
+import type { SettingsAnchor } from "../features/settings/ui/SettingsView";
+import {
+  OPEN_CONNECTIONS_EVENT,
+  OPEN_REMOTE_PROJECT_EVENT,
+  REMOTE_HISTORY_UPDATED,
+  cachedRemoteSessionSummary,
+  rememberRemotePendingWorktree,
+  rememberRemoteSession,
+  remotePendingWorktree,
+  remoteTabCwd,
+  remoteSessionFor,
+} from "../features/connections/model/connections";
+import { buildRemotePlan, remoteSessionActions } from "../features/connections/model/remoteSessionActions";
+import { remoteSessionState } from "../features/connections/model/remoteSessionState";
+import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
+import type { HostSession } from "../features/connections/model/protocol";
+import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
-import { InboxView, LinkedWorkItemPanel } from "../features/inbox/ui/InboxView";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
 import { inboxAskKey, inboxAskPrompt } from "../features/inbox/model/inboxAsk";
-import { NotesView } from "../features/notes/ui";
-import { AutomationsView } from "../features/automations/ui/AutomationsView";
 import {
   githubWorkItemThread,
   inboxComposerCard,
@@ -565,7 +587,10 @@ import {
 import type { LinkedSessionUpdate } from "../features/inbox/model/linkedSessionUpdates";
 import { markLinkedSessionUpdateSeen } from "../features/inbox/model/linkedSessionSeen";
 import { inboxTrackerDescription } from "../features/inbox/model/inboxContext";
-import { gitlabWorkItemDetails, peekGitlabWorkItemDetails } from "../features/inbox/model/gitlab";
+import {
+  gitlabWorkItemDetails,
+  peekGitlabWorkItemDetails,
+} from "../features/inbox/model/gitlab";
 import {
   azureDevOpsWorkItemDetails,
   peekAzureDevOpsWorkItemDetails,
@@ -610,10 +635,13 @@ import {
 } from "../features/sessions/model/inFlight";
 import {
   isBlankSession,
-  planProjectReturn,
   reconcileProjectReturn,
   type ProjectReturnMemory,
 } from "../features/projects/model/projectReturn";
+import {
+  planProjectOpenRun,
+  type ProjectOpenStep,
+} from "../features/projects/model/projectOpenRun";
 import {
   collectWorkspaceSnapshot,
   workspaceSnapshotKey,
@@ -633,6 +661,31 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
+
+const SearchView = lazySurface(async () => {
+  const module = await import("../features/search/ui/SearchView");
+  return { default: module.SearchView };
+});
+const SettingsView = lazySurface(async () => {
+  const module = await import("../features/settings/ui/SettingsView");
+  return { default: module.SettingsView };
+});
+const InboxView = lazySurface(async () => {
+  const module = await import("../features/inbox/ui/InboxView");
+  return { default: module.InboxView };
+});
+const LinkedWorkItemPanel = lazySurface(async () => {
+  const module = await import("../features/inbox/ui/InboxView");
+  return { default: module.LinkedWorkItemPanel };
+});
+const NotesView = lazySurface(async () => {
+  const module = await import("../features/notes/ui/NotesView");
+  return { default: module.NotesView };
+});
+const AutomationsView = lazySurface(async () => {
+  const module = await import("../features/automations/ui/AutomationsView");
+  return { default: module.AutomationsView };
+});
 
 /** How long a hidden idle session stays attached after it leaves every tab. */
 const SESSION_DETACH_DELAY_MS = 250;
@@ -704,21 +757,6 @@ function setsEqual<T>(a: Set<T>, b: Set<T>): boolean {
     if (!b.has(value)) return false;
   }
   return true;
-}
-
-type ScheduledFlush = { kind: "raf" | "timeout"; id: number };
-
-function cancelScheduledFlush(handle: ScheduledFlush | null) {
-  if (!handle) return;
-  if (handle.kind === "raf") cancelAnimationFrame(handle.id);
-  else clearTimeout(handle.id);
-}
-
-function scheduleHarnessFlush(run: () => void): ScheduledFlush {
-  if (document.hidden) {
-    return { kind: "timeout", id: window.setTimeout(run, 32) };
-  }
-  return { kind: "raf", id: requestAnimationFrame(run) };
 }
 
 function userTurnCards(
@@ -1022,6 +1060,12 @@ export default function App({
     () => new Map(),
   );
   const [history, setHistory] = useState<SessionSummary[]>(() => bootHistory);
+  const [, refreshRemoteTabTitles] = useState(0);
+  useEffect(() => {
+    const updated = () => refreshRemoteTabTitles((value) => value + 1);
+    window.addEventListener(REMOTE_HISTORY_UPDATED, updated);
+    return () => window.removeEventListener(REMOTE_HISTORY_UPDATED, updated);
+  }, []);
   const [storedLinkedSessions, setStoredLinkedSessions] = useState<
     SessionSummary[]
   >(() => bootHistory.filter((session) => session.linkedWorkItem));
@@ -1069,6 +1113,19 @@ export default function App({
   searchViewOpenRef.current = searchViewOpen;
   const inboxViewOpenRef = useRef(inboxViewOpen);
   inboxViewOpenRef.current = inboxViewOpen;
+  const foregroundSurfaceRef = useRef<{
+    workspaceVisible: boolean;
+    inboxSessionId?: string;
+  }>({ workspaceVisible: true });
+  foregroundSurfaceRef.current = {
+    workspaceVisible:
+      !searchViewOpen &&
+      !inboxViewOpen &&
+      !notesViewOpen &&
+      !automationsViewOpen &&
+      !settingsOpen,
+    inboxSessionId: inboxViewOpen ? inboxAskPortal?.sessionId : undefined,
+  };
   const notesViewOpenRef = useRef(notesViewOpen);
   notesViewOpenRef.current = notesViewOpen;
   const automationsViewOpenRef = useRef(automationsViewOpen);
@@ -1185,7 +1242,7 @@ export default function App({
     const prev = sessionsRef.current;
     const next = prev.map((session) => {
       const events = batches.get(session.id);
-      return events ? events.reduce(applyHarnessEvent, session) : session;
+      return events ? applyHarnessEvents(session, events) : session;
     });
     if (!next.some((session, index) => session !== prev[index])) return;
     sessionsRef.current = next;
@@ -1222,7 +1279,7 @@ export default function App({
       const prev = sessionsRef.current;
       const next = prev.map((session) =>
         session.id === sessionId
-          ? events.reduce(applyHarnessEvent, session)
+          ? applyHarnessEvents(session, events)
           : session,
       );
       if (!next.some((session, index) => session !== prev[index])) return;
@@ -1248,8 +1305,33 @@ export default function App({
       const events = queued.get(sessionId);
       if (events) events.push(event);
       else queued.set(sessionId, [event]);
+      const tab = tabsRef.current.find(
+        (entry) => entry.id === activeTabIdRef.current,
+      );
+      const foreground =
+        !document.hidden &&
+        // Inbox owns its session surfaces outside the workspace tab tree.
+        (foregroundSurfaceRef.current.inboxSessionId === sessionId ||
+          (foregroundSurfaceRef.current.workspaceVisible &&
+            !!tab &&
+            (leafIds(tab.layout).includes(sessionId) ||
+              tab.editorPanes.some((pane) =>
+                pane.files.some(
+                  (file) =>
+                    file.id === pane.activeFileId &&
+                    file.agent?.sessionId === sessionId,
+                ),
+              ))));
+      // A visible stream must not wait for a background-only timer.
+      if (foreground && harnessFlush.current?.kind === "timeout") {
+        cancelScheduledFlush(harnessFlush.current);
+        harnessFlush.current = null;
+      }
       if (!harnessFlush.current) {
-        harnessFlush.current = scheduleHarnessFlush(flushHarnessEvents);
+        harnessFlush.current = scheduleHarnessFlush(
+          flushHarnessEvents,
+          foreground,
+        );
       }
     },
     [applyApprovalEvent, flushHarnessEvents],
@@ -1425,14 +1507,24 @@ export default function App({
     activeFile?.cwd ?? (active ? sessionWorkCwd(active) : sidebarCwd);
   const gitCwdBranches = useProjectBranches(
     gitCwd,
-    Boolean(gitCwd) && gitCwd !== "~",
+    Boolean(gitCwd) && gitCwd !== "~" && !isRemoteProjectPath(sidebarCwd),
   );
   const explorerRootLabel =
     active?.worktreeCwd && sameProjectPath(gitCwd, sessionWorkCwd(active))
       ? active.branch || gitCwdBranches?.current || undefined
       : undefined;
-  const gitCwdRef = useRef(gitCwd);
-  gitCwdRef.current = gitCwd;
+  const remoteFilesProject = remoteProjectFor(sidebarCwd);
+  const filesCwd = remoteFilesProject
+    ? isRemoteProjectPath(gitCwd)
+      ? gitCwd
+      : remotePath(
+          remoteFilesProject.environmentId,
+          remoteTabCwd(sidebarCwd, active?.id) ??
+            (gitCwd && gitCwd !== sidebarCwd ? gitCwd : remoteFilesProject.cwd),
+        )
+    : gitCwd;
+  const gitCwdRef = useRef(filesCwd);
+  gitCwdRef.current = filesCwd;
   const projectBranches = useProjectBranches(
     sidebarCwd,
     Boolean(sidebarCwd) && sidebarCwd !== "~",
@@ -1481,6 +1573,7 @@ export default function App({
     return {
       id: active.id,
       harness: active.harness,
+      model: active.model,
       authRequired: latestTurnNeedsHarnessLogin(active.blocks),
       providerAccountId:
         active.providerAccountId ??
@@ -1488,7 +1581,7 @@ export default function App({
           ? DEFAULT_PROVIDER_ACCOUNT_ID
           : undefined),
     };
-  }, [active?.id, active?.harness, active?.blocks, active?.providerAccountId]);
+  }, [active?.id, active?.harness, active?.model, active?.blocks, active?.providerAccountId]);
   const activeProviderSignInRequest = useMemo(() => {
     if (
       !active ||
@@ -1638,11 +1731,28 @@ export default function App({
 
   useEffect(() => {
     const onVisible = () => {
-      if (!document.hidden) flushHarnessEvents();
+      // Flush on hiding too: WebKit can suspend a pending animation frame,
+      // leaving the last output stranded until another event or activation.
+      flushHarnessEvents();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [flushHarnessEvents]);
+
+  useLayoutEffect(() => {
+    // A newly selected chat catches up before paint, even if its output was
+    // waiting on the background cadence. Draft/composer input stays immediate.
+    flushHarnessEvents();
+  }, [
+    activeTabId,
+    inboxViewOpen,
+    inboxAskPortal?.sessionId,
+    searchViewOpen,
+    notesViewOpen,
+    automationsViewOpen,
+    settingsOpen,
+    flushHarnessEvents,
+  ]);
 
   useEffect(() => {
     let unlistenClose: (() => void) | undefined;
@@ -2067,12 +2177,23 @@ export default function App({
   }, [activeTabId, commitTabVisit, tabs]);
 
   /** `cwd` scopes group inheritance: a tab from another project starts alone. */
-  const insertBesideActive = useCallback(
-    (prev: WorkspaceTab[], tab: WorkspaceTab, cwd?: string) =>
-      insertTabBesideActive(prev, tab, activeTabIdRef.current, (id) =>
+  const insertBeside = useCallback(
+    (
+      prev: WorkspaceTab[],
+      tab: WorkspaceTab,
+      anchorId: string | undefined,
+      cwd?: string,
+    ) =>
+      insertTabBesideActive(prev, tab, anchorId, (id) =>
         id === tab.id ? (cwd ? projectName(cwd) : undefined) : projectOfTab(id),
       ),
     [projectOfTab],
+  );
+
+  const insertBesideActive = useCallback(
+    (prev: WorkspaceTab[], tab: WorkspaceTab, cwd?: string) =>
+      insertBeside(prev, tab, activeTabIdRef.current, cwd),
+    [insertBeside],
   );
 
   const appendTab = useCallback(
@@ -2152,6 +2273,36 @@ export default function App({
     sessionDefaults?.runtimeMode,
     projectCwd,
   ]);
+
+  const onSelectRemoteSession = useCallback(
+    (project: string, remoteSessionId: string) => {
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+      const existing = tabsRef.current
+        .map((tab) => ({
+          tab,
+          shellId: leafIds(tab.layout).find(
+            (shellId) => remoteSessionFor(shellId) === remoteSessionId,
+          ),
+        }))
+        .find(({ shellId }) => shellId);
+      if (existing) {
+        activateTab(existing.tab.id, existing.shellId);
+        return;
+      }
+      // Reserve a dedicated tab immediately. An apparently blank remote tab
+      // may hold composer text or a create/upload that the host has not accepted.
+      const session = newDefaultSession(project, sessionDefaults?.runtimeMode);
+      const tab = newTab(session.id);
+      rememberRemoteSession(session.id, remoteSessionId);
+      setSessions((prev) => [...prev, session]);
+      appendTab(tab, project);
+      setActiveTabId(tab.id);
+    },
+    [activateTab, appendTab, sessionDefaults?.runtimeMode],
+  );
 
   const onStartInboxItem = useCallback(
     async (item: InboxItem, body?: string) => {
@@ -2328,7 +2479,7 @@ export default function App({
     (cwd: string) => {
       const workdir = cwd || projectCwdRef.current;
       const projectPath = projectCwdRef.current;
-      if (!looksLikeProject(projectPath)) return false;
+      if (!isLocalProject(projectPath)) return false;
       setProjectTerminals((prev) => {
         const existing = findProjectTerminal(prev, projectPath);
         const file = newTerminalFile(
@@ -2359,6 +2510,7 @@ export default function App({
   const onOpenTerminal = useCallback(
     (cwd: string, asWorkspaceTab = false, occupySessionId?: string) => {
       const workdir = cwd || gitCwd;
+      if (!isLocalProject(projectCwdRef.current) || !isLocalProject(workdir)) return;
       if (openProjectTerminal(workdir)) return;
 
       if (asWorkspaceTab || !activeTab) {
@@ -2436,7 +2588,7 @@ export default function App({
   );
 
   const onToggleProjectTerminal = useCallback(() => {
-    if (!looksLikeProject(projectCwd)) return;
+    if (!isLocalProject(projectCwd)) return;
     const dock = findProjectTerminal(projectTerminalsRef.current, projectCwd);
     if (!dock) {
       openProjectTerminal(gitCwd);
@@ -2657,6 +2809,8 @@ export default function App({
         );
         for (const sessionId of gone) {
           persistSession(sessionsRef.current.find((s) => s.id === sessionId));
+          rememberRemoteSession(sessionId);
+          rememberRemotePendingWorktree(sessionId);
         }
         setDirtyFiles((prev) => {
           const updated = new Set(prev);
@@ -2718,6 +2872,8 @@ export default function App({
           persistSession(
             sessionsRef.current.find((session) => session.id === sessionId),
           );
+          rememberRemoteSession(sessionId);
+          rememberRemotePendingWorktree(sessionId);
         }
         setDirtyFiles((prev) => {
           const next = new Set(prev);
@@ -2975,6 +3131,10 @@ export default function App({
 
       const finishClear = () => {
         persistSession(oldSession);
+        for (const shellId of leafIds(tab.layout)) {
+          rememberRemoteSession(shellId);
+          rememberRemotePendingWorktree(shellId);
+        }
 
         const session = newSession(
           oldSession.harness,
@@ -3018,6 +3178,26 @@ export default function App({
       ).then((ok) => ok && finishClear());
     },
     [tabs, persistSession, refreshHistory, sidebarCwd],
+  );
+
+  const onRemoteSessionDeleted = useCallback(
+    (remoteSessionId: string) => {
+      const tab = tabsRef.current.find((entry) =>
+        leafIds(entry.layout).some(
+          (shellId) => remoteSessionFor(shellId) === remoteSessionId,
+        ),
+      );
+      if (!tab) return;
+      const closePlan = planWorkspaceTabClose({
+        tabs: tabsRef.current,
+        sessions: sessionsRef.current,
+        closingTabId: tab.id,
+        scope: tabCloseScope,
+      });
+      if (closePlan.action === "keep") onClearTabSession(tab.id);
+      else onCloseTab(tab.id);
+    },
+    [onClearTabSession, onCloseTab, tabCloseScope],
   );
 
   const onCloseAllTabs = useCallback(() => {
@@ -3833,21 +4013,27 @@ export default function App({
       removingSessionIds.current.add(id);
       try {
         await stopSessionForRemoval(id);
+        const stopped =
+          sessionsRef.current.find((session) => session.id === id) ?? current;
         await Promise.all(
-          sessionChildHarnesses(current).map((harness) =>
+          sessionChildHarnesses(stopped).map((harness) =>
             forgetHarnessSession(harness, id),
           ),
         );
+        const imagePaths = stopped.blocks.flatMap((block) =>
+          block.role === "image" && block.image ? [block.image.path] : [],
+        );
+        await deleteSession(id, imagePaths);
         const fresh = {
           ...newSession(
-            current.harness,
-            current.cwd,
-            current.model,
-            current.runtimeMode,
-            current.modelSettings,
+            stopped.harness,
+            stopped.cwd,
+            stopped.model,
+            stopped.runtimeMode,
+            stopped.modelSettings,
           ),
-          title: current.title,
-          inboxAsk: current.inboxAsk,
+          title: stopped.title,
+          inboxAsk: stopped.inboxAsk,
         };
         const next = sessionsRef.current.map((session) =>
           session.id === id ? fresh : session,
@@ -4988,68 +5174,93 @@ export default function App({
     [appendTab, invalidateLoadedSession, refreshHistory],
   );
 
-  const onSelectProject = useCallback(
-    (path: string) => {
-      setSearchViewOpen(false);
-      setInboxViewOpen(false);
-      setNotesViewOpen(false);
-      setAutomationsViewOpen(false);
-      const normalized = normalizeProjectPath(path);
-      if (!looksLikeProject(normalized)) return;
-
-      const activeWorkspace = tabsRef.current.find(
-        (entry) => entry.id === activeTabIdRef.current,
-      );
-      const current = activeWorkspace
-        ? sessionsRef.current.find(
-            (session) => session.id === activeWorkspace.focusedId,
-          )
-        : undefined;
-      const decision = planProjectReturn({
+  /**
+   * Open a run of folders from one snapshot, committed in a single transition.
+   *
+   * Planning per folder from refs would read state React has not rendered yet,
+   * so the whole run is planned first and applied here in selection order.
+   */
+  const openProjects = useCallback(
+    (paths: readonly string[]) => {
+      const steps = planProjectOpenRun({
         memory: readProjectReturnMemory(),
         tabs: tabsRef.current,
         sessions: sessionsRef.current,
         activeTabId: activeTabIdRef.current,
-        projectPath: normalized,
+        paths,
       });
-      switch (decision.action) {
-        case "keep":
-          setProjectCwd(normalized);
-          setRecents(rememberProject(normalized));
-          return;
-        case "reuse-blank":
-          onCwdChange(decision.sessionId, normalized);
-          return;
-        case "activate":
-          setProjectCwd(normalized);
-          setRecents(rememberProject(normalized));
-          activateTab(decision.tabId, decision.paneId);
-          return;
-        case "create":
-          break;
-        default: {
-          const exhaustive: never = decision;
-          return exhaustive;
-        }
+      const last = steps[steps.length - 1];
+      if (!last) return;
+
+      // After the early return, not before it. `pickFolders` hands back an
+      // empty list when the picker is dismissed, and every path failing
+      // `looksLikeProject` comes out the same way — so closing these first
+      // meant cancelling a folder picker shut whatever the user had open.
+      // Nothing below opens a project without also leaving one of these views.
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+
+      // At most one folder can take the blank session, and it keeps the
+      // retargeting rules `onCwdChange` already owns.
+      const blank = steps.find(
+        (step): step is Extract<ProjectOpenStep, { action: "reuse-blank" }> =>
+          step.action === "reuse-blank",
+      );
+      if (blank) onCwdChange(blank.sessionId, blank.path);
+
+      const created = steps.filter(
+        (step): step is Extract<ProjectOpenStep, { action: "create" }> =>
+          step.action === "create",
+      );
+      if (created.length > 0) {
+        setSessions((prev) => [...prev, ...created.map((step) => step.session)]);
+        // Each tab sits beside the one before it in the run, so the folders keep
+        // their selection order.
+        setTabs((prev) =>
+          created.reduce(
+            (tabs, step) =>
+              insertBeside(tabs, step.tab, step.besideTabId, step.path),
+            prev,
+          ),
+        );
       }
 
-      const seed = current ?? sessionsRef.current[0];
-      const session = newSessionForProject(seed, normalized);
-      const tab = newTab(session.id);
-      setProjectCwd(normalized);
-      setRecents(rememberProject(normalized));
-      setSessions((prev) => [...prev, session]);
-      appendTab(tab, normalized);
-      setActiveTabId(tab.id);
-      setComposerFocused(true);
+      // The folder chosen last ends up focused.
+      switch (last.action) {
+        case "create":
+          setProjectCwd(last.path);
+          setActiveTabId(last.tab.id);
+          setComposerFocused(true);
+          break;
+        case "activate":
+          setProjectCwd(last.path);
+          activateTab(last.tabId, last.paneId);
+          break;
+        case "keep":
+          setProjectCwd(last.path);
+          break;
+        case "reuse-blank":
+          // `onCwdChange` already moved to it.
+          break;
+      }
+      // Every project opened is remembered, the one chosen last most recently.
+      for (const step of steps) setRecents(rememberProject(step.path));
     },
-    [activateTab, appendTab, onCwdChange, readProjectReturnMemory],
+    [activateTab, insertBeside, onCwdChange, readProjectReturnMemory],
+  );
+
+  const onSelectProject = useCallback(
+    (path: string) => openProjects([path]),
+    [openProjects],
   );
 
   const pickProject = useCallback(async () => {
-    const path = await pickFolder();
-    if (path) onSelectProject(path);
-  }, [onSelectProject]);
+    // Several folders can be taken at once; each opens as its own project, and
+    // the last one selected ends up focused.
+    openProjects(await pickFolders());
+  }, [openProjects]);
 
   const [resumePickerFor, setResumePickerFor] =
     useState<ClaudeImportTarget | null>(null);
@@ -5142,7 +5353,13 @@ export default function App({
       }
       saveSessionFolders(
         source.cwd,
-        placeSessionInFolder(folders, sessionId, target),
+        placeSessionInFolder(
+          folders,
+          isRemoteProjectPath(source.cwd)
+            ? (remoteSessionFor(sessionId) ?? sessionId)
+            : sessionId,
+          target,
+        ),
       );
     },
     [],
@@ -5369,7 +5586,10 @@ export default function App({
     for (const tab of tabsRef.current) {
       for (const pane of tab.editorPanes) {
         for (const file of pane.files) {
-          if (isFilesystemTab(file) && isEqualOrInside(file.path, path)) {
+          if (
+            isFilesystemTab(file) &&
+            isEqualOrInside(file.path, path)
+          ) {
             dropped.add(file.id);
           }
         }
@@ -5630,6 +5850,8 @@ export default function App({
       const current = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
+      if (current && remoteProjectFor(current.cwd))
+        return !!remoteSessionActions(sessionId)?.saveDraft(text, attachments);
       if (
         !current ||
         current.busy ||
@@ -5716,6 +5938,9 @@ export default function App({
       attachments: Attachment[] = [],
       options?: SubmitOptions,
     ): SubmissionAcceptance => {
+      const remote = sessionsRef.current.find((session) => session.id === sessionId);
+      if (remote && remoteProjectFor(remote.cwd))
+        return !!remoteSessionActions(sessionId)?.submit(text, attachments, options);
       if (editedResends.isActive(sessionId)) return false;
       const controlError = orchestrator.submissionError(
         sessionId,
@@ -5892,9 +6117,7 @@ export default function App({
       const ciContext = options?.ciRepair?.prompt ?? options?.ciContext;
       const harnessText =
         options?.ciRepair?.prompt ??
-        (rawCommand
-          ? submittedText
-          : composeNoteMessage(noteCard, promptText));
+        (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
       const pendingSwitch =
         current.pendingSwitch && current.pendingSwitch.from !== current.harness
@@ -6123,18 +6346,18 @@ export default function App({
       const card =
         options?.secondOpinion ??
         (handoffCard ? handoffTurnCard(handoffCard) : undefined);
-      const visibleText =
-        operatorCommand.matched
-          ? promptText
-          : card?.kind === "handoff"
-            ? submittedText
-            : card
-              ? SECOND_OPINION_TITLE
-              : submittedText;
+      const visibleText = operatorCommand.matched
+        ? promptText
+        : card?.kind === "handoff"
+          ? submittedText
+          : card
+            ? SECOND_OPINION_TITLE
+            : submittedText;
       const cards = {
         ...(rawCommand ? undefined : userTurnCards(noteCard, card)),
         ...(ciContext ? { ciContext } : {}),
         ...(operatorCommand.matched ? { monocode: true } : {}),
+        ...(intent === "plan" || intent === "orchestrate" ? { intent } : {}),
         ...(options?.appRequestId ? { appRequestId: options.appRequestId } : {}),
         // The orchestrator writes these turns, not the user; hide them.
         ...(options?.managed ? { internal: true } : {}),
@@ -6155,7 +6378,9 @@ export default function App({
             const draftRemoved = draftBlock
               ? {
                   ...s,
-                  blocks: s.blocks.filter((block) => block.id !== draftBlock.id),
+                  blocks: s.blocks.filter(
+                    (block) => block.id !== draftBlock.id,
+                  ),
                 }
               : s;
             const selected = options?.buildTarget
@@ -6249,7 +6474,9 @@ export default function App({
           }),
         );
       };
-      if (!options?.resendEdited) flushSync(commitSubmittedTurn);
+      if (!options?.resendEdited) {
+        flushSync(commitSubmittedTurn);
+      }
 
       const launchTitleGeneration = (workCwd: string) => {
         if (
@@ -6451,11 +6678,7 @@ export default function App({
           }
           if (turnGen.current.get(sessionId) !== gen) return;
           const latest = sessionsRef.current.find((s) => s.id === sessionId);
-          const brief = chooseHandoffBrief(
-            agentText,
-            latest ?? current,
-            text,
-          );
+          const brief = chooseHandoffBrief(agentText, latest ?? current, text);
           await forgetHarnessSession(pendingSwitch.from, sessionId);
           if (turnGen.current.get(sessionId) !== gen) return;
           wrap = { from: pendingSwitch.from, to: current.harness, text: brief };
@@ -6542,12 +6765,16 @@ export default function App({
         const recoverEditedResend = () => {
           if (!editedResend || editedResend.isAccepted()) return;
           pendingEditedEvents.length = 0;
+          const previous = sessionsRef.current.find(
+            (session) => session.id === sessionId,
+          );
+          const recovered = previous
+            ? editedResend.recoverAfterFailure(previous)
+            : undefined;
           flushSync(() => {
             setSessions((prev) =>
               prev.map((session) =>
-                session.id === sessionId
-                  ? editedResend.recoverAfterFailure(session)
-                  : session,
+                session.id === sessionId && recovered ? recovered : session,
               ),
             );
           });
@@ -6586,10 +6813,7 @@ export default function App({
           const earlier = queuedHandoff
             ? userMessagesAfterHandoff(current)
             : [];
-          if (
-            editedResend &&
-            canRewindHarnessLastTurn(current.harness)
-          ) {
+          if (editedResend && canRewindHarnessLastTurn(current.harness)) {
             try {
               await rewindHarnessLastTurn({
                 harness: current.harness,
@@ -6675,7 +6899,7 @@ export default function App({
           );
           if (operatorCommand.matched) {
             const cli = `${shellPath(await invoke<string>("app_cli_path"))} app`;
-            sendText += `\n\n<monocode_app>\nThe user's Operator command enables app access in this thread, including later turns without the command. You can start session tabs, read and continue other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` for exact commands and JSON fields, then use it as needed for the user's request. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`;
+            sendText += `\n\n<monocode_app>\nThe user's Operator command enables app access in this thread, including later turns without the command. You can start session tabs or split session panes right or down, list and create project worktrees, choose a new session's checkout, read and continue other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` for exact commands and JSON fields, then use it as needed for the user's request. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`;
           }
           await sendTurn(sendText);
           acceptEditedResend();
@@ -7025,7 +7249,7 @@ export default function App({
   );
 
   const launchQuickSession = useCallback(
-    (launch: QuickLaunch, deliveryId: string) =>
+    (launch: QuickLaunch, deliveryId: string, placement?: AppSessionPlacement) =>
       acceptQuickLaunch(launch, deliveryId, {
         getSessions: () => sessionsRef.current,
         updateSessions: (update) => {
@@ -7034,6 +7258,34 @@ export default function App({
           setSessions(update);
         },
         appendTab,
+        placeSession: (sessionId, target, cwd) => {
+          const anchor = sessionsRef.current.find(
+            (session) => session.id === target.besideSessionId,
+          );
+          const tab = tabsRef.current.find((entry) =>
+            leafIds(entry.layout).includes(target.besideSessionId),
+          );
+          if (!anchor || !sameProjectPath(anchor.cwd, cwd) || !tab)
+            throw new Error("The target session must be open in this project");
+          const nextTabs = tabsRef.current.map((entry) =>
+            entry.id === tab.id
+              ? {
+                  ...entry,
+                  layout: splitPane(
+                    entry.layout,
+                    target.besideSessionId,
+                    target.direction,
+                    sessionId,
+                  ),
+                  focusedId: launch.reveal ? sessionId : entry.focusedId,
+                  diffFocused: launch.reveal ? false : entry.diffFocused,
+                }
+              : entry,
+          );
+          tabsRef.current = nextTabs;
+          setTabs(nextTabs);
+          return tab.id;
+        },
         setProjectCwd,
         setRecents,
         revealTab: (id, cwd) => {
@@ -7050,7 +7302,7 @@ export default function App({
           flushSync(() =>
             onSaveDraft(id, prompt, attachments, requestId),
           ),
-      }),
+      }, placement),
     [appendTab, submitSession, onSaveDraft],
   );
   useQuickComposerLaunches(launchQuickSession);
@@ -7149,6 +7401,7 @@ export default function App({
     (sessionId: string, blockId: string, text: string) => {
       setSessions((prev) =>
         prev.map((session) => {
+          if (remoteProjectFor(session.cwd)) return session;
           if (session.id !== sessionId || session.busy) return session;
           return {
             ...session,
@@ -7186,6 +7439,10 @@ export default function App({
       const session = sessionsRef.current.find(
         (entry) => entry.id === sessionId,
       );
+      if (session && remoteProjectFor(session.cwd)) {
+        buildRemotePlan(sessionId, blockId, target);
+        return;
+      }
       const block = session?.blocks.find((entry) => entry.id === blockId);
       if (
         !session ||
@@ -8211,6 +8468,8 @@ export default function App({
       const current = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
+      if (current && remoteProjectFor(current.cwd))
+        return remoteSessionActions(sessionId)?.compact() ?? false;
       if (!current || current.busy || current.worktreeRemoved) return false;
       if (!canCompactHarnessContext(current.harness)) {
         const unsupported = sessionsRef.current.map((session) =>
@@ -8292,6 +8551,11 @@ export default function App({
 
   const onStop = useCallback(
     (sessionId: string, managed = false) => {
+      const remote = sessionsRef.current.find((s) => s.id === sessionId);
+      if (remote && remoteProjectFor(remote.cwd)) {
+        remoteSessionActions(sessionId)?.stop();
+        return;
+      }
       if (!managed) {
         const stopping = orchestrator.stopForSession(sessionId);
         if (stopping) {
@@ -8381,6 +8645,10 @@ export default function App({
     (sessionId: string, requestId: number, decision: ApprovalDecision) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return;
+      if (remoteProjectFor(session.cwd)) {
+        remoteSessionActions(sessionId)?.approve(requestId, decision);
+        return;
+      }
       respondHarnessApproval(session.harness, sessionId, requestId, decision);
     },
     [],
@@ -8390,6 +8658,10 @@ export default function App({
     (sessionId: string, requestId: number, reply: UserQuestionReply) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return;
+      if (remoteProjectFor(session.cwd)) {
+        remoteSessionActions(sessionId)?.answer(requestId, reply);
+        return;
+      }
       respondHarnessQuestion(session.harness, sessionId, requestId, reply);
     },
     [],
@@ -8398,6 +8670,7 @@ export default function App({
   const onQuestionInteraction = useCallback(
     (sessionId: string, requestId: number) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
+      if (session && remoteProjectFor(session.cwd)) return;
       if (session && !session.worktreeRemoved)
         keepHarnessQuestionOpen(session.harness, sessionId, requestId);
     },
@@ -8845,7 +9118,7 @@ export default function App({
           payload.action,
           payload.input,
           {
-            start: async (launch, id) => {
+            start: async (launch, id, placement) => {
               const open = sessionsRef.current.find(
                 (session) => session.id === id,
               );
@@ -8859,7 +9132,9 @@ export default function App({
                   previous.text !== launch.prompt ||
                   (!launch.draft && !!previous.draft)
                 )
-                  throw new Error("Request ID was already used for another session launch");
+                  throw new Error(
+                    "Request ID was already used for another session launch",
+                  );
                 return;
               }
               if (
@@ -8870,7 +9145,7 @@ export default function App({
                 return;
               if (existing && sessionDraftBlock(existing))
                 throw new Error("Session ID already has a different draft");
-              await launchQuickSessionRef.current(launch, id);
+              await launchQuickSessionRef.current(launch, id, placement);
             },
             sessions: async (cwd): Promise<AppSessionListing[]> => {
               const stored = await listSessionsByProject(cwd);
@@ -8978,6 +9253,9 @@ export default function App({
               if (!saved) throw new Error("Session could not accept a draft");
               return { alreadySaved: false, draft: true };
             },
+            worktrees: (cwd) => listWorktrees(cwd),
+            createWorktree: (cwd, branch, base, existing) =>
+              createWorktree(cwd, branch, base, existing),
             notes: () => invoke("notes_list"),
             note: (id) => invoke("notes_get", { id }),
             saveNote: async (note) => {
@@ -9453,11 +9731,7 @@ export default function App({
   );
 
   const onRepairChecks = useCallback(
-    async (
-      item: InboxItem,
-      request: CiRepairRequest,
-      sessionId?: string,
-    ) => {
+    async (item: InboxItem, request: CiRepairRequest, sessionId?: string) => {
       const cwd = item.projectPath;
       if (!cwd) throw new Error("Choose a local project for this PR first.");
       let session = sessionId ? await ensureOpenSession(sessionId) : undefined;
@@ -9576,6 +9850,18 @@ export default function App({
   );
 
   const onOpenSettings = useCallback(() => openSettings(), [openSettings]);
+  useEffect(() => {
+    const openConnections = () => openSettings("connections");
+    window.addEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
+    return () =>
+      window.removeEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
+  }, [openSettings]);
+  const [remoteProjectDialogOpen, setRemoteProjectDialogOpen] = useState(false);
+  useEffect(() => {
+    const open = () => setRemoteProjectDialogOpen(true);
+    window.addEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
+    return () => window.removeEventListener(OPEN_REMOTE_PROJECT_EVENT, open);
+  }, []);
 
   const onOpenNotificationSettings = useCallback(
     (path?: string) => {
@@ -9662,7 +9948,8 @@ export default function App({
     for (const tab of tabs) {
       for (const pane of tab.editorPanes) {
         for (const file of pane.files) {
-          if (!isFilesystemTab(file) || seen.has(file.path)) continue;
+          if (!isFilesystemTab(file) || seen.has(file.path))
+            continue;
           seen.add(file.path);
           paths.push(file.path);
         }
@@ -9691,13 +9978,27 @@ export default function App({
         (session) => session.id === activeWorkspace.focusedId,
       );
       if (!current) return;
+      const remoteProject = isRemoteProjectPath(current.cwd);
+      const navigationId = remoteProject
+        ? remoteSessionFor(current.id)
+        : current.id;
+      if (!navigationId) return;
 
       const next = adjacentItemId(
         sessionNavigationIdsRef.current,
-        current.id,
+        navigationId,
         delta,
       );
-      if (!next || next === current.id) return;
+      if (!next || next === navigationId) return;
+      if (remoteProject) {
+        if (inCurrentTab) {
+          rememberRemoteSession(current.id, next);
+          setComposerFocused(true);
+        } else {
+          onSelectRemoteSession(current.cwd, next);
+        }
+        return;
+      }
       // Stepping gives no hover to warm the transcript, so load the one a
       // further step away once this switch has its own session.
       const prefetchAhead = () => {
@@ -9718,10 +10019,13 @@ export default function App({
         prefetchAhead();
         if (!session || session.inboxAsk) return;
         if (activeTabIdRef.current !== activeTabId) return;
-        const currentTab = tabsRef.current.find((tab) => tab.id === activeTabId);
+        const currentTab = tabsRef.current.find(
+          (tab) => tab.id === activeTabId,
+        );
         if (currentTab?.focusedId !== focusedId) return;
-        setTabs((prev) =>
-          switchSessionInTab(prev, activeTabId, focusedId, next) ?? prev,
+        setTabs(
+          (prev) =>
+            switchSessionInTab(prev, activeTabId, focusedId, next) ?? prev,
         );
         setComposerFocused(true);
         const linkedUpdate = linkedSessionUpdatesRef.current.get(next);
@@ -9732,6 +10036,7 @@ export default function App({
       ensureOpenSession,
       onPrefetchHistorySession,
       onSelectHistorySession,
+      onSelectRemoteSession,
       revealLinkedSessionUpdate,
     ],
   );
@@ -10009,8 +10314,7 @@ export default function App({
         else if (shortcut === "App: Command Palette")
           run("open_command_palette", a.onOpenCommandPalette);
         else if (shortcut === "View: Reload") run("reload", a.onReload);
-        else if (shortcut === "App: Search")
-          run("open_search", a.onOpenSearch);
+        else if (shortcut === "App: Search") run("open_search", a.onOpenSearch);
         else if (shortcut === "App: Settings")
           run("open_settings", () => a.openSettings());
         else if (shortcut === "App: Find in Files")
@@ -10157,6 +10461,33 @@ export default function App({
     );
   }, [currentProjectDock, dockVisible]);
 
+  const lastRemoteSnapshot = useRef(new Map<string, HostSession>());
+  const onRemoteSnapshot = useCallback((shellId: string, snapshot?: HostSession) => {
+    if (!snapshot) {
+      lastRemoteSnapshot.current.delete(shellId);
+      setSessions((current) => current.map((entry) => entry.id === shellId
+        ? { ...entry, title: "New remote session", blocks: [], busy: false }
+        : entry));
+      return;
+    }
+    if (lastRemoteSnapshot.current.get(shellId) === snapshot) return;
+    lastRemoteSnapshot.current.set(shellId, snapshot);
+    setSessions((current) => {
+      const shell = current.find((entry) => entry.id === shellId);
+      if (!shell) return current;
+      const project = remoteProjectFor(shell.cwd);
+      if (!project) return current;
+      return current.map((entry) => entry.id === shellId
+        ? remoteSessionState(entry, snapshot, project)
+        : entry);
+    });
+  }, []);
+
+  const onManageWorktrees = useCallback(
+    () => openSettings("worktrees"),
+    [openSettings],
+  );
+
   const sessionPaneProps = {
     recents,
     hideProjectPicker: true,
@@ -10165,9 +10496,10 @@ export default function App({
     onCwdChange,
     onBranchChange,
     onWorktreeChange,
+    onRemoteSnapshot,
     onWorkspaceModeChange,
     onWorktreeBaseChange,
-    onManageWorktrees: () => openSettings("worktrees"),
+    onManageWorktrees,
     onModelChange,
     onModelSettingsChange,
     onRuntimeModeChange,
@@ -10280,6 +10612,8 @@ export default function App({
               status={historyFailed ? "error" : "idle"}
               pending={historyPending}
               onSelectSession={onSelectHistorySession}
+              onSelectRemoteSession={onSelectRemoteSession}
+              onRemoteSessionDeleted={onRemoteSessionDeleted}
               onPrefetchSession={onPrefetchHistorySession}
               onSessionNavigationOrder={onSessionNavigationOrder}
               onPlaceSessionOnPane={onPlaceSessionOnPane}
@@ -10571,7 +10905,8 @@ export default function App({
                   onToggleSidebar={onToggleSidebar}
                   onOpenFile={onOpenFile}
                   onOpenSession={(sessionId, blockId, query) => {
-                    if (blockId) requestTranscriptJump(sessionId, blockId, query);
+                    if (blockId)
+                      requestTranscriptJump(sessionId, blockId, query);
                     void onSelectHistorySession(sessionId);
                   }}
                   onOpenProject={onSelectProject}
@@ -10689,10 +11024,10 @@ export default function App({
                   terminalOpen={runningTerminalOpen}
                   onToggleTerminal={onToggleRunningTerminal}
                   onNewTerminal={
-                    looksLikeProject(projectCwd) ? onNewTerminal : undefined
+                    isLocalProject(projectCwd) ? onNewTerminal : undefined
                   }
                   onShowTerminal={
-                    looksLikeProject(projectCwd)
+                    isLocalProject(projectCwd)
                       ? onShowProjectTerminal
                       : undefined
                   }
@@ -10709,7 +11044,7 @@ export default function App({
             <FilePicker
               key={filePickerResetToken}
               open
-              cwd={gitCwd}
+              cwd={filesCwd}
               openPaths={openFilePaths}
               initialQuery={filePickerInitialQuery}
               onOpenFile={onOpenFile}
@@ -10764,6 +11099,15 @@ export default function App({
               onClose={() => setWhatsNewVersion(null)}
             />
           ) : null}
+          {remoteProjectDialogOpen ? (
+            <AddRemoteProjectDialog
+              onCancel={() => setRemoteProjectDialogOpen(false)}
+              onOpen={(key) => {
+                setRemoteProjectDialogOpen(false);
+                onSelectProject(key);
+              }}
+            />
+          ) : null}
           {providerSignInRequest ? (
             <ProviderSignInDialog
               key={providerSignInRequest.key}
@@ -10778,7 +11122,16 @@ export default function App({
   );
 }
 function conversationTitle(session: Session): string {
-  const title = sessionDisplayTitle(session.title, session.harness);
+  const hostId = isRemoteProjectPath(session.cwd)
+    ? remoteSessionFor(session.id)
+    : undefined;
+  const remote = hostId
+    ? cachedRemoteSessionSummary(session.cwd, hostId)
+    : undefined;
+  const title = sessionDisplayTitle(
+    remote?.title ?? session.title,
+    remote?.harness ?? session.harness,
+  );
   return title === "New session" ? "" : title;
 }
 
@@ -10823,6 +11176,7 @@ function isBlankWorkspaceTab(tab: WorkspaceTab, sessions: Session[]): boolean {
     return false;
   const ids = leafIds(tab.layout);
   if (ids.length !== 1) return false;
+  if (remoteSessionFor(ids[0]) || remotePendingWorktree(ids[0])) return false;
   return isBlankSession(sessions.find((entry) => entry.id === ids[0]));
 }
 
@@ -10958,7 +11312,8 @@ function dropOpenFiles(
   const editorPanes: EditorPane[] = [];
   for (const pane of tab.editorPanes) {
     const files = pane.files.filter(
-      (file) => !isFilesystemTab(file) || !shouldDrop(file.path),
+      (file) =>
+        !isFilesystemTab(file) || !shouldDrop(file.path),
     );
     if (files.length === 0) {
       const sibling = siblingLeafId(layout, pane.id);
