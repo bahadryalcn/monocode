@@ -148,8 +148,14 @@ export type ClaudeSessionSummary = {
  * Summarized in Rust: a single session file routinely runs past half a
  * megabyte, and reading a project's worth of them in the UI would stall it.
  */
-export function claudeSessions(cwd: string): Promise<ClaudeSessionSummary[]> {
-  return invoke<ClaudeSessionSummary[]>("claude_sessions", { cwd });
+export function claudeSessions(
+  cwd: string,
+  providerAccountId?: string,
+): Promise<ClaudeSessionSummary[]> {
+  return invoke<ClaudeSessionSummary[]>("claude_sessions", {
+    cwd,
+    providerAccountId: providerAccountId ?? null,
+  });
 }
 
 export function listDir(path: string): Promise<FsEntry[]> {

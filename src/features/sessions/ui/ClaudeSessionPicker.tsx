@@ -7,17 +7,24 @@ import {
 
 type Props = {
   cwd: string;
+  /** Whose conversations: an added account keeps its own transcripts. */
+  providerAccountId?: string;
   onPick: (summary: ClaudeSessionSummary) => void;
   onClose: () => void;
 };
 
 /** Conversations Claude Code already recorded for this project, newest first. */
-export function ClaudeSessionPicker({ cwd, onPick, onClose }: Props) {
+export function ClaudeSessionPicker({
+  cwd,
+  providerAccountId,
+  onPick,
+  onClose,
+}: Props) {
   const [sessions, setSessions] = useState<ClaudeSessionSummary[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    claudeSessions(cwd)
+    claudeSessions(cwd, providerAccountId)
       .then((list) => {
         if (!cancelled) setSessions(list);
       })
@@ -28,7 +35,7 @@ export function ClaudeSessionPicker({ cwd, onPick, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [cwd]);
+  }, [cwd, providerAccountId]);
 
   return (
     <ModalPanel

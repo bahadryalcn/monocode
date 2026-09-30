@@ -11086,6 +11086,7 @@ export default function App({
           {resumePickerFor ? (
             <ClaudeSessionPicker
               cwd={resumePickerFor.cwd}
+              providerAccountId={resumePickerFor.providerAccountId}
               onClose={() => setResumePickerFor(null)}
               onPick={(summary) => {
                 void importClaudeConversation(resumePickerFor, summary);

@@ -148,26 +148,46 @@ pub struct ClaudeSessionSummary {
 ///
 /// The mapping only runs this way: `-a-b` could have come from `/a/b`, `/a-b`
 /// or `/a.b`, so a directory name can never be turned back into a path.
-pub(crate) fn claude_project_dir(home: &Path, cwd: &str) -> PathBuf {
+pub(crate) fn claude_project_dir(config_dir: &Path, cwd: &str) -> PathBuf {
     let flattened: String = cwd
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    home.join(".claude").join("projects").join(flattened)
+    config_dir.join("projects").join(flattened)
+}
+
+/// The directory a Claude account keeps its config and transcripts in. An
+/// added account runs its CLI with `CLAUDE_CONFIG_DIR` pointed at its own
+/// profile, so its conversations live there and never under `~/.claude`.
+fn claude_config_dir(
+    app: &AppHandle,
+    provider_account_id: Option<&str>,
+) -> Result<PathBuf, String> {
+    match provider_account_id {
+        Some(id) if id != "default" => crate::harness::provider_account_path(app, "claude", id),
+        _ => match std::env::var_os("CLAUDE_CONFIG_DIR") {
+            Some(path) => Ok(PathBuf::from(path)),
+            None => Ok(
+                PathBuf::from(dirs_home().ok_or("Home directory is unavailable")?).join(".claude"),
+            ),
+        },
+    }
 }
 
 #[tauri::command]
-pub async fn claude_sessions(cwd: String) -> Result<Vec<ClaudeSessionSummary>, String> {
-    tauri::async_runtime::spawn_blocking(move || claude_sessions_sync(&cwd))
+pub async fn claude_sessions(
+    app: AppHandle,
+    cwd: String,
+    provider_account_id: Option<String>,
+) -> Result<Vec<ClaudeSessionSummary>, String> {
+    let config_dir = claude_config_dir(&app, provider_account_id.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || claude_sessions_sync(&config_dir, &cwd))
         .await
         .map_err(|e| format!("{e}"))?
 }
 
-fn claude_sessions_sync(cwd: &str) -> Result<Vec<ClaudeSessionSummary>, String> {
-    let Some(home) = dirs_home() else {
-        return Ok(Vec::new());
-    };
-    let dir = claude_project_dir(Path::new(&home), &expand_home(cwd).to_string_lossy());
+fn claude_sessions_sync(config_dir: &Path, cwd: &str) -> Result<Vec<ClaudeSessionSummary>, String> {
+    let dir = claude_project_dir(config_dir, &expand_home(cwd).to_string_lossy());
     let Ok(reader) = std::fs::read_dir(&dir) else {
         // No conversations recorded for this project yet is an empty list, not
         // an error the picker should surface.
@@ -361,15 +381,7 @@ pub fn claude_shell_commands(
     if tool_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let config_dir = match provider_account_id.as_deref() {
-        Some(id) if id != "default" => crate::harness::provider_account_path(&app, "claude", id)?,
-        _ => match std::env::var_os("CLAUDE_CONFIG_DIR") {
-            Some(path) => PathBuf::from(path),
-            None => {
-                PathBuf::from(dirs_home().ok_or("Home directory is unavailable")?).join(".claude")
-            }
-        },
-    };
+    let config_dir = claude_config_dir(&app, provider_account_id.as_deref())?;
     let transcript_name = format!("{provider_session_id}.jsonl");
     let root = config_dir.join("projects");
     let Some(path) = std::fs::read_dir(root).ok().and_then(|projects| {
@@ -6319,33 +6331,33 @@ mod tests {
 
     #[test]
     fn claude_project_dir_flattens_every_separator() {
-        let home = Path::new("/home/dev");
+        let config = Path::new("/home/dev/.claude");
         assert_eq!(
-            claude_project_dir(home, "/Users/medeni/Desktop/Projects/monocode"),
-            home.join(".claude/projects/-Users-medeni-Desktop-Projects-monocode")
+            claude_project_dir(config, "/Users/medeni/Desktop/Projects/monocode"),
+            config.join("projects/-Users-medeni-Desktop-Projects-monocode")
         );
         // Dots and underscores flatten too, which is why the mapping is one-way:
         // these three distinct paths share a single directory name.
-        let dotted = claude_project_dir(home, "/a/b.c");
-        assert_eq!(dotted, claude_project_dir(home, "/a/b-c"));
-        assert_eq!(dotted, claude_project_dir(home, "/a/b_c"));
+        let dotted = claude_project_dir(config, "/a/b.c");
+        assert_eq!(dotted, claude_project_dir(config, "/a/b-c"));
+        assert_eq!(dotted, claude_project_dir(config, "/a/b_c"));
 
         // Everything that is not a letter or digit goes, not just the
         // characters that read as separators. Spaces and punctuation are
         // ordinary in project paths, and a Windows path carries a drive colon.
         assert_eq!(
-            claude_project_dir(home, "/Users/me/My Project (v2)"),
-            home.join(".claude/projects/-Users-me-My-Project--v2-")
+            claude_project_dir(config, "/Users/me/My Project (v2)"),
+            config.join("projects/-Users-me-My-Project--v2-")
         );
         assert_eq!(
-            claude_project_dir(home, "C:\\Users\\dev\\proj"),
-            home.join(".claude/projects/C--Users-dev-proj")
+            claude_project_dir(config, "C:\\Users\\dev\\proj"),
+            config.join("projects/C--Users-dev-proj")
         );
         // Non-ASCII letters are replaced rather than transliterated: each one
         // becomes a single `-`, so `çalışma` is `-al--ma`, not `calisma`.
         assert_eq!(
-            claude_project_dir(home, "/Users/me/çalışma"),
-            home.join(".claude/projects/-Users-me--al--ma")
+            claude_project_dir(config, "/Users/me/çalışma"),
+            config.join("projects/-Users-me--al--ma")
         );
     }
 
@@ -6407,7 +6419,32 @@ mod tests {
     fn claude_sessions_returns_empty_for_a_project_with_no_history() {
         let dir = tmp("claude-empty");
         let cwd = dir.0.join("nowhere").to_string_lossy().to_string();
-        assert!(claude_sessions_sync(&cwd).unwrap().is_empty());
+        assert!(claude_sessions_sync(&dir.0, &cwd).unwrap().is_empty());
+    }
+
+    #[test]
+    fn claude_sessions_reads_only_the_given_account_profile() {
+        // An added account's CLI writes under its own config dir, so a
+        // conversation recorded there must not be listed from another one.
+        let dir = tmp("claude-accounts");
+        let added = dir.0.join("added");
+        let default = dir.0.join("default");
+        let cwd = "/work/app";
+        let project = claude_project_dir(&added, cwd);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("s1.jsonl"),
+            concat!(
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let listed = claude_sessions_sync(&added, cwd).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "s1");
+        assert!(claude_sessions_sync(&default, cwd).unwrap().is_empty());
     }
 
     #[test]
