@@ -336,6 +336,7 @@ import {
   loadDiffViewer,
   loadFileTabMode,
   loadFollowUpBehavior,
+  loadResumeAtReset,
   loadFormatOnSave,
   loadGridArcadeEnabled,
   KEEP_AWAKE_HOLD_AFTER,
@@ -358,6 +359,7 @@ import {
   saveDiffViewer,
   saveFileTabMode,
   saveFollowUpBehavior,
+  saveResumeAtReset,
   saveFormatOnSave,
   saveGridArcadeEnabled,
   saveKeepAwakeEnabled,
@@ -1059,6 +1061,7 @@ function ChatPage() {
     useState(loadTranscriptAnchor);
   const [followUpBehavior, setFollowUpBehavior] =
     useState<FollowUpBehavior>(loadFollowUpBehavior);
+  const [resumeAtReset, setResumeAtReset] = useState(loadResumeAtReset);
   const [modelControls, setModelControls] =
     useState<ModelControls>(loadModelControls);
   const [diffViewer, setDiffViewer] = useState<DiffViewer>(loadDiffViewer);
@@ -1091,6 +1094,11 @@ function ChatPage() {
   const onFollowUpBehavior = (next: FollowUpBehavior) => {
     saveFollowUpBehavior(next);
     setFollowUpBehavior(next);
+  };
+
+  const onResumeAtReset = (next: boolean) => {
+    saveResumeAtReset(next);
+    setResumeAtReset(next);
   };
 
   const onModelControls = (next: ModelControls) => {
@@ -1169,6 +1177,17 @@ function ChatPage() {
               { value: "steer", label: "Steer" },
             ]}
             onChange={onFollowUpBehavior}
+          />
+        </Row>
+        <Row
+          id="resume-at-reset"
+          label="Resume at reset"
+          description="When a provider stops a turn at its usage limit, continue the session automatically once the limit resets. You can still cancel it from the notice above the composer."
+        >
+          <Toggle
+            label="Resume at reset"
+            on={resumeAtReset}
+            onChange={onResumeAtReset}
           />
         </Row>
         <Row
