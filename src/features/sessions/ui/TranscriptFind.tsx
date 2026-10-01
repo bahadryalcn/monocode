@@ -3,11 +3,16 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { ChevronDown, ChevronUp, Search, X } from "../../../shared/ui/icons";
 import type { Block } from "../model/session";
 import { findTranscriptBlocks } from "../model/transcriptFind";
+import {
+  peekTranscriptJump,
+  subscribeTranscriptJump,
+} from "../model/transcriptJump";
 import { keybindingPressed } from "../../settings/model/settings";
 
 type Props = {
@@ -15,6 +20,8 @@ type Props = {
   visible: boolean;
   focused: boolean;
   onNavigate: (blockId: string | null, query?: string) => boolean;
+  /** Lets a jump from cross-session search open this find with its query. */
+  sessionId?: string;
   side?: "left" | "right";
 };
 
@@ -23,6 +30,7 @@ export function TranscriptFind({
   visible,
   focused,
   onNavigate,
+  sessionId,
   side = "right",
 }: Props) {
   const input = useRef<HTMLInputElement>(null);
@@ -34,6 +42,13 @@ export function TranscriptFind({
     [blocks, query],
   );
   const selected = matches[Math.min(active, matches.length - 1)] ?? null;
+  const jump = useSyncExternalStore(
+    subscribeTranscriptJump,
+    () => peekTranscriptJump(sessionId ?? ""),
+    () => null,
+  );
+  const adoptedJump = useRef(0);
+  const [jumpTarget, setJumpTarget] = useState<string | null>(null);
 
   const openFind = () => {
     setOpen(true);
@@ -50,6 +65,25 @@ export function TranscriptFind({
     if (!matches.length) return;
     setActive((index) => (index + direction + matches.length) % matches.length);
   };
+
+  // A result opened from the cross-session search arrives as a jump carrying
+  // its query: show it here, on the matching block, so next/previous work.
+  // A query this find would not match is left to the jump's own highlight.
+  useEffect(() => {
+    if (!jump?.query || !visible || adoptedJump.current === jump.token) return;
+    if (!findTranscriptBlocks(blocks, jump.query).includes(jump.blockId)) return;
+    adoptedJump.current = jump.token;
+    setQuery(jump.query);
+    setOpen(true);
+    setJumpTarget(jump.blockId);
+  }, [jump, visible, blocks]);
+
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const index = matches.indexOf(jumpTarget);
+    if (index >= 0) setActive(index);
+    setJumpTarget(null);
+  }, [jumpTarget, matches]);
 
   useEffect(() => {
     if (!open || !visible) return;

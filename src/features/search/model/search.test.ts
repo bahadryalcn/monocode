@@ -6,6 +6,7 @@ import {
 } from "./search";
 import {
   cancelSessionSearch,
+  searchSessionContent,
   searchSessions,
 } from "../../sessions/data/sessionStore";
 
@@ -50,6 +51,33 @@ describe("project search cancellation", () => {
     expect(invoke).toHaveBeenNthCalledWith(2, "cancel_session_search", {
       searchOwner: "owner-1",
     });
+  });
+
+  it("sends only the set filters with a content search", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      sessions: [],
+      truncated: false,
+      pending: 3,
+    });
+
+    const result = await searchSessionContent({
+      query: " needle ",
+      searchOwner: "owner-2",
+      cwds: ["C:/Work/One/"],
+      harness: "codex",
+      since: 5,
+    });
+
+    expect(invoke).toHaveBeenCalledWith("session_search_content", {
+      options: {
+        query: "needle",
+        searchOwner: "owner-2",
+        cwds: ["C:/Work/One"],
+        harness: "codex",
+        since: 5,
+      },
+    });
+    expect(result.pending).toBe(3);
   });
 
   it("does not send remote cancellation to this computer", async () => {

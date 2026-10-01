@@ -13,6 +13,7 @@ import {
   promoteLastAssistantToPlan,
   stopStreaming,
 } from "./apply";
+import type { HarnessEvent } from "./types";
 
 let now = 0;
 
@@ -1205,6 +1206,109 @@ describe("subagent steps", () => {
       kind: "agent",
       status: "in_progress",
     });
+
+  describe("results and prompt", () => {
+    const step = (
+      callId: string,
+      stepId: string,
+      extra: Record<string, unknown>,
+    ) =>
+      ({
+        type: "agent.step",
+        callId,
+        stepId,
+        kind: "tool",
+        text: "Bash",
+        ...extra,
+      }) as HarnessEvent;
+
+    it("keeps a successful result as bounded output, not detail", () => {
+      let session = spawn();
+      session = applyHarnessEvent(
+        session,
+        step("agent-1", "t1", { status: "in_progress" }),
+      );
+      session = applyHarnessEvent(
+        session,
+        step("agent-1", "t1", { status: "completed", output: "ok\n" }),
+      );
+      const [only] = session.blocks[0].agentRun?.steps ?? [];
+      expect(only).toMatchObject({ status: "completed", output: "ok" });
+      expect(only).not.toHaveProperty("detail");
+      expect(only).not.toHaveProperty("outputTruncated");
+    });
+
+    it("cuts one long result to head and tail and says so", () => {
+      const long = `HEAD${"x".repeat(50_000)}TAIL`;
+      const session = applyHarnessEvent(
+        spawn(),
+        step("agent-1", "t1", { status: "completed", output: long }),
+      );
+      const [only] = session.blocks[0].agentRun?.steps ?? [];
+      expect(only.outputTruncated).toBe(true);
+      expect(only.output?.length).toBeLessThan(4_200);
+      expect(only.output?.startsWith("HEAD")).toBe(true);
+      expect(only.output?.endsWith("TAIL")).toBe(true);
+      expect(only.output).toContain("characters omitted");
+    });
+
+    it("holds a run's outputs to a total, dropping the oldest first", () => {
+      let session = spawn();
+      for (let index = 0; index < 40; index += 1) {
+        session = applyHarnessEvent(
+          session,
+          step("agent-1", `t${index}`, {
+            status: "completed",
+            output: "y".repeat(3_900),
+          }),
+        );
+      }
+      const steps = session.blocks[0].agentRun?.steps ?? [];
+      const kept = steps.reduce((sum, s) => sum + (s.output?.length ?? 0), 0);
+      expect(kept).toBeLessThanOrEqual(64_000);
+      expect(steps[0].output).toBeUndefined();
+      expect(steps[0].outputTruncated).toBe(true);
+      expect(steps[39].output).toHaveLength(3_900);
+    });
+
+    it("stores a preview's own output once, as the step's output", () => {
+      const session = applyHarnessEvent(
+        spawn(),
+        step("agent-1", "t1", {
+          status: "completed",
+          preview: { kind: "read", output: "file contents" },
+        }),
+      );
+      const [only] = session.blocks[0].agentRun?.steps ?? [];
+      expect(only.output).toBe("file contents");
+      expect(only.preview?.output).toBeUndefined();
+    });
+
+    it("records the prompt on the run and bounds it", () => {
+      let session = applyHarnessEvent(newSession("claude", "/tmp"), {
+        type: "tool.started",
+        callId: "agent-1",
+        title: "Review",
+        kind: "agent",
+        agentPrompt: "Look at the reducer.",
+      });
+      expect(session.blocks[0].agentRun?.prompt).toBe("Look at the reducer.");
+      session = applyHarnessEvent(session, {
+        type: "tool.updated",
+        callId: "agent-1",
+        status: "completed",
+      });
+      expect(session.blocks[0].agentRun?.prompt).toBe("Look at the reducer.");
+      const big = applyHarnessEvent(newSession("claude", "/tmp"), {
+        type: "tool.started",
+        callId: "agent-2",
+        title: "Review",
+        kind: "agent",
+        agentPrompt: "p".repeat(40_000),
+      });
+      expect(big.blocks[0].agentRun?.prompt?.length).toBeLessThan(6_200);
+    });
+  });
 
   it("mirrors a subagent's work onto the call that spawned it", () => {
     let session = spawn();

@@ -27,6 +27,25 @@ describe("findTranscriptBlocks", () => {
     ]);
   });
 
+  it("matches Turkish text across case and diacritics", () => {
+    const turkish: Block[] = [
+      { id: "a", role: "user", text: "ISPARTA'daki gül bahçesi" },
+      { id: "b", role: "assistant", text: "İstanbul'da kırmızı ışık" },
+    ];
+    expect(findTranscriptBlocks(turkish, "ısparta")).toEqual(["a"]);
+    expect(findTranscriptBlocks(turkish, "GUL BAHCESI")).toEqual(["a"]);
+    expect(findTranscriptBlocks(turkish, "istanbul")).toEqual(["b"]);
+    expect(findTranscriptBlocks(turkish, "Kırmızı Işık")).toEqual(["b"]);
+  });
+
+  it("accepts the words of a query in any order", () => {
+    const words: Block[] = [
+      { id: "a", role: "user", text: "fix the websocket reconnect" },
+      { id: "b", role: "user", text: "websocket only" },
+    ];
+    expect(findTranscriptBlocks(words, "reconnect websocket")).toEqual(["a"]);
+  });
+
   it("ignores empty queries and hidden reasoning", () => {
     expect(findTranscriptBlocks(blocks, "  ")).toEqual([]);
     expect(findTranscriptBlocks(blocks, "reasoning only")).toEqual([]);

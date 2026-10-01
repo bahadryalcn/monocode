@@ -1,5 +1,6 @@
 import { Plus } from "../../../shared/ui/icons";
 import {
+  Fragment,
   useEffect,
   useRef,
   useState,
@@ -158,8 +159,13 @@ function SkillList({
       {skills.map((skill, index) => {
         const highlighted = index === active;
         return (
+          <Fragment key={`${skill.kind}:${skill.source}:${skill.invocation}`}>
+          {skill.kind === "template" && skills[index - 1]?.kind !== "template" ? (
+            <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-content/40">
+              Templates
+            </p>
+          ) : null}
           <button
-            key={`${skill.kind}:${skill.source}:${skill.invocation}`}
             ref={highlighted ? activeRef : undefined}
             type="button"
             role="option"
@@ -192,6 +198,7 @@ function SkillList({
               </span>
             ) : null}
           </button>
+          </Fragment>
         );
       })}
     </div>
@@ -347,6 +354,7 @@ function scopeLabel(skill: Skill): string {
     return skill.origin ? `${skill.source} · ${skill.origin}` : skill.source;
   }
   if (skill.kind === "builtin") return "monocode";
+  if (skill.kind === "template") return "template";
   if (skill.scope === "user") return "personal";
   if (skill.source !== "agents" && skill.source !== "monocode") return skill.source;
   return "project";

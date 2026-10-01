@@ -2,27 +2,34 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AppWindow,
   Archive,
+  ArrowDownCircle,
   BellOff,
+  ExternalLink,
   FolderOpen,
   FolderPlus,
   FolderTree,
   ImagePlus,
   Pin,
   PinOff,
+  RefreshCw,
   Settings,
+  Ungroup,
   Trash2,
 } from "../../shared/ui/icons";
 import {
   basename,
   listExternalEditors,
   openInExternalEditor,
+  openPathWithDefaultApp,
   revealPath,
   type ExternalEditor,
 } from "../../platform/tauri/fs";
 import { IS_MAC, IS_WIN } from "../../platform/tauri/platform";
 import { projectKey, projectName } from "../../shared/lib/paths";
 import {
+  collectRailProjects,
   loadPinnedProjects,
+  loadRecents,
   sameProjectPath,
   subscribeProjectPathsChanged,
   toggleProjectPin,
@@ -52,9 +59,13 @@ import {
   projectGroupIdForPath,
   saveProjectGroups,
   setProjectGroupAssignment,
+  unlinkProjectGroup,
   updateProjectGroup,
   type ProjectGroup,
 } from "../../features/projects/model/projectGroups";
+import { REFRESH_LINKED_GROUP_EVENT } from "../../features/projects/hooks/useLinkedWorkspaceGroups";
+import { GroupFetchPopover } from "../../features/projects/ui/GroupFetchPopover";
+import { setLinkedGroupStatus } from "../../features/projects/model/linkedWorkspace";
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { RemoveProjectDialog } from "../../features/projects/ui/RemoveProjectDialog";
@@ -213,6 +224,9 @@ export function useProjectMenu({
   const [groupMenu, setGroupMenu] = useState<(Point & { id: string }) | null>(
     null,
   );
+  const [fetchAll, setFetchAll] = useState<
+    (Point & { id: string; paths: string[] }) | null
+  >(null);
   const [notificationMenu, setNotificationMenu] = useState<
     (Point & { path: string; project: NotificationProject }) | null
   >(null);
@@ -307,6 +321,7 @@ export function useProjectMenu({
     onOpen?.();
     setProjectMenu(null);
     setNotificationMenu(null);
+    setFetchAll(null);
     setGroupMenu({ x, y, id });
   };
 
@@ -327,6 +342,7 @@ export function useProjectMenu({
 
   const dismiss = () => {
     close();
+    setFetchAll(null);
     setRemoving(null);
     setBackgroundProject(null);
   };
@@ -530,6 +546,39 @@ export function useProjectMenu({
         showActions={false}
         ariaLabel="Project group actions"
         extraItems={[
+          ...(group.workspaceFile
+            ? [
+                {
+                  id: "workspace-refresh",
+                  label: "Refresh from workspace file",
+                  description: group.workspaceFile,
+                  icon: RefreshCw,
+                },
+                {
+                  id: "workspace-open",
+                  label: "Open workspace file",
+                  icon: ExternalLink,
+                },
+                {
+                  id: "workspace-reveal",
+                  label: REVEAL_LABEL,
+                  icon: FolderOpen,
+                },
+                {
+                  id: "workspace-unlink",
+                  label: "Unlink from workspace file",
+                  description: "Projects stay in the group",
+                  icon: Ungroup,
+                },
+              ]
+            : []),
+          {
+            id: "fetch-all",
+            label: "Fetch all",
+            description: "Run git fetch in each local project",
+            icon: ArrowDownCircle,
+            sepBefore: true,
+          },
           {
             id: "delete-project-group",
             label: "Delete group",
@@ -538,11 +587,38 @@ export function useProjectMenu({
             danger: true,
           },
         ]}
-        onExtraPick={(action) =>
-          action === "delete-project-group"
-            ? deleteProjectGroup(group.id)
-            : undefined
-        }
+        onExtraPick={(action) => {
+          const file = group.workspaceFile;
+          if (action === "delete-project-group") {
+            return deleteProjectGroup(group.id);
+          }
+          if (action === "fetch-all") {
+            const assignments = loadProjectGroupAssignments();
+            setFetchAll({
+              x: groupMenu.x,
+              y: groupMenu.y,
+              id: group.id,
+              paths: [...collectRailProjects(loadRecents(), "").values()]
+                .map((project) => project.path)
+                .filter(
+                  (path) =>
+                    isLocalProject(path) &&
+                    projectGroupIdForPath(path, assignments) === group.id,
+                ),
+            });
+          } else if (action === "workspace-refresh") {
+            window.dispatchEvent(
+              new CustomEvent(REFRESH_LINKED_GROUP_EVENT, { detail: group.id }),
+            );
+          } else if (action === "workspace-open" && file) {
+            void openPathWithDefaultApp(file).catch(() => undefined);
+          } else if (action === "workspace-reveal" && file) {
+            void revealPath(file).catch(() => undefined);
+          } else if (action === "workspace-unlink") {
+            unlinkProjectGroup(group.id);
+            setLinkedGroupStatus(group.id, null);
+          }
+        }}
       />
     );
   };
@@ -551,6 +627,22 @@ export function useProjectMenu({
     <>
       {renderProjectMenu()}
       {renderGroupMenu()}
+      {fetchAll ? (
+        <GroupFetchPopover
+          key={fetchAll.id}
+          x={fetchAll.x}
+          y={fetchAll.y}
+          name={
+            loadProjectGroups().find((item) => item.id === fetchAll.id)?.name ??
+            "group"
+          }
+          paths={fetchAll.paths}
+          onClose={() => {
+            setFetchAll(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
       {notificationMenu ? (
         <Popover
           key={notificationMenu.path}
@@ -625,6 +717,7 @@ export function useProjectMenu({
     isActive:
       projectMenu != null ||
       groupMenu != null ||
+      fetchAll != null ||
       notificationMenu != null ||
       additionalDirsProject != null ||
       removing != null ||

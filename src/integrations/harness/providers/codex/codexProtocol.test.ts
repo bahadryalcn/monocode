@@ -1027,8 +1027,9 @@ describe("mapCodexSubagentSteps", () => {
     ]);
   });
 
-  it("leaves a settled child's result off its step", () => {
+  it("carries a settled child's result as output, not as failure detail", () => {
     const steps = subagentBash("completed", "12 passed");
     expect(steps[0]).not.toHaveProperty("detail");
+    expect(steps[0]).toMatchObject({ output: "12 passed" });
   });
 });

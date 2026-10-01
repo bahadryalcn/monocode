@@ -2,6 +2,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   additionalDirCandidates,
+  additionalDirsForSession,
+  loadSessionAdditionalDirs,
+  removeSessionAdditionalDirs,
+  saveSessionAdditionalDirs,
   loadAdditionalDirs,
   rebaseAdditionalDirs,
   removeAdditionalDirs,
@@ -51,5 +55,65 @@ describe("additional project folders", () => {
 
     expect(additionalDirCandidates("/work/web")).toEqual(["/work/api"]);
     expect(additionalDirCandidates("/work/loose")).toEqual([]);
+  });
+});
+
+describe("per-session additional folders", () => {
+  function groupWeb() {
+    for (const path of ["/work/web", "/work/api", "/work/ui"]) rememberProject(path);
+    saveProjectGroups([{ id: "acme", name: "Acme", collapsed: false }]);
+    saveProjectGroupAssignments({
+      [pathKey("/work/web")]: "acme",
+      [pathKey("/work/api")]: "acme",
+      [pathKey("/work/ui")]: "acme",
+    });
+  }
+
+  it("follows the project setting until the session overrides it", () => {
+    groupWeb();
+    saveAdditionalDirs("/work/web", ["/work/api"]);
+    expect(additionalDirsForSession("s1", "/work/web")).toEqual(["/work/api"]);
+
+    saveSessionAdditionalDirs("s1", "/work/web", ["/work/ui"]);
+    expect(loadSessionAdditionalDirs("s1")).toEqual(["/work/ui"]);
+    expect(additionalDirsForSession("s1", "/work/web")).toEqual(["/work/ui"]);
+    expect(additionalDirsForSession("s2", "/work/web")).toEqual(["/work/api"]);
+  });
+
+  it("lets a session opt out of every folder", () => {
+    groupWeb();
+    saveAdditionalDirs("/work/web", ["/work/api"]);
+    saveSessionAdditionalDirs("s1", "/work/web", []);
+    expect(loadSessionAdditionalDirs("s1")).toEqual([]);
+    expect(additionalDirsForSession("s1", "/work/web")).toEqual([]);
+  });
+
+  it("drops the override when it matches the project or is reset", () => {
+    groupWeb();
+    saveAdditionalDirs("/work/web", ["/work/api"]);
+    saveSessionAdditionalDirs("s1", "/work/web", ["/work/api"]);
+    expect(loadSessionAdditionalDirs("s1")).toBeUndefined();
+
+    saveSessionAdditionalDirs("s1", "/work/web", ["/work/ui"]);
+    saveSessionAdditionalDirs("s1", "/work/web", null);
+    expect(loadSessionAdditionalDirs("s1")).toBeUndefined();
+  });
+
+  it("ignores override folders the project can no longer offer", () => {
+    groupWeb();
+    saveSessionAdditionalDirs("s1", "/work/web", ["/work/ui", "/work/web", "/work/gone"]);
+    expect(additionalDirsForSession("s1", "/work/web")).toEqual(["/work/ui"]);
+
+    saveProjectGroupAssignments({ [pathKey("/work/web")]: "acme" });
+    expect(additionalDirsForSession("s1", "/work/web")).toEqual([]);
+  });
+
+  it("is forgotten when the session is deleted", () => {
+    groupWeb();
+    saveSessionAdditionalDirs("s1", "/work/web", ["/work/ui"]);
+    saveSessionAdditionalDirs("s2", "/work/web", ["/work/api"]);
+    removeSessionAdditionalDirs("s1");
+    expect(loadSessionAdditionalDirs("s1")).toBeUndefined();
+    expect(loadSessionAdditionalDirs("s2")).toEqual(["/work/api"]);
   });
 });

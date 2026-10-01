@@ -6,8 +6,17 @@ import {
 import { codexCommandPresentation } from "../../../integrations/harness/providers/codex/codexProtocol";
 import { recoverCursorSubagents } from "../../../integrations/harness/providers/cursor/cursorSubagents";
 import { persistableAttachment } from "../model/attachments";
+import {
+  budgetStepOutputs,
+  capHeadTail,
+  capStepOutput,
+  PERSISTED_AGENT_OUTPUT_RUN_CHARS,
+  PERSISTED_AGENT_OUTPUT_STEP_CHARS,
+  PERSISTED_AGENT_PROMPT_CHARS,
+} from "../model/agentOutput";
 import type { ContextUsage } from "../model/contextUsage";
 import { isRemoteProjectPath, normalizeProjectPath } from "../../projects/model/recents";
+import { removeSessionAdditionalDirs } from "../../projects/model/additionalDirs";
 import {
   claudeShellCommands,
   ompActiveAssistantTexts,
@@ -381,6 +390,69 @@ export function cancelSessionSearch(searchOwner: string): Promise<void> {
   return invoke<void>("cancel_session_search", { searchOwner });
 }
 
+export type SessionContentHit = {
+  blockId: string;
+  role: string;
+  /** Message excerpt around the match. */
+  snippet: string;
+  /** UTF-16 `[start, end)` offsets of the matched words inside `snippet`. */
+  ranges: [number, number][];
+};
+
+export type SessionContentSession = {
+  sessionId: string;
+  cwd: string;
+  harness: string;
+  title: string;
+  titleRanges: [number, number][];
+  createdAt: number;
+  updatedAt: number;
+  archived: boolean;
+  /** Messages that matched; `hits` carries the first few. */
+  hitCount: number;
+  hits: SessionContentHit[];
+};
+
+export type SessionContentResult = {
+  sessions: SessionContentSession[];
+  /** More sessions matched than are listed. */
+  truncated: boolean;
+  /** Sessions whose text is not indexed yet; searching again later finds more. */
+  pending: number;
+};
+
+/** Full-text search over the messages of every stored session. */
+export async function searchSessionContent(options: {
+  query: string;
+  searchOwner: string;
+  cwds?: string[];
+  harness?: string;
+  includeArchived?: boolean;
+  since?: number;
+  until?: number;
+}): Promise<SessionContentResult> {
+  const query = options.query.trim();
+  if (!query) return { sessions: [], truncated: false, pending: 0 };
+  const result = await invoke<SessionContentResult>("session_search_content", {
+    options: {
+      query,
+      searchOwner: options.searchOwner,
+      ...(options.cwds?.length
+        ? { cwds: options.cwds.map(normalizeProjectPath) }
+        : {}),
+      ...(options.harness ? { harness: options.harness } : {}),
+      ...(options.includeArchived ? { includeArchived: true } : {}),
+      ...(options.since != null ? { since: options.since } : {}),
+      ...(options.until != null ? { until: options.until } : {}),
+    },
+  });
+  return {
+    sessions: Array.isArray(result?.sessions) ? result.sessions : [],
+    truncated: !!result?.truncated,
+    pending: typeof result?.pending === "number" ? result.pending : 0,
+  };
+}
+
 export async function getSession(sessionId: string): Promise<Session | null> {
   const record = await invoke<SessionRecord | null>("session_get", {
     sessionId,
@@ -538,6 +610,7 @@ export async function deleteSession(
     await enqueueSessionWrite(sessionId, () =>
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
+    removeSessionAdditionalDirs(sessionId);
     const tombstone = setTimeout(() => deletedSessionIds.delete(sessionId), 60_000);
     if (typeof tombstone === "object") tombstone.unref();
   } catch (error) {
@@ -1045,10 +1118,15 @@ function sanitizeAgentRun(value: unknown): AgentRunMeta | null {
         ...(row.preview && typeof row.preview === "object"
           ? { preview: row.preview as AgentStep["preview"] }
           : {}),
+        ...persistedOutput(row),
       },
     ];
   });
   const name = typeof record.name === "string" ? record.name.trim() : "";
+  const prompt =
+    typeof record.prompt === "string" && record.prompt.trim()
+      ? capHeadTail(record.prompt.trim(), PERSISTED_AGENT_PROMPT_CHARS).text
+      : "";
   if (!name && steps.length === 0) return null;
   return {
     name: name || "Subagent",
@@ -1058,9 +1136,31 @@ function sanitizeAgentRun(value: unknown): AgentRunMeta | null {
     ...(typeof record.agentType === "string" && record.agentType.trim()
       ? { agentType: record.agentType.trim() }
       : {}),
-    steps: steps.slice(-PERSISTED_AGENT_STEPS),
+    ...(prompt ? { prompt } : {}),
+    steps: budgetStepOutputs(
+      steps.slice(-PERSISTED_AGENT_STEPS),
+      PERSISTED_AGENT_OUTPUT_RUN_CHARS,
+    ),
     ...(isEpochMs(record.startedAt) ? { startedAt: record.startedAt } : {}),
     ...(isEpochMs(record.endedAt) ? { endedAt: record.endedAt } : {}),
+  };
+}
+
+/**
+ * A saved session keeps a short form of each tool result: enough to see what a
+ * call returned, not a replay of it. Live runs hold far more (agentOutput.ts).
+ */
+function persistedOutput(
+  row: Record<string, unknown>,
+): Pick<AgentStep, "output" | "outputTruncated"> {
+  const capped =
+    typeof row.output === "string"
+      ? capStepOutput(row.output, PERSISTED_AGENT_OUTPUT_STEP_CHARS)
+      : undefined;
+  const truncated = capped?.truncated || row.outputTruncated === true;
+  return {
+    ...(capped ? { output: capped.output } : {}),
+    ...(truncated ? { outputTruncated: true } : {}),
   };
 }
 

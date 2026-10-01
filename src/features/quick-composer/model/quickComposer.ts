@@ -21,9 +21,17 @@ import {
   type AgentModel,
 } from "../../sessions/model/models";
 import {
+  DEFAULT_RUNTIME_MODE,
   HARNESSES,
   HARNESS_TITLE,
   RUNTIME_MODES,
+  RUNTIME_MODE_LABEL,
+  planUnavailableReason,
+  runtimeModeForNewSession,
+  runtimeModeUnavailableReason,
+  setHarnessModeLimits,
+  unavailableRuntimeModes,
+  type HarnessModeLimits,
   type RuntimeMode,
   type WorkspaceMode,
   type Attachment,
@@ -47,6 +55,12 @@ const LAST_PROJECT_KEY = "monocode.quickComposerProject";
 export type QuickCatalog = {
   models: Partial<Record<HarnessId, AgentModel[]>>;
   availableHarnesses: HarnessId[];
+  /**
+   * What each harness's active transport cannot do. Learned by the workspace
+   * windows that probe the binaries; the panel has no probe of its own. Only
+   * harnesses with a limit appear.
+   */
+  modeLimits?: Partial<Record<HarnessId, HarnessModeLimits>>;
 };
 
 export type QuickChoice = { harness: HarnessId; model: string };
@@ -167,10 +181,73 @@ export function liveQuickCatalog(): QuickCatalog {
   for (const harness of HARNESSES) {
     if (hasLiveCatalog(harness)) catalog[harness] = modelsFor(harness);
   }
+  const modeLimits: NonNullable<QuickCatalog["modeLimits"]> = {};
+  for (const harness of HARNESSES) {
+    const runtimeModes = unavailableRuntimeModes(harness);
+    const plan = planUnavailableReason(harness);
+    if (!runtimeModes && !plan) continue;
+    // The panel only ever asks for the default mode of a new session.
+    const newSessionMode = runtimeModeForNewSession(
+      harness,
+      DEFAULT_RUNTIME_MODE,
+    );
+    modeLimits[harness] = {
+      ...(runtimeModes ? { runtimeModes } : {}),
+      ...(plan ? { plan } : {}),
+      ...(newSessionMode !== DEFAULT_RUNTIME_MODE ? { newSessionMode } : {}),
+    };
+  }
   return {
     models: catalog,
     availableHarnesses: HARNESSES.filter(isHarnessAvailable),
+    modeLimits,
   };
+}
+
+function parseModeLimits(value: unknown): HarnessModeLimits | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  const runtimeModes: Partial<Record<RuntimeMode, string>> = {};
+  if (raw.runtimeModes && typeof raw.runtimeModes === "object") {
+    for (const mode of RUNTIME_MODES) {
+      const reason = (raw.runtimeModes as Record<string, unknown>)[mode];
+      if (typeof reason === "string" && reason) runtimeModes[mode] = reason;
+    }
+  }
+  const limits: HarnessModeLimits = {
+    ...(Object.keys(runtimeModes).length ? { runtimeModes } : {}),
+    ...(typeof raw.plan === "string" && raw.plan ? { plan: raw.plan } : {}),
+    ...(RUNTIME_MODES.includes(raw.newSessionMode as RuntimeMode)
+      ? { newSessionMode: raw.newSessionMode as RuntimeMode }
+      : {}),
+  };
+  return limits.runtimeModes || limits.plan ? limits : undefined;
+}
+
+/**
+ * The access mode a quick session launches in: the one the user picked, or
+ * when they have not picked, the harness's default for a new session. A picked
+ * mode is never rewritten, even when the harness cannot honour it; submit
+ * refuses it instead (see quickLaunchRefusal).
+ */
+export function quickRuntimeMode(
+  harness: HarnessId,
+  picked: RuntimeMode | null,
+): RuntimeMode {
+  return picked ?? runtimeModeForNewSession(harness, DEFAULT_RUNTIME_MODE);
+}
+
+/** Why this launch cannot run on the harness's transport, if it cannot. */
+export function quickLaunchRefusal(
+  harness: HarnessId,
+  mode: RuntimeMode,
+  intent?: QuickLaunch["intent"] | "plan",
+): string | undefined {
+  const modeReason = runtimeModeUnavailableReason(harness, mode);
+  if (modeReason) {
+    return `${RUNTIME_MODE_LABEL[mode]} access is unavailable: ${modeReason} Pick another access mode.`;
+  }
+  return intent === "plan" ? planUnavailableReason(harness) : undefined;
 }
 
 export function applyQuickCatalog(value: unknown): HarnessId[] | null {
@@ -182,6 +259,12 @@ export function applyQuickCatalog(value: unknown): HarnessId[] | null {
     !Array.isArray(raw.availableHarnesses)
   )
     return null;
+  // Limits go first so a re-render from the model update below sees them.
+  if (raw.modeLimits && typeof raw.modeLimits === "object") {
+    const limits = raw.modeLimits as Record<string, unknown>;
+    for (const harness of HARNESSES)
+      setHarnessModeLimits(harness, parseModeLimits(limits[harness]));
+  }
   for (const [harness, models] of Object.entries(raw.models)) {
     if (!isHarnessId(harness) || !Array.isArray(models)) continue;
     const valid = models.filter(

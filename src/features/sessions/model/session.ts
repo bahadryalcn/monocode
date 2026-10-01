@@ -86,6 +86,8 @@ export type ComposerTurnOptions = {
   onResendRejected?: (recovery: EditedResendRejection) => void;
   /** Promote an existing unsent transcript block instead of appending a turn. */
   draftBlockId?: string;
+  /** Queue this message behind a running turn instead of following the follow-up setting. */
+  followUpBehavior?: "queue" | "steer";
 };
 
 export type PlanStatus = "streaming" | "ready" | "building" | "built";
@@ -207,8 +209,13 @@ export type AgentStep = {
   text: string;
   toolKind?: string;
   status?: string;
+  /** Failure text only; a failed step is shown open and in red. */
   detail?: string;
   preview?: ToolPreview;
+  /** What a successful call returned, bounded; absent on older sessions. */
+  output?: string;
+  /** Part of the output was cut or dropped to stay within the size limits. */
+  outputTruncated?: boolean;
 };
 
 /**
@@ -223,6 +230,8 @@ export type AgentRunMeta = {
   agentType?: string;
   /** Model reported for the child, which may differ from its parent. */
   model?: string;
+  /** What the subagent was asked to do, bounded. Absent when the provider does not expose it. */
+  prompt?: string;
   steps: AgentStep[];
   /** Epoch ms the run's tool block was created. Absent on older sessions. */
   startedAt?: number;
@@ -324,6 +333,13 @@ export type Block = {
     status?: string;
     detail?: string;
     preview?: ToolPreview;
+    /**
+     * A subagent step's result, for the panel to expand. Set only on the blocks
+     * `agentStepBlock` builds from an `AgentStep`; a transcript block's own
+     * result is `detail`.
+     */
+    output?: string;
+    outputTruncated?: boolean;
     /** Left running by the agent when it yielded; the turn waits on it. */
     background?: boolean;
   };

@@ -11,6 +11,7 @@ import {
   type GitStashEntry,
 } from "../../../platform/tauri/fs";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import { appName } from "../../../shared/lib/appName";
 
 type Props = {
   cwd: string;
@@ -74,7 +75,7 @@ export function GitStashSection({ cwd, enabled, hasChanges, onOpenCommit }: Prop
     try {
       await work();
     } catch (error) {
-      await message(errorText(error), { title: "MonoCode", kind: "error" });
+      await message(errorText(error), { title: appName(), kind: "error" });
     } finally {
       setBusy(false);
       notifyGitChanged();
@@ -84,7 +85,7 @@ export function GitStashSection({ cwd, enabled, hasChanges, onOpenCommit }: Prop
   const drop = async (entry: GitStashEntry) => {
     const confirmed = await ask(
       `Drop "${entry.message}"? The stashed changes are lost.`,
-      { title: "MonoCode", kind: "warning", okLabel: "Drop" },
+      { title: appName(), kind: "warning", okLabel: "Drop" },
     );
     if (confirmed) await run(() => gitStashAction(cwd, "drop", entry.index));
   };

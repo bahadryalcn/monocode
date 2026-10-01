@@ -1,13 +1,15 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
 import { GlassBackdrop } from "../../../app/shell/GlassBackdrop";
-import { CornerDownRight, X } from "../../../shared/ui/icons";
+import { Check, Copy, CornerDownRight, X } from "../../../shared/ui/icons";
+import { copyText } from "../../../platform/tauri/clipboard";
+import { agentRunMarkdown, isReportStep } from "../model/agentRunMarkdown";
 import type { AgentStep, Block } from "../model/session";
 import {
   isSubagentBlock,
@@ -18,7 +20,7 @@ import {
   toolCallState,
 } from "../model/transcriptActivity";
 import { AgentClock } from "./AgentClock";
-import { ActivityPhases, agentStepBlock } from "./AgentTranscript";
+import { ActivityRow, agentStepBlock } from "./AgentTranscript";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { VIEW_SUBAGENT_EVENT } from "./subagentFocus";
 
@@ -102,11 +104,15 @@ function runLabel(block: Block, busy: boolean): string {
   return "Done";
 }
 
+/** Steps shown at first, and added by each "Show earlier steps". */
+const STEP_PAGE = 60;
+
 /**
- * One subagent's trail in a sheet over the session pane. It reads the same
- * block the transcript row does, so it fills in live, and renders the steps
- * through the transcript's own rows. There is no composer: subagents cannot be
- * messaged.
+ * One subagent's run in a sheet over the session pane, read as a conversation:
+ * the prompt it was given, what it said, each call with what it returned, and
+ * its report. It reads the same block the transcript row does, so it fills in
+ * live, and renders calls and thoughts through the transcript's own rows. There
+ * is no composer: subagents cannot be messaged.
  */
 export function SubagentSheet({
   block,
@@ -185,6 +191,10 @@ export function SubagentSheet({
               >
                 {name}
               </h2>
+              <CopyTranscriptButton
+                block={block}
+                status={runLabel(block, busy)}
+              />
               <button
                 type="button"
                 onClick={() => onShowInTranscript(block.id)}
@@ -244,6 +254,127 @@ export function SubagentSheet({
   );
 }
 
+/** Copies the run as Markdown; the icon confirms it for a moment. */
+function CopyTranscriptButton({
+  block,
+  status,
+}: {
+  block: Block;
+  status: string;
+}) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current != null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  const copy = () => {
+    const text = agentRunMarkdown(block, status);
+    if (!text) return;
+    void copyText(text).then(
+      () => setState("copied"),
+      () => setState("failed"),
+    );
+    if (timer.current != null) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setState("idle"), 2000);
+  };
+  const label =
+    state === "copied"
+      ? "Copied"
+      : state === "failed"
+        ? "Copy failed"
+        : "Copy transcript";
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      title={`${label} (Markdown)`}
+      aria-label={label}
+      className={`grid size-7 shrink-0 place-items-center rounded-md transition-colors hover:bg-content/8 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
+        state === "failed"
+          ? "text-red-400"
+          : "text-content/45 hover:text-content"
+      }`}
+    >
+      {state === "copied" ? (
+        <Check className="size-4" strokeWidth={1.75} />
+      ) : (
+        <Copy className="size-4" strokeWidth={1.75} />
+      )}
+    </button>
+  );
+}
+
+/** What the subagent was asked, clamped until the reader opens it. */
+function PromptCard({ prompt }: { prompt: string }) {
+  const [open, setOpen] = useState(false);
+  const long = prompt.length > 360 || prompt.split("\n").length > 6;
+  return (
+    <section
+      aria-label="Prompt"
+      className="rounded-lg bg-content/6 px-3 py-2 text-[13px] leading-5"
+    >
+      <h3 className="pb-0.5 text-[11px] font-medium tracking-wide text-content/40 uppercase">
+        Prompt
+      </h3>
+      <p
+        className={`min-w-0 whitespace-pre-wrap break-words text-content/80 ${
+          open || !long ? "" : "line-clamp-6"
+        }`}
+      >
+        {prompt}
+      </p>
+      {long ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="pt-1 text-xs text-content/50 hover:text-content focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          {open ? "Show less" : "Show full prompt"}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * One step of the conversation. Prose reads in full, like a chat reply; calls
+ * and thoughts use the transcript's rows, which open to input and output.
+ */
+const SheetStep = memo(function SheetStep({
+  step,
+  live,
+  cwd,
+  onOpenFile,
+  onOpenDiff,
+}: {
+  step: AgentStep;
+  live: boolean;
+  cwd?: string;
+  onOpenFile?: (path: string) => void;
+  onOpenDiff?: (path: string) => void;
+}) {
+  if (step.kind === "message") {
+    return (
+      <div className="min-w-0 py-1">
+        <AgentMarkdown text={step.text} cwd={cwd} onOpenFile={onOpenFile} />
+      </div>
+    );
+  }
+  return (
+    <ActivityRow
+      block={blockForStep(step)}
+      cwd={cwd}
+      live={live}
+      onOpenFile={onOpenFile}
+      onOpenDiff={onOpenDiff}
+    />
+  );
+});
+
 /** Keyed by run, so each agent starts pinned to its newest step. */
 function SubagentTrail({
   block,
@@ -264,9 +395,19 @@ function SubagentTrail({
   // Follow the newest step until the reader scrolls up; scrolling back to the
   // end picks the follow up again.
   const following = useRef(true);
-  const blocks = useMemo(() => steps.map(blockForStep), [steps]);
   const report = subagentReport(block);
   const failed = toolCallState(block) === "rejected";
+  const prompt = block.agentRun?.prompt?.trim();
+  // A run can hold hundreds of steps. Rows are variable-height and open on
+  // demand, so rather than virtualise them the newest page is rendered and the
+  // older ones sit behind a button.
+  const [shown, setShown] = useState(STEP_PAGE);
+  const trail = report
+    ? steps.filter((step) => !isReportStep(step, report))
+    : steps;
+  const visible =
+    trail.length > shown ? trail.slice(trail.length - shown) : trail;
+  const hidden = trail.length - visible.length;
 
   const pin = useCallback(() => {
     const el = scroller.current;
@@ -298,24 +439,42 @@ function SubagentTrail({
       ref={scroller}
       className="min-h-0 flex-1 overflow-y-auto overscroll-none"
     >
-      <div className="flex min-w-0 flex-col gap-2 px-4 py-3">
-        {blocks.length === 0 && !report ? (
-          <p className="text-xs text-content/45">
+      <div className="flex min-w-0 flex-col gap-1 px-4 py-3">
+        {prompt ? <PromptCard prompt={prompt} /> : null}
+        {visible.length === 0 && !report ? (
+          <p className="pt-1 text-xs text-content/45">
             {running
               ? "Waiting for the first step."
               : "This agent did not report any steps."}
           </p>
         ) : null}
-        <ActivityPhases
-          blocks={blocks}
-          cwd={cwd}
-          done={!running}
-          padded={false}
-          onOpenFile={onOpenFile}
-          onOpenDiff={onOpenDiff}
-        />
+        {hidden > 0 ? (
+          <button
+            type="button"
+            onClick={() => {
+              following.current = false;
+              setShown((count) => count + STEP_PAGE);
+            }}
+            className="self-start rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/60 hover:bg-content/12 hover:text-content focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            Show earlier steps ({hidden})
+          </button>
+        ) : null}
+        {visible.map((step) => (
+          <SheetStep
+            key={step.id}
+            step={step}
+            live={running}
+            cwd={cwd}
+            onOpenFile={onOpenFile}
+            onOpenDiff={onOpenDiff}
+          />
+        ))}
         {report ? (
-          <div className="py-1">
+          <section
+            aria-label={failed ? "Failure" : "Report"}
+            className="mt-1 border-t border-content/8 pt-2"
+          >
             {failed ? (
               <pre className="min-w-0 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-red-400/80">
                 {report}
@@ -323,7 +482,7 @@ function SubagentTrail({
             ) : (
               <AgentMarkdown text={report} cwd={cwd} onOpenFile={onOpenFile} />
             )}
-          </div>
+          </section>
         ) : null}
       </div>
     </div>

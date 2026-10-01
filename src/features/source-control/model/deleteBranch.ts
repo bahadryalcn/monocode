@@ -1,5 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { gitDeleteBranch } from "../../../platform/tauri/fs";
+import { appName } from "../../../shared/lib/appName";
 
 function errorText(error: unknown): string {
   if (typeof error === "string") return error;
@@ -13,7 +14,7 @@ function errorText(error: unknown): string {
  */
 export async function deleteLocalBranch(cwd: string, name: string): Promise<void> {
   const confirmed = await ask(`Delete branch ${name}?`, {
-    title: "MonoCode",
+    title: appName(),
     kind: "warning",
     okLabel: "Delete",
   });
@@ -24,7 +25,7 @@ export async function deleteLocalBranch(cwd: string, name: string): Promise<void
     if (!errorText(error).includes("not fully merged")) throw error;
     const force = await ask(
       `${name} has commits that are not merged anywhere else. Delete it anyway? Those commits are lost.`,
-      { title: "MonoCode", kind: "warning", okLabel: "Delete Anyway" },
+      { title: appName(), kind: "warning", okLabel: "Delete Anyway" },
     );
     if (force) await gitDeleteBranch(cwd, name, true);
   }

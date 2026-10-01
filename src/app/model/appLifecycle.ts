@@ -45,6 +45,7 @@ import { loadWindowTransfer } from "./windowTransferBootstrap";
 import type { WindowTransferPayload } from "./windowTransfer";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { ProjectReturnMemory } from "../../features/projects/model/projectReturn";
+import { appName } from "../../shared/lib/appName";
 
 export type { ResumedWorkspace };
 export { hasInFlightSessions };
@@ -163,7 +164,7 @@ export async function askQuitConfirmation(
     quitDialogOpen = true;
     try {
       confirmed = await ask(quitWhileBusyMessage(inFlight), {
-        title: "MonoCode",
+        title: appName(),
         kind: "warning",
         okLabel: "Quit",
       });
@@ -356,7 +357,7 @@ export async function confirmReload(
 ): Promise<boolean> {
   if (!hasUnsavedFiles) return true;
   return ask("Reload MonoCode and discard unsaved changes?", {
-    title: "MonoCode",
+    title: appName(),
     kind: "warning",
     okLabel: "Reload",
   });
@@ -462,7 +463,7 @@ async function confirmAndCloseWindow(
     if (refs.length > 0) {
       const ok = await ask(
         "Close this window and stop its running chats? Other windows will stay open.",
-        { title: "MonoCode", kind: "warning", okLabel: "Close window" },
+        { title: appName(), kind: "warning", okLabel: "Close window" },
       );
       if (!ok) return;
     }

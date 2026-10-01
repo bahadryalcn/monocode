@@ -3,13 +3,16 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { pathKey } from "../../../shared/lib/paths";
 import {
   assignProjectsToNamedGroup,
+  changeProjectGroupMembers,
   createProjectGroup,
+  linkProjectGroup,
   loadProjectGroupAssignments,
   loadProjectGroups,
   nextProjectGroupName,
   saveProjectGroupAssignments,
   saveProjectGroups,
   setProjectGroupAssignment,
+  unlinkProjectGroup,
 } from "./projectGroups";
 
 beforeEach(() => localStorage.clear());
@@ -105,5 +108,69 @@ describe("project groups", () => {
     expect(assignProjectsToNamedGroup("  ", ["/work/web"])).toBeNull();
     expect(assignProjectsToNamedGroup("Acme", [])).toBeNull();
     expect(loadProjectGroups()).toEqual([]);
+  });
+});
+
+describe("linked workspace groups", () => {
+  it("round-trips the link and keeps older groups unlinked", () => {
+    saveProjectGroups([
+      { id: "old", name: "Old", collapsed: false },
+      { id: "acme", name: "Acme", collapsed: false },
+    ]);
+    linkProjectGroup("acme", "G:\\work\\acme.code-workspace", [
+      "G:/work/web",
+      "g:/WORK/web",
+      "G:/work/api",
+    ]);
+    const [old, acme] = loadProjectGroups();
+    expect(old).toEqual({ id: "old", name: "Old", collapsed: false });
+    expect(acme).toMatchObject({
+      workspaceFile: "G:/work/acme.code-workspace",
+      workspaceFolders: ["G:/work/web", "G:/work/api"],
+    });
+  });
+
+  it("drops folders without a file and invalid link fields", () => {
+    localStorage.setItem(
+      "monocode.projectGroups",
+      JSON.stringify([
+        { id: "a", name: "A", collapsed: false, workspaceFolders: ["/x"] },
+        { id: "b", name: "B", collapsed: false, workspaceFile: 4, workspaceFolders: 5 },
+        { id: "c", name: "C", collapsed: false, workspaceFile: " /w.code-workspace ", workspaceFolders: [1, "", "/x"] },
+      ]),
+    );
+    const [a, b, c] = loadProjectGroups();
+    expect(a).not.toHaveProperty("workspaceFolders");
+    expect(b).not.toHaveProperty("workspaceFile");
+    expect(c).toMatchObject({ workspaceFile: "/w.code-workspace", workspaceFolders: ["/x"] });
+  });
+
+  it("unlinks without touching members", () => {
+    saveProjectGroups([{ id: "acme", name: "Acme", collapsed: false }]);
+    setProjectGroupAssignment("/work/web", "acme");
+    linkProjectGroup("acme", "/w.code-workspace", ["/work/web"]);
+    unlinkProjectGroup("acme");
+    expect(loadProjectGroups()).toEqual([
+      { id: "acme", name: "Acme", collapsed: false },
+    ]);
+    expect(loadProjectGroupAssignments()).toEqual({
+      [pathKey("/work/web")]: "acme",
+    });
+  });
+
+  it("changes members in one step and leaves projects moved elsewhere", () => {
+    saveProjectGroups([
+      { id: "acme", name: "Acme", collapsed: false },
+      { id: "other", name: "Other", collapsed: false },
+    ]);
+    saveProjectGroupAssignments({
+      [pathKey("/work/web")]: "acme",
+      [pathKey("/work/api")]: "other",
+    });
+    changeProjectGroupMembers("acme", ["/work/docs"], ["/work/web", "/work/api"]);
+    expect(loadProjectGroupAssignments()).toEqual({
+      [pathKey("/work/api")]: "other",
+      [pathKey("/work/docs")]: "acme",
+    });
   });
 });

@@ -205,7 +205,7 @@ it("keeps projects collapsed until opened and preserves choices when switching p
   act(() => personal.click());
   expect(personalPanel.hidden).toBe(false);
   act(() => checkbox("Issues and Linear tasks for me/private").click());
-  expect(personal.textContent).toContain("4 of 5 enabled");
+  expect(personal.textContent).toContain("5 of 6 enabled");
   act(() => work.click());
   expect(personalPanel.hidden).toBe(true);
   expect(workPanel.hidden).toBe(false);
@@ -310,7 +310,7 @@ it.each(["manual", "expiry"])(
       await act(async () => vi.advanceTimersByTimeAsync(60_000));
     }
     expect(categoriesButton("me/private").textContent).toContain(
-      "3 of 5 enabled",
+      "4 of 6 enabled",
     );
     expect(project.textContent).not.toContain("All notifications paused");
     expect(pr.hasAttribute("aria-describedby")).toBe(false);

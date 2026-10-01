@@ -45,6 +45,7 @@ import { BranchManagerDialog } from "./BranchManagerDialog";
 import { GitPickDialog, type PickItem } from "./GitPickDialog";
 import { stashCommit } from "./GitStashSection";
 import { RefNameDialog } from "./RefNameDialog";
+import { appName } from "../../../shared/lib/appName";
 
 /** The `busy` key the menu's own actions hold while they run. */
 export const GIT_MENU_BUSY = "git-menu";
@@ -122,7 +123,7 @@ async function orElse<T>(work: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 function confirm(text: string, okLabel: string): Promise<boolean> {
-  return ask(text, { title: "MonoCode", kind: "warning", okLabel });
+  return ask(text, { title: appName(), kind: "warning", okLabel });
 }
 
 /** The header "…" button and the source-control menu it opens. */
@@ -197,7 +198,7 @@ export function GitActionsMenu({
       await work();
       if (status) onStatus(status);
     } catch (error) {
-      await message(errorText(error), { title: "MonoCode", kind: "error" });
+      await message(errorText(error), { title: appName(), kind: "error" });
     } finally {
       setBusy(null);
       onMutated();
@@ -212,7 +213,7 @@ export function GitActionsMenu({
     try {
       setDialog({ kind: "pick", items: await load(), ...dialog });
     } catch (error) {
-      await message(errorText(error), { title: "MonoCode", kind: "error" });
+      await message(errorText(error), { title: appName(), kind: "error" });
     }
   };
 

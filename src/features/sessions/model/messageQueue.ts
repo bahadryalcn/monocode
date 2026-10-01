@@ -1,5 +1,6 @@
 import { isPreparingHandoff } from "./handoff";
-import type { QueuedMessage, Session } from "./session";
+import type { FollowUpBehavior } from "../../settings/model/settings";
+import type { QueuedMessage, Session, TurnIntent } from "./session";
 
 export function queuedHead(session: Session): QueuedMessage | undefined {
   return session.queuedMessages?.[0];
@@ -61,4 +62,42 @@ export function queuedMessageForSubmit(
   if (queuedHead(session)?.id !== messageId) return undefined;
   if (!canDispatchQueuedHead(session)) return undefined;
   return message;
+}
+
+export type FollowUpRoute = "dispatch" | "queue" | "steer";
+
+/**
+ * Where a message sent from the composer goes. Idle sessions dispatch. While a
+ * turn is open the message is queued when the app must (a worktree is still
+ * preparing; plan, orchestrate and /operator start their own turn), steered
+ * when only background tasks keep the turn open (they may never end, so a
+ * queued message would be parked behind them), and otherwise follows
+ * `requested` (an explicit per-send choice) or the global `setting`.
+ *
+ * An explicit "queue" beats the background-task steer unless the agent has
+ * truly yielded (`backgroundOnly`), because with the agent still working the
+ * queued message is sent when that turn ends.
+ */
+export function resolveFollowUpRoute(input: {
+  busy: boolean;
+  worktreePreparing?: boolean;
+  intent: TurnIntent;
+  operatorCommand: boolean;
+  backgroundTaskCount: number;
+  backgroundOnly: boolean;
+  requested?: FollowUpBehavior;
+  setting: FollowUpBehavior;
+}): FollowUpRoute {
+  if (!input.busy) return "dispatch";
+  if (
+    input.worktreePreparing ||
+    input.intent === "plan" ||
+    input.intent === "orchestrate" ||
+    input.operatorCommand
+  ) {
+    return "queue";
+  }
+  if (input.requested === "queue" && !input.backgroundOnly) return "queue";
+  if (input.backgroundTaskCount > 0) return "steer";
+  return input.requested ?? input.setting;
 }

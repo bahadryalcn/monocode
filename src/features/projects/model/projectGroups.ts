@@ -1,4 +1,4 @@
-import { pathKey } from "../../../shared/lib/paths";
+import { pathKey, slash } from "../../../shared/lib/paths";
 import { PROJECT_MASCOTS } from "./projectMascots";
 import { TAB_GROUP_COLORS, tabGroupColor } from "../../workspace/model/tabGroups";
 import { notifyProjectPathsChanged } from "./recents";
@@ -14,6 +14,13 @@ export type ProjectGroup = {
   colorIndex?: number;
   customColor?: string;
   mascot?: string;
+  /** The `.code-workspace` file this group mirrors, when it was created from one. */
+  workspaceFile?: string;
+  /**
+   * The folders that file listed at the last sync. Only these may be detached
+   * when the file changes; projects the user added by hand are never touched.
+   */
+  workspaceFolders?: string[];
 };
 
 function normalizeGroup(value: unknown): ProjectGroup | null {
@@ -40,6 +47,15 @@ function normalizeGroup(value: unknown): ProjectGroup | null {
       ? candidate.mascot
       : undefined;
 
+  const workspaceFile =
+    typeof candidate.workspaceFile === "string" && candidate.workspaceFile.trim()
+      ? slash(candidate.workspaceFile.trim())
+      : undefined;
+  const workspaceFolders =
+    workspaceFile && Array.isArray(candidate.workspaceFolders)
+      ? uniquePaths(candidate.workspaceFolders)
+      : [];
+
   return {
     id: candidate.id,
     name: candidate.name.trim(),
@@ -50,7 +66,22 @@ function normalizeGroup(value: unknown): ProjectGroup | null {
         ? {}
         : { colorIndex }),
     ...(mascot ? { mascot } : {}),
+    ...(workspaceFile ? { workspaceFile, workspaceFolders } : {}),
   };
+}
+
+function uniquePaths(values: readonly unknown[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string" || !value.trim()) continue;
+    const path = slash(value.trim());
+    const key = pathKey(path);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(path);
+  }
+  return out;
 }
 
 export function loadProjectGroups(): ProjectGroup[] {
@@ -232,4 +263,52 @@ export function assignProjectsToNamedGroup(
   for (const path of paths) assignments[pathKey(path)] = group.id;
   saveProjectGroupAssignments(assignments);
   return group;
+}
+
+/** Remembers the workspace file a group mirrors and the folders it listed. */
+export function linkProjectGroup(
+  id: string,
+  workspaceFile: string,
+  folders: readonly string[],
+): void {
+  updateProjectGroup(id, (group) => ({
+    ...group,
+    workspaceFile,
+    workspaceFolders: [...folders],
+  }));
+}
+
+/** Stops mirroring the file. The group and its projects stay as they are. */
+export function unlinkProjectGroup(id: string): void {
+  updateProjectGroup(id, (group) => {
+    const { workspaceFile: _file, workspaceFolders: _folders, ...rest } = group;
+    return rest;
+  });
+}
+
+/**
+ * Moves `add` into the group and takes `remove` out of it in one save. A
+ * project in `remove` that has since moved to another group is left there.
+ */
+export function changeProjectGroupMembers(
+  id: string,
+  add: readonly string[],
+  remove: readonly string[],
+): void {
+  if (!loadProjectGroups().some((group) => group.id === id)) return;
+  const assignments = loadProjectGroupAssignments();
+  for (const path of remove) {
+    const key = pathKey(path);
+    if (assignments[key] === id) delete assignments[key];
+  }
+  for (const path of add) assignments[pathKey(path)] = id;
+  saveProjectGroupAssignments(assignments);
+}
+
+/** Paths (as stored keys) currently assigned to the group. */
+export function projectGroupMembers(
+  id: string,
+  assignments: Record<string, string>,
+): string[] {
+  return Object.keys(assignments).filter((key) => assignments[key] === id);
 }

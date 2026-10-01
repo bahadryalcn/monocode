@@ -57,6 +57,7 @@ import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, message } from "@tauri-apps/plugin-dialog";
+import { appName } from "../shared/lib/appName";
 import {
   startTransition,
   Suspense,
@@ -151,9 +152,14 @@ import {
   OPEN_CODE_WORKSPACE_EVENT,
   parseCodeWorkspace,
 } from "../features/projects/model/codeWorkspace";
-import { assignProjectsToNamedGroup } from "../features/projects/model/projectGroups";
+import {
+  assignProjectsToNamedGroup,
+  linkProjectGroup,
+} from "../features/projects/model/projectGroups";
+import { useLinkedWorkspaceGroups } from "../features/projects/hooks/useLinkedWorkspaceGroups";
+import { OPEN_PROJECT_CHANGES_EVENT } from "../features/projects/model/groupGit";
 import { GitFileInspector } from "../features/source-control/ui/GitFileInspector";
-import { loadAdditionalDirs } from "../features/projects/model/additionalDirs";
+import { additionalDirsForSession } from "../features/projects/model/additionalDirs";
 import { setAdditionalDirsResolver } from "../integrations/harness/core/additionalDirs";
 import {
   invalidateProjectFiles,
@@ -444,7 +450,9 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   queuedMessageForSubmit,
+  resolveFollowUpRoute,
 } from "../features/sessions/model/messageQueue";
+import { isBackgroundOnly } from "../features/sessions/model/activityDock";
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   usageLimitResumeDue,
@@ -493,6 +501,7 @@ import {
   setWindowFocused,
 } from "../features/notifications/model/notifications";
 import { useInputNotifications } from "../features/notifications/hooks/useInputNotifications";
+import { useAttentionNotifications } from "../features/notifications/hooks/useAttentionNotifications";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
 import {
   adjacentItemId,
@@ -884,7 +893,7 @@ function filesInWorkspaceTabs(tabs: readonly WorkspaceTab[]): FilePaneTab[] {
 
 /** Native sheet. `window.confirm` is swallowed when a macOS menu accelerator fires. */
 function confirmDiscardUnsaved(message: string): Promise<boolean> {
-  return ask(message, { title: "MonoCode", kind: "warning" });
+  return ask(message, { title: appName(), kind: "warning" });
 }
 
 function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
@@ -1156,7 +1165,7 @@ function Workspace({
     setAdditionalDirsResolver((sessionId) => {
       const session = sessionsRef.current.find((item) => item.id === sessionId);
       return session && isLocalProject(session.cwd)
-        ? loadAdditionalDirs(session.cwd)
+        ? additionalDirsForSession(sessionId, session.cwd)
         : [];
     });
     return () => setAdditionalDirsResolver(() => []);
@@ -1727,6 +1736,7 @@ function Workspace({
   activeSessionIdRef.current = activeSessionId;
 
   useInputNotifications(sessions, activeSessionId);
+  useAttentionNotifications(sessions, activeSessionId);
 
   // Cache the OS decision so a turn ending later can skip a denied banner.
   useEffect(() => {
@@ -2320,7 +2330,7 @@ function Workspace({
     if (!document) {
       void message(
         "Release notes for this version are not available in this build.",
-        { title: "MonoCode" },
+        { title: appName() },
       );
       return;
     }
@@ -4735,7 +4745,7 @@ function Workspace({
           } catch (error) {
             void message(
               `The session was deleted. Its worktree was kept.\n\n${String(error)}\n\nYou can manage it in Settings → Worktrees.`,
-              { title: "MonoCode", kind: "warning" },
+              { title: appName(), kind: "warning" },
             );
           }
         }
@@ -4743,7 +4753,7 @@ function Workspace({
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         void message(`Could not ${mode} this conversation.\n\n${detail}`, {
-          title: "MonoCode",
+          title: appName(),
           kind: "error",
         });
         return false;
@@ -4779,7 +4789,7 @@ function Workspace({
         void message(
           `Could not unarchive this conversation.\n\n${String(error)}`,
           {
-            title: "MonoCode",
+            title: appName(),
             kind: "error",
           },
         );
@@ -4908,7 +4918,7 @@ function Workspace({
           void refreshHistory(sidebarCwd);
           void message(
             `Could not update this conversation's GitHub link.\n\n${String(error)}`,
-            { title: "MonoCode", kind: "error" },
+            { title: appName(), kind: "error" },
           );
         },
       );
@@ -5399,7 +5409,10 @@ function Workspace({
         return;
       }
       openProjects(found);
-      assignProjectsToNamedGroup(workspace.name, found);
+      const group = assignProjectsToNamedGroup(workspace.name, found);
+      // Folders skipped above are not listed, so they join the group later if
+      // they appear on disk and are still in the file.
+      if (group) linkProjectGroup(group.id, file, found);
       if (skipped.length > 0) {
         await message(
           `These folders could not be opened and were skipped:\n\n${skipped.join("\n")}`,
@@ -5419,6 +5432,24 @@ function Workspace({
     window.addEventListener(OPEN_CODE_WORKSPACE_EVENT, open);
     return () => window.removeEventListener(OPEN_CODE_WORKSPACE_EVENT, open);
   }, [openCodeWorkspace]);
+
+  // Groups linked to a workspace file follow it; new folders land on the rail
+  // without moving focus.
+  useLinkedWorkspaceGroups(
+    useCallback(() => setRecents(loadRecents()), []),
+  );
+
+  // A group's git overview opens a project's Changes tab.
+  useEffect(() => {
+    const open = (event: Event) => {
+      const path = (event as CustomEvent<string>).detail;
+      if (typeof path !== "string" || !path) return;
+      setSidebarTab("changes", path);
+      onSelectProject(path);
+    };
+    window.addEventListener(OPEN_PROJECT_CHANGES_EVENT, open);
+    return () => window.removeEventListener(OPEN_PROJECT_CHANGES_EVENT, open);
+  }, [onSelectProject, setSidebarTab]);
 
   const [resumePickerFor, setResumePickerFor] =
     useState<ClaudeImportTarget | null>(null);
@@ -6295,19 +6326,23 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
-        const followUpBehavior =
-          current.worktreePreparing ||
-          intent === "plan" ||
-          intent === "orchestrate" ||
-          operatorCommand.matched
-            ? "queue"
-            : // The agent has yielded and only background work is left, which
-              // may never end (a dev server). Queuing would park the message
-              // behind it, so hand it to the agent now.
-              current.backgroundTasks?.length
-              ? "steer"
-              : (options?.followUpBehavior ?? loadFollowUpBehavior());
-        if (followUpBehavior === "queue") {
+        // Background work with the agent yielded may never end (a dev
+        // server), so there the message is steered instead of parked behind it.
+        const followUpRoute = resolveFollowUpRoute({
+          busy: true,
+          worktreePreparing: current.worktreePreparing,
+          intent,
+          operatorCommand: operatorCommand.matched,
+          backgroundTaskCount: current.backgroundTasks?.length ?? 0,
+          backgroundOnly: isBackgroundOnly(
+            !!current.busy,
+            current.backgroundTasks,
+            current.backgroundAgents,
+          ),
+          requested: options?.followUpBehavior,
+          setting: loadFollowUpBehavior(),
+        });
+        if (followUpRoute === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId

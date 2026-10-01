@@ -35,6 +35,7 @@ import { GitGraphDialog } from "./GitGraphDialog";
 import { GitGraphList, type GraphListItem } from "./GitGraphList";
 import { GraphSearchInput } from "./GitGraphParts";
 import { RefNameDialog } from "./RefNameDialog";
+import { appName } from "../../../shared/lib/appName";
 
 type Props = {
   cwd: string;
@@ -110,7 +111,7 @@ export function GitHistoryGraph({
     try {
       await action();
     } catch (error) {
-      await message(errorText(error), { title: "MonoCode", kind: "error" });
+      await message(errorText(error), { title: appName(), kind: "error" });
     } finally {
       // Also after a failure: a conflict leaves the tree and index changed.
       notifyGitChanged();
@@ -138,7 +139,7 @@ export function GitHistoryGraph({
       case "reset-hard": {
         const confirmed = await ask(
           `Reset the current branch to ${commit.shortSha} and discard all uncommitted changes? This cannot be undone.`,
-          { title: "MonoCode", kind: "warning", okLabel: "Reset" },
+          { title: appName(), kind: "warning", okLabel: "Reset" },
         );
         if (confirmed) await run(() => gitReset(cwd, sha, "hard"));
         return;

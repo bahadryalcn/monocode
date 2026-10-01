@@ -918,9 +918,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentCallFields(tool.name, tool.input),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
     });
@@ -943,9 +941,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentCallFields(tool.name, tool.input),
       status: "pending",
       detail: summarizeToolRequest(tool.name, parsed),
       preview: previewFromTool(tool.name, parsed),
@@ -989,9 +985,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
           callId: streamed.id,
           title: streamed.title,
           kind: toolKindFromName(streamed.name),
-          ...(isAgentToolName(streamed.name) && stringField(use.input, "model")
-            ? { agentModel: stringField(use.input, "model") }
-            : {}),
+          ...agentCallFields(streamed.name, use.input),
           status: isAgentToolName(streamed.name) ? "in_progress" : "pending",
           preview: previewFromTool(streamed.name, use.input),
         });
@@ -1016,9 +1010,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentCallFields(tool.name, tool.input),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
     });
@@ -1500,6 +1492,23 @@ function handleToolProgress(live: Live, rec: Record<string, unknown>): void {
 }
 
 /**
+ * What an Agent/Task call tells the transcript about the run it starts: the
+ * model it asked for, and the prompt it hands the subagent.
+ */
+function agentCallFields(
+  name: string,
+  input: Record<string, unknown>,
+): { agentModel?: string; agentPrompt?: string } {
+  if (!isAgentToolName(name)) return {};
+  const model = stringField(input, "model");
+  const prompt = stringField(input, "prompt");
+  return {
+    ...(model ? { agentModel: model } : {}),
+    ...(prompt ? { agentPrompt: prompt } : {}),
+  };
+}
+
+/**
  * The Agent call a subagent message belongs to, or nothing when the message
  * came from somewhere the parent transcript has no row for.
  */
@@ -1610,7 +1619,10 @@ function noteSubagentResults(
       kind: "tool",
       text: "",
       status: result.isError ? "failed" : "completed",
+      // A failure is shown open and in red from `detail`; a success keeps its
+      // result as bounded `output` for the panel to expand.
       ...(result.isError && result.text ? { detail: result.text } : {}),
+      ...(!result.isError && result.text ? { output: result.text } : {}),
     });
   }
 }

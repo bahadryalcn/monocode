@@ -6,6 +6,7 @@ import {
   isEditingQueuedHead,
   queuedHead,
   queuedMessageForSubmit,
+  resolveFollowUpRoute,
 } from "./messageQueue";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
@@ -140,5 +141,80 @@ describe("queuedMessageForSubmit", () => {
       queuedMessageForSubmit(chat({ queueStatus: "paused" }), "a", "steer")?.id,
     ).toBe("a");
     expect(queuedMessageForSubmit(chat(), "missing", "steer")).toBeUndefined();
+  });
+});
+
+describe("resolveFollowUpRoute", () => {
+  const base = {
+    busy: true,
+    intent: "default" as const,
+    operatorCommand: false,
+    backgroundTaskCount: 0,
+    backgroundOnly: false,
+    setting: "steer" as const,
+  };
+
+  it("dispatches when the session is idle, whatever else is set", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, busy: false, requested: "queue" }),
+    ).toBe("dispatch");
+    expect(
+      resolveFollowUpRoute({ ...base, busy: false, setting: "queue" }),
+    ).toBe("dispatch");
+  });
+
+  it("follows the global setting while busy", () => {
+    expect(resolveFollowUpRoute({ ...base, setting: "steer" })).toBe("steer");
+    expect(resolveFollowUpRoute({ ...base, setting: "queue" })).toBe("queue");
+  });
+
+  it("lets an explicit request override the setting either way", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, setting: "steer", requested: "queue" }),
+    ).toBe("queue");
+    expect(
+      resolveFollowUpRoute({ ...base, setting: "queue", requested: "steer" }),
+    ).toBe("steer");
+  });
+
+  it("always queues while a worktree prepares and for plan, orchestrate and operator", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, worktreePreparing: true, requested: "steer" }),
+    ).toBe("queue");
+    expect(
+      resolveFollowUpRoute({ ...base, intent: "plan", requested: "steer" }),
+    ).toBe("queue");
+    expect(
+      resolveFollowUpRoute({ ...base, intent: "orchestrate" }),
+    ).toBe("queue");
+    expect(
+      resolveFollowUpRoute({ ...base, operatorCommand: true, requested: "steer" }),
+    ).toBe("queue");
+  });
+
+  it("steers when background tasks are open and nothing asked for a queue", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, setting: "queue", backgroundTaskCount: 1 }),
+    ).toBe("steer");
+    expect(
+      resolveFollowUpRoute({ ...base, setting: "steer", backgroundTaskCount: 2, backgroundOnly: true }),
+    ).toBe("steer");
+  });
+
+  it("honours an explicit queue beside a background task while the agent is still working", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, backgroundTaskCount: 1, requested: "queue" }),
+    ).toBe("queue");
+  });
+
+  it("never parks an explicit queue behind background-only work", () => {
+    expect(
+      resolveFollowUpRoute({
+        ...base,
+        backgroundTaskCount: 1,
+        backgroundOnly: true,
+        requested: "queue",
+      }),
+    ).toBe("steer");
   });
 });

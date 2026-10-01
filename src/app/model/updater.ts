@@ -4,6 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
 import { announceUpdateAvailable } from "../../features/settings/model/sounds";
 import { rememberInstalledUpdate } from "./updateNotice";
+import { appName } from "../../shared/lib/appName";
 
 export type UpdaterPhase =
   | "idle"
@@ -71,7 +72,7 @@ export async function runUpdateFlow(
     const idle: UpdaterSnapshot = { phase: "idle", currentVersion };
     onProgress?.(idle);
     if (manual) {
-      await message(UPDATES_DISABLED_MESSAGE, { title: "MonoCode" });
+      await message(UPDATES_DISABLED_MESSAGE, { title: appName() });
     }
     return idle;
   }
@@ -85,7 +86,7 @@ export async function runUpdateFlow(
       const current: UpdaterSnapshot = { phase: "current", currentVersion };
       onProgress?.(current);
       if (manual) {
-        await message("You're on the latest version.", { title: "MonoCode" });
+        await message("You're on the latest version.", { title: appName() });
       }
       return current;
     }
@@ -118,7 +119,7 @@ export async function runUpdateFlow(
       if (manual) {
         await message(
           "Automatic updates aren't configured for this build.\n\nDownload releases at https://github.com/hardbeat920/monocode/releases/latest",
-          { title: "MonoCode" },
+          { title: appName() },
         );
       }
       return idle;
@@ -129,7 +130,7 @@ export async function runUpdateFlow(
     onProgress?.(failed);
     if (manual) {
       await message(`Couldn't check for updates.\n\n${error}`, {
-        title: "MonoCode",
+        title: appName(),
       });
     }
     return failed;
@@ -196,7 +197,7 @@ export async function installPendingUpdate(
       error,
     };
     onProgress?.(failed);
-    await message(`Couldn't install the update.\n\n${error}`, { title: "MonoCode" });
+    await message(`Couldn't install the update.\n\n${error}`, { title: appName() });
     return failed;
   }
 }

@@ -68,3 +68,39 @@ it("dismisses on Escape without changing permissions", () => {
   expect(onChange).not.toHaveBeenCalled();
   expect(onClose).toHaveBeenCalledOnce();
 });
+
+it("disables modes the transport cannot honour and skips them with the keys", () => {
+  const reason = "Headless agy cannot ask before editing files.";
+  act(() =>
+    root.render(
+      createElement(QuickPermissions, {
+        value: "auto-accept-edits",
+        unavailable: { supervised: reason },
+        onChange,
+        onClose,
+      }),
+    ),
+  );
+  const options =
+    container.querySelectorAll<HTMLButtonElement>('[role="option"]');
+  expect(options[0].getAttribute("aria-disabled")).toBe("true");
+  expect(options[0].title).toBe(reason);
+  expect(options[0].textContent).toContain(`Unavailable: ${reason}`);
+  expect(options[1].hasAttribute("aria-disabled")).toBe(false);
+  act(() => options[0].click());
+  expect(onChange).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+  // From the first enabled mode, ArrowUp wraps past the disabled one.
+  const menu = container.querySelector('[role="listbox"]')!;
+  act(() =>
+    menu.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }),
+    ),
+  );
+  act(() =>
+    menu.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    ),
+  );
+  expect(onChange).toHaveBeenCalledWith("full-access");
+});

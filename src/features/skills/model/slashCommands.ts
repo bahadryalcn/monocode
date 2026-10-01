@@ -17,14 +17,21 @@ export function rankSkills(
   limit = MAX_PICKER,
 ): Skill[] {
   const needle = query.trim().toLowerCase();
+  // Templates list after commands and skills so the picker can show them as
+  // one "Templates" group.
+  const templatesLast = (ranked: Skill[]) => [
+    ...ranked.filter((skill) => skill.kind !== "template"),
+    ...ranked.filter((skill) => skill.kind === "template"),
+  ];
   if (!needle) {
-    return [...skills]
+    return templatesLast(
+      [...skills]
       .sort((a, b) => {
         const rank = scopeRank(a) - scopeRank(b);
         if (rank !== 0) return rank;
         return a.name.localeCompare(b.name);
-      })
-      .slice(0, limit);
+      }),
+    ).slice(0, limit);
   }
 
   const scored: { skill: Skill; score: number }[] = [];
@@ -50,10 +57,11 @@ export function rankSkills(
     if (b.score !== a.score) return b.score - a.score;
     return a.skill.name.localeCompare(b.skill.name);
   });
-  return scored.slice(0, limit).map((row) => row.skill);
+  return templatesLast(scored.map((row) => row.skill)).slice(0, limit);
 }
 
 function scopeRank(skill: Skill): number {
+  if (skill.kind === "template") return 3;
   if (skill.kind === "builtin") return 0;
   if (skill.kind === "native" || skill.scope === "project") return 1;
   return 2;

@@ -84,12 +84,13 @@ import { applyProjectDiffStats } from "../hooks/useProjectDiffStats";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import type { CommitMenuOptions } from "../model/gitActionsMenu";
+import { appName } from "../../../shared/lib/appName";
 
 const GIT_POLL_MS = 2000;
 
 function confirmNative(message: string, okLabel?: string): Promise<boolean> {
   return ask(message, {
-    title: "MonoCode",
+    title: appName(),
     kind: "warning",
     ...(okLabel ? { okLabel } : {}),
   });

@@ -1,6 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
-import { HARNESS_TITLE, sessionDisplayTitle, type Session } from "../../sessions/model/session";
+import { projectName } from "../../../shared/lib/paths";
+import type { Session } from "../../sessions/model/session";
 import { loadSoundsEnabled, playCue } from "../../settings/model/sounds";
+import {
+  attentionText,
+  createNotificationBatcher,
+  decideNotification,
+  turnKey,
+  turnOutcome,
+  type AttentionKind,
+  type NotificationPayload,
+} from "./attention";
+import { loadNotificationEvents } from "./notificationEvents";
 import {
   allowsProjectNotification,
   type NotificationSubject,
@@ -85,6 +96,41 @@ let windowFocused =
 
 export function setWindowFocused(focused: boolean) {
   windowFocused = focused;
+  for (const listener of attentionListeners) listener();
+}
+
+export function isWindowFocused(): boolean {
+  return windowFocused;
+}
+
+/** Sessions whose finish or failure was announced and not yet looked at. */
+const unseenAttention = new Set<string>();
+const attentionListeners = new Set<() => void>();
+
+export function unseenAttentionSessions(): ReadonlySet<string> {
+  return unseenAttention;
+}
+
+export function replaceUnseenAttention(next: ReadonlySet<string>) {
+  if (
+    next.size === unseenAttention.size &&
+    [...next].every((id) => unseenAttention.has(id))
+  ) {
+    return;
+  }
+  unseenAttention.clear();
+  for (const id of next) unseenAttention.add(id);
+}
+
+/** Notified when focus or the unseen set changes, so the taskbar can follow. */
+export function subscribeAttention(listener: () => void): () => void {
+  attentionListeners.add(listener);
+  return () => attentionListeners.delete(listener);
+}
+
+function markUnseen(sessionId: string) {
+  unseenAttention.add(sessionId);
+  for (const listener of attentionListeners) listener();
 }
 
 /**
@@ -111,7 +157,7 @@ export type InputNotificationEvent = {
   kind: "approval" | "question";
   requestId: number;
 };
-export type NotificationEvent = "finished" | InputNotificationEvent;
+export type NotificationEvent = "finished" | "failed" | InputNotificationEvent;
 
 type PendingInputNotification = {
   session: Session;
@@ -163,60 +209,54 @@ export type NotificationText = {
   body: string;
 };
 
-const BODY_MAX = 240;
-
 export function notificationText(
   session: Session,
   event: NotificationEvent,
 ): NotificationText {
-  const title = "MonoCode";
-  const subtitle = sessionDisplayTitle(session.title, session.harness);
-  const harness = HARNESS_TITLE[session.harness];
-  if (event !== "finished") {
-    if (event.kind === "question") {
-      const question =
-        session.pendingQuestion?.requestId === event.requestId
-          ? session.pendingQuestion
-          : undefined;
-      const prompt = question?.title || question?.questions[0]?.prompt;
-      return {
-        title,
-        subtitle,
-        body: clip(prompt || `${harness} has a question for you`),
-      };
-    }
-    const pending = session.blocks.find(
-      (block) =>
-        block.approval?.requestId === event.requestId &&
-        !block.approval.decided,
-    );
-    const what = pending?.tool?.title || pending?.text;
-    return {
-      title,
-      subtitle,
-      body: clip(what ? `Approve: ${what}` : `${harness} needs your approval`),
-    };
-  }
-  const reply = [...session.blocks]
-    .reverse()
-    .find((block) => block.role === "assistant" && block.text.trim());
-  return {
-    title,
-    subtitle,
-    body: clip(reply?.text || `${harness} finished`),
-  };
+  return attentionText(session, attentionKind(event), {
+    requestId: typeof event === "string" ? undefined : event.requestId,
+    projectName: notificationProjectName(session),
+  });
 }
 
-/** First paragraph, whitespace collapsed; macOS wraps and truncates the rest. */
-function clip(text: string): string {
-  const paragraph =
-    text
-      .split(/\n\s*\n/)
-      .map((part) => part.replace(/\s+/g, " ").trim())
-      .find((part) => part.length > 0) ?? "";
-  return paragraph.length > BODY_MAX
-    ? `${paragraph.slice(0, BODY_MAX - 1)}…`
-    : paragraph;
+function attentionKind(event: NotificationEvent): AttentionKind {
+  return typeof event === "string" ? event : "input";
+}
+
+function notificationProjectName(session: Session): string {
+  return (
+    knownNotificationProject(session.cwd)?.name ?? projectName(session.cwd)
+  );
+}
+
+const EVENT_CATEGORY = {
+  finished: "agentFinished",
+  failed: "agentFailed",
+  input: "agentInput",
+} as const;
+
+/** Bursts within this window leave as one notification. */
+let batchDelayMs = 800;
+
+export function setNotificationBatchDelay(ms: number) {
+  batchDelayMs = ms;
+}
+
+const batcher = createNotificationBatcher(deliver, () => batchDelayMs);
+
+async function deliver(payload: NotificationPayload): Promise<boolean> {
+  try {
+    await invoke("show_notification", {
+      sessionId: payload.sessionId,
+      title: payload.title,
+      subtitle: payload.subtitle,
+      body: payload.body,
+      sound: loadSoundsEnabled(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -235,13 +275,50 @@ export async function notifySession(
   if (!project) return false;
   return notifyProjectSession(session, event, sessionVisible, {
     projectId: project.id,
-    category: event === "finished" ? "agentFinished" : "agentInput",
+    category: EVENT_CATEGORY[attentionKind(event)],
     occurredAt,
   });
 }
 
-/** One policy decision covers both the OS banner and its in-app sound fallback. */
+/** Turns announced while their background commands still ran, by turn. */
+const announcedEarly = new Map<string, string>();
+
+/**
+ * The agent is done and only background commands keep the turn open. Announced
+ * once per turn; the eventual turn end then stays quiet.
+ */
+export async function announceBackgroundFinish(
+  session: Session,
+  sessionVisible: boolean,
+): Promise<void> {
+  const key = turnKey(session);
+  if (announcedEarly.get(session.id) === key) return;
+  announcedEarly.set(session.id, key);
+  await announceFinished(session, sessionVisible);
+}
+
+/**
+ * Called when a turn ends. One policy decision covers both the OS banner and
+ * its in-app sound fallback. A failure or usage limit gets its own banner; a
+ * stop the user asked for gets none.
+ */
 export async function announceSessionFinished(
+  session: Session,
+  sessionVisible: boolean,
+): Promise<void> {
+  if (session.inboxAsk) return;
+  const outcome = turnOutcome(session);
+  const early = announcedEarly.get(session.id) === turnKey(session);
+  announcedEarly.delete(session.id);
+  if (outcome === "interrupted") return;
+  if (outcome === "failed") {
+    await notifySession(session, "failed", sessionVisible);
+    return;
+  }
+  if (!early) await announceFinished(session, sessionVisible);
+}
+
+async function announceFinished(
   session: Session,
   sessionVisible: boolean,
 ): Promise<void> {
@@ -269,25 +346,24 @@ async function notifyProjectSession(
   sessionVisible: boolean,
   subject: NotificationSubject,
 ): Promise<boolean> {
-  if (!allowsProjectNotification(subject)) return false;
-  const decision = shouldNotify({
-    enabled: loadNotificationsEnabled(),
-    permission,
-    windowFocused,
-    sessionVisible,
-  });
-  if (!decision) return false;
-  const { title, subtitle, body } = notificationText(session, event);
-  try {
-    await invoke("show_notification", {
-      sessionId: session.id,
-      title,
-      subtitle,
-      body,
-      sound: loadSoundsEnabled(),
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  const kind = attentionKind(event);
+  const payload = decideNotification(
+    session,
+    kind,
+    {
+      requestId: typeof event === "string" ? undefined : event.requestId,
+      projectName: notificationProjectName(session),
+    },
+    {
+      enabled: loadNotificationsEnabled(),
+      permission,
+      eventEnabled: loadNotificationEvents()[kind],
+      projectAllowed: allowsProjectNotification(subject),
+      windowFocused,
+      sessionVisible,
+    },
+  );
+  if (!payload) return false;
+  if (kind !== "input") markUnseen(session.id);
+  return batcher.enqueue(payload);
 }

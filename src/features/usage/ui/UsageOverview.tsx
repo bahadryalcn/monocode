@@ -1,0 +1,622 @@
+import { RefreshCw } from "../../../shared/ui/icons";
+import { useEffect, useMemo, useState } from "react";
+import {
+  PROVIDER_ACCOUNT_PROVIDERS,
+  providerAccounts,
+  subscribeProviderAccounts,
+} from "../../providers/model/providerAccounts";
+import {
+  createUsagePricing,
+  fetchModelPrices,
+  fetchProviderUsage,
+  formatUsageCost,
+  formatUsageTokens,
+  type AccountUsage,
+  type ModelPrices,
+} from "../../providers/model/providerUsage";
+import { railGroupLookup } from "../model/railGroups";
+import {
+  USAGE_RANGES,
+  summarizeUsageOverview,
+  usageRangeSince,
+  usageSeriesColor,
+  type UsageDayBucket,
+  type UsageOverviewData,
+  type UsageProjectRow,
+  type UsageRangeId,
+  type UsageStackBy,
+} from "../model/usageOverview";
+
+type Metric = "cost" | "tokens";
+
+type Load =
+  | { status: "loading" }
+  | { status: "ready"; usage: AccountUsage[]; failed: number };
+
+function formatDay(date: Date): string {
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/**
+ * Estimated API-equivalent cost by day and by project. Reads the same local
+ * session logs as the Usage card above it; the backend caches parsed
+ * transcripts, so switching range or reopening Settings stays quick.
+ */
+export function UsageOverview() {
+  const [version, setVersion] = useState(0);
+  const [reload, setReload] = useState(0);
+  const [range, setRange] = useState<UsageRangeId>("30d");
+  const [stackBy, setStackBy] = useState<UsageStackBy>("provider");
+  const [metric, setMetric] = useState<Metric>("cost");
+  const [load, setLoad] = useState<Load>({ status: "loading" });
+  const [refreshing, setRefreshing] = useState(true);
+  const [prices, setPrices] = useState<ModelPrices | null | undefined>();
+
+  useEffect(
+    () => subscribeProviderAccounts(() => setVersion((value) => value + 1)),
+    [],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModelPrices().then((next) => {
+      if (!cancelled) setPrices(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [reload]);
+
+  const pricing = useMemo(() => createUsagePricing(prices?.models), [prices]);
+  const accounts = useMemo(
+    () => PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts),
+    [version],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setRefreshing(true);
+    const since = usageRangeSince(range, new Date());
+    void Promise.all(
+      accounts.map(async (account) => {
+        try {
+          const report = await fetchProviderUsage(
+            account.provider,
+            account.id,
+            since,
+          );
+          return { account, rows: report.rows, ok: true };
+        } catch {
+          return { account, rows: [], ok: false };
+        }
+      }),
+    ).then((results) => {
+      if (cancelled) return;
+      setRefreshing(false);
+      setLoad({
+        status: "ready",
+        usage: results.map(({ account, rows }) => ({ account, rows })),
+        failed: results.filter(({ ok }) => !ok).length,
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accounts, range, reload]);
+
+  // "Today" and the rail groups are read whenever the logs, range or prices
+  // change, which is also when the window should move on.
+  const data = useMemo(
+    () =>
+      load.status === "ready"
+        ? summarizeUsageOverview(
+            load.usage,
+            range,
+            new Date(),
+            stackBy,
+            railGroupLookup(),
+            pricing,
+          )
+        : null,
+    [load, range, stackBy, pricing],
+  );
+
+  const rangeLabel =
+    USAGE_RANGES.find((entry) => entry.id === range)?.label ?? "";
+
+  return (
+    <section className="pt-8">
+      <div className="flex flex-wrap items-end gap-4 pb-2.5">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[13px] font-semibold text-content">
+            Cost by project and day
+          </h2>
+          <p className="mt-1 text-[12px] leading-relaxed text-content/45">
+            API-equivalent estimates at list prices, from local session logs.
+            Subscription plans are not billed per token, so this is not what you
+            pay.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2 pb-0.5">
+          <Choice
+            label="Cost range"
+            value={range}
+            options={USAGE_RANGES.map(({ id, label }) => ({
+              value: id,
+              label,
+            }))}
+            onChange={setRange}
+          />
+          <button
+            type="button"
+            aria-label="Reload cost by project and day"
+            title="Reload"
+            disabled={refreshing}
+            onClick={() => setReload((value) => value + 1)}
+            className="grid size-[26px] place-items-center rounded-md border border-content/10 text-content/50 hover:bg-content/10 hover:text-content disabled:opacity-40"
+          >
+            <RefreshCw
+              className={`size-3.5${refreshing ? " animate-spin" : ""}`}
+              strokeWidth={1.75}
+              aria-hidden
+            />
+          </button>
+        </div>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-content/10 bg-content/3">
+        {!data ? (
+          <div className="px-4 py-6 text-[12px] text-content/45">
+            Reading session logs…
+          </div>
+        ) : data.totals.tokens === 0 ? (
+          <div className="px-4 py-6 text-[12px] leading-relaxed text-content/45">
+            No usage in the selected range ({rangeLabel.toLowerCase()}).
+          </div>
+        ) : (
+          <>
+            <Totals data={data} />
+            <DailyChart
+              data={data}
+              metric={metric}
+              stackBy={stackBy}
+              onMetric={setMetric}
+              onStackBy={setStackBy}
+            />
+            <ProjectTable data={data} />
+          </>
+        )}
+        <Notes
+          data={data}
+          failed={load.status === "ready" ? load.failed : 0}
+          prices={prices}
+        />
+      </div>
+    </section>
+  );
+}
+
+function Totals({ data }: { data: UsageOverviewData }) {
+  const { totals } = data;
+  return (
+    <div className="grid grid-cols-1 divide-y divide-content/5 border-b border-content/5 @min-[560px]/settings:grid-cols-4 @min-[560px]/settings:divide-x @min-[560px]/settings:divide-y-0">
+      <Stat
+        label="Estimated cost"
+        value={formatUsageCost(totals.cost)}
+        detail="API-equivalent, not billed"
+      />
+      <Stat
+        label="Input"
+        value={formatUsageTokens(totals.input)}
+        detail="uncached tokens"
+      />
+      <Stat
+        label="Output"
+        value={formatUsageTokens(totals.output)}
+        detail="tokens"
+      />
+      <Stat
+        label="Cache"
+        value={formatUsageTokens(totals.cacheRead + totals.cacheWrite)}
+        detail={`${formatUsageTokens(totals.cacheRead)} read · ${formatUsageTokens(totals.cacheWrite)} written`}
+      />
+    </div>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="min-w-0 px-4 py-3.5">
+      <div className="text-[12px] text-content/45">{label}</div>
+      <div className="mt-1 text-[20px] font-semibold leading-tight tabular-nums text-content">
+        {value}
+      </div>
+      <div className="mt-1 truncate text-[11px] text-content/40">{detail}</div>
+    </div>
+  );
+}
+
+function amountText(amount: { cost: number; tokens: number }, metric: Metric) {
+  return metric === "cost"
+    ? `${formatUsageCost(amount.cost)} est.`
+    : `${formatUsageTokens(amount.tokens)} tokens`;
+}
+
+function dayLabel(
+  day: UsageDayBucket,
+  data: UsageOverviewData,
+  metric: Metric,
+) {
+  const total = metric === "cost" ? day.cost : day.tokens;
+  if (total <= 0) return `${formatDay(day.date)}: no activity`;
+  const parts = data.series
+    .filter((series) => day.series[series.key])
+    .map(
+      (series) =>
+        `${series.label} ${amountText(day.series[series.key], metric)}`,
+    );
+  return `${formatDay(day.date)}: ${amountText(day, metric)} (${parts.join(", ")})`;
+}
+
+function DailyChart({
+  data,
+  metric,
+  stackBy,
+  onMetric,
+  onStackBy,
+}: {
+  data: UsageOverviewData;
+  metric: Metric;
+  stackBy: UsageStackBy;
+  onMetric: (metric: Metric) => void;
+  onStackBy: (by: UsageStackBy) => void;
+}) {
+  const [active, setActive] = useState<number | null>(null);
+  const { days, series } = data;
+  const value = (amount: { cost: number; tokens: number }) =>
+    metric === "cost" ? amount.cost : amount.tokens;
+  const max = Math.max(...days.map(value), 0);
+  const colors = new Map(
+    series.map((entry, index) => [
+      entry.key,
+      usageSeriesColor(index, entry.key),
+    ]),
+  );
+  return (
+    <div className="border-b border-content/5 px-4 py-3.5">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pb-3">
+        <div className="min-w-0 flex-1 text-[13px] font-medium text-content">
+          Daily {metric === "cost" ? "estimated cost" : "tokens"}
+        </div>
+        <Choice
+          label="Chart metric"
+          value={metric}
+          options={[
+            { value: "cost", label: "Cost" },
+            { value: "tokens", label: "Tokens" },
+          ]}
+          onChange={onMetric}
+        />
+        <Choice
+          label="Stack by"
+          value={stackBy}
+          options={[
+            { value: "provider", label: "Provider" },
+            { value: "model", label: "Model" },
+          ]}
+          onChange={onStackBy}
+        />
+      </div>
+      <ul
+        aria-label={`Daily ${metric === "cost" ? "estimated cost" : "tokens"}`}
+        className="relative m-0 flex h-28 list-none items-end gap-px p-0"
+        onMouseLeave={() => setActive(null)}
+      >
+        {days.map((day, index) => {
+          const total = value(day);
+          const height = max > 0 ? (total / max) * 100 : 0;
+          return (
+            <li
+              key={day.key}
+              tabIndex={0}
+              aria-label={dayLabel(day, data, metric)}
+              onMouseEnter={() => setActive(index)}
+              onFocus={() => setActive(index)}
+              onBlur={() => setActive(null)}
+              className="flex h-full min-w-0 flex-1 items-end rounded-t-[3px] outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            >
+              {total <= 0 ? (
+                <div className="h-px w-full bg-content/10" />
+              ) : (
+                <div
+                  className={`mx-auto flex w-full max-w-8 flex-col-reverse overflow-hidden rounded-t-[3px] transition-opacity ${
+                    active != null && active !== index ? "opacity-40" : ""
+                  }`}
+                  style={{ height: `${Math.max(3, height)}%` }}
+                >
+                  {series.map((entry) => {
+                    const slice = day.series[entry.key];
+                    const share = slice ? value(slice) / total : 0;
+                    return share > 0 ? (
+                      <div
+                        key={entry.key}
+                        style={{
+                          flexGrow: share,
+                          flexBasis: 0,
+                          backgroundColor: colors.get(entry.key),
+                        }}
+                      />
+                    ) : null;
+                  })}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      <div
+        aria-live="polite"
+        className="mt-2 min-h-4 text-[11px] tabular-nums text-content/60"
+      >
+        {active != null ? (
+          dayLabel(days[active], data, metric)
+        ) : (
+          <span className="flex justify-between text-content/40">
+            <span>{formatDay(days[0].date)}</span>
+            <span>
+              Peak{" "}
+              {metric === "cost"
+                ? formatUsageCost(max)
+                : formatUsageTokens(max)}
+            </span>
+            <span>{formatDay(days[days.length - 1].date)}</span>
+          </span>
+        )}
+      </div>
+      <ul className="m-0 mt-2 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 text-[11px] text-content/60">
+        {series.map((entry) => (
+          <li key={entry.key} className="flex items-center gap-1.5">
+            <span
+              aria-hidden
+              className="size-2 rounded-sm"
+              style={{ backgroundColor: colors.get(entry.key) }}
+            />
+            <span className={stackBy === "model" ? "font-mono" : ""}>
+              {entry.label}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <details className="mt-3 text-[11px] text-content/60">
+        <summary className="cursor-pointer select-none text-content/50 hover:text-content">
+          Show as table
+        </summary>
+        <div className="mt-2 max-h-56 overflow-auto">
+          <table className="w-full border-collapse text-left tabular-nums">
+            <caption className="sr-only">
+              Estimated cost and tokens per day
+            </caption>
+            <thead>
+              <tr className="text-content/45">
+                <th scope="col" className="py-1 pr-3 font-normal">
+                  Day
+                </th>
+                {series.map((entry) => (
+                  <th
+                    key={entry.key}
+                    scope="col"
+                    className="py-1 pr-3 text-right font-normal"
+                  >
+                    {entry.label}
+                  </th>
+                ))}
+                <th scope="col" className="py-1 text-right font-normal">
+                  Total
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...days].reverse().map((day) => (
+                <tr key={day.key} className="border-t border-content/5">
+                  <th scope="row" className="py-1 pr-3 font-normal">
+                    {formatDay(day.date)}
+                  </th>
+                  {series.map((entry) => (
+                    <td key={entry.key} className="py-1 pr-3 text-right">
+                      {day.series[entry.key]
+                        ? amountText(day.series[entry.key], metric)
+                        : "–"}
+                    </td>
+                  ))}
+                  <td className="py-1 text-right text-content/85">
+                    {dayTotalText(day, metric)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function dayTotalText(day: UsageDayBucket, metric: Metric): string {
+  return day.tokens > 0 ? amountText(day, metric) : "–";
+}
+
+function ProjectTable({ data }: { data: UsageOverviewData }) {
+  const grouped = data.groups.some((section) => section.name !== null);
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[520px] border-collapse text-left text-[12px] tabular-nums">
+        <caption className="px-4 py-3 text-left text-[13px] font-medium text-content">
+          Projects by estimated cost
+        </caption>
+        <thead>
+          <tr className="border-y border-content/5 text-[11px] text-content/45">
+            <th scope="col" className="px-4 py-1.5 font-normal">
+              Project
+            </th>
+            <th scope="col" className="px-2 py-1.5 text-right font-normal">
+              Input
+            </th>
+            <th scope="col" className="px-2 py-1.5 text-right font-normal">
+              Output
+            </th>
+            <th scope="col" className="px-2 py-1.5 text-right font-normal">
+              Cache
+            </th>
+            <th scope="col" className="px-4 py-1.5 text-right font-normal">
+              Est. cost
+            </th>
+          </tr>
+        </thead>
+        {data.groups.map((section) => (
+          <tbody
+            key={section.key}
+            className="border-b border-content/5 last:border-b-0"
+          >
+            {grouped ? (
+              <tr className="bg-content/[0.03]">
+                <th
+                  scope="colgroup"
+                  colSpan={4}
+                  className="px-4 py-1.5 text-[11px] font-semibold text-content/70"
+                >
+                  {section.name ?? "Not in a group"}
+                </th>
+                <td className="px-4 py-1.5 text-right text-[11px] font-semibold text-content/70">
+                  {formatUsageCost(section.cost)}
+                </td>
+              </tr>
+            ) : null}
+            {section.projects.map((project) => (
+              <ProjectLine key={project.key} project={project} />
+            ))}
+          </tbody>
+        ))}
+      </table>
+    </div>
+  );
+}
+
+function ProjectLine({ project }: { project: UsageProjectRow }) {
+  return (
+    <tr className="border-t border-content/5 first:border-t-0">
+      <th
+        scope="row"
+        title={project.title}
+        className="max-w-0 px-4 py-2 font-normal text-content/85"
+      >
+        <span className="block truncate">{project.label}</span>
+        <span
+          aria-hidden
+          className="mt-1 block h-0.5 overflow-hidden rounded-full bg-content/[0.07]"
+        >
+          <span
+            className="block h-full rounded-full bg-accent/70"
+            style={{ width: `${Math.max(2, project.share * 100)}%` }}
+          />
+        </span>
+      </th>
+      <td className="px-2 py-2 text-right text-content/60">
+        {formatUsageTokens(project.input)}
+      </td>
+      <td className="px-2 py-2 text-right text-content/60">
+        {formatUsageTokens(project.output)}
+      </td>
+      <td
+        className="px-2 py-2 text-right text-content/60"
+        title={`${formatUsageTokens(project.cacheRead)} read · ${formatUsageTokens(project.cacheWrite)} written`}
+      >
+        {formatUsageTokens(project.cacheRead + project.cacheWrite)}
+      </td>
+      <td className="px-4 py-2 text-right text-content/85">
+        {formatUsageCost(project.cost)}
+        {project.partlyUnpriced ? (
+          <span title="Some models here have no known price, so this is a minimum">
+            {" "}
+            +
+          </span>
+        ) : null}
+      </td>
+    </tr>
+  );
+}
+
+function Notes({
+  data,
+  failed,
+  prices,
+}: {
+  data: UsageOverviewData | null;
+  failed: number;
+  prices: ModelPrices | null | undefined;
+}) {
+  const notes = [
+    prices === null
+      ? "OpenRouter prices could not be loaded, so built-in prices are used."
+      : null,
+    data?.unpricedModels.length
+      ? `No price is known for ${data.unpricedModels.join(", ")}, so its cost is left out.`
+      : null,
+    failed
+      ? `Could not read the logs for ${failed} account${failed === 1 ? "" : "s"}.`
+      : null,
+  ].filter(Boolean);
+  if (!notes.length) return null;
+  return (
+    <div className="border-t border-content/5 px-4 py-2.5 text-[11px] leading-relaxed text-content/40">
+      {notes.join(" ")}
+    </div>
+  );
+}
+
+/** Same look as the Settings segmented control, which is private to that file. */
+function Choice<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label={label}
+      className="inline-grid max-w-full shrink-0 gap-0.5 rounded-md border border-content/10 p-0.5 text-[12px]"
+      style={{
+        gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))`,
+      }}
+    >
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={`min-w-0 rounded-[5px] px-2.5 py-1 ${
+            value === option.value
+              ? "bg-selection text-content"
+              : "text-content/50 hover:text-content"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}

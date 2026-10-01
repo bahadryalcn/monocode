@@ -1,9 +1,11 @@
 import {
+  AlertCircle,
   Archive,
   BellOff,
   ChevronDown,
   ChevronRight,
   FolderPlus,
+  GitBranch,
   Internet,
   Inbox,
   MoreHorizontal,
@@ -18,7 +20,10 @@ import {
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
-import { useProjectDiffStats } from "../../features/source-control/hooks/useProjectDiffStats";
+import {
+  useProjectDiffStats,
+  useProjectsDiffStats,
+} from "../../features/source-control/hooks/useProjectDiffStats";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import {
@@ -37,6 +42,7 @@ import { formatInteger } from "../../shared/lib/numbers";
 import { pathKey, projectKey, projectName } from "../../shared/lib/paths";
 import {
   collectRailProjects,
+  isLocalProject,
   loadPinnedProjects,
   loadProjectRailOrder,
   projectRailSections,
@@ -92,6 +98,9 @@ import {
 } from "../../features/connections/model/connections";
 import { remoteProjectFor } from "../../features/connections/model/remoteProjects";
 import { useProjectMenu } from "./useProjectMenu";
+import { GroupGitPopover } from "../../features/projects/ui/GroupGitPopover";
+import { OPEN_PROJECT_CHANGES_EVENT, summarizeGroupGit } from "../../features/projects/model/groupGit";
+import { useLinkedGroupStatus } from "../../features/projects/model/linkedWorkspace";
 
 type Props = {
   visible?: boolean;
@@ -733,6 +742,27 @@ function ProjectGroupSection({
   );
   const countLabel = `${items.length} ${items.length === 1 ? "project" : "projects"}`;
   const expanded = !group.collapsed;
+  const linkStatus = useLinkedGroupStatus(group.id);
+  const localPaths = useMemo(
+    () => items.map((item) => item.path).filter(isLocalProject),
+    [items],
+  );
+  // Only an expanded group shows project cards, which already load these
+  // stats. Reading them here adds no git calls; a collapsed group shows no
+  // count rather than starting new ones.
+  const groupStats = useProjectsDiffStats(localPaths, statsEnabled && expanded);
+  const gitSummary = summarizeGroupGit(
+    localPaths.map((_, index) => ({
+      remote: false,
+      files: groupStats[index]?.files ?? null,
+    })),
+  );
+  const gitAnchor = useRef<HTMLButtonElement>(null);
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  const gitTitle =
+    gitSummary.known > 0
+      ? `${gitSummary.dirty} of ${gitSummary.local} ${gitSummary.local === 1 ? "project has" : "projects have"} uncommitted changes`
+      : "Git overview";
   const openMenu = (target: HTMLElement, x?: number, y?: number) => {
     const rect = target.getBoundingClientRect();
     onOpenGroupMenu(x ?? rect.left, y ?? rect.bottom);
@@ -761,7 +791,11 @@ function ProjectGroupSection({
           aria-label={`${group.name}, ${countLabel}`}
           title={`${group.name} · ${countLabel}`}
           onClick={onToggleCollapsed}
-          className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[:focus-visible]:pr-6"
+          className={`flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none ${
+            localPaths.length > 0
+              ? ""
+              : "group-hover:pr-6 group-has-[:focus-visible]:pr-6"
+          }`}
         >
           <div className="grid size-4 shrink-0 place-items-center">
             {group.collapsed ? (
@@ -792,7 +826,68 @@ function ProjectGroupSection({
             )}
           </div>
           <span className={nameClassName}>{group.name}</span>
+          {group.workspaceFile ? (
+            <span
+              role="img"
+              aria-label={
+                linkStatus
+                  ? `Linked workspace file problem: ${linkStatus.message}`
+                  : `Linked to ${group.workspaceFile}`
+              }
+              title={
+                linkStatus
+                  ? `${linkStatus.message}
+The group was left as it is.`
+                  : `Linked to ${group.workspaceFile}`
+              }
+              className={`grid size-4 shrink-0 place-items-center ${
+                linkStatus ? "text-amber-400" : "text-content/45"
+              }`}
+            >
+              {linkStatus ? (
+                <AlertCircle className="size-3" strokeWidth={1.75} aria-hidden="true" />
+              ) : (
+                <File className="size-3" strokeWidth={1.75} aria-hidden="true" />
+              )}
+            </span>
+          ) : null}
         </button>
+        {localPaths.length > 0 ? (
+          <button
+            ref={gitAnchor}
+            type="button"
+            data-no-drag
+            title={gitTitle}
+            aria-label={`${group.name} git overview, ${gitTitle}`}
+            aria-haspopup="dialog"
+            aria-expanded={overviewOpen}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              setOverviewOpen((value) => !value);
+            }}
+            className="my-auto mr-0 flex h-5 shrink-0 items-center gap-0.5 rounded-md px-1 text-[11px] font-semibold tabular-nums text-content/50 transition-[margin] duration-150 hover:bg-content/8 hover:text-content group-hover:mr-6 group-has-[:focus-visible]:mr-6 aria-expanded:bg-content/8 motion-reduce:transition-none"
+          >
+            <GitBranch className="size-3" strokeWidth={1.75} />
+            {gitSummary.dirty > 0 ? (
+              <span className="text-amber-400">{gitSummary.dirty}</span>
+            ) : null}
+          </button>
+        ) : null}
+        {overviewOpen ? (
+          <GroupGitPopover
+            anchor={gitAnchor}
+            name={group.name}
+            paths={items.map((item) => item.path)}
+            onSelect={(path) => {
+              setOverviewOpen(false);
+              window.dispatchEvent(
+                new CustomEvent(OPEN_PROJECT_CHANGES_EVENT, { detail: path }),
+              );
+            }}
+            onDismiss={() => setOverviewOpen(false)}
+          />
+        ) : null}
         <button
           type="button"
           data-no-drag

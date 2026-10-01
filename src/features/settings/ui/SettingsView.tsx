@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
+import { TemplatesSettings } from "./TemplatesSettings";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownCircle,
@@ -410,6 +411,11 @@ import {
   type NotificationPermission,
 } from "../../notifications/model/notifications";
 import {
+  NOTIFICATION_EVENT_SETTINGS,
+  loadNotificationEvents,
+  saveNotificationEvent,
+} from "../../notifications/model/notificationEvents";
+import {
   installPendingUpdate,
   isUpdaterEnabled,
   readAppVersion,
@@ -419,6 +425,7 @@ import {
 
 import { SkillsPage } from "../../skills/ui/SkillsPage";
 import { ProjectNotificationSettings } from "../../notifications/ui/ProjectNotificationSettings";
+import { UsageOverview } from "../../usage/ui/UsageOverview";
 import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
 import {
   removeWorktree,
@@ -607,6 +614,7 @@ export function SettingsView({
                 <AppearancePage appearance={appearance} />
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
+              {section === "chat" ? <TemplatesSettings /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
@@ -782,6 +790,9 @@ function GeneralPage({
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     loadNotificationsEnabled,
   );
+  const [notificationEvents, setNotificationEvents] = useState(
+    loadNotificationEvents,
+  );
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermission>(cachedNotificationPermission);
   const [notesEnabled, setNotesEnabled] = useState(loadNotesEnabled);
@@ -923,6 +934,24 @@ function GeneralPage({
             onChange={onNotificationsEnabled}
           />
         </Row>
+        {notificationsEnabled
+          ? NOTIFICATION_EVENT_SETTINGS.map((event) => (
+              <Row
+                key={event.id}
+                label={event.label}
+                description={event.description}
+              >
+                <Toggle
+                  label={event.label}
+                  on={notificationEvents[event.id]}
+                  onChange={(on) => {
+                    saveNotificationEvent(event.id, on);
+                    setNotificationEvents(loadNotificationEvents());
+                  }}
+                />
+              </Row>
+            ))
+          : null}
       </Group>
 
       <Group
@@ -3401,6 +3430,7 @@ function ProvidersPage({
     <>
       <ProviderAccountsSettings />
       <ProviderUsageSettings />
+      <UsageOverview />
 
       <Group
         id="agent-clis"

@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod content_search;
+pub use content_search::{ContentSearchOptions, ContentSearchResult};
+
 const MIGRATION_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -31,6 +34,9 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 pub struct SessionStore {
     conn: Mutex<Connection>,
     read_conn: Mutex<Option<Connection>>,
+    /// One search-index builder at a time: the startup pass and a search both
+    /// run `content_search::sync_index`, and indexing a session twice is waste.
+    search_index_lock: Mutex<()>,
 }
 
 impl SessionStore {
@@ -50,6 +56,7 @@ impl SessionStore {
         Ok(Self {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(Some(read_conn)),
+            search_index_lock: Mutex::new(()),
         })
     }
 
@@ -62,6 +69,7 @@ impl SessionStore {
         Ok(Self {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(None),
+            search_index_lock: Mutex::new(()),
         })
     }
 
@@ -79,7 +87,9 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         |store| {
             app.manage(store);
         },
-    )
+    )?;
+    start_search_indexing(app);
+    Ok(())
 }
 
 // Keep the complete startup path here so the transcript-read test covers it.
@@ -91,6 +101,25 @@ fn init_with(
     let store = open(data_dir()?.join("monocode.db"))?;
     manage(store);
     Ok(())
+}
+
+/// Builds the message-content search index for sessions it does not cover yet
+/// (a fresh migration, a bulk import) off the startup path.
+fn start_search_indexing(app: &AppHandle) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("session-search-index".into())
+        .spawn(move || {
+            // Let startup finish first; this is catch-up work, not on the
+            // critical path, and a search indexes what it needs by itself.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if let Some(store) = app.try_state::<SessionStore>() {
+                content_search::index_in_background(&store);
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("session search index thread: {error}");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -546,6 +575,16 @@ fn search_store(
     }
 }
 
+/// Full-text search over message content, grouped by session. Cancel with
+/// `cancel_session_search` under the same `searchOwner`.
+#[tauri::command(async)]
+pub fn session_search_content(
+    store: State<'_, SessionStore>,
+    options: ContentSearchOptions,
+) -> Result<ContentSearchResult, String> {
+    content_search::search_content(&store, &options)
+}
+
 #[tauri::command(async)]
 pub fn cancel_session_search(search_owner: String) {
     cancel_owned_session_search(&search_owner);
@@ -977,6 +1016,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
+    // Message-content search index: derived tables, created empty like the ones
+    // around it (so no version row, and instant however many sessions exist).
+    // Sessions are indexed lazily; see `content_search`.
+    content_search::ensure_schema(conn)?;
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -1868,6 +1911,7 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
         "DELETE FROM orchestration_workers WHERE session_id = ?1 OR lead_id = ?1",
         [session_id],
     )?;
+    content_search::forget_session(&tx, session_id)?;
     tx.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
     tx.commit()
 }

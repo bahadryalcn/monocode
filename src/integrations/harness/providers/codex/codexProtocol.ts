@@ -1037,6 +1037,9 @@ function mapCollabAgentToolCall(
     ...(spawns && stringField(item, "model")
       ? { agentModel: stringField(item, "model") }
       : {}),
+    ...(spawns && stringField(item, "prompt")
+      ? { agentPrompt: stringField(item, "prompt") }
+      : {}),
     status: settled ? (failed ? "failed" : "completed") : "in_progress",
     ...(detail ? { detail } : {}),
   };
@@ -1143,12 +1146,12 @@ export function mapCodexSubagentSteps(
   return mapCodexNotification(method, params).events.flatMap(
     (event): HarnessEvent[] => {
       if (event.type === "tool.started" || event.type === "tool.updated") {
-        // Only a failure earns detail: a settled result already rides in the
-        // preview, and a long one would weigh the run down for nothing.
-        const detail =
-          event.type === "tool.updated" && event.status === "failed"
-            ? event.detail
-            : undefined;
+        // A failure is shown open from `detail`; a settled result rides as
+        // `output`, which the shared layer caps and budgets per run.
+        const failed = event.type === "tool.updated" && event.status === "failed";
+        const detail = failed ? event.detail : undefined;
+        const output =
+          event.type === "tool.updated" && !failed ? event.detail : undefined;
         return [
           {
             type: "agent.step",
@@ -1159,6 +1162,7 @@ export function mapCodexSubagentSteps(
             ...(event.kind ? { toolKind: event.kind } : {}),
             ...(event.status ? { status: event.status } : {}),
             ...(detail ? { detail } : {}),
+            ...(output ? { output } : {}),
             ...(event.preview ? { preview: event.preview } : {}),
           },
         ];

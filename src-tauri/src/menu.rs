@@ -510,10 +510,11 @@ fn build(
 
     #[cfg(target_os = "macos")]
     {
-        let quit = MenuItemBuilder::with_id("quit", "Quit MonoCode")
+        let name = &app.package_info().name;
+        let quit = MenuItemBuilder::with_id("quit", format!("Quit {name}"))
             .accelerator("CmdOrCtrl+Q")
             .build(app)?;
-        let app_menu = SubmenuBuilder::new(app, "MonoCode")
+        let app_menu = SubmenuBuilder::new(app, name)
             .about(Some(AboutMetadata::default()))
             .separator()
             .item(&open_settings)

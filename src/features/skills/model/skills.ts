@@ -99,7 +99,16 @@ export type NativeSkill = NativeCommand & {
   kind: "native";
 };
 
-export type Skill = FileSkill | BuiltinSkill | NativeSkill;
+/** A saved prompt snippet from Settings; picking it inserts `body` instead of `/name`. */
+export type TemplateSkill = SkillCommon & {
+  kind: "template";
+  scope: "template";
+  source: "monocode";
+  templateId: string;
+  body: string;
+};
+
+export type Skill = FileSkill | BuiltinSkill | NativeSkill | TemplateSkill;
 
 export const BUILTIN_CREATE_SKILL: BuiltinSkill = {
   kind: "builtin",

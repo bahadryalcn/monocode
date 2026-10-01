@@ -445,7 +445,7 @@ function isSearchableRole(role: Block["role"]): boolean {
   );
 }
 
-function recencyBonus(updatedAt: number): number {
+export function recencyBonus(updatedAt: number): number {
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) return 0;
   const age = Date.now() - updatedAt;
   if (age <= 0) return 24;

@@ -1731,6 +1731,67 @@ describe("claude subagents", () => {
     ]);
   });
 
+  it("keeps a successful subagent result as output and the prompt on the run", async () => {
+    const { events, turn } = await startTurn("s1");
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_agent",
+            name: "Agent",
+            input: {
+              description: "Run tests",
+              prompt: "Run the unit tests and report failures.",
+            },
+          },
+        ],
+      },
+    });
+    emit({
+      type: "assistant",
+      parent_tool_use_id: "toolu_agent",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_sub_bash",
+            name: "Bash",
+            input: { command: "npm test" },
+          },
+        ],
+      },
+    });
+    emit({
+      type: "user",
+      parent_tool_use_id: "toolu_agent",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_sub_bash",
+            content: [{ type: "text", text: "12 passed" }],
+          },
+        ],
+      },
+    });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+
+    const run = events
+      .reduce(applyHarnessEvent, newSession("claude", "/repo"))
+      .blocks.find((block) => block.tool?.callId === "toolu_agent")?.agentRun;
+    expect(run?.prompt).toBe("Run the unit tests and report failures.");
+    expect(run?.steps[0]).toMatchObject({
+      id: "toolu_sub_bash",
+      status: "completed",
+      output: "12 passed",
+    });
+    expect(run?.steps[0]).not.toHaveProperty("detail");
+  });
+
   it("keeps a failed subagent tool result on its tool row", async () => {
     const { events, turn } = await startTurn("s1");
     emit({

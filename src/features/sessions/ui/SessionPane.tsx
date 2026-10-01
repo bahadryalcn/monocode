@@ -968,6 +968,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
               </PooledTranscript>
               {!session.inboxAsk ? (
                 <TranscriptFind
+                  sessionId={session.id}
                   blocks={session.blocks}
                   visible={visible}
                   focused={focused}

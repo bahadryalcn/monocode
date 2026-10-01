@@ -298,6 +298,75 @@ describe("persisting a subagent's trail", () => {
     expect(saved?.steps).toHaveLength(100);
     expect(saved?.steps[99].id).toBe("s259");
   });
+
+  describe("results and prompt", () => {
+    const run = (output?: string, count = 100): NonNullable<Block["agentRun"]> => ({
+      name: "Correctness review",
+      prompt: "Review the reducer.",
+      steps: Array.from({ length: count }, (_, index) => ({
+        id: `s${index}`,
+        kind: "tool" as const,
+        text: `Read file-${index}.ts`,
+        toolKind: "read",
+        status: "completed",
+        ...(output ? { output } : {}),
+      })),
+    });
+    const size = (value: unknown) => JSON.stringify(value).length;
+
+    it("keeps a short result and the prompt", () => {
+      const saved = withRun({
+        ...run("export const a = 1;", 1),
+        steps: [
+          {
+            id: "s1",
+            kind: "tool",
+            text: "Read a.ts",
+            output: "export const a = 1;",
+            outputTruncated: true,
+          },
+        ],
+      });
+      expect(saved?.prompt).toBe("Review the reducer.");
+      expect(saved?.steps[0]).toMatchObject({
+        output: "export const a = 1;",
+        outputTruncated: true,
+      });
+    });
+
+    it("saves a heavy 100-step run in a small fraction of its live size", () => {
+      // What the live run holds: every step at the per-step cap.
+      const live = run("z".repeat(4_000));
+      const saved = withRun(live);
+      const kept = (saved?.steps ?? []).reduce(
+        (sum, step) => sum + (step.output?.length ?? 0),
+        0,
+      );
+      const bare = size(withRun(run()));
+      // Measured for the report: no outputs, live outputs, saved outputs.
+      expect(size(live)).toBeGreaterThan(400_000);
+      expect(kept).toBeLessThanOrEqual(16_000);
+      expect(size(saved)).toBeLessThan(bare + 20_000);
+      // Newest results survive; older ones say they were left out.
+      expect(saved?.steps[99].output).toBeDefined();
+      expect(saved?.steps[0].output).toBeUndefined();
+      expect(saved?.steps[0].outputTruncated).toBe(true);
+    });
+
+    it("re-trims a result longer than the saved per-step cap", () => {
+      const saved = withRun(run("a".repeat(4_000), 1));
+      expect(saved?.steps[0].output?.length).toBeLessThan(1_400);
+      expect(saved?.steps[0].outputTruncated).toBe(true);
+    });
+
+    it("loads an old saved run without outputs exactly as before", () => {
+      const saved = withRun({ name: "Review", steps: [{ id: "s1", kind: "tool", text: "Read" }] });
+      expect(saved).toEqual({
+        name: "Review",
+        steps: [{ id: "s1", kind: "tool", text: "Read" }],
+      });
+    });
+  });
 });
 
 describe("sanitizeSessionForPersist", () => {

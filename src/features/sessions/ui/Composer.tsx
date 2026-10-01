@@ -79,6 +79,7 @@ import {
 } from "../../inbox/model/githubTasks";
 import type { HandoffComposerCard } from "../model/handoff";
 import {
+  isLocalProject,
   looksLikeProject,
   type RecentProject,
 } from "../../projects/model/recents";
@@ -147,6 +148,8 @@ import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
 import { useProjectBranchesState } from "../../source-control/hooks/useProjectBranches";
 import {
   COMPOSER_RUNNER_CHANGE_EVENT,
+  keybindingPressed,
+  keybindingShortcutLabel,
   loadComposerRunner,
   loadModelControls,
   loadNotesEnabled,
@@ -220,6 +223,20 @@ import {
   type McpSettingsSnapshot,
 } from "../../settings/model/mcpSettingsCache";
 import type { LastTurnRecall } from "../model/editLastTurn";
+import {
+  isDefaultQueueChord,
+  QUEUE_MESSAGE_COMMAND,
+  queueShortcutApplies,
+} from "../model/composerQueue";
+import {
+  insertTemplateBody,
+  loadPromptTemplates,
+  subscribePromptTemplates,
+  templateSkill,
+  templateTriggerAt,
+} from "../model/promptTemplates";
+import { SessionDirsPicker, sessionDirCandidates } from "./SessionDirsPicker";
+import { IS_MAC } from "../../../platform/tauri/platform";
 
 type Props = {
   enabled?: boolean;
@@ -696,6 +713,11 @@ export function Composer({
     () => "menu" as const,
   );
   const controlsBeside = modelControls === "beside";
+  const promptTemplates = useSyncExternalStore(
+    subscribePromptTemplates,
+    loadPromptTemplates,
+    () => [],
+  );
   const [notes, setNotes] = useState<Note[]>(() => peekNotes() ?? []);
   const [mention, setMention] = useState<MentionToken | null>(null);
   const [mentionActive, setMentionActive] = useState(0);
@@ -730,9 +752,13 @@ export function Composer({
     pickerOpen: pickerOpen && !remote,
   });
   const skills = skillCatalog.skills;
+  const templateItems = useMemo(
+    () => promptTemplates.map(templateSkill),
+    [promptTemplates],
+  );
   const slashItems = useMemo(
-    () =>
-      remote
+    () => [
+      ...(remote
         ? [...(remoteFeatures?.plan ? [PLAN_COMMAND] : []), COMPACT_COMMAND]
         : [
             SESSION_FOLDER_COMMAND,
@@ -764,9 +790,12 @@ export function Composer({
                     skill.name !== RESUME_COMMAND.name &&
                     skill.name !== BTW_COMMAND.name)),
             ),
-          ],
+          ]),
+      ...templateItems,
+    ],
     [
       harness,
+      templateItems,
       skills,
       remote,
       remoteFeatures?.plan,
@@ -780,11 +809,24 @@ export function Composer({
     ? Number.POSITIVE_INFINITY
     : undefined;
   const rankedSkills = rankSkills(slashItems, slash?.query ?? "", skillLimit);
+  const sessionDirsHarness =
+    harness === "claude" || harness === "codex" || harness === "antigravity";
+  const showSessionDirs =
+    !remote &&
+    !compact &&
+    sessionDirsHarness &&
+    isLocalProject(cwd ?? executionCwd) &&
+    sessionDirCandidates(cwd ?? executionCwd).length > 0;
   const attachmentsSupported =
     (!remote || !!remoteFeatures?.attachments) &&
     harnessSupportsAttachments(harness);
   const skillNames = useMemo(
-    () => new Set(slashItems.map((skill) => skill.invocation)),
+    () =>
+      new Set(
+        slashItems
+          .filter((skill) => skill.kind !== "template")
+          .map((skill) => skill.invocation),
+      ),
     [slashItems],
   );
   const leadingMode = leadingModeCommand(draft, skillNames);
@@ -1281,6 +1323,21 @@ export function Composer({
         onResumeProviderSession();
         return;
       }
+      if (skill.kind === "template") {
+        // Goes through the same input path as typing, so the draft, the
+        // attachment tokens and the highlight all follow.
+        const edit = insertTemplateBody(
+          el.value,
+          token.start,
+          token.end,
+          skill.body,
+        );
+        applyTextareaEdit(el, edit.text, edit.caret);
+        setSlash(null);
+        setCreatingSkill(false);
+        el.focus();
+        return;
+      }
       const next = replaceSlashToken(el.value, token, skill.invocation);
       el.value = next;
       resizeComposer(el);
@@ -1604,14 +1661,14 @@ export function Composer({
       if (pasteFlightRef.current === joined) pasteFlightRef.current = null;
     });
   };
-  const submit = (value: string) => {
+  const submit = (value: string, queue = false) => {
     if (disabled || worktreeRemoved || submitLockRef.current) return;
     submitLockRef.current = true;
-    void completeSubmit(value).finally(() => {
+    void completeSubmit(value, queue).finally(() => {
       submitLockRef.current = false;
     });
   };
-  const completeSubmit = async (submittedValue: string) => {
+  const completeSubmit = async (submittedValue: string, queue = false) => {
     let pending = pasteFlightRef.current;
     const generation = pasteGenerationRef.current;
     while (pending) {
@@ -1717,6 +1774,13 @@ export function Composer({
         ? folderCommand.text
         : value,
     );
+    // A typed /plan must behave like the disabled Plan button: say why, and
+    // keep the draft instead of starting a turn the transport would refuse.
+    const planBlocked = planUnavailableReason(harness);
+    if ((planSelected || command.planning) && planBlocked) {
+      setPasteError(`Plan mode is unavailable: ${planBlocked}`);
+      return;
+    }
     const orchestratorCommand =
       !remote && !hideTopBar && !command.planning
         ? consumeOrchestratorCommand(command.text)
@@ -1747,6 +1811,7 @@ export function Composer({
       ),
       files,
       {
+        ...(queue ? { followUpBehavior: "queue" as const } : {}),
         intent:
           planSelected || command.planning
             ? "plan"
@@ -1828,6 +1893,29 @@ export function Composer({
       e.preventDefault();
       openSessionFolderPicker();
       return;
+    }
+
+    if (
+      e.key === " " &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      promptTemplates.length > 0 &&
+      e.currentTarget.selectionStart === e.currentTarget.selectionEnd
+    ) {
+      const el = e.currentTarget;
+      const hit = templateTriggerAt(el.value, el.selectionStart, promptTemplates);
+      if (hit) {
+        e.preventDefault();
+        const edit = insertTemplateBody(
+          el.value,
+          hit.start,
+          hit.end,
+          hit.template.body,
+        );
+        applyTextareaEdit(el, edit.text, edit.caret);
+        return;
+      }
     }
 
     if (mentionOpen) {
@@ -1918,6 +2006,27 @@ export function Composer({
         }
         setSlash(null);
       }
+    }
+
+    // Shift+Tab (rebindable) queues the message behind the running turn.
+    // Outside that state it is not handled, so focus still moves backwards.
+    if (
+      keybindingPressed(QUEUE_MESSAGE_COMMAND, e, isDefaultQueueChord(e)) &&
+      queueShortcutApplies({
+        busy,
+        backgroundOnly,
+        allowBusySubmit,
+        disabled: disabled || worktreeRemoved,
+        remote,
+        popupOpen: !!slash || mentionOpen || pickerOpen,
+        draftMode: draftActive,
+        text: e.currentTarget.value,
+        attachmentCount: attachmentsRef.current.length,
+      })
+    ) {
+      e.preventDefault();
+      submit(e.currentTarget.value, true);
+      return;
     }
 
     if (
@@ -2719,6 +2828,13 @@ export function Composer({
                     onClose={() => ref.current?.focus()}
                   />
                 ) : null}
+                {showSessionDirs && sessionId ? (
+                  <SessionDirsPicker
+                    sessionId={sessionId}
+                    project={cwd ?? executionCwd}
+                    onClose={() => ref.current?.focus()}
+                  />
+                ) : null}
               </div>
             </div>
 
@@ -2743,6 +2859,25 @@ export function Composer({
                 allowBusySubmit={allowBusySubmit}
                 label={draftActive ? "Save draft" : "Send"}
                 onSend={() => submit(ref.current?.value ?? "")}
+                onQueue={
+                  queueShortcutApplies({
+                    busy,
+                    backgroundOnly,
+                    allowBusySubmit,
+                    disabled: disabled || worktreeRemoved,
+                    remote,
+                    popupOpen: false,
+                    draftMode: draftActive,
+                    text: draft,
+                    attachmentCount: attachments.length,
+                  })
+                    ? () => submit(ref.current?.value ?? "", true)
+                    : undefined
+                }
+                queueShortcut={keybindingShortcutLabel(
+                  QUEUE_MESSAGE_COMMAND,
+                  IS_MAC ? "⇧Tab" : "Shift+Tab",
+                )}
                 onStop={() => onStop?.()}
               />
             </div>
@@ -2877,6 +3012,8 @@ export function ComposerAction({
   allowBusySubmit = true,
   label = "Send",
   onSend,
+  onQueue,
+  queueShortcut,
   onStop,
 }: {
   busy: boolean;
@@ -2885,6 +3022,9 @@ export function ComposerAction({
   allowBusySubmit?: boolean;
   label?: string;
   onSend: () => void;
+  /** Queue the message behind the running turn; only offered while one runs. */
+  onQueue?: () => void;
+  queueShortcut?: string | null;
   onStop: () => void;
 }) {
   if (disabled) {
@@ -2902,15 +3042,36 @@ export function ComposerAction({
   }
   if (busy) {
     return hasValue && allowBusySubmit ? (
-      <button
-        type="button"
-        title={label}
-        aria-label={label}
-        onClick={onSend}
-        className="composer-send primary-action grid size-6.5 place-items-center rounded-md"
-      >
-        <ArrowUp className="size-3.5" strokeWidth={2.25} />
-      </button>
+      <>
+        {onQueue ? (
+          <button
+            type="button"
+            title={
+              queueShortcut
+                ? `Queue message for when this turn finishes (${queueShortcut})`
+                : "Queue message for when this turn finishes"
+            }
+            aria-label="Queue message"
+            onClick={onQueue}
+            className="grid size-6.5 place-items-center rounded-md bg-selection text-content hover:bg-selection-hover"
+          >
+            <ListEnd className="size-3.5" strokeWidth={1.75} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          title={
+            onQueue && queueShortcut
+              ? `${label} (${queueShortcut} queues instead)`
+              : label
+          }
+          aria-label={label}
+          onClick={onSend}
+          className="composer-send primary-action grid size-6.5 place-items-center rounded-md"
+        >
+          <ArrowUp className="size-3.5" strokeWidth={2.25} />
+        </button>
+      </>
     ) : (
       <button
         type="button"

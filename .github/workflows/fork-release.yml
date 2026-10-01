@@ -1,4 +1,4 @@
-name: Fork release (macOS)
+name: Fork release (macOS and host packages)
 
 # Builds the fork's macOS app for an existing release and attaches the DMGs.
 # Run by hand; the upstream Release workflow needs signing secrets this fork
@@ -55,3 +55,36 @@ jobs:
             exit 1
           fi
           gh release upload "$TAG" "${dmgs[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Remote (SSH) projects download this package for the app's own version.
+  host:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run host:package -- --all
+
+      - name: Attach host packages to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(build/host-packages/*.tar.gz build/host-packages/*.zip build/host-packages/*.sha256)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no host packages were built"
+            exit 1
+          fi
+          gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"

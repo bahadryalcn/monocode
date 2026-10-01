@@ -88,7 +88,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "How transcripts read, what the composer does with a follow-up, how files save, and how diffs open.",
     keywords:
-      "transcript composer prompt message diff review layout format save editor",
+      "transcript composer prompt message diff review layout format save editor template snippet trigger queue",
   },
   {
     id: "providers",
@@ -1216,6 +1216,11 @@ export const KEYBINDINGS: KeybindingRow[] = [
     command: "Composer: Toggle Workspace",
     keys: `${MOD}${SHIFT}G`,
     when: "Draft session composer",
+  },
+  {
+    command: "Composer: Queue Message",
+    keys: `${SHIFT}Tab`,
+    when: "textFocus && turnRunning && !popup",
   },
   { command: "View: Reload", keys: `${MOD}${SHIFT}R`, when: "Always" },
   { command: "View: Zoom In", keys: `${MOD}+`, when: "Always" },

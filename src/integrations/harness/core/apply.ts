@@ -21,6 +21,12 @@ import {
   mergeToolPreview,
   stubFilePreview,
 } from "./preview";
+import {
+  AGENT_PROMPT_CHARS,
+  budgetStepOutputs,
+  capHeadTail,
+  capStepOutput,
+} from "../../../features/sessions/model/agentOutput";
 import { joinStreamText } from "./streamText";
 import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
@@ -88,6 +94,7 @@ export function applyHarnessEvent(
         preview: event.preview,
         streaming: true,
         agentModel: event.agentModel,
+        agentPrompt: event.agentPrompt,
         ...(event.background ? { background: true } : {}),
       });
     case "tool.updated":
@@ -100,6 +107,7 @@ export function applyHarnessEvent(
         preview: event.preview,
         streaming: event.status !== "completed" && event.status !== "failed",
         agentModel: event.agentModel,
+        agentPrompt: event.agentPrompt,
       });
     case "agent.step":
       return recordAgentStep(session, event);
@@ -928,10 +936,12 @@ function upsertTool(
     preview?: ToolPreview;
     streaming: boolean;
     agentModel?: string;
+    agentPrompt?: string;
     background?: boolean;
   },
 ): Session {
   const index = findToolIndex(session, patch);
+  const prompt = capAgentPrompt(patch.agentPrompt);
   if (index < 0) {
     const detail = capToolDetail(patch.detail);
     const preview = fillPreview(patch.preview, detail, patch.kind, patch.title);
@@ -951,6 +961,7 @@ function upsertTool(
             agentRun: {
               name: label,
               ...(patch.agentModel ? { model: patch.agentModel } : {}),
+              ...(prompt ? { prompt } : {}),
               steps: [],
               startedAt: Date.now(),
             },
@@ -992,6 +1003,7 @@ function upsertTool(
     prev.tool?.status === status &&
     prev.tool?.detail === detail &&
     (!patch.agentModel || prev.agentRun?.model === patch.agentModel) &&
+    (!prompt || prev.agentRun?.prompt === prompt) &&
     (!prev.agentRun || prev.agentRun.name === agentName) &&
     !endsAgentRun(prev.agentRun, patch.streaming) &&
     samePreview(prev.tool?.preview, preview)
@@ -1010,6 +1022,7 @@ function upsertTool(
             ...prev.agentRun,
             name: agentName,
             ...(patch.agentModel ? { model: patch.agentModel } : {}),
+            ...(prompt ? { prompt } : {}),
             ...(endsAgentRun(prev.agentRun, patch.streaming)
               ? { endedAt: Date.now() }
               : {}),
@@ -1119,6 +1132,14 @@ function recordAgentStep(
 
   const run = prev.agentRun;
   const detail = capToolDetail(event.detail);
+  // A preview's own output (Cursor reports results there) is the same thing
+  // as the step's output; keeping it in one place stops it being stored twice.
+  const previewOutput = event.preview?.output;
+  const preview =
+    event.preview && previewOutput !== undefined
+      ? { ...event.preview, output: undefined }
+      : event.preview;
+  const output = capStepOutput(event.output ?? previewOutput);
   const step: AgentStep = {
     id: event.stepId,
     kind: event.kind,
@@ -1126,7 +1147,9 @@ function recordAgentStep(
     ...(event.toolKind ? { toolKind: event.toolKind } : {}),
     ...(event.status ? { status: event.status } : {}),
     ...(detail ? { detail } : {}),
-    ...(event.preview ? { preview: event.preview } : {}),
+    ...(preview ? { preview } : {}),
+    ...(output ? { output: output.output } : {}),
+    ...(output?.truncated ? { outputTruncated: true } : {}),
   };
 
   const at = run?.steps.findIndex((entry) => entry.id === event.stepId) ?? -1;
@@ -1140,7 +1163,7 @@ function recordAgentStep(
       // A completion carries the result, not the request: keep the label the
       // call announced itself with rather than letting the result rename it.
       text: text || existing.text,
-      preview: mergeToolPreview(event.preview, existing.preview),
+      preview: mergeToolPreview(preview, existing.preview),
     };
   } else {
     steps = [...(run?.steps ?? []), step];
@@ -1148,6 +1171,7 @@ function recordAgentStep(
       steps = steps.slice(steps.length - MAX_AGENT_STEPS);
     }
   }
+  if (output) steps = budgetStepOutputs(steps);
 
   const next: AgentRunMeta = {
     ...(run?.model ? { model: run.model } : {}),
@@ -1160,6 +1184,7 @@ function recordAgentStep(
     ...((event.agentType ?? run?.agentType)
       ? { agentType: event.agentType ?? run?.agentType }
       : {}),
+    ...(run?.prompt ? { prompt: run.prompt } : {}),
     steps,
     ...(run?.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
     ...(run?.endedAt !== undefined ? { endedAt: run.endedAt } : {}),
@@ -1186,8 +1211,15 @@ function sameAgentStep(a: AgentStep, b: AgentStep): boolean {
     a.toolKind === b.toolKind &&
     a.status === b.status &&
     a.detail === b.detail &&
+    a.output === b.output &&
+    a.outputTruncated === b.outputTruncated &&
     samePreview(a.preview, b.preview)
   );
+}
+
+function capAgentPrompt(value: string | undefined): string | undefined {
+  const text = value?.trim();
+  return text ? capHeadTail(text, AGENT_PROMPT_CHARS).text : undefined;
 }
 
 function capAgentStepText(value: string): string {

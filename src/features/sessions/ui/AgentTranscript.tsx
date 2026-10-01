@@ -2804,6 +2804,8 @@ export function agentStepBlock(step: AgentStep): Block {
       ...(step.status ? { status: step.status } : {}),
       ...(step.detail ? { detail: step.detail } : {}),
       ...(step.preview ? { preview: step.preview } : {}),
+      ...(step.output ? { output: step.output } : {}),
+      ...(step.outputTruncated ? { outputTruncated: true } : {}),
     },
   };
 }
@@ -2840,7 +2842,7 @@ function ActivityPhaseIcon({
  * a paragraph. In a phase the rail draws the bullet, so the row drops its own
  * leading icon and leans on the rail instead.
  */
-function ActivityRow({
+export function ActivityRow({
   block,
   cwd,
   live = false,
@@ -3162,6 +3164,21 @@ function ActivityToolRow({
   const pending = needsApproval(block);
   const errorDetail =
     !pending && state === "rejected" ? block.tool?.detail?.trim() : undefined;
+  // A subagent step also keeps what a successful call returned. It opens the
+  // same way a failure does, in a neutral tone. Real transcript blocks carry no
+  // `output`, so their rows are unchanged.
+  const output = block.tool?.output?.trim();
+  const outputTruncated = !!block.tool?.outputTruncated;
+  const resultText =
+    errorDetail ??
+    (pending
+      ? undefined
+      : (output ??
+        (outputTruncated
+          ? "Output left out to keep this run small."
+          : undefined)));
+  const hasResult = !!resultText;
+  const resultInput = hasResult && label.length > 80 ? label : undefined;
   const summary = (
     <ToolCallSummary
       label={label}
@@ -3177,9 +3194,9 @@ function ActivityToolRow({
 
   return (
     <div className="flex min-w-0 flex-col">
-      {errorDetail ? (
+      {hasResult ? (
         <div
-          aria-label={`Failed tool call: ${label}`}
+          aria-label={`${errorDetail ? "Failed tool call" : "Tool call"}: ${label}`}
           className="group flex min-w-0 items-center gap-1.5 py-1"
         >
           {bare ? null : <ActivityToolIcon state={state} live={live} />}
@@ -3193,12 +3210,14 @@ function ActivityToolRow({
           <button
             type="button"
             aria-expanded={errorOpen}
-            aria-label={`${errorOpen ? "Hide" : "Show"} error details for ${label}`}
+            aria-label={`${errorOpen ? "Hide" : "Show"} ${errorDetail ? "error details" : "output"} for ${label}`}
             onClick={() => setErrorOpen((value) => !value)}
             className="-m-1 shrink-0 rounded p-1"
           >
             <ChevronRight
-              className={`size-3.5 text-red-400/60 transition-transform ${errorOpen ? "rotate-90" : ""}`}
+              className={`size-3.5 transition-transform ${
+                errorDetail ? "text-red-400/60" : "text-content/35"
+              } ${errorOpen ? "rotate-90" : ""}`}
               strokeWidth={1.75}
             />
           </button>
@@ -3216,12 +3235,28 @@ function ActivityToolRow({
       {pending ? (
         <ApprovalControls block={block} onApproval={onApproval} />
       ) : null}
-      {errorOpen && errorDetail ? (
-        <pre
-          className={`min-w-0 whitespace-pre-wrap break-words py-1 font-mono text-[12px] leading-5 text-red-400/80 ${bare ? "" : "pl-5"}`}
-        >
-          {errorDetail}
-        </pre>
+      {errorOpen && resultText ? (
+        <div className={`min-w-0 py-1 ${bare ? "" : "pl-5"}`}>
+          {resultInput ? (
+            <pre className="mb-1 max-h-24 min-w-0 overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-content/45">
+              {resultInput}
+            </pre>
+          ) : null}
+          <pre
+            className={`min-w-0 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 ${
+              errorDetail
+                ? "text-red-400/80"
+                : "max-h-72 overflow-auto text-content/65"
+            }`}
+          >
+            {resultText}
+          </pre>
+          {outputTruncated && output ? (
+            <p className="pt-1 font-sans text-[11px] text-content/40">
+              Output shortened to keep this run small.
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

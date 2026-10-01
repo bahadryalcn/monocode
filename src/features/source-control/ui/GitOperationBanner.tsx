@@ -20,6 +20,7 @@ import {
   hasConflictMarkers,
   resolveConflictMarkers,
 } from "../model/conflictMarkers";
+import { appName } from "../../../shared/lib/appName";
 
 const POLL_MS = 5000;
 
@@ -76,7 +77,7 @@ export function GitOperationBanner({ cwd, enabled, onOpenFile }: Props) {
     try {
       await work();
     } catch (error) {
-      await message(errorText(error), { title: "MonoCode", kind: "error" });
+      await message(errorText(error), { title: appName(), kind: "error" });
     } finally {
       setBusy(false);
       notifyGitChanged();
@@ -86,7 +87,7 @@ export function GitOperationBanner({ cwd, enabled, onOpenFile }: Props) {
   const abort = async () => {
     const confirmed = await ask(
       `Abort the ${label?.toLowerCase()}? Changes made while resolving it are discarded.`,
-      { title: "MonoCode", kind: "warning", okLabel: "Abort" },
+      { title: appName(), kind: "warning", okLabel: "Abort" },
     );
     if (confirmed) await run(() => gitOperationAbort(cwd));
   };
@@ -103,7 +104,7 @@ export function GitOperationBanner({ cwd, enabled, onOpenFile }: Props) {
       if (hasConflictMarkers(await readTextFile(`${cwd}/${relative}`))) {
         const confirmed = await ask(
           `${relative} still contains conflict markers. Mark it as resolved anyway?`,
-          { title: "MonoCode", kind: "warning", okLabel: "Mark Resolved" },
+          { title: appName(), kind: "warning", okLabel: "Mark Resolved" },
         );
         if (!confirmed) return;
       }
