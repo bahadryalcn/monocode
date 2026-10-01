@@ -142,6 +142,8 @@ export type SessionPaneProps = {
   onRemoveDraft: (sessionId: string, draftBlockId: string) => boolean | void;
   onStop: (sessionId: string) => void;
   onCompactContext: (sessionId: string) => boolean;
+  /** Open the picker of conversations Claude Code stored for this project. */
+  onResumeProviderSession?: (sessionId: string) => void;
   onPlaceSessionInFolder: (
     sessionId: string,
     target: SessionFolderTarget,
@@ -280,6 +282,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onStop,
   onCompactContext,
   onPlaceSessionInFolder,
+  onResumeProviderSession,
   onDeleteQueuedMessage,
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
@@ -663,6 +666,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onStop={() => onStop(session.id)}
       onCompactContext={() => onCompactContext(session.id)}
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
+      onResumeProviderSession={
+        onResumeProviderSession
+          ? () => onResumeProviderSession(session.id)
+          : undefined
+      }
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}
       onDeleteQueuedMessage={(messageId) =>
