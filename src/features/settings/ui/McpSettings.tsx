@@ -28,7 +28,9 @@ import { MCP_PROVIDER_LABELS, type McpConnection } from "../model/mcp";
 import {
   getCachedMcpSettings,
   loadMcpSettings,
+  subscribeMcpSettings,
   type McpServerRow,
+  type McpSettingsSnapshot,
 } from "../model/mcpSettingsCache";
 
 type Scope = McpConnection["scope"];
@@ -239,7 +241,7 @@ function AddServerModal({
           </span>
           <input
             value={name}
-            pattern="[A-Za-z0-9_-]*"
+            pattern={provider === "opencode" ? undefined : "[A-Za-z0-9_-]*"}
             onChange={(event) => setName(event.target.value)}
             className="mt-1 block w-full rounded-md border border-stroke bg-background-base px-2 py-1.5 text-sm text-content"
             placeholder="my-server"
@@ -340,6 +342,18 @@ function McpConnections({
   const [removeScopes, setRemoveScopes] = useState<Record<string, Scope>>({});
   const refreshGeneration = useRef(0);
 
+  const applySnapshot = useCallback((snapshot: McpSettingsSnapshot) => {
+    setServers(snapshot.servers);
+    setError(snapshot.error);
+    setClaudeError(snapshot.claudeError);
+    setLoading(false);
+  }, []);
+
+  useEffect(
+    () => subscribeMcpSettings(cwd, applySnapshot),
+    [cwd, applySnapshot],
+  );
+
   const refresh = useCallback(
     async (force = true) => {
       const generation = ++refreshGeneration.current;
@@ -352,13 +366,10 @@ function McpConnections({
       setLoading(force || !previous);
       const snapshot = await loadMcpSettings(cwd, force);
       if (generation === refreshGeneration.current) {
-        setServers(snapshot.servers);
-        setError(snapshot.error);
-        setClaudeError(snapshot.claudeError);
-        setLoading(false);
+        applySnapshot(getCachedMcpSettings(cwd) ?? snapshot);
       }
     },
-    [cwd],
+    [cwd, applySnapshot],
   );
 
   useEffect(() => {

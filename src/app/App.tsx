@@ -58,6 +58,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
+  startTransition,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -511,12 +513,14 @@ import {
   ADD_NOTE_TO_CHAT_EVENT,
   NOTES_CHANGED_EVENT,
   composeNoteMessage,
+  loadNotes,
   noteCardMeta,
   upsertNote,
   type NoteComposerCard,
 } from "../features/notes";
 import {
   claimDueAutomations,
+  listAutomations,
   recoverAutomationRuns,
   updateAutomationRun,
   type Automation,
@@ -538,6 +542,7 @@ import { SessionPane } from "../features/sessions/ui/SessionPane";
 import { SessionSurface } from "../features/sessions/ui/SessionSurface";
 import { ProjectTerminalDock } from "../features/terminal/ui/ProjectTerminalDock";
 import { lazySurface } from "../shared/ui/lazySurface";
+import { preloadNavigationWhenIdle } from "./model/preloadNavigation";
 import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
 import type { SettingsAnchor } from "../features/settings/ui/SettingsView";
 import {
@@ -655,30 +660,45 @@ import {
   type ResumedWorkspace,
 } from "./model/appLifecycle";
 
-const SearchView = lazySurface(async () => {
-  const module = await import("../features/search/ui/SearchView");
-  return { default: module.SearchView };
-});
-const SettingsView = lazySurface(async () => {
-  const module = await import("../features/settings/ui/SettingsView");
-  return { default: module.SettingsView };
-});
-const InboxView = lazySurface(async () => {
-  const module = await import("../features/inbox/ui/InboxView");
-  return { default: module.InboxView };
-});
+const SearchView = lazySurface(
+  async () => {
+    const module = await import("../features/search/ui/SearchView");
+    return { default: module.SearchView };
+  },
+  { suspense: false },
+);
+const SettingsView = lazySurface(
+  async () => {
+    const module = await import("../features/settings/ui/SettingsView");
+    return { default: module.SettingsView };
+  },
+  { suspense: false },
+);
+const InboxView = lazySurface(
+  async () => {
+    const module = await import("../features/inbox/ui/InboxView");
+    return { default: module.InboxView };
+  },
+  { suspense: false },
+);
 const LinkedWorkItemPanel = lazySurface(async () => {
   const module = await import("../features/inbox/ui/InboxView");
   return { default: module.LinkedWorkItemPanel };
 });
-const NotesView = lazySurface(async () => {
-  const module = await import("../features/notes/ui/NotesView");
-  return { default: module.NotesView };
-});
-const AutomationsView = lazySurface(async () => {
-  const module = await import("../features/automations/ui/AutomationsView");
-  return { default: module.AutomationsView };
-});
+const NotesView = lazySurface(
+  async () => {
+    const module = await import("../features/notes/ui/NotesView");
+    return { default: module.NotesView };
+  },
+  { suspense: false },
+);
+const AutomationsView = lazySurface(
+  async () => {
+    const module = await import("../features/automations/ui/AutomationsView");
+    return { default: module.AutomationsView };
+  },
+  { suspense: false },
+);
 
 /** How long a hidden idle session stays attached after it leaves every tab. */
 const SESSION_DETACH_DELAY_MS = 250;
@@ -875,19 +895,29 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
 // Register capabilities before composer hooks choose their discovery strategy.
 registerBuiltinHarnesses();
 
-export default function App({
-  windowTransfer = null,
-  resumed = null,
-  installedUpdate = null,
-  history: bootHistory = [],
-  historyCwd: bootHistoryCwd = null,
-}: {
+type AppProps = {
   windowTransfer?: WindowTransferPayload | null;
   resumed?: ResumedWorkspace | null;
   installedUpdate?: InstalledUpdate | null;
   history?: SessionSummary[];
   historyCwd?: string | null;
-}) {
+};
+
+export default function App(props: AppProps) {
+  return (
+    <Suspense fallback={null}>
+      <Workspace {...props} />
+    </Suspense>
+  );
+}
+
+function Workspace({
+  windowTransfer = null,
+  resumed = null,
+  installedUpdate = null,
+  history: bootHistory = [],
+  historyCwd: bootHistoryCwd = null,
+}: AppProps) {
   const [projectCwd, setProjectCwd] = useState(
     () =>
       windowTransfer?.projectCwd ??
@@ -1007,6 +1037,12 @@ export default function App({
   const [collapsedProjectRailMode, setCollapsedProjectRailMode] =
     useState<CollapsedProjectRailMode>(loadCollapsedProjectRailMode);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsReturnViewRef = useRef({
+    search: false,
+    inbox: false,
+    notes: false,
+    automations: false,
+  });
   const [updateNotice, setUpdateNotice] = useState(installedUpdate);
   const [whatsNewVersion, setWhatsNewVersion] = useState<string | null>(null);
   const [providerSignInRequest, setProviderSignInRequest] = useState<{
@@ -1153,6 +1189,17 @@ export default function App({
   useEffect(() => {
     if (!notesEnabled) setNotesViewOpen(false);
   }, [notesEnabled]);
+
+  useEffect(
+    () =>
+      preloadNavigationWhenIdle([
+        InboxView.preload,
+        AutomationsView.preload,
+        listAutomations,
+        ...(notesEnabled ? [NotesView.preload, loadNotes] : []),
+      ]),
+    [notesEnabled],
+  );
 
   const projectReturnRef = useRef<ProjectReturnMemory>(
     resumed?.projectReturnMemory ?? new Map(),
@@ -3556,8 +3603,8 @@ export default function App({
     [onOpenDiff],
   );
 
-  /** Stack every working-tree change in one review, whatever the diff-view setting. */
-  const onOpenAllChanges = useCallback(() => {
+  /** Stack one section's working-tree changes in one review, whatever the diff-view setting. */
+  const onOpenAllChanges = useCallback((kind: GitFileDiffKind) => {
     setTabs((prev) =>
       prev.map((tab) =>
         tab.id === activeTabId
@@ -3565,7 +3612,7 @@ export default function App({
               tab,
               gitCwdRef.current,
               undefined,
-              undefined,
+              kind,
               sidebarCwdRef.current,
             )
           : tab,
@@ -9589,13 +9636,15 @@ export default function App({
   }, []);
 
   const onOpenSearch = useCallback(() => {
-    setFilePickerOpen(false);
-    setSettingsOpen(false);
-    setInboxViewOpen(false);
-    setNotesViewOpen(false);
-    setAutomationsViewOpen(false);
-    setSearchViewOpen(true);
-    setSearchViewFocusToken((token) => token + 1);
+    startTransition(() => {
+      setFilePickerOpen(false);
+      setSettingsOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+      setSearchViewOpen(true);
+      setSearchViewFocusToken((token) => token + 1);
+    });
   }, []);
 
   const onLeaveSearch = useCallback(() => {
@@ -9603,12 +9652,14 @@ export default function App({
   }, []);
 
   const onOpenInbox = useCallback(() => {
-    setFilePickerOpen(false);
-    setSettingsOpen(false);
-    setSearchViewOpen(false);
-    setNotesViewOpen(false);
-    setAutomationsViewOpen(false);
-    setInboxViewOpen(true);
+    startTransition(() => {
+      setFilePickerOpen(false);
+      setSettingsOpen(false);
+      setSearchViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+      setInboxViewOpen(true);
+    });
   }, []);
 
   const onOpenLinkedWorkItem = useCallback(
@@ -9716,12 +9767,14 @@ export default function App({
 
   const onOpenNotes = useCallback(() => {
     if (!loadNotesEnabled()) return;
-    setFilePickerOpen(false);
-    setSettingsOpen(false);
-    setSearchViewOpen(false);
-    setInboxViewOpen(false);
-    setAutomationsViewOpen(false);
-    setNotesViewOpen(true);
+    startTransition(() => {
+      setFilePickerOpen(false);
+      setSettingsOpen(false);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setAutomationsViewOpen(false);
+      setNotesViewOpen(true);
+    });
   }, []);
 
   const onLeaveNotes = useCallback(() => {
@@ -9729,12 +9782,14 @@ export default function App({
   }, []);
 
   const onOpenAutomations = useCallback(() => {
-    setFilePickerOpen(false);
-    setSettingsOpen(false);
-    setSearchViewOpen(false);
-    setInboxViewOpen(false);
-    setNotesViewOpen(false);
-    setAutomationsViewOpen(true);
+    startTransition(() => {
+      setFilePickerOpen(false);
+      setSettingsOpen(false);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(true);
+    });
   }, []);
 
   const onLeaveAutomations = useCallback(() => {
@@ -9762,18 +9817,28 @@ export default function App({
 
   const openSettings = useCallback(
     (section?: SettingsSectionId, anchor?: SettingsAnchor) => {
-      setFilePickerOpen(false);
-      setSearchViewOpen(false);
-      setInboxViewOpen(false);
-      setNotesViewOpen(false);
-      setAutomationsViewOpen(false);
-      if (section) {
-        setSettingsSection(section);
-        saveSettingsSection(section);
+      if (!settingsOpenRef.current) {
+        settingsReturnViewRef.current = {
+          search: searchViewOpenRef.current,
+          inbox: inboxViewOpenRef.current,
+          notes: notesViewOpenRef.current,
+          automations: automationsViewOpenRef.current,
+        };
       }
-      setSettingsAnchor(anchor ?? null);
-      setNotificationProjectPath(null);
-      setSettingsOpen(true);
+      startTransition(() => {
+        setFilePickerOpen(false);
+        setSearchViewOpen(false);
+        setInboxViewOpen(false);
+        setNotesViewOpen(false);
+        setAutomationsViewOpen(false);
+        if (section) {
+          setSettingsSection(section);
+          saveSettingsSection(section);
+        }
+        setSettingsAnchor(anchor ?? null);
+        setNotificationProjectPath(null);
+        setSettingsOpen(true);
+      });
     },
     [],
   );
@@ -9813,6 +9878,11 @@ export default function App({
   );
 
   const onCloseSettings = useCallback(() => {
+    const returnView = settingsReturnViewRef.current;
+    setSearchViewOpen(returnView.search);
+    setInboxViewOpen(returnView.inbox);
+    setNotesViewOpen(returnView.notes && loadNotesEnabled());
+    setAutomationsViewOpen(returnView.automations);
     setSettingsOpen(false);
   }, []);
 
@@ -9831,7 +9901,7 @@ export default function App({
 
   const onRailBack = useCallback(() => {
     if (settingsOpen) {
-      setSettingsOpen(false);
+      onCloseSettings();
       return;
     }
     if (searchViewOpen) {
@@ -9852,6 +9922,7 @@ export default function App({
     }
     onVisitBack();
   }, [
+    onCloseSettings,
     onVisitBack,
     searchViewOpen,
     settingsOpen,

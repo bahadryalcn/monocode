@@ -118,6 +118,28 @@ it("filters connections by provider", async () => {
   });
 });
 
+it("shows configured rows while Claude health is still pending", async () => {
+  let resolveHealth!: (output: string) => void;
+  const discovery = invoke.getMockImplementation()!;
+  invoke.mockImplementation((command: string, args: unknown) =>
+    command === "claude_mcp_list"
+      ? new Promise((resolve) => {
+          resolveHealth = resolve;
+        })
+      : discovery(command, args),
+  );
+  await act(async () =>
+    root.render(createElement(McpSettings, { cwd: "/repo" })),
+  );
+  expect(container.textContent).toContain("docs");
+  expect(container.textContent).toContain("sentry");
+  expect(container.textContent).not.toContain("Checking servers…");
+  await act(async () =>
+    resolveHealth("sentry: https://example.com - Needs authentication"),
+  );
+  expect(container.textContent).toContain("Needs authentication");
+});
+
 it("adds a standard mcpServers entry to the selected provider and project", async () => {
   await act(async () =>
     root.render(

@@ -30,7 +30,6 @@ import {
   type ReactNode,
 } from "react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { invoke } from "@tauri-apps/api/core";
 import {
   attachmentsFromFiles,
   attachmentsFromPaths,
@@ -161,6 +160,18 @@ import {
   OPERATOR_COMMAND,
 } from "../model/operatorCommand";
 import {
+  consumeOrchestratorCommand,
+  ORCHESTRATOR_COMMAND,
+} from "../model/orchestratorCommand";
+import { consumeDraftCommand, DRAFT_COMMAND } from "../model/draftCommand";
+import {
+  leadingModeCommand,
+  MODE_COMMAND_INDENT,
+  ModeCommandPill,
+  ModeCommandText,
+  type ModeCommandToken,
+} from "./modeCommands";
+import {
   BTW_COMMAND,
   consumeBtwCommand,
   consumeBtwPrefix,
@@ -188,10 +199,13 @@ import {
   type McpTag,
 } from "../model/mcpPicker";
 import { getComposerMcpTags, setComposerMcpTags } from "../model/draftCache";
+import { type McpConnection } from "../../settings/model/mcp";
 import {
-  parseClaudeMcpList,
-  type McpConnection,
-} from "../../settings/model/mcp";
+  getCachedMcpSettings,
+  loadMcpSettings,
+  subscribeMcpSettings,
+  type McpSettingsSnapshot,
+} from "../../settings/model/mcpSettingsCache";
 import type { LastTurnRecall } from "../model/editLastTurn";
 
 type Props = {
@@ -702,7 +716,9 @@ export function Composer({
             SESSION_FOLDER_COMMAND,
             MCP_COMMAND,
             OPERATOR_COMMAND,
+            ...(hideTopBar ? [] : [ORCHESTRATOR_COMMAND]),
             PLAN_COMMAND,
+            ...(canSaveDraft && onSaveDraft ? [DRAFT_COMMAND] : []),
             COMPACT_COMMAND,
             ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
             ...skills.filter(
@@ -715,10 +731,20 @@ export function Composer({
                     skill.name !== COMPACT_COMMAND.name &&
                     skill.name !== SESSION_FOLDER_COMMAND.name &&
                     skill.name !== MCP_COMMAND.name &&
+                    skill.name !== ORCHESTRATOR_COMMAND.name &&
+                    skill.name !== DRAFT_COMMAND.name &&
                     skill.name !== BTW_COMMAND.name)),
             ),
           ],
-    [harness, skills, remote, remoteFeatures?.plan],
+    [
+      harness,
+      skills,
+      remote,
+      remoteFeatures?.plan,
+      hideTopBar,
+      canSaveDraft,
+      onSaveDraft,
+    ],
   );
   const skillLimit = hasNativeCommands(harness)
     ? Number.POSITIVE_INFINITY
@@ -731,6 +757,12 @@ export function Composer({
     () => new Set(slashItems.map((skill) => skill.invocation)),
     [slashItems],
   );
+  const leadingMode = leadingModeCommand(draft, skillNames);
+  const modeIndent = leadingMode ? MODE_COMMAND_INDENT : undefined;
+  useLayoutEffect(() => {
+    // The indent can rewrap the first line after the input already resized.
+    if (ref.current) resizeComposer(ref.current);
+  }, [modeIndent]);
   const mentionFiles = useMemo(
     () => (notesEnabled ? [...files, ...notesAsProjectFiles(notes)] : files),
     [files, notes, notesEnabled],
@@ -770,6 +802,27 @@ export function Composer({
     [inboxCard, noteCard, handoffCard],
   );
 
+  // A leading mode command in the text shows the same pill as picking the mode.
+  const operatorActive =
+    operatorSelected || leadingMode?.name === OPERATOR_COMMAND.name;
+  const orchestrationActive =
+    orchestrationSelected || leadingMode?.name === ORCHESTRATOR_COMMAND.name;
+  const draftActive = draftSelected || leadingMode?.name === DRAFT_COMMAND.name;
+  const planActive = planSelected || leadingMode?.name === PLAN_COMMAND.name;
+
+  /** Turning a mode off also drops its leading command from the text. */
+  const clearLeadingMode = (name: string) => {
+    const el = ref.current;
+    if (!el || leadingModeCommand(el.value, skillNames)?.name !== name) return;
+    const next = el.value.replace(/^\/[a-z]+\s?/, "");
+    el.value = next;
+    resizeComposer(el);
+    el.setSelectionRange(0, 0);
+    setDraft(next);
+    onDraftChange?.(next);
+    syncHasValue(next, attachmentsRef.current);
+  };
+
   const openMcpPicker = useCallback(() => {
     setMcpConnections([]);
     setMcpStatus(new Map());
@@ -780,65 +833,26 @@ export function Composer({
 
   useEffect(() => {
     if (!mcpPickerOpen) return;
-    let cancelled = false;
-    setMcpLoading(true);
-    setMcpError("");
-    void invoke<McpConnection[]>("mcp_discover", { cwd: executionCwd })
-      .then((connections) => {
-        if (!cancelled)
-          setMcpConnections((current) => [
-            ...connections,
-            ...current.filter(
-              (entry) =>
-                entry.provider === "claude" &&
-                !entry.configPath &&
-                !connections.some(
-                  (configured) =>
-                    configured.provider === "claude" &&
-                    configured.name === entry.name,
-                ),
-            ),
-          ]);
-      })
-      .catch((cause) => {
-        if (!cancelled) setMcpError(String(cause));
-      })
-      .finally(() => {
-        if (!cancelled) setMcpLoading(false);
-      });
-    void invoke<string>("claude_mcp_list", { cwd: executionCwd })
-      .then((output) => {
-        if (cancelled) return;
-        const statuses = parseClaudeMcpList(output);
-        setMcpStatus(
-          new Map(statuses.map((server) => [server.name, server.status])),
-        );
-        setMcpConnections((current) => {
-          const combined = [...current];
-          for (const server of statuses) {
-            if (
-              !combined.some(
-                (entry) =>
-                  entry.provider === "claude" && entry.name === server.name,
-              )
-            ) {
-              combined.push({
-                provider: "claude",
-                name: server.name,
-                scope: "local",
-                configPath: "",
-                transport: "",
-              });
-            }
-          }
-          return combined;
-        });
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
+    const apply = (snapshot: McpSettingsSnapshot) => {
+      setMcpConnections(snapshot.servers);
+      setMcpStatus(
+        new Map(
+          snapshot.servers
+            .filter((server) => server.provider === "claude")
+            .map((server) => [server.name, server.status]),
+        ),
+      );
+      setMcpError(snapshot.error);
+      setMcpLoading(false);
     };
-  }, [executionCwd, mcpPickerOpen]);
+    const stop = subscribeMcpSettings(executionCwd, apply);
+    const cached = getCachedMcpSettings(executionCwd);
+    if (cached) apply(cached);
+    void loadMcpSettings(executionCwd, false, {
+      claudeHealth: harness === "claude",
+    });
+    return stop;
+  }, [executionCwd, harness, mcpPickerOpen]);
 
   useEffect(() => {
     setMcpPickerOpen(false);
@@ -1155,8 +1169,6 @@ export function Composer({
         openMcpPicker();
         return;
       }
-      const planCommand =
-        skill.kind === "builtin" && skill.name === PLAN_COMMAND.name;
       const sessionFolderCommand =
         skill.kind === "builtin" &&
         skill.name === SESSION_FOLDER_COMMAND.name &&
@@ -1179,16 +1191,10 @@ export function Composer({
         openSessionFolderPicker();
         return;
       }
-      const next = planCommand
-        ? `${el.value.slice(0, token.start)}${el.value
-            .slice(token.end)
-            .replace(/^\s/, "")}`
-        : replaceSlashToken(el.value, token, skill.invocation);
+      const next = replaceSlashToken(el.value, token, skill.invocation);
       el.value = next;
       resizeComposer(el);
-      let cursor = planCommand
-        ? token.start
-        : token.start + skill.invocation.length + 1;
+      let cursor = token.start + skill.invocation.length + 1;
       if (next[cursor] === " ") cursor += 1;
       el.setSelectionRange(cursor, cursor);
       setDraft(next);
@@ -1197,11 +1203,6 @@ export function Composer({
       setCreatingSkill(false);
       if (skill.kind === "builtin" && skill.name === BTW_COMMAND.name) {
         enterBtwFromPrefix(el);
-      }
-      if (planCommand) {
-        setPlanSelected(true);
-        setOperatorSelected(false);
-        setOrchestrationSelected(false);
       }
       el.focus();
     },
@@ -1543,11 +1544,15 @@ export function Composer({
       openMcpPicker();
       return;
     }
-    if (draftSelected && onSaveDraft) {
+    const draftCommand = canSaveDraft
+      ? consumeDraftCommand(value)
+      : { text: value, matched: false };
+    if ((draftSelected || draftCommand.matched) && onSaveDraft) {
       const files = attachmentsRef.current;
-      if (!value.trim() && files.length === 0) return;
+      const text = draftCommand.text;
+      if (!text.trim() && files.length === 0) return;
       const accepted = onSaveDraft(
-        mcpContextText(taggedMcpServers(value, selectedMcp), value),
+        mcpContextText(taggedMcpServers(text, selectedMcp), text),
         files,
       );
       if (accepted === false || !ref.current) return;
@@ -1621,9 +1626,13 @@ export function Composer({
         ? folderCommand.text
         : value,
     );
-    const text = isNativeCommandPrompt(command.text, harness)
-      ? command.text
-      : composeInboxMessage(inboxCard, command.text);
+    const orchestratorCommand =
+      !remote && !hideTopBar && !command.planning
+        ? consumeOrchestratorCommand(command.text)
+        : { text: command.text, matched: false };
+    const text = isNativeCommandPrompt(orchestratorCommand.text, harness)
+      ? orchestratorCommand.text
+      : composeInboxMessage(inboxCard, orchestratorCommand.text);
     const submittedText =
       operatorSelected && !consumeOperatorCommand(text).matched
         ? `/operator ${text}`
@@ -1650,7 +1659,7 @@ export function Composer({
         intent:
           planSelected || command.planning
             ? "plan"
-            : orchestrationSelected
+            : orchestrationSelected || orchestratorCommand.matched
               ? "orchestrate"
               : "default",
         ...(resendEdited
@@ -2277,12 +2286,14 @@ export function Composer({
             <div
               ref={highlightRef}
               aria-hidden
+              style={{ textIndent: modeIndent }}
               className={`composer-highlight pointer-events-none absolute inset-0 max-h-40 overflow-hidden whitespace-pre-wrap wrap-break-word px-3 text-sm leading-5.5 text-content font-sans ${
                 shell ? "py-4" : "py-3"
               }`}
             >
               <ComposerHighlight
                 text={draft}
+                mode={leadingMode}
                 names={skillNames}
                 mentions={mentionIndex.labels}
                 mcpTags={selectedMcp}
@@ -2291,6 +2302,7 @@ export function Composer({
             <textarea
               ref={ref}
               data-composer-empty={navigationEmpty ? "true" : undefined}
+              style={{ textIndent: modeIndent }}
               rows={1}
               spellCheck={false}
               defaultValue={initialDraft}
@@ -2397,10 +2409,11 @@ export function Composer({
                   {!remote || remoteFeatures?.plan ? (
                     <button
                       type="button"
-                      aria-pressed={planSelected}
+                      aria-pressed={planActive}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
-                        setPlanSelected((selected) => !selected);
+                        setPlanSelected(!planActive);
+                        if (planActive) clearLeadingMode(PLAN_COMMAND.name);
                         setOperatorSelected(false);
                         setOrchestrationSelected(false);
                         setDraftSelected(false);
@@ -2416,7 +2429,7 @@ export function Composer({
                           Review a plan before building
                         </span>
                       </span>
-                      {planSelected ? (
+                      {planActive ? (
                         <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />
                       ) : null}
                     </button>
@@ -2424,10 +2437,13 @@ export function Composer({
                   {!remote ? (
                     <button
                       type="button"
-                      aria-pressed={operatorSelected}
+                      aria-pressed={operatorActive}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
-                        setOperatorSelected((selected) => !selected);
+                        setOperatorSelected(!operatorActive);
+                        if (operatorActive) {
+                          clearLeadingMode(OPERATOR_COMMAND.name);
+                        }
                         setPlanSelected(false);
                         setOrchestrationSelected(false);
                         setDraftSelected(false);
@@ -2443,7 +2459,7 @@ export function Composer({
                           Give this thread access to MonoCode
                         </span>
                       </span>
-                      {operatorSelected ? (
+                      {operatorActive ? (
                         <Check className="mt-0.5 size-3.5 shrink-0 text-sky-300/80" />
                       ) : null}
                     </button>
@@ -2451,10 +2467,13 @@ export function Composer({
                   {!remote && !hideTopBar && (
                     <button
                       type="button"
-                      aria-pressed={orchestrationSelected}
+                      aria-pressed={orchestrationActive}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
-                        setOrchestrationSelected((selected) => !selected);
+                        setOrchestrationSelected(!orchestrationActive);
+                        if (orchestrationActive) {
+                          clearLeadingMode(ORCHESTRATOR_COMMAND.name);
+                        }
                         setPlanSelected(false);
                         setOperatorSelected(false);
                         setDraftSelected(false);
@@ -2475,7 +2494,7 @@ export function Composer({
                           Plan and coordinate agent work
                         </span>
                       </span>
-                      {orchestrationSelected && (
+                      {orchestrationActive && (
                         <Check className="mt-0.5 size-3.5 shrink-0 text-fuchsia-300/80" />
                       )}
                     </button>
@@ -2483,10 +2502,11 @@ export function Composer({
                   {canSaveDraft && onSaveDraft ? (
                     <button
                       type="button"
-                      aria-pressed={draftSelected}
+                      aria-pressed={draftActive}
                       onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
-                        setDraftSelected((selected) => !selected);
+                        setDraftSelected(!draftActive);
+                        if (draftActive) clearLeadingMode(DRAFT_COMMAND.name);
                         setPlanSelected(false);
                         setOperatorSelected(false);
                         setOrchestrationSelected(false);
@@ -2502,7 +2522,7 @@ export function Composer({
                           Save this message without starting the agent
                         </span>
                       </span>
-                      {draftSelected ? (
+                      {draftActive ? (
                         <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />
                       ) : null}
                     </button>
@@ -2510,71 +2530,45 @@ export function Composer({
                 </Popover>
               ) : null}
             </div>
-            {!compact && operatorSelected ? (
-              <button
-                type="button"
-                title="Turn off Operator"
-                aria-label="Turn off Operator"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
+            {!compact && operatorActive ? (
+              <ModeCommandPill
+                name={OPERATOR_COMMAND.name}
+                onClear={() => {
                   setOperatorSelected(false);
+                  clearLeadingMode(OPERATOR_COMMAND.name);
                   ref.current?.focus();
                 }}
-                className="flex h-6.5 shrink-0 items-center gap-1 rounded-md bg-sky-500/15 px-1.5 text-[11px] font-medium text-sky-700 hover:bg-sky-500/20 dark:bg-sky-400/10 dark:text-sky-200/90 dark:hover:bg-sky-400/15"
-              >
-                <CursorMagicSelection className="size-3.5" />
-                Operator
-                <X className="size-3" />
-              </button>
+              />
             ) : null}
-            {!compact && orchestrationSelected && (
-              <button
-                type="button"
-                title="Turn off Orchestrator mode"
-                aria-label="Turn off Orchestrator mode"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
+            {!compact && orchestrationActive ? (
+              <ModeCommandPill
+                name={ORCHESTRATOR_COMMAND.name}
+                onClear={() => {
                   setOrchestrationSelected(false);
+                  clearLeadingMode(ORCHESTRATOR_COMMAND.name);
                   ref.current?.focus();
                 }}
-                className="flex h-6.5 shrink-0 items-center gap-1 rounded-md bg-fuchsia-500/15 px-1.5 text-[11px] font-medium text-fuchsia-700 hover:bg-fuchsia-500/20 dark:bg-fuchsia-400/10 dark:text-fuchsia-200/90 dark:hover:bg-fuchsia-400/15"
-              >
-                <Share className="size-3.5" />
-                Orchestrator
-                <X className="size-3" />
-              </button>
-            )}
-            {!compact && planSelected ? (
-              <button
-                type="button"
-                title="Turn off Plan mode"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  setPlanSelected(false);
-                  ref.current?.focus();
-                }}
-                className="flex h-6.5 shrink-0 items-center gap-1 rounded-md bg-yellow-300/12 px-1.5 text-[11px] text-yellow-200/90 hover:bg-yellow-300/18"
-              >
-                <AiIdea className="size-3.5" />
-                Plan
-                <X className="size-3" />
-              </button>
+              />
             ) : null}
-            {!compact && draftSelected ? (
-              <button
-                type="button"
-                title="Turn off Draft mode"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  setDraftSelected(false);
+            {!compact && planActive ? (
+              <ModeCommandPill
+                name={PLAN_COMMAND.name}
+                onClear={() => {
+                  setPlanSelected(false);
+                  clearLeadingMode(PLAN_COMMAND.name);
                   ref.current?.focus();
                 }}
-                className="flex h-6.5 shrink-0 items-center gap-1 rounded-md border border-dashed border-content/25 bg-content/5 px-1.5 text-[11px] text-content/70 hover:bg-content/10 hover:text-content"
-              >
-                <CircleDashed className="size-3.5" />
-                Draft
-                <X className="size-3" />
-              </button>
+              />
+            ) : null}
+            {!compact && draftActive ? (
+              <ModeCommandPill
+                name={DRAFT_COMMAND.name}
+                onClear={() => {
+                  setDraftSelected(false);
+                  clearLeadingMode(DRAFT_COMMAND.name);
+                  ref.current?.focus();
+                }}
+              />
             ) : null}
             <div
               className="composer-toolbar flex min-w-0 flex-1 items-center"
@@ -2648,7 +2642,7 @@ export function Composer({
                 disabled={disabled}
                 hasValue={hasValue && !worktreeRemoved}
                 allowBusySubmit={allowBusySubmit}
-                label={draftSelected ? "Save draft" : "Send"}
+                label={draftActive ? "Save draft" : "Send"}
                 onSend={() => submit(ref.current?.value ?? "")}
                 onStop={() => onStop?.()}
               />
@@ -2671,18 +2665,22 @@ export function Composer({
 
 function ComposerHighlight({
   text,
+  mode,
   names,
   mentions,
   mcpTags,
 }: {
   text: string;
+  mode: ModeCommandToken | null;
   names: ReadonlySet<string>;
   mentions: ReadonlyMap<string, ProjectFile>;
   mcpTags: McpTag[];
 }) {
-  const parts = skillTextParts(text, names);
+  const rest = mode ? text.slice(mode.end) : text;
+  const parts = skillTextParts(rest, names);
   return (
     <>
+      {mode ? <ModeCommandText text={text} mode={mode} /> : null}
       {parts.map((part, index) =>
         part.skill ? (
           <span key={index} className="text-skill">
@@ -2749,7 +2747,9 @@ function FileMentionRuns({
                 lockstep; the file icon sits on top of it. */}
             <span className="relative text-transparent">
               {"@"}
-              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+              {/* `indent-0`: a leading mode command indents the first line,
+                  and this box would otherwise inherit that indent. */}
+              <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 indent-0">
                 {part.file && isNoteMentionPath(part.file.path) ? (
                   <StickyNote className="size-3.5" strokeWidth={1.75} />
                 ) : (

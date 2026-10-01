@@ -20,6 +20,7 @@ import {
   workingTreeDiffFocusId,
 } from "../model/workingTreeDiff";
 import { stageChunkText } from "../../files/editor/editorGit";
+import { LINE_DIFF_CONFIG } from "../model/lineDiff";
 import { UnifiedDiffView, type UnifiedDiffFileModel } from "./UnifiedDiffView";
 
 type Props = {
@@ -73,7 +74,7 @@ export function WorkingTreeDiff({
           setFiles(index.files);
           setDiffs(new Map());
           setError(null);
-          const entries = workingTreeDiffEntries(index.files);
+          const entries = workingTreeDiffEntries(index.files, focusKind);
           const loadOrder = prioritizeWorkingTreeDiffEntries(
             entries,
             focusPath,
@@ -151,9 +152,13 @@ export function WorkingTreeDiff({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
-  }, [cwd]);
+  }, [cwd, focusKind]);
 
-  const entries = useMemo(() => workingTreeDiffEntries(files ?? []), [files]);
+  // A review opened from the Changes or Staged Changes section shows only that side.
+  const entries = useMemo(
+    () => workingTreeDiffEntries(files ?? [], focusKind),
+    [files, focusKind],
+  );
 
   const models = useMemo<UnifiedDiffFileModel[]>(() => {
     if (!files) return [];
@@ -250,7 +255,14 @@ export function WorkingTreeDiff({
       if (!entry || entry.kind !== "unstaged") return;
       const loaded = diffsRef.current.get(id);
       if (!loaded) return;
-      const next = stageChunkText(loaded.original, loaded.current, pos);
+      // Same diff the view used to produce `pos`, so the same hunk is staged.
+      const next = stageChunkText(
+        loaded.original,
+        loaded.current,
+        pos,
+        null,
+        LINE_DIFF_CONFIG,
+      );
       if (next == null) return;
       setBusyId(id);
       try {
@@ -290,7 +302,7 @@ export function WorkingTreeDiff({
   return (
     <UnifiedDiffView
       files={models}
-      fileCount={files.length}
+      fileCount={focusKind ? entries.length : files.length}
       focusId={focusId}
       focusRequest={focusRequest}
       busyId={busyId}
