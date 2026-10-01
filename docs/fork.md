@@ -1,12 +1,12 @@
 # Running this fork next to the official MonoCode
 
-This checkout can be built and installed as **MonoCode Fork**, side by side with
+This checkout can be built and installed as **MonoCode** (replacing the official app, with its own data directory), unlike
 the official MonoCode. Three identities keep their data apart:
 
 | Build | Product name | Identifier | Data dir (`%APPDATA%\<id>`) | Install dir |
 | --- | --- | --- | --- | --- |
 | Official release | MonoCode | `com.monocode.desktop` | `com.monocode.desktop` | `%LOCALAPPDATA%\MonoCode` |
-| Installed fork (`build:windows`) | MonoCode Fork | `com.monocode.desktop.fork` | `com.monocode.desktop.fork` | `%LOCALAPPDATA%\MonoCode Fork` |
+| Installed fork (`build:windows`) | MonoCode | `com.monocode.desktop.fork` | `com.monocode.desktop.fork` | `%LOCALAPPDATA%\MonoCode Fork` |
 | `npm run tauri dev` | MonoCode Dev | `com.monocode.desktop.dev` | `com.monocode.desktop.dev` | not installed |
 
 `src-tauri/tauri.conf.json` carries the **dev** identity so a plain `tauri dev`
@@ -29,7 +29,7 @@ so the installer is unsigned (SmartScreen will warn once).
 npm run build:windows
 ```
 
-Output: `src-tauri\target\release\bundle\nsis\MonoCode Fork_<version>_x64-setup.exe`
+Output: `src-tauri\target\release\bundle\nsis\MonoCode_<version>_x64-setup.exe`
 (per-user install, no admin). Run it; it does not touch the official install.
 
 ## Updater is disabled

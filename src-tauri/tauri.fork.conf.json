@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MonoCode Fork",
+  "productName": "MonoCode",
   "identifier": "com.monocode.desktop.fork",
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "MonoCode Fork",
+        "title": "MonoCode",
         "width": 1280,
         "height": 800,
         "minWidth": 800,

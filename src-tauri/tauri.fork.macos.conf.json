@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MonoCode Fork",
+  "productName": "MonoCode",
   "identifier": "com.monocode.desktop.fork",
   "bundle": {
     "createUpdaterArtifacts": false
