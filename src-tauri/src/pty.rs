@@ -52,6 +52,9 @@ struct LivePty {
 
 pub struct PtyHost {
     sessions: Mutex<HashMap<String, Arc<LivePty>>>,
+    /// Background reaps of closed windows. Shutdown joins them so their
+    /// SIGKILLs land before the process exits.
+    reapers: Mutex<Vec<thread::JoinHandle<()>>>,
 }
 
 impl PtyHost {
@@ -66,6 +69,7 @@ impl PtyHost {
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
+            reapers: Mutex::new(Vec::new()),
         }
     }
 
@@ -74,6 +78,17 @@ impl PtyHost {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, live)
+    }
+
+    /// Hand a live PTY to the window asking for it. The lookup, the owner
+    /// change and the redraw happen under the sessions lock, so a closing
+    /// window's `kill_window` cannot reap the terminal mid-transfer. `None`
+    /// when no PTY runs under `id`, and the caller spawns a fresh one.
+    fn reattach(&self, id: &str, owner: &str, cols: u16, rows: u16) -> Option<Result<(), String>> {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let live = sessions.get(id)?;
+        live.set_owner(owner);
+        Some(reattach(live, cols, rows))
     }
 
     fn get(&self, id: &str) -> Option<Arc<LivePty>> {
@@ -119,6 +134,19 @@ impl PtyHost {
             ids.iter().filter_map(|id| map.remove(id)).collect()
         };
         reap(kids);
+    }
+
+    pub(crate) fn track_reaper(&self, handle: thread::JoinHandle<()>) {
+        let mut reapers = self.reapers.lock().unwrap_or_else(|e| e.into_inner());
+        reapers.retain(|reaper| !reaper.is_finished());
+        reapers.push(handle);
+    }
+
+    pub(crate) fn join_reapers(&self) {
+        let reapers = std::mem::take(&mut *self.reapers.lock().unwrap_or_else(|e| e.into_inner()));
+        for reaper in reapers {
+            let _ = reaper.join();
+        }
     }
 }
 
@@ -169,9 +197,8 @@ pub fn pty_spawn(
     // A reloaded page restores its terminals under the same ids while the old
     // shells are still running. Hand the live PTY to the new view instead of
     // hanging up the shell and every job in it.
-    if let Some(live) = host.get(&id) {
-        live.set_owner(window.label());
-        return reattach(&live, cols, rows);
+    if let Some(attached) = host.reattach(&id, window.label(), cols, rows) {
+        return attached;
     }
 
     let workdir = working_dir(&cwd);
@@ -912,11 +939,25 @@ mod tests {
     fn a_reattached_terminal_follows_its_new_window() {
         let host = PtyHost::new();
         host.insert("a".into(), fake_pty(0, "main"));
-        host.get("a").unwrap().set_owner("window-2");
+        assert!(host.reattach("missing", "window-2", 80, 24).is_none());
+        // The fake has no real fd, so the resize fails, but the handoff holds.
+        assert!(host.reattach("a", "window-2", 80, 24).is_some());
         host.kill_window("main");
         assert!(host.get("a").is_some());
         host.kill_window("window-2");
         assert!(host.get("a").is_none());
+    }
+
+    #[test]
+    fn join_reapers_waits_for_pending_window_reaps() {
+        let host = PtyHost::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        host.track_reaper(thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            tx.send(()).unwrap();
+        }));
+        host.join_reapers();
+        assert!(rx.try_recv().is_ok());
     }
 
     #[test]

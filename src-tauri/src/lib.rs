@@ -577,12 +577,15 @@ pub fn run() {
                 // A page unload no longer kills its terminals, because a
                 // reload keeps them. The window going away is what ends them.
                 // Off the event loop: the reap waits for the shells to die.
-                let handle = handle.clone();
-                std::thread::spawn(move || {
-                    if let Some(host) = handle.try_state::<pty::PtyHost>() {
-                        host.kill_window(&label);
-                    }
-                });
+                // Shutdown joins it so the shells are dead before we exit.
+                if let Some(host) = handle.try_state::<pty::PtyHost>() {
+                    let app = handle.clone();
+                    host.track_reaper(std::thread::spawn(move || {
+                        if let Some(host) = app.try_state::<pty::PtyHost>() {
+                            host.kill_window(&label);
+                        }
+                    }));
+                }
             }
         }
         tauri::RunEvent::ExitRequested { api, code, .. } => {
@@ -612,6 +615,7 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
+        host.join_reapers();
     }
 }
 
