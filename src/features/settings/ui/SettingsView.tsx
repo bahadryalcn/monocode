@@ -3319,7 +3319,7 @@ function ProviderAccountsSettings() {
         ? loginHarness(account.provider)
         : loginHarness(account.provider, account.id));
       const limits = await loadRateLimits(account.provider, account.id, true);
-      if (needsProviderLogin(limits)) {
+      if (limits.status === "error" || needsProviderLogin(limits)) {
         throw new Error(
           limits.error ||
             `${HARNESS_TITLE[account.provider]} sign-in could not be verified`,
