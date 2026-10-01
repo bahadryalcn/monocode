@@ -36,6 +36,7 @@ import {
   inputJsonDeltaFromEvent,
   isAgentTaskType,
   isClaudeUltracodeEffort,
+  isReplayedTaskNotificationResult,
   isSubagentMessage,
   isTerminalAgentTaskStatus,
   isTodoTool,
@@ -969,6 +970,7 @@ function settleInlineAgentTask(live: Live, toolUseId: string): void {
 
 function handleResult(live: Live, rec: Record<string, unknown>): void {
   if (isSubagentMessage(rec)) return;
+  if (isReplayedTaskNotificationResult(rec)) return;
   // A /compact result reports the summarizer call's usage, not the rebuilt
   // conversation level. The next real turn will provide the fresh reading.
   if (!live.manualCompaction) {
