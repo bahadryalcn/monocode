@@ -3287,10 +3287,11 @@ function HarnessUpdatesGroup() {
 
   const stateOf = (harness: HarnessId): HarnessUpdateRun =>
     runs[harness] ?? { status: "idle" };
-  const pending = pendingHarnessUpdates(checks ?? []).filter((update) => {
-    const status = stateOf(update.harness).status;
-    return status === "idle" || status === "failed";
-  });
+  // A harness updated earlier in this session can fall behind again when a
+  // newer release ships, so only a running update is left out.
+  const pending = pendingHarnessUpdates(checks ?? []).filter(
+    (update) => stateOf(update.harness).status !== "updating",
+  );
   const start = (targets: HarnessUpdate[]) => {
     for (const update of targets) void runHarnessUpdate(update);
   };

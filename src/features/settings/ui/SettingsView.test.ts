@@ -699,6 +699,8 @@ describe("settings pages", () => {
 
   it("checks CLI versions on request and updates one from settings", async () => {
     let claudeVersion = "2.1.284 (Claude Code)";
+    let claudeLatest = "2.1.285";
+    let cursorLatest = "2026.09.28-64d2043";
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       const payload = args as { binaryProvider?: string; provider?: string };
       if (command.startsWith("harness_resolve_")) {
@@ -710,7 +712,7 @@ describe("settings pages", () => {
           : "2026.09.28-64d2043";
       }
       if (command === "harness_latest_version") {
-        return payload.provider === "claude" ? "2.1.285" : "2026.09.28-64d2043";
+        return payload.provider === "claude" ? claudeLatest : cursorLatest;
       }
       if (command === "harness_update") {
         claudeVersion = "2.1.285 (Claude Code)";
@@ -751,6 +753,24 @@ describe("settings pages", () => {
     expect(
       group.querySelector('[aria-label="Update Claude Code to 2.1.285"]'),
     ).toBeNull();
+
+    // Claude Code, updated earlier in this session, falls behind again and
+    // still counts for Update all.
+    claudeLatest = "2.1.286";
+    cursorLatest = "2026.09.29-1234567";
+    await act(async () => checkButton.click());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    vi.mocked(invoke).mockClear();
+    const updateAll = Array.from(group.querySelectorAll("button")).find(
+      (button) => button.textContent === "Update all",
+    )!;
+    await act(async () => updateAll.click());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    const updated = vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "harness_update")
+      .map(([, args]) => (args as { binaryProvider: string }).binaryProvider);
+    expect(updated.sort()).toEqual(["claude", "cursor"]);
   });
 
   it("returns focus to the CLI trigger when the details popover closes", async () => {

@@ -4,6 +4,7 @@ import {
   announceHarnessUpdated,
   checkHarnessVersions,
   findHarnessUpdates,
+  isHarnessVersionBehind,
   onHarnessUpdated,
 } from "./harnessUpdates";
 
@@ -118,8 +119,8 @@ describe("per-harness version check", () => {
       {
         harness: "cursor",
         status: "behind",
-        installed: "2026.09.18",
-        latest: "2026.09.28",
+        installed: "2026.09.18-9a7762b",
+        latest: "2026.09.28-64d2043",
       },
       { harness: "grok", status: "current", installed: "1.0.46", latest: "1.0.46" },
       // A dev build ahead of the stable feed is not offered a downgrade.
@@ -128,6 +129,20 @@ describe("per-harness version check", () => {
       { harness: "pi", status: "unknown", error: "The CLI reported no version." },
     ]);
   });
+});
+
+it("compares Cursor builds from the same day by their full build", () => {
+  expect(
+    isHarnessVersionBehind("cursor", "2026.09.28-9a7762b", "2026.09.28-64d2043"),
+  ).toBe(true);
+  expect(
+    isHarnessVersionBehind("cursor", "2026.09.28-64d2043", "2026.09.28-64d2043"),
+  ).toBe(false);
+  expect(
+    isHarnessVersionBehind("cursor", "2026.10.01-1111111", "2026.09.28-64d2043"),
+  ).toBe(false);
+  // Other harnesses compare release numbers only.
+  expect(isHarnessVersionBehind("grok", "1.0.46", "1.0.46")).toBe(false);
 });
 
 it("delivers updates to other windows while skipping the sender and respecting cleanup", async () => {

@@ -6,16 +6,14 @@ import {
   inspectHarnessBinary,
   updateHarnessCli,
 } from "../../../integrations/harness/core/child";
-import {
-  compareSemver,
-  parseOpenCodeVersion,
-} from "../../../integrations/harness/providers/opencode/opencodeProtocol";
 import { refreshHarnessCatalogs } from "../../../integrations/harness/core/registry";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import {
   announceHarnessUpdated,
   checkHarnessVersions,
   fetchLatestHarnessVersion,
+  isHarnessVersionBehind,
+  parseHarnessVersion,
   UPDATABLE_HARNESSES,
   type HarnessUpdate,
   type HarnessVersionCheck,
@@ -69,10 +67,19 @@ async function installedVersion(harness: HarnessId): Promise<string> {
 
 let inflightCheck: Promise<HarnessVersionCheck[]> | null = null;
 
-/** Checks every installed harness that has a release feed. */
+/**
+ * Checks every installed harness that has a release feed. A call made while
+ * a check is running shares its result, unless it forces a fresh probe: the
+ * running check may have skipped one, so a forced call runs after it.
+ */
 export function checkInstalledHarnessVersions(options?: {
   force?: boolean;
 }): Promise<HarnessVersionCheck[]> {
+  if (inflightCheck && options?.force) {
+    return inflightCheck
+      .catch(() => undefined)
+      .then(() => checkInstalledHarnessVersions(options));
+  }
   inflightCheck ??= (async () => {
     setSnapshot({ checking: true });
     try {
@@ -144,8 +151,11 @@ async function performUpdate(update: HarnessUpdate): Promise<HarnessUpdateRun> {
   try {
     await updateHarnessCli(update.harness);
     const after = await inspectHarnessBinary(update.harness);
-    const version = parseOpenCodeVersion(after.version ?? "");
-    if (version && compareSemver(version, update.latest) >= 0) {
+    const version = parseHarnessVersion(update.harness, after.version ?? "");
+    if (
+      version &&
+      !isHarnessVersionBehind(update.harness, version, update.latest)
+    ) {
       await refreshHarnessCatalogs([update.harness], { force: true });
       void announceHarnessUpdated(update.harness).catch(() => undefined);
       return { status: "updated", version };

@@ -69,6 +69,40 @@ export function fetchLatestHarnessVersion(harness: HarnessId): Promise<string> {
   return invoke<string>("harness_latest_version", { provider: harness });
 }
 
+/** Cursor names a build by date and commit, such as `2026.09.28-64d2043`. */
+const CURSOR_BUILD = /\d{4}\.\d{2}\.\d{2}-[0-9a-f]+/;
+
+/**
+ * The version to compare and display. Cursor keeps its full build, because
+ * two builds can share a date.
+ */
+export function parseHarnessVersion(
+  harness: HarnessId,
+  output: string,
+): string | null {
+  if (harness === "cursor") {
+    const build = output.match(CURSOR_BUILD)?.[0];
+    if (build) return build;
+  }
+  return parseOpenCodeVersion(output);
+}
+
+/**
+ * True when `installed` is older than `latest`. A Cursor build from the same
+ * day as the feed but with another commit is behind, since the feed names
+ * the newest build. Commit hashes have no order, so this is the only way to
+ * tell.
+ */
+export function isHarnessVersionBehind(
+  harness: HarnessId,
+  installed: string,
+  latest: string,
+): boolean {
+  const order = compareSemver(latest, installed);
+  if (order !== 0) return order > 0;
+  return harness === "cursor" && installed !== latest;
+}
+
 /**
  * Compares each harness with its newest release. A failed lookup becomes an
  * "unknown" entry for that harness instead of failing the whole check.
@@ -89,7 +123,7 @@ export async function checkHarnessVersions({
             installedVersion(harness),
             latestVersion(harness),
           ]);
-          const installed = parseOpenCodeVersion(installedOutput ?? "");
+          const installed = parseHarnessVersion(harness, installedOutput ?? "");
           if (!installed) {
             return {
               harness,
@@ -97,7 +131,7 @@ export async function checkHarnessVersions({
               error: "The CLI reported no version.",
             };
           }
-          const latest = parseOpenCodeVersion(latestOutput);
+          const latest = parseHarnessVersion(harness, latestOutput);
           if (!latest) {
             return {
               harness,
@@ -105,8 +139,9 @@ export async function checkHarnessVersions({
               error: "The release feed returned no version.",
             };
           }
-          const status =
-            compareSemver(latest, installed) > 0 ? "behind" : "current";
+          const status = isHarnessVersionBehind(harness, installed, latest)
+            ? "behind"
+            : "current";
           return { harness, status, installed, latest };
         } catch (error) {
           return {
