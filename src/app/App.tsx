@@ -480,6 +480,7 @@ import {
 } from "../features/sessions/ui/TranscriptPool";
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
 import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
+import { useKeepAwake } from "../features/settings/model/keepAwake";
 import { hiddenApprovalNotices } from "../features/notifications/model/approvalToast";
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
@@ -959,6 +960,7 @@ function Workspace({
   const [sessions, setSessions] = useState<Session[]>(
     () => windowTransfer?.sessions ?? resumed?.sessions ?? [seed.session],
   );
+  useKeepAwake(sessions);
   const [sessionDeleteDialog, setSessionDeleteDialog] = useState<{
     title: string;
     unusedWorktree: string;
