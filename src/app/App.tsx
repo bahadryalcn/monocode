@@ -650,7 +650,7 @@ import {
   isAppQuitting,
   persistLiveTranscripts,
   persistQuitState,
-  reapWindowRuntime,
+  reapUnloadRuntime,
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
@@ -1345,11 +1345,7 @@ export default function App({
         projectTerminalsRef.current,
         lastDockSideRef.current ?? undefined,
       ).finally(() => {
-        void reapWindowRuntime(
-          sessionsRef.current,
-          tabsRef.current,
-          projectTerminalsRef.current,
-        );
+        void reapUnloadRuntime(sessionsRef.current);
       });
     };
     window.addEventListener("pagehide", reap);
