@@ -1035,7 +1035,13 @@ function sanitizeAgentRun(value: unknown): AgentRunMeta | null {
       ? { agentType: record.agentType.trim() }
       : {}),
     steps: steps.slice(-PERSISTED_AGENT_STEPS),
+    ...(isEpochMs(record.startedAt) ? { startedAt: record.startedAt } : {}),
+    ...(isEpochMs(record.endedAt) ? { endedAt: record.endedAt } : {}),
   };
+}
+
+function isEpochMs(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function sanitizeTaskList(value: unknown): TaskListMeta | null {

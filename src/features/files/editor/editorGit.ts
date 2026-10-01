@@ -36,7 +36,7 @@ type ChunkRange = {
   toB: number;
 };
 
-type GitStageHandler = (contents: string) => Promise<void> | void;
+export type GitStageHandler = (contents: string) => Promise<void> | void;
 export type GitCommentTarget = { line: UnifiedLine; anchor: DOMRect };
 type GitCommentHandler = (target: GitCommentTarget) => void;
 
@@ -302,11 +302,25 @@ export function stateWithGitOriginal(
 export function revertChunkAt(view: EditorView, pos: number): boolean {
   const original = view.state.field(originalField);
   if (!original) return false;
+  return revertChunkIn(view, original, pos, actionRange(view));
+}
+
+/**
+ * Put the hunk at `pos` back to `original` in `view`'s document. For editors
+ * that keep the "before" text somewhere other than `originalField`, such as
+ * the left pane of the side-by-side layout.
+ */
+export function revertChunkIn(
+  view: EditorView,
+  original: Text,
+  pos: number,
+  selection?: GitTextRange | null,
+): boolean {
   const changes = revertChunkChanges(
     original,
     view.state.doc,
     pos,
-    actionRange(view),
+    selection,
     view.state.lineBreak,
   );
   if (!changes) return false;
@@ -356,18 +370,41 @@ export async function stageChunkAt(
   const original = view.state.field(originalField);
   const onStage = view.state.facet(gitStageFacet);
   if (!original || !onStage) return false;
-  const contents = stageChunkText(
-    original.toString(),
-    view.state.doc.toString(),
+  const contents = await stageChunkIn(
+    view,
+    original,
     pos,
+    onStage,
     actionRange(view),
   );
   if (contents == null) return false;
-  await onStage(contents);
   if (view.state.field(originalField)?.toString() !== contents) {
     setGitOriginal(view, contents);
   }
   return true;
+}
+
+/**
+ * Stage the hunk at `pos` of `view`'s document against `original` through
+ * `onStage`. Returns the new staged text (LF, like the document; the handler
+ * owns restoring the file's line endings), or null when there is no such hunk.
+ */
+export async function stageChunkIn(
+  view: EditorView,
+  original: Text,
+  pos: number,
+  onStage: GitStageHandler,
+  selection?: GitTextRange | null,
+): Promise<string | null> {
+  const contents = stageChunkText(
+    original.toString(),
+    view.state.doc.toString(),
+    pos,
+    selection,
+  );
+  if (contents == null) return null;
+  await onStage(contents);
+  return contents;
 }
 
 export function findChunk(
@@ -692,7 +729,8 @@ function buildDecorations(state: EditorState): GitDecorations {
   return { lines: lines.finish(), gutter: marks.finish() };
 }
 
-function widgetPos(doc: Text, chunk: Chunk): number {
+/** The document position that identifies a hunk to the stage/revert helpers. */
+export function widgetPos(doc: Text, chunk: Chunk): number {
   if (doc.length === 0) return 0;
   return Math.min(chunk.fromB, doc.length);
 }
@@ -1165,10 +1203,10 @@ const gitTheme = EditorView.theme({
   },
 });
 
-const UNDO_SVG =
+export const UNDO_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>';
 
-const PLUS_SVG =
+export const PLUS_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>';
 
 const COMMENT_SVG =

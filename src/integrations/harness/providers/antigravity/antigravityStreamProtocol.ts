@@ -96,6 +96,7 @@ import { promptText } from "../../../../features/sessions/model/attachments";
 import type { AgentModel } from "../../../../features/sessions/model/models";
 import type {
   Attachment,
+  HarnessModeLimits,
   RuntimeMode,
   ToolPreview,
   TurnIntent,
@@ -144,6 +145,19 @@ export function streamModeRefusal(
   }
   return undefined;
 }
+
+/**
+ * What the pickers say about the same limits `streamModeRefusal` enforces.
+ * Supervised is unavailable, and a new session starts in Auto-accept edits,
+ * which is exactly what headless agy does for every non-full-access mode.
+ */
+export const STREAM_MODE_LIMITS: HarnessModeLimits = {
+  runtimeModes: {
+    supervised: "Headless agy cannot ask before editing files.",
+  },
+  plan: "Headless agy cannot keep a plan turn from editing files.",
+  newSessionMode: "auto-accept-edits",
+};
 
 export type StreamLaunch = {
   model?: string;

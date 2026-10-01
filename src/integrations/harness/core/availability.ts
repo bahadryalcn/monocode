@@ -2,6 +2,7 @@ import type { HarnessId } from "../../../features/sessions/model/session";
 import {
   HARNESSES,
   setHarnessAttachmentsSupported,
+  setHarnessModeLimits,
 } from "../../../features/sessions/model/session";
 import {
   resolveAntigravityBinary,
@@ -15,6 +16,7 @@ import {
   resolveOpenCodeBinary,
   resolvePiBinary,
 } from "./child";
+import { STREAM_MODE_LIMITS } from "../providers/antigravity/antigravityStreamProtocol";
 import { isLiveHarness } from "./registry";
 import {
   emitHarnessAvailability,
@@ -164,6 +166,12 @@ export function probeHarnessAvailability(
           setHarnessAttachmentsSupported(
             "antigravity",
             binary.transport !== "stream-json",
+          );
+          // The same transport cannot ask before editing or hold a plan turn
+          // back, so the pickers must not offer those.
+          setHarnessModeLimits(
+            "antigravity",
+            binary.transport === "stream-json" ? STREAM_MODE_LIMITS : undefined,
           );
           return [id, true] as const;
         } catch {

@@ -4,6 +4,7 @@ import {
   ChevronRight,
   CircleDashed,
   Copy,
+  ExternalLink,
   FilePlusCorner,
   Minus,
   Pencil,
@@ -84,13 +85,18 @@ import {
 import { HarnessIcon } from "./HarnessIcon";
 import { formatElapsed, useElapsedFrom } from "./useElapsedFrom";
 import { isBackgroundOnly } from "../model/activityDock";
-import { consumeOpenSubagent, OPEN_SUBAGENT_EVENT } from "./subagentFocus";
+import {
+  consumeOpenSubagent,
+  OPEN_SUBAGENT_EVENT,
+  requestViewSubagent,
+} from "./subagentFocus";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { useTranscriptLayout } from "../hooks/useTranscriptLayout";
 import { useTranscriptAnchor } from "../hooks/useTranscriptAnchor";
 import { useTranscriptSelection } from "../hooks/useTranscriptSelection";
 import type { TranscriptLayout } from "../../settings/model/appearance";
 import { AgentMarkdown } from "./AgentMarkdown";
+import { AgentClock } from "./AgentClock";
 import { TranscriptSelectionMenu } from "./TranscriptSelectionMenu";
 import { parseUserMessageLink } from "../model/linkPreview";
 import { UserLinkPreview } from "./UserLinkPreview";
@@ -2070,7 +2076,7 @@ type ActivityPhasesProps = {
   onOpenDiff?: (path: string) => void;
 };
 
-const ActivityPhases = memo(function ActivityPhases({
+export const ActivityPhases = memo(function ActivityPhases({
   blocks,
   cwd,
   done,
@@ -2639,7 +2645,7 @@ function SubagentPanel({
           {name}
         </span>
       )}
-      {model || status ? (
+      {model || status || block.agentRun?.startedAt !== undefined ? (
         <span className="flex min-w-0 max-w-[55%] shrink-0 items-baseline gap-2 font-sans text-[12px] text-content/40">
           {model ? (
             <span className="truncate" title={`Model: ${model}`}>
@@ -2647,6 +2653,11 @@ function SubagentPanel({
             </span>
           ) : null}
           {status ? <span className="shrink-0">{status}</span> : null}
+          <AgentClock
+            startedAt={block.agentRun?.startedAt}
+            endedAt={block.agentRun?.endedAt}
+            live={active}
+          />
         </span>
       ) : null}
     </span>
@@ -2670,27 +2681,38 @@ function SubagentPanel({
 
   return (
     <div className="flex min-w-0 flex-col">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
-        title={brief}
-        onClick={onToggle}
-        // An open row keeps the wash it lit up under the cursor, so the panel
-        // below reads as hanging off it rather than off the transcript.
-        className={`group -mx-1.5 flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors duration-200 hover:bg-content/8 ${
-          open ? "bg-content/8" : ""
-        }`}
-      >
-        <SubagentMascot name={name} state={state} active={active} />
-        {label}
-        <ChevronRight
-          className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${
-            open ? "rotate-90" : ""
+      <div className="-mx-1.5 flex min-w-0 items-center gap-0.5">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
+          title={brief}
+          onClick={onToggle}
+          // An open row keeps the wash it lit up under the cursor, so the panel
+          // below reads as hanging off it rather than off the transcript.
+          className={`group flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors duration-200 hover:bg-content/8 ${
+            open ? "bg-content/8" : ""
           }`}
-          strokeWidth={1.75}
-        />
-      </button>
+        >
+          <SubagentMascot name={name} state={state} active={active} />
+          {label}
+          <ChevronRight
+            className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${
+              open ? "rotate-90" : ""
+            }`}
+            strokeWidth={1.75}
+          />
+        </button>
+        <button
+          type="button"
+          aria-label={`Open ${name} in its own panel`}
+          title="Open in panel"
+          onClick={() => requestViewSubagent(block.id)}
+          className="grid size-6 shrink-0 place-items-center rounded-md text-content/35 transition-colors hover:bg-content/8 hover:text-content/70 focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <ExternalLink className="size-3" strokeWidth={1.75} />
+        </button>
+      </div>
       <div className="zen-phase-body" data-open={open}>
         {open ? (
           /*
@@ -2763,7 +2785,7 @@ function SubagentMascot({
  * A mirrored step as the transcript block it stands for, so a subagent's trail
  * goes through the same rows — labels, file chips, diffs — as the main agent's.
  */
-function agentStepBlock(step: AgentStep): Block {
+export function agentStepBlock(step: AgentStep): Block {
   if (step.kind !== "tool") {
     return {
       id: step.id,

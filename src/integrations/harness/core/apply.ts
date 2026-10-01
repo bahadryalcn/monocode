@@ -15,6 +15,7 @@ import {
 import { displayPath } from "../../../shared/lib/paths";
 import {
   composeToolTitle,
+  isAgentTool,
   isFileTool,
   isWeakToolTitle,
   mergeToolPreview,
@@ -540,7 +541,14 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     ...settled,
     busy: false,
     pendingQuestion: undefined,
-    blocks: stampTurnDuration(settled.blocks.map(stopBlockProgress), endedAt),
+    blocks: stampTurnDuration(
+      settled.blocks.map((block) =>
+        stopBlockProgress(
+          block.streaming ? endOpenAgentRun(block, endedAt) : block,
+        ),
+      ),
+      endedAt,
+    ),
   };
 }
 
@@ -604,7 +612,7 @@ function failStreaming(session: Session): Session {
       const pendingApproval = !!block.approval && !block.approval.decided;
       if (!open && !pendingApproval) return block;
       return {
-        ...block,
+        ...(open ? endOpenAgentRun(block, Date.now()) : block),
         streaming: false,
         ...(block.tool && open
           ? { tool: { ...block.tool, status: "failed" } }
@@ -938,8 +946,15 @@ function upsertTool(
       role: "tool",
       text: label,
       streaming: patch.streaming,
-      ...(patch.agentModel
-        ? { agentRun: { name: label, model: patch.agentModel, steps: [] } }
+      ...(patch.agentModel || isAgentTool(patch.kind, label)
+        ? {
+            agentRun: {
+              name: label,
+              ...(patch.agentModel ? { model: patch.agentModel } : {}),
+              steps: [],
+              startedAt: Date.now(),
+            },
+          }
         : {}),
       tool: {
         callId: patch.callId,
@@ -978,6 +993,7 @@ function upsertTool(
     prev.tool?.detail === detail &&
     (!patch.agentModel || prev.agentRun?.model === patch.agentModel) &&
     (!prev.agentRun || prev.agentRun.name === agentName) &&
+    !endsAgentRun(prev.agentRun, patch.streaming) &&
     samePreview(prev.tool?.preview, preview)
   ) {
     return session;
@@ -994,6 +1010,9 @@ function upsertTool(
             ...prev.agentRun,
             name: agentName,
             ...(patch.agentModel ? { model: patch.agentModel } : {}),
+            ...(endsAgentRun(prev.agentRun, patch.streaming)
+              ? { endedAt: Date.now() }
+              : {}),
           },
         }
       : {}),
@@ -1008,6 +1027,21 @@ function upsertTool(
     },
   };
   return { ...session, blocks };
+}
+
+/**
+ * True when this update is the one that finishes a run that has not been
+ * stamped as ended yet. `startedAt` is only ever set when the block is created;
+ * `endedAt` is set once and never overwritten by later updates.
+ */
+function endsAgentRun(run: AgentRunMeta | undefined, streaming: boolean) {
+  return !!run && !streaming && run.endedAt === undefined;
+}
+
+/** Stamps `endedAt` on runs a turn is closing out, leaving ended ones alone. */
+function endOpenAgentRun(block: Block, at: number): Block {
+  if (!block.agentRun || block.agentRun.endedAt !== undefined) return block;
+  return { ...block, agentRun: { ...block.agentRun, endedAt: at } };
 }
 
 const MAX_TOOL_DETAIL_CHARS = 8_000;
@@ -1127,6 +1161,8 @@ function recordAgentStep(
       ? { agentType: event.agentType ?? run?.agentType }
       : {}),
     steps,
+    ...(run?.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
+    ...(run?.endedAt !== undefined ? { endedAt: run.endedAt } : {}),
   };
   if (run && sameAgentRun(run, next)) return session;
   const blocks = session.blocks.slice();
@@ -1137,6 +1173,7 @@ function recordAgentStep(
 function sameAgentRun(a: AgentRunMeta, b: AgentRunMeta): boolean {
   if (a.name !== b.name || a.agentType !== b.agentType || a.model !== b.model)
     return false;
+  if (a.startedAt !== b.startedAt || a.endedAt !== b.endedAt) return false;
   if (a.steps.length !== b.steps.length) return false;
   return a.steps.every((step, index) => sameAgentStep(step, b.steps[index]));
 }

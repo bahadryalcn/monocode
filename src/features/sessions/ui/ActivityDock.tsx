@@ -18,6 +18,7 @@ import {
   type DockAgent,
 } from "../model/activityDock";
 import type { Block } from "../model/session";
+import { AgentClock } from "./AgentClock";
 import { formatElapsed, useElapsedFrom } from "./useElapsedFrom";
 
 /** Expanded or not, per session, for as long as the app is open. */
@@ -34,8 +35,11 @@ type Props = {
   visible?: boolean;
   /** The transcript is scrolled to its last line. */
   atEnd: boolean;
-  /** Take the reader to a delegated run's row in the transcript and open it. */
-  onOpenAgent: (blockId: string) => void;
+  /**
+   * A row was clicked: a subagent opens its own panel, a background command
+   * takes the reader to its row in the transcript.
+   */
+  onOpenAgent: (agent: DockAgent) => void;
 };
 
 /**
@@ -118,7 +122,7 @@ function DockBody({
   sessionId: string;
   dock: ActivityDockModel;
   label: string;
-  onOpenAgent: (blockId: string) => void;
+  onOpenAgent: (agent: DockAgent) => void;
 }) {
   const [expanded, setExpandedState] = useState(
     () => expandedBySession.get(sessionId) ?? false,
@@ -249,7 +253,7 @@ function DockAgentRow({
   onOpen,
 }: {
   agent: DockAgent;
-  onOpen: (blockId: string) => void;
+  onOpen: (agent: DockAgent) => void;
 }) {
   const status =
     agent.status === "running"
@@ -266,7 +270,7 @@ function DockAgentRow({
       aria-label={`${agent.kind === "agent" ? "Open" : "Show"} ${summary}`}
       title={agent.name}
       data-dock-agent={agent.blockId}
-      onClick={() => onOpen(agent.blockId)}
+      onClick={() => onOpen(agent)}
       className="group flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-content/8 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
     >
       <AgentStatusDot status={agent.status} />
@@ -283,6 +287,12 @@ function DockAgentRow({
           {agent.detail}
         </span>
       ) : null}
+      <AgentClock
+        startedAt={agent.startedAt}
+        endedAt={agent.endedAt}
+        live={agent.status === "running"}
+        className="text-[11px] text-content/40"
+      />
       <ChevronRight
         className="size-3 shrink-0 text-content/35 group-hover:text-content/60"
         strokeWidth={1.75}

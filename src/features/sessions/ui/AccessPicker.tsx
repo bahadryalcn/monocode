@@ -24,6 +24,8 @@ type Props = {
   onChange: (mode: RuntimeMode) => void;
   onClose?: () => void;
   busy?: boolean;
+  /** Modes the harness cannot honour, with why. They show, but cannot be picked. */
+  unavailable?: Partial<Record<RuntimeMode, string>>;
 };
 
 const MENU_WIDTH = 288;
@@ -40,6 +42,7 @@ export function AccessPicker({
   onChange,
   onClose,
   busy = false,
+  unavailable,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(() =>
@@ -61,19 +64,32 @@ export function AccessPicker({
   }, [open, value]);
 
   const pick = (mode: RuntimeMode) => {
+    if (unavailable?.[mode]) return;
     onChange(mode);
     dismiss(true);
+  };
+
+  // Arrow keys skip what cannot be picked.
+  const step = (from: number, direction: 1 | -1) => {
+    for (
+      let i = from + direction;
+      i >= 0 && i < RUNTIME_MODES.length;
+      i += direction
+    ) {
+      if (!unavailable?.[RUNTIME_MODES[i]]) return i;
+    }
+    return from;
   };
 
   const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((i) => Math.min(RUNTIME_MODES.length - 1, i + 1));
+      setActive((i) => step(i, 1));
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActive((i) => Math.max(0, i - 1));
+      setActive((i) => step(i, -1));
       return;
     }
     if (e.key === "Enter") {
@@ -135,18 +151,25 @@ export function AccessPicker({
           {RUNTIME_MODES.map((mode, index) => {
             const ModeIcon = ICONS[mode];
             const selected = mode === value;
-            const highlighted = index === active;
+            const reason = unavailable?.[mode];
+            const highlighted = index === active && !reason;
             return (
               <button
                 key={mode}
                 type="button"
                 role="option"
                 aria-selected={selected}
+                aria-disabled={reason ? true : undefined}
+                title={reason}
                 onMouseDown={(e) => e.preventDefault()}
-                onMouseEnter={() => setActive(index)}
+                onMouseEnter={() => {
+                  if (!reason) setActive(index);
+                }}
                 onClick={() => pick(mode)}
                 className={`flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left ${
-                  highlighted || selected
+                  reason
+                    ? "cursor-not-allowed text-content/40"
+                    : highlighted || selected
                     ? "bg-selection text-content"
                     : "text-content hover:bg-content/5"
                 }`}
@@ -160,7 +183,7 @@ export function AccessPicker({
                     {RUNTIME_MODE_LABEL[mode]}
                   </span>
                   <span className="mt-0.5 block text-[11px] leading-4 text-content/50">
-                    {RUNTIME_MODE_HINT[mode]}
+                    {reason ? `Unavailable: ${reason}` : RUNTIME_MODE_HINT[mode]}
                   </span>
                 </span>
               </button>

@@ -22,6 +22,24 @@ function agent(id: string, status: string, patch: Partial<Block> = {}): Block {
   };
 }
 
+describe("dock agent timing", () => {
+  it("carries the run's start and end, and omits them on old data", () => {
+    const dock = derive({
+      busy: true,
+      blocks: [
+        user,
+        agent("a", "completed", {
+          agentRun: { name: "A", steps: [], startedAt: 5, endedAt: 9 },
+        }),
+        agent("b", "in_progress"),
+      ],
+    });
+    expect(dock.agents[0]).toMatchObject({ startedAt: 5, endedAt: 9 });
+    expect(dock.agents[1]).not.toHaveProperty("startedAt");
+    expect(dock.agents[1]).not.toHaveProperty("endedAt");
+  });
+});
+
 function background(id: string, status: string): Block {
   return {
     id,

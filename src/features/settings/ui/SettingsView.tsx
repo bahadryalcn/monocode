@@ -410,6 +410,7 @@ import {
 } from "../../notifications/model/notifications";
 import {
   installPendingUpdate,
+  isUpdaterEnabled,
   readAppVersion,
   runUpdateFlow,
   type UpdaterSnapshot,
@@ -1859,11 +1860,17 @@ function UpdateRow({
     currentVersion: "…",
   });
 
+  // Unknown until the identifier resolves; only the official build updates.
+  const [updatesEnabled, setUpdatesEnabled] = useState<boolean | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     void readAppVersion().then((currentVersion) => {
       if (cancelled) return;
       setSnapshot((current) => ({ ...current, currentVersion }));
+    });
+    void isUpdaterEnabled().then((enabled) => {
+      if (!cancelled) setUpdatesEnabled(enabled);
     });
     return () => {
       cancelled = true;
@@ -1884,7 +1891,9 @@ function UpdateRow({
   };
 
   const status =
-    snapshot.phase === "available"
+    updatesEnabled === false
+      ? "Automatic updates are disabled in this build."
+      : snapshot.phase === "available"
       ? `Version ${snapshot.availableVersion} is available.`
       : snapshot.phase === "downloading"
         ? `Downloading${snapshot.progress != null ? ` ${snapshot.progress}%` : "…"}`
@@ -1916,16 +1925,18 @@ function UpdateRow({
         >
           What's new
         </SecondaryButton>
-        <SecondaryButton onClick={() => void onClick()} disabled={busy}>
-          {busy ? (
-            <Loader className="size-3.5 animate-spin" aria-hidden />
-          ) : hasUpdate ? (
-            <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />
-          ) : (
-            <RefreshCw className="size-3.5" strokeWidth={1.75} aria-hidden />
-          )}
-          {hasUpdate ? "Download" : "Check for updates"}
-        </SecondaryButton>
+        {updatesEnabled === false ? null : (
+          <SecondaryButton onClick={() => void onClick()} disabled={busy}>
+            {busy ? (
+              <Loader className="size-3.5 animate-spin" aria-hidden />
+            ) : hasUpdate ? (
+              <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />
+            ) : (
+              <RefreshCw className="size-3.5" strokeWidth={1.75} aria-hidden />
+            )}
+            {hasUpdate ? "Download" : "Check for updates"}
+          </SecondaryButton>
+        )}
       </div>
     </Row>
   );

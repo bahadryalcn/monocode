@@ -23,11 +23,33 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
     bridge.invoke(command, args),
 }));
 
+// Every test spawns ~15-20 real `git` processes with execFileSync. Measured on
+// this Windows machine, a test takes 0.7-1.5 s, but roughly 1% of ALL process
+// spawns (git, hostname.exe, ... - it is not git specific) stall for a fixed
+// ~5.05-5.15 s inside the OS before the child starts executing. One stall
+// already exceeds vitest's 5 s default, so the budget allows normal runtime
+// plus three stalls (1.5 + 3 * 5.2 = ~17 s).
+const TEST_TIMEOUT_MS = 20_000;
+
 describe("CRLF editor Git boundaries", () => {
   let directory: string;
   let root: Root;
   let container: HTMLDivElement;
   let gitEnvironment: NodeJS.ProcessEnv;
+  // Body of the running test. execFileSync blocks the event loop, so a stalled
+  // spawn can make vitest declare a timeout and start teardown while the body
+  // is still mid-flight; afterEach waits for it so a slow test can never
+  // overlap act() calls, or reuse shared state, with the next test.
+  let running: Promise<unknown> | undefined;
+  const scenario = (name: string, body: () => Promise<void>) =>
+    it(
+      name,
+      async () => {
+        running = body();
+        await running;
+      },
+      TEST_TIMEOUT_MS,
+    );
   const filename = "notes.txt";
   const git = (args: string[], input?: string) =>
     execFileSync("git", ["-C", directory, ...args], {
@@ -41,12 +63,24 @@ describe("CRLF editor Git boundaries", () => {
   const disk = () => readFileSync(join(directory, filename), "utf8");
   const index = () => git(["show", `:${filename}`]);
   function baseline(content: string, autocrlf = "false") {
+    // Command-scope config via the environment instead of five `git config`
+    // spawns: fewer processes means fewer chances to hit an OS spawn stall.
+    const config = [
+      ["user.name", "CRLF Test"],
+      ["user.email", "crlf@example.invalid"],
+      ["commit.gpgsign", "false"],
+      ["core.autocrlf", autocrlf],
+      ["core.safecrlf", "false"],
+    ];
+    gitEnvironment = {
+      ...gitEnvironment,
+      GIT_CONFIG_COUNT: String(config.length),
+    };
+    config.forEach(([key, value], i) => {
+      gitEnvironment[`GIT_CONFIG_KEY_${i}`] = key;
+      gitEnvironment[`GIT_CONFIG_VALUE_${i}`] = value;
+    });
     git(["init", "-q"]);
-    git(["config", "user.name", "CRLF Test"]);
-    git(["config", "user.email", "crlf@example.invalid"]);
-    git(["config", "commit.gpgsign", "false"]);
-    git(["config", "core.autocrlf", autocrlf]);
-    git(["config", "core.safecrlf", "false"]);
     write(content);
     git(["add", "--", filename]);
     git(["commit", "-qm", "Initial content"]);
@@ -110,11 +144,16 @@ describe("CRLF editor Git boundaries", () => {
     };
   });
   afterEach(async () => {
+    await Promise.race([
+      running?.catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 8_000)),
+    ]);
+    running = undefined;
     await act(async () => root.unmount());
     container.remove();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5 });
   });
   async function render() {
     const cwd = directory.replaceAll("\\", "/");
@@ -139,67 +178,81 @@ describe("CRLF editor Git boundaries", () => {
     )!;
   }
 
-  it("shows staged hunks under autocrlf without rewriting staged siblings", async () => {
-    const original = "old first\n" + "context\n".repeat(16) + "old last\n";
-    const changed = original
-      .replace("old first", "new first")
-      .replace("old last", "new last");
-    baseline(original, "true");
-    write(changed.replaceAll("\n", "\r\n"));
-    git(["add", "--", filename]);
-    const view = await render();
-    await act(async () =>
-      vi.waitFor(() => expect(diffNavigablePositions(view)).toHaveLength(2)),
-    );
-    expect(view.state.doc.toString()).toBe(changed);
-    await act(async () => expect(await stageChunkAt(view, 0)).toBe(false));
-    expect(index()).toBe(changed);
-    expect(disk()).toBe(changed.replaceAll("\n", "\r\n"));
-  });
+  scenario(
+    "shows staged hunks under autocrlf without rewriting staged siblings",
+    async () => {
+      const original = "old first\n" + "context\n".repeat(16) + "old last\n";
+      const changed = original
+        .replace("old first", "new first")
+        .replace("old last", "new last");
+      baseline(original, "true");
+      write(changed.replaceAll("\n", "\r\n"));
+      git(["add", "--", filename]);
+      const view = await render();
+      await act(async () =>
+        vi.waitFor(() => expect(diffNavigablePositions(view)).toHaveLength(2)),
+      );
+      expect(view.state.doc.toString()).toBe(changed);
+      await act(async () => expect(await stageChunkAt(view, 0)).toBe(false));
+      expect(index()).toBe(changed);
+      expect(disk()).toBe(changed.replaceAll("\n", "\r\n"));
+    },
+  );
 
-  it("does not confuse a real CRLF-only change with a clean working tree", async () => {
-    baseline("old\nline\n");
-    write("new\nline\n");
-    git(["add", "--", filename]);
-    write("new\r\nline\r\n");
-    const view = await render();
-    await act(async () =>
-      vi.waitFor(() =>
-        expect(container.querySelector('[role="status"]')).not.toBeNull(),
-      ),
-    );
-    expect(diffNavigablePositions(view)).toEqual([]);
-    expect(git(["diff", "--name-only", "--", filename]).trim()).toBe(filename);
-    expect(index()).toBe("new\nline\n");
-  });
+  scenario(
+    "does not confuse a real CRLF-only change with a clean working tree",
+    async () => {
+      baseline("old\nline\n");
+      write("new\nline\n");
+      git(["add", "--", filename]);
+      write("new\r\nline\r\n");
+      const view = await render();
+      await act(async () =>
+        vi.waitFor(() =>
+          expect(container.querySelector('[role="status"]')).not.toBeNull(),
+        ),
+      );
+      expect(diffNavigablePositions(view)).toEqual([]);
+      expect(git(["diff", "--name-only", "--", filename]).trim()).toBe(
+        filename,
+      );
+      expect(index()).toBe("new\nline\n");
+    },
+  );
 
-  it("keeps the index EOL when staging only one CRLF editor hunk", async () => {
-    const original = "old first\n" + "context\n".repeat(16) + "old last\n";
-    const changed = original
-      .replace("old first", "new first")
-      .replace("old last", "new last");
-    baseline(original);
-    write(changed.replaceAll("\n", "\r\n"));
-    const view = await render();
-    await act(async () =>
-      vi.waitFor(() => expect(diffNavigablePositions(view)).toHaveLength(2)),
-    );
-    await act(async () => expect(await stageChunkAt(view, 0)).toBe(true));
-    expect(index()).toBe(original.replace("old first", "new first"));
-    expect(disk()).toBe(changed.replaceAll("\n", "\r\n"));
-  });
+  scenario(
+    "keeps the index EOL when staging only one CRLF editor hunk",
+    async () => {
+      const original = "old first\n" + "context\n".repeat(16) + "old last\n";
+      const changed = original
+        .replace("old first", "new first")
+        .replace("old last", "new last");
+      baseline(original);
+      write(changed.replaceAll("\n", "\r\n"));
+      const view = await render();
+      await act(async () =>
+        vi.waitFor(() => expect(diffNavigablePositions(view)).toHaveLength(2)),
+      );
+      await act(async () => expect(await stageChunkAt(view, 0)).toBe(true));
+      expect(index()).toBe(original.replace("old first", "new first"));
+      expect(disk()).toBe(changed.replaceAll("\n", "\r\n"));
+    },
+  );
 
-  it("keeps CRLF when staging a file without an index baseline", async () => {
-    baseline("");
-    git(["rm", "--cached", "--", filename]);
-    git(["commit", "-qm", "Remove file from index"]);
-    write("first\r\nsecond\r\n");
-    const view = await render();
-    await act(async () =>
-      vi.waitFor(() => expect(diffNavigablePositions(view)).toHaveLength(1)),
-    );
-    await act(async () => expect(await stageChunkAt(view, 0)).toBe(true));
-    expect(index()).toBe("first\r\nsecond\r\n");
-    expect(disk()).toBe(index());
-  });
+  scenario(
+    "keeps CRLF when staging a file without an index baseline",
+    async () => {
+      baseline("");
+      git(["rm", "--cached", "--", filename]);
+      git(["commit", "-qm", "Remove file from index"]);
+      write("first\r\nsecond\r\n");
+      const view = await render();
+      await act(async () =>
+        vi.waitFor(() => expect(diffNavigablePositions(view)).toHaveLength(1)),
+      );
+      await act(async () => expect(await stageChunkAt(view, 0)).toBe(true));
+      expect(index()).toBe("first\r\nsecond\r\n");
+      expect(disk()).toBe(index());
+    },
+  );
 });

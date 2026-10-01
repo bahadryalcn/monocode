@@ -1165,6 +1165,7 @@ describe("subagent steps", () => {
       name: "Review",
       model: "gpt-5.6-sol",
       steps: [],
+      startedAt: expect.any(Number),
     });
     session = applyHarnessEvent(session, {
       type: "tool.updated",
@@ -1328,5 +1329,123 @@ describe("subagent steps", () => {
 
     expect(session.blocks[0].tool?.status).toBe("completed");
     expect(session.blocks[0].agentRun?.steps).toHaveLength(1);
+  });
+});
+
+describe("subagent timing", () => {
+  const start = () =>
+    applyHarnessEvent(newSession("claude", "/tmp"), {
+      type: "tool.started",
+      callId: "agent-1",
+      title: "Correctness review",
+      kind: "agent",
+      status: "in_progress",
+    });
+
+  afterEach(() => vi.useRealTimers());
+
+  it("stamps the start once, when the block is created", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    let session = start();
+    expect(session.blocks[0].agentRun).toMatchObject({ startedAt: 1_000 });
+    expect(session.blocks[0].agentRun?.endedAt).toBeUndefined();
+
+    vi.setSystemTime(5_000);
+    session = applyHarnessEvent(session, {
+      type: "tool.updated",
+      callId: "agent-1",
+      status: "in_progress",
+      agentModel: "opus",
+    });
+    session = applyHarnessEvent(session, {
+      type: "agent.step",
+      callId: "agent-1",
+      stepId: "t1",
+      kind: "tool",
+      text: "Read a.ts",
+    });
+    expect(session.blocks[0].agentRun).toMatchObject({ startedAt: 1_000 });
+    expect(session.blocks[0].agentRun?.endedAt).toBeUndefined();
+  });
+
+  it("stamps the end on completion and never overwrites it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    let session = start();
+    vi.setSystemTime(9_000);
+    session = applyHarnessEvent(session, {
+      type: "tool.updated",
+      callId: "agent-1",
+      status: "completed",
+    });
+    expect(session.blocks[0].agentRun).toMatchObject({
+      startedAt: 1_000,
+      endedAt: 9_000,
+    });
+    vi.setSystemTime(20_000);
+    session = applyHarnessEvent(session, {
+      type: "tool.updated",
+      callId: "agent-1",
+      status: "completed",
+      detail: "late result",
+    });
+    session = applyHarnessEvent(session, {
+      type: "agent.step",
+      callId: "agent-1",
+      stepId: "m1",
+      kind: "message",
+      text: "late",
+    });
+    expect(session.blocks[0].agentRun).toMatchObject({
+      startedAt: 1_000,
+      endedAt: 9_000,
+    });
+  });
+
+  it("stamps the end when the run fails", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    let session = start();
+    vi.setSystemTime(4_000);
+    session = applyHarnessEvent(session, {
+      type: "tool.updated",
+      callId: "agent-1",
+      status: "failed",
+    });
+    expect(session.blocks[0].agentRun).toMatchObject({
+      startedAt: 1_000,
+      endedAt: 4_000,
+    });
+  });
+
+  it("stamps the end of a run orphaned by a provider failure", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    let session = start();
+    vi.setSystemTime(3_000);
+    session = applyHarnessEvent(session, {
+      type: "session.error",
+      message: "exited",
+    });
+    expect(session.blocks[0].agentRun).toMatchObject({
+      startedAt: 1_000,
+      endedAt: 3_000,
+    });
+  });
+
+  it("leaves a run restored without timing untimed", () => {
+    let session = start();
+    const { startedAt: _s, ...legacy } = session.blocks[0].agentRun!;
+    session = {
+      ...session,
+      blocks: [{ ...session.blocks[0], agentRun: legacy }],
+    };
+    session = applyHarnessEvent(session, {
+      type: "tool.updated",
+      callId: "agent-1",
+      status: "in_progress",
+    });
+    expect(session.blocks[0].agentRun?.startedAt).toBeUndefined();
   });
 });

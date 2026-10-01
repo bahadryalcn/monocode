@@ -1,34 +1,31 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MonoCode Fork",
+  "identifier": "com.monocode.desktop.fork",
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "MonoCode Dev",
+        "title": "MonoCode Fork",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
         "minHeight": 520,
         "decorations": false,
         "transparent": true,
-        "backgroundColor": "#17171a",
+        "backgroundColor": "#171717",
         "backgroundThrottling": "throttle",
         "shadow": true
       }
     ]
   },
   "bundle": {
-    "targets": [
-      "deb",
-      "appimage"
-    ],
-    "createUpdaterArtifacts": false,
-    "category": "DeveloperTool",
-    "linux": {
-      "appimage": {
-        "bundleMediaFramework": false
-      }
-    },
-    "resources": null
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": []
+    }
   }
 }

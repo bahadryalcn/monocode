@@ -1575,3 +1575,30 @@ export function filterKeybindings(
       row.when.toLowerCase().includes(needle),
   );
 }
+
+const INLINE_BLAME_KEY = "monocode.inlineBlame";
+
+export const INLINE_BLAME_DEFAULT = false;
+
+/** Fired on `window` when the editor's inline blame gutter is switched. */
+export const INLINE_BLAME_CHANGE_EVENT = "monocode:inline-blame-change";
+
+/** Whether editors show the per-line blame gutter. */
+export function loadInlineBlame(): boolean {
+  return readFlag(INLINE_BLAME_KEY) ?? INLINE_BLAME_DEFAULT;
+}
+
+export function saveInlineBlame(value: boolean) {
+  writeFlag(INLINE_BLAME_KEY, value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(INLINE_BLAME_CHANGE_EVENT, { detail: value }),
+  );
+}
+
+export function subscribeInlineBlame(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(INLINE_BLAME_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(INLINE_BLAME_CHANGE_EVENT, onStoreChange);
+}

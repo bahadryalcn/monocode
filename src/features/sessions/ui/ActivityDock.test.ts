@@ -110,6 +110,26 @@ describe("ActivityDock", () => {
     );
     expect(row?.getAttribute("aria-label")).toContain("Side-by-side diff");
     act(() => row?.click());
-    expect(onOpenAgent).toHaveBeenCalledWith("a1");
+    expect(onOpenAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ blockId: "a1", kind: "agent" }),
+    );
+  });
+
+  it("shows a run's final duration in the agent list", () => {
+    const timed: Block = {
+      ...agent,
+      tool: { callId: "a1", kind: "agent", status: "completed" },
+      agentRun: { name: "Diff", steps: [], startedAt: 10_000, endedAt: 72_000 },
+    };
+    // Its own session id: the list's open state is remembered per session.
+    render({ busy: true, blocks: [user, timed], sessionId: "s-timing" });
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>("button[aria-expanded]")
+        ?.click(),
+    );
+    expect(
+      container.querySelector("[data-dock-agent='a1']")?.textContent,
+    ).toContain("1m 2s");
   });
 });

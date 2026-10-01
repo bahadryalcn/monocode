@@ -36,6 +36,7 @@ import { useTabCloseMotion } from "../../features/workspace/hooks/useTabCloseMot
 import { TabWidthMotion } from "./ClosingTab";
 import { FileTypeIcon } from "../../features/files/ui/FileTypeIcon";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
 import { WindowControls } from "./WindowControls";
@@ -723,6 +724,15 @@ function TitleBarComponent({
     () => tabs.find((t) => t.id === activeId),
     [activeId, tabs],
   );
+  // The product name differs between the official, fork and dev builds.
+  const [appName, setAppName] = useState("MonoCode");
+  useEffect(() => {
+    void (async () => {
+      try {
+        setAppName(await getName());
+      } catch {}
+    })();
+  }, []);
   const systemTitle = useMemo(() => {
     const activeName = activeTab
       ? activeTab.files[0]
@@ -731,13 +741,13 @@ function TitleBarComponent({
       : "";
     const project = cwd ? basename(cwd) : "";
     if (activeName && project && activeName !== project) {
-      return `${activeName} — ${project} — MonoCode`;
+      return `${activeName} — ${project} — ${appName}`;
     }
     if (project) {
-      return `${project} — MonoCode`;
+      return `${project} — ${appName}`;
     }
-    return "MonoCode";
-  }, [activeTab, cwd]);
+    return appName;
+  }, [activeTab, cwd, appName]);
 
   useEffect(() => {
     document.title = systemTitle;

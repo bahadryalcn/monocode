@@ -259,6 +259,22 @@ describe("persisting a subagent's trail", () => {
     });
   });
 
+  it("keeps run timing, and tolerates old runs without it", () => {
+    const timed = withRun({
+      name: "Review",
+      steps: [],
+      startedAt: 1_000,
+      endedAt: 2_000,
+    });
+    expect(timed).toMatchObject({ startedAt: 1_000, endedAt: 2_000 });
+    const old = withRun({ name: "Review", steps: [] });
+    expect(old).not.toHaveProperty("startedAt");
+    expect(old).not.toHaveProperty("endedAt");
+    expect(
+      withRun({ name: "Review", steps: [], startedAt: "x" } as never),
+    ).not.toHaveProperty("startedAt");
+  });
+
   it("drops steps a provider left malformed", () => {
     expect(
       withRun({

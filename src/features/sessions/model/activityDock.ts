@@ -56,6 +56,9 @@ export type DockAgent = {
   model?: string;
   /** "46 steps, 1 failed", worded exactly as on the transcript row. */
   detail: string;
+  /** Epoch ms the run began and ended; absent on older sessions. */
+  startedAt?: number;
+  endedAt?: number;
 };
 
 export type ActivityDock = {
@@ -152,6 +155,12 @@ function dockAgent(block: Block, busy: boolean): DockAgent[] {
       detail: agent
         ? subagentStatusLine(block, block.agentRun?.steps ?? [])
         : "",
+      ...(agent && block.agentRun?.startedAt !== undefined
+        ? { startedAt: block.agentRun.startedAt }
+        : {}),
+      ...(agent && block.agentRun?.endedAt !== undefined
+        ? { endedAt: block.agentRun.endedAt }
+        : {}),
     },
   ];
 }

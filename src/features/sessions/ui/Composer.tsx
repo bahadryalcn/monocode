@@ -92,7 +92,12 @@ import type {
   WorkspaceMode,
   ComposerTurnOptions,
 } from "../model/session";
-import { HARNESS_TITLE, harnessSupportsAttachments } from "../model/session";
+import {
+  HARNESS_TITLE,
+  harnessSupportsAttachments,
+  planUnavailableReason,
+  unavailableRuntimeModes,
+} from "../model/session";
 import type {
   UserQuestionPrompt,
   UserQuestionReply,
@@ -2499,6 +2504,8 @@ export function Composer({
                     <button
                       type="button"
                       aria-pressed={planActive}
+                      disabled={!!planUnavailableReason(harness)}
+                      title={planUnavailableReason(harness)}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
                         setPlanSelected(!planActive);
@@ -2509,13 +2516,15 @@ export function Composer({
                         setPlusOpen(false);
                         ref.current?.focus();
                       }}
-                      className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
+                      className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <AiIdea className="mt-0.5 size-4 shrink-0 text-yellow-300/80" />
                       <span className="min-w-0 flex-1">
                         <span className="block text-[13px]">Plan mode</span>
                         <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                          Review a plan before building
+                          {planUnavailableReason(harness)
+                            ? `Unavailable: ${planUnavailableReason(harness)}`
+                            : "Review a plan before building"}
                         </span>
                       </span>
                       {planActive ? (
@@ -2705,6 +2714,7 @@ export function Composer({
                   <AccessPicker
                     value={runtimeMode}
                     busy={busy}
+                    unavailable={unavailableRuntimeModes(harness)}
                     onChange={onRuntimeModeChange}
                     onClose={() => ref.current?.focus()}
                   />

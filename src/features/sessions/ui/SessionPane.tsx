@@ -47,8 +47,9 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { ActivityDock } from "./ActivityDock";
-import { isBackgroundOnly } from "../model/activityDock";
-import { requestOpenSubagent } from "./subagentFocus";
+import { SubagentSheet, useSubagentSheet } from "./SubagentSheet";
+import { isBackgroundOnly, type DockAgent } from "../model/activityDock";
+import { requestOpenSubagent, requestViewSubagent } from "./subagentFocus";
 import { AgentTranscript } from "./AgentTranscript";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
@@ -477,12 +478,25 @@ const LocalSessionPane = memo(function LocalSessionPane({
     [],
   );
   // The dock's rows: bring the run into view, and open it once it is there.
-  const openDockAgent = useCallback(
+  const showAgentInTranscript = useCallback(
     (blockId: string) => {
       requestOpenSubagent(blockId);
       navigateBlock(blockId);
     },
     [navigateBlock],
+  );
+  const subagentSheet = useSubagentSheet(session.blocks, visible);
+  const closeSubagentSheet = subagentSheet.close;
+  // Only one sheet over the pane at a time: a side question takes over.
+  useEffect(() => {
+    if (btw.open) closeSubagentSheet();
+  }, [btw.open, closeSubagentSheet]);
+  const openDockAgent = useCallback(
+    (agent: DockAgent) => {
+      if (agent.kind === "agent") requestViewSubagent(agent.blockId);
+      else showAgentInTranscript(agent.blockId);
+    },
+    [showAgentInTranscript],
   );
   const jumpRequest = useSyncExternalStore(
     subscribeTranscriptJump,
@@ -1013,6 +1027,21 @@ const LocalSessionPane = memo(function LocalSessionPane({
           onOpenFile={onOpenFile}
           onOpenDiff={onOpenDiff}
         />
+        {subagentSheet.block ? (
+          <SubagentSheet
+            block={subagentSheet.block}
+            busy={!!session.busy}
+            visible={visible}
+            cwd={workCwd}
+            onClose={closeSubagentSheet}
+            onShowInTranscript={(blockId) => {
+              closeSubagentSheet();
+              showAgentInTranscript(blockId);
+            }}
+            onOpenFile={onOpenFile}
+            onOpenDiff={onOpenDiff}
+          />
+        ) : null}
       </div>
     </div>
   );

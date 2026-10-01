@@ -1,4 +1,4 @@
-import { getVersion } from "@tauri-apps/api/app";
+import { getIdentifier, getVersion } from "@tauri-apps/api/app";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
@@ -28,6 +28,23 @@ function isUpdaterNotConfiguredError(error: unknown): boolean {
   return /updater does not have any endpoints set/i.test(text);
 }
 
+// Only the official build may talk to the release feed. The fork and dev
+// builds use other identifiers, so a fork can never download or install the
+// official release over itself. Any failure reading the identifier counts as
+// "not official": the safe default is no updates.
+const OFFICIAL_IDENTIFIER = "com.monocode.desktop";
+
+export async function isUpdaterEnabled(): Promise<boolean> {
+  try {
+    return (await getIdentifier()) === OFFICIAL_IDENTIFIER;
+  } catch {
+    return false;
+  }
+}
+
+export const UPDATES_DISABLED_MESSAGE =
+  "Automatic updates are disabled in this build. Rebuild from source to update (see docs/fork.md).";
+
 export async function readAppVersion(): Promise<string> {
   try {
     return await getVersion();
@@ -37,6 +54,7 @@ export async function readAppVersion(): Promise<string> {
 }
 
 export async function probeForUpdate(): Promise<Update | null> {
+  if (!(await isUpdaterEnabled())) return null;
   const update = await check();
   pendingUpdate = update;
   if (update) announceUpdateAvailable(update.version);
@@ -48,6 +66,15 @@ export async function runUpdateFlow(
   onProgress?: (snapshot: UpdaterSnapshot) => void,
 ): Promise<UpdaterSnapshot> {
   const currentVersion = await readAppVersion();
+  if (!(await isUpdaterEnabled())) {
+    pendingUpdate = null;
+    const idle: UpdaterSnapshot = { phase: "idle", currentVersion };
+    onProgress?.(idle);
+    if (manual) {
+      await message(UPDATES_DISABLED_MESSAGE, { title: "MonoCode" });
+    }
+    return idle;
+  }
   const base: UpdaterSnapshot = { phase: "checking", currentVersion };
   onProgress?.(base);
 

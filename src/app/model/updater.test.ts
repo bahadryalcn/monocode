@@ -4,13 +4,17 @@ const mocks = vi.hoisted(() => ({
   announce: vi.fn(),
   check: vi.fn(),
   downloadAndInstall: vi.fn(),
+  getIdentifier: vi.fn(),
   getVersion: vi.fn(),
   message: vi.fn(),
   relaunch: vi.fn(),
   remember: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/api/app", () => ({ getVersion: mocks.getVersion }));
+vi.mock("@tauri-apps/api/app", () => ({
+  getIdentifier: mocks.getIdentifier,
+  getVersion: mocks.getVersion,
+}));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   ask: vi.fn(),
   message: mocks.message,
@@ -23,6 +27,7 @@ vi.mock("./updateNotice", () => ({ rememberInstalledUpdate: mocks.remember }));
 beforeEach(() => {
   vi.clearAllMocks();
   vi.resetModules();
+  mocks.getIdentifier.mockResolvedValue("com.monocode.desktop");
   mocks.getVersion.mockResolvedValue("0.1.22");
   mocks.relaunch.mockResolvedValue(undefined);
   mocks.message.mockResolvedValue(undefined);

@@ -26,3 +26,16 @@ export function consumeOpenSubagent(blockId: string): boolean {
   clearTimeout(expiry);
   return true;
 }
+
+/**
+ * Asks the session pane to open one delegated run's own panel, from anywhere
+ * below it (the transcript's "Open" button, the composer's dock). The pane that
+ * owns the block answers; every other pane ignores it.
+ */
+export const VIEW_SUBAGENT_EVENT = "monocode:view-subagent";
+
+export function requestViewSubagent(blockId: string): void {
+  window.dispatchEvent(
+    new CustomEvent<string>(VIEW_SUBAGENT_EVENT, { detail: blockId }),
+  );
+}
