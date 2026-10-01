@@ -55,6 +55,7 @@ import {
   type ExplorerFilePointerDragDetail,
 } from "../../../shared/lib/drag";
 import type { ContextUsage } from "../model/contextUsage";
+import type { SessionUsage } from "../model/sessionUsage";
 import {
   loadProjectFiles,
   peekProjectFiles,
@@ -241,6 +242,7 @@ type Props = {
   remoteSession?: boolean;
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
   context?: ContextUsage;
+  sessionUsage?: SessionUsage;
   compactSupported?: boolean;
   quoteRequest?: QuoteRequest;
   initialDraft?: string;
@@ -534,6 +536,7 @@ export function Composer({
   remoteSession = false,
   remoteFeatures,
   context,
+  sessionUsage,
   compactSupported = false,
   quoteRequest,
   initialDraft,
@@ -2288,6 +2291,7 @@ export function Composer({
               <div className="ml-auto flex shrink-0 items-center">
                 <ContextMeter
                   usage={context}
+                  sessionUsage={sessionUsage}
                   onCompact={
                     compactSupported && !worktreeRemoved
                       ? onCompactContext

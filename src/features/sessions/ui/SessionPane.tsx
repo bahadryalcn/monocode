@@ -581,6 +581,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       hideBranchPicker={!!session.inboxAsk || managed}
       hideTopBar={!!session.inboxAsk}
       context={session.context}
+      sessionUsage={session.usage}
       quoteRequest={quoteRequest}
       initialDraft={
         draftRef.current ??
