@@ -55,6 +55,7 @@ import {
 } from "../../../shared/ui/ColorPickerPopover";
 import { Popover } from "../../../shared/ui/Popover";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import { OPEN_SESSION_IMPORT_EVENT } from "../../sessions/import/importModel";
 import { JiraSettings } from "./JiraSettings";
 import { GradientBlurBackground } from "./GradientBlurBackground";
 import { McpSettings } from "./McpSettings";
@@ -1045,6 +1046,25 @@ function GeneralPage({
             onChange={onKeepAwakeScreen}
             disabled={!keepAwake}
           />
+        </Row>
+      </Group>
+
+      <Group
+        id="import-history"
+        title="Import history"
+        description="Bring conversations you had in the Claude Code and Codex terminals into MonoCode."
+      >
+        <Row
+          label="Claude Code and Codex sessions"
+          description="Lists what is on this computer by folder. Nothing is imported until you choose it, and the originals are never changed."
+        >
+          <SecondaryButton
+            onClick={() =>
+              window.dispatchEvent(new Event(OPEN_SESSION_IMPORT_EVENT))
+            }
+          >
+            Import…
+          </SecondaryButton>
         </Row>
       </Group>
 

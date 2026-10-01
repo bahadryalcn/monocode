@@ -582,6 +582,7 @@ import { remoteSessionState } from "../features/connections/model/remoteSessionS
 import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
 import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
+import { SessionImportHost } from "../features/sessions/ui/SessionImportHost";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
 import { inboxAskKey, inboxAskPrompt } from "../features/inbox/model/inboxAsk";
@@ -10035,6 +10036,11 @@ function Workspace({
     return () =>
       window.removeEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
   }, [openSettings]);
+  // Imported sessions add projects to the rail and rows to the open project.
+  const onSessionsImported = useCallback(() => {
+    setRecents(loadRecents());
+    void refreshHistory(sidebarCwdRef.current);
+  }, [refreshHistory]);
   const [remoteProjectDialogOpen, setRemoteProjectDialogOpen] = useState(false);
   useEffect(() => {
     const open = () => setRemoteProjectDialogOpen(true);
@@ -11309,6 +11315,7 @@ function Workspace({
             />
           ) : null}
           <GitFileInspector onOpenCommit={onOpenCommit} />
+          <SessionImportHost onImported={onSessionsImported} />
           {remoteProjectDialogOpen ? (
             <AddRemoteProjectDialog
               onCancel={() => setRemoteProjectDialogOpen(false)}

@@ -182,6 +182,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "update upgrade release what's new build changelog",
   },
   {
+    id: "import-history",
+    section: "general",
+    label: "Import Claude Code and Codex sessions",
+    keywords: "history conversations terminal resume migrate existing",
+  },
+  {
     id: "sounds",
     section: "general",
     label: "Sounds",

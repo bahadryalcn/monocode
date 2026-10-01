@@ -75,7 +75,7 @@ pub async fn provider_usage_report(
 }
 
 /// The directory a provider CLI uses for this account, without creating it.
-fn account_config_dir(
+pub(crate) fn account_config_dir(
     app: &AppHandle,
     provider: &str,
     account_id: Option<&str>,
@@ -156,7 +156,7 @@ fn scan(roots: &[PathBuf], since: i64, parse: FileParser) -> UsageReport {
     }
 }
 
-fn collect_jsonl(dir: &Path, since: i64, depth: usize, out: &mut Vec<(i64, PathBuf)>) {
+pub(crate) fn collect_jsonl(dir: &Path, since: i64, depth: usize, out: &mut Vec<(i64, PathBuf)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -189,7 +189,7 @@ fn collect_jsonl(dir: &Path, since: i64, depth: usize, out: &mut Vec<(i64, PathB
 }
 
 /// A JSONL transcript, plain or zstd-compressed as Codex can store them.
-fn is_log(path: &Path) -> bool {
+pub(crate) fn is_log(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
@@ -223,18 +223,23 @@ fn add(totals: &mut Totals, timestamp: i64, model: &str, project: &str, usage: &
 /// Lines of a transcript, decompressed on the fly for `.zst` files. Reading
 /// stops at the first damaged line or frame.
 fn lines(path: &Path) -> Box<dyn Iterator<Item = String>> {
-    let Ok(file) = std::fs::File::open(path) else {
-        return Box::new(std::iter::empty());
-    };
-    let file = BufReader::new(file);
+    match open_log(path) {
+        Some(reader) => Box::new(reader.lines().map_while(Result::ok)),
+        None => Box::new(std::iter::empty()),
+    }
+}
+
+/// A transcript opened for reading, decompressed on the fly for `.zst` files.
+pub(crate) fn open_log(path: &Path) -> Option<Box<dyn BufRead>> {
+    let file = BufReader::new(std::fs::File::open(path).ok()?);
     if path.extension().and_then(|ext| ext.to_str()) == Some("zst") {
         let frames = ZstdFrames {
             source: Some(file),
             decoder: None,
         };
-        return Box::new(BufReader::new(frames).lines().map_while(Result::ok));
+        return Some(Box::new(BufReader::new(frames)));
     }
-    Box::new(file.lines().map_while(Result::ok))
+    Some(Box::new(file))
 }
 
 /// Streams every frame of a zstd file in turn, since a file appended to over
@@ -450,7 +455,7 @@ fn parse_codex_file(path: &Path, since: i64, _totals: &mut Totals, requests: &mu
 }
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM)` into Unix seconds.
-fn parse_timestamp(text: &str) -> Option<i64> {
+pub(crate) fn parse_timestamp(text: &str) -> Option<i64> {
     let bytes = text.as_bytes();
     if bytes.len() < 19
         || bytes[4] != b'-'

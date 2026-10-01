@@ -1,4 +1,5 @@
 import {
+  Archive,
   BellOff,
   ChevronDown,
   ChevronRight,
@@ -84,6 +85,7 @@ import { GithubStarPrompt } from "./GithubStarPrompt";
 import { Popover } from "../../shared/ui/Popover";
 import { OPEN_REMOTE_PROJECT_EVENT } from "../../features/connections/model/connections";
 import { OPEN_CODE_WORKSPACE_EVENT } from "../../features/projects/model/codeWorkspace";
+import { OPEN_SESSION_IMPORT_EVENT } from "../../features/sessions/import/importModel";
 import {
   useRemoteMachineOnline,
   useRemoteMachines,
@@ -1167,7 +1169,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
         <Popover
           anchor={anchor}
           align="start"
-          width={230}
+          width={290}
           onDismiss={() => setOpen(false)}
           role="menu"
           aria-label="Open project"
@@ -1208,6 +1210,18 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
           >
             <Internet className="size-3.5 shrink-0" strokeWidth={1.75} />
             Open folder on a machine…
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              window.dispatchEvent(new Event(OPEN_SESSION_IMPORT_EVENT));
+            }}
+          >
+            <Archive className="size-3.5 shrink-0" strokeWidth={1.75} />
+            Import Claude Code / Codex sessions…
           </button>
         </Popover>
       ) : null}

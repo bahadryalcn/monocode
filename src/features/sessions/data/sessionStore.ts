@@ -264,6 +264,30 @@ export async function upsertSession(
 }
 
 /**
+ * Store a conversation brought in from a provider's own history, keeping its
+ * original timestamps so it sorts where it happened. Resolves to `null` when
+ * the conversation is already stored: an import never replaces a session.
+ */
+export async function importSessionRecord(
+  session: Session,
+  times: { createdAt: number; updatedAt: number },
+): Promise<SessionSummary | null> {
+  if (!shouldPersistSession(session)) {
+    throw new Error("The conversation has no messages to import");
+  }
+  if (!isPersistableId(session.id)) throw new Error("Invalid session id");
+  const summary = await invoke<SessionSummary | null>("session_import", {
+    session: { ...sanitizeSessionForPersist(session), ...times },
+  });
+  return summary ? normalizeSummary(summary) : null;
+}
+
+/** `harness:providerSessionId` of every stored session bound to a provider conversation, plus the ids earlier imports created. */
+export function importedSessionKeys(): Promise<string[]> {
+  return invoke<string[]>("session_import_keys");
+}
+
+/**
  * Blocks are replaced, never mutated in place, so identity stands in for
  * content. Serializing the session here instead meant a full deep copy and a
  * `JSON.stringify` of the whole transcript — megabytes on a long chat — on the

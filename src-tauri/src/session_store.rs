@@ -123,6 +123,14 @@ pub struct SessionUpsert {
     pub linked_work_item: Option<Value>,
     #[serde(default)]
     pub automation_id: Option<String>,
+    /// Original timestamps of an imported conversation. Used only when the row
+    /// is first created, so imported history sorts where it happened rather
+    /// than at the moment of the import; every later write moves `updated_at`
+    /// as usual.
+    #[serde(default)]
+    pub created_at: Option<i64>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +212,13 @@ pub fn session_upsert(
     store: State<'_, SessionStore>,
     session: SessionUpsert,
 ) -> Result<SessionSummary, String> {
+    validate_upsert(&session)?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
+    Ok(summary)
+}
+
+fn validate_upsert(session: &SessionUpsert) -> Result<(), String> {
     validate_id(&session.id, "session")?;
     if session.cwd.trim().is_empty() {
         return Err("cwd is required".into());
@@ -229,10 +244,63 @@ pub fn session_upsert(
     if !session.blocks.is_array() {
         return Err("blocks must be an array".into());
     }
+    Ok(())
+}
 
+/// Adds a conversation brought in from a provider's own history. Never
+/// replaces anything: when the id, or the provider conversation it carries, is
+/// already stored, the call does nothing and returns `None`, so importing the
+/// same transcript twice cannot overwrite a chat that was continued since.
+#[tauri::command(async)]
+pub fn session_import(
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+) -> Result<Option<SessionSummary>, String> {
+    validate_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
-    Ok(summary)
+    if import_already_stored(&conn, &session).map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    upsert_session(&conn, &session)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+fn import_already_stored(conn: &Connection, session: &SessionUpsert) -> rusqlite::Result<bool> {
+    let provider_session_id = session
+        .provider_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM sessions
+           WHERE id = ?1
+              OR (?3 IS NOT NULL AND harness = ?2 AND provider_session_id = ?3))",
+        params![session.id, session.harness, provider_session_id],
+        |row| row.get(0),
+    )
+}
+
+/// What the import dialog needs to mark conversations as already imported:
+/// `harness:providerSessionId` for every stored session bound to a provider
+/// conversation, plus the id of every session an earlier import created (a
+/// read-only import has no provider binding to match on).
+#[tauri::command(async)]
+pub fn session_import_keys(store: State<'_, SessionStore>) -> Result<Vec<String>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    import_keys(&conn).map_err(|e| e.to_string())
+}
+
+fn import_keys(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT harness || ':' || provider_session_id FROM sessions
+           WHERE provider_session_id IS NOT NULL AND provider_session_id != ''
+         UNION
+         SELECT id FROM sessions WHERE id LIKE 'imp-%'",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
 }
 
 fn generated_image_paths(blocks: &Value) -> Vec<String> {
@@ -1142,12 +1210,13 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
     let created_at = existing
         .as_ref()
         .map(|(value, _, _, _, _)| *value)
-        .unwrap_or(now);
+        .unwrap_or_else(|| session.created_at.unwrap_or(now));
     let updated_at = match &existing {
         Some((_, prev_updated, prev_blocks, _, _)) if json_eq(prev_blocks, &session.blocks) => {
             *prev_updated
         }
-        _ => now,
+        Some(_) => now,
+        None => session.updated_at.unwrap_or(now),
     };
     let archived = existing
         .as_ref()
@@ -2061,7 +2130,52 @@ mod tests {
             worktree_removed: false,
             linked_work_item: None,
             automation_id: None,
+            created_at: None,
+            updated_at: None,
         }
+    }
+
+    #[test]
+    fn imported_sessions_keep_their_timestamps_and_are_never_replaced() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut import = sample("imp-cursor-acp-session-1", "/tmp/project", "Imported");
+        import.created_at = Some(1_000);
+        import.updated_at = Some(2_000);
+        assert!(!import_already_stored(&conn, &import).unwrap());
+        let summary = upsert_session(&conn, &import).unwrap();
+        assert_eq!((summary.created_at, summary.updated_at), (1_000, 2_000));
+
+        // Same id, or a different id carrying the same provider conversation.
+        assert!(import_already_stored(&conn, &import).unwrap());
+        let mut renamed = sample("other-id", "/tmp/project", "Imported");
+        assert!(import_already_stored(&conn, &renamed).unwrap());
+        renamed.harness = "claude".into();
+        assert!(!import_already_stored(&conn, &renamed).unwrap());
+        renamed.provider_session_id = None;
+        assert!(!import_already_stored(&conn, &renamed).unwrap());
+
+        // Continuing the chat afterwards moves `updated_at` like any session.
+        let mut continued = import.clone();
+        continued.blocks = json!([{ "id": "b2", "role": "user", "text": "more" }]);
+        let summary = upsert_session(&conn, &continued).unwrap();
+        assert_eq!(summary.created_at, 1_000);
+        assert!(summary.updated_at > 2_000);
+
+        // A read-only import has no provider binding; its id is the key.
+        let mut readonly = sample("imp-codex-abc", "/tmp/project", "Read only");
+        readonly.provider_session_id = None;
+        upsert_session(&conn, &readonly).unwrap();
+        let mut keys = import_keys(&conn).unwrap();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "cursor:acp-session-1",
+                "imp-codex-abc",
+                "imp-cursor-acp-session-1"
+            ]
+        );
     }
 
     #[test]

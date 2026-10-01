@@ -38,6 +38,7 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod search;
+mod session_import;
 mod session_store;
 mod skills;
 pub mod ssh_askpass;
@@ -494,7 +495,13 @@ pub fn run() {
             pty::pty_status,
             pty::pty_kill,
             pty::pty_kill_all,
+            session_import::import_discover,
+            session_import::import_read_claude,
+            session_import::import_read_codex,
+            session_import::import_placeholder_dir,
             session_store::session_upsert,
+            session_store::session_import,
+            session_store::session_import_keys,
             session_store::session_list_by_project,
             session_store::session_rebase_project,
             session_store::session_list_linked,

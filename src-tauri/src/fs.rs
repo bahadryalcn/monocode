@@ -279,7 +279,7 @@ fn summarize_claude_session(path: &Path) -> Option<(String, usize)> {
 
 /// `content` is a bare string for a typed prompt and a block list once the
 /// message carries attachments or tool results.
-fn claude_message_text(value: &serde_json::Value) -> Option<String> {
+pub(crate) fn claude_message_text(value: &serde_json::Value) -> Option<String> {
     let content = value.get("message")?.get("content")?;
     if let Some(text) = content.as_str() {
         return Some(text.to_string());
