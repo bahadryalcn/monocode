@@ -4,8 +4,11 @@ import { operationLabel } from "./commitActions";
 
 /** What the Changes header menu needs to know to enable and label its items. */
 export type GitMenuState = {
-  /** Connected machines only get Pull; the rest is not implemented there. */
-  local: boolean;
+  /** The whole menu is available: this computer, or a machine whose host has
+   * `git.actions`. Otherwise only Pull is. */
+  actions: boolean;
+  /** Why the rest is missing when the machine's host is too old to run it. */
+  updateNotice?: string | null;
   /** Another git action is already running. */
   busy: boolean;
   /** Current branch, or null when HEAD is detached. */
@@ -105,7 +108,12 @@ export function gitActionsMenuItems(state: GitMenuState): ExplorerMenuItem[] {
   const hasStash = state.stashCount > 0;
 
   const pull = entry("pull", "Pull", canPull);
-  if (!state.local) return state.busy ? lock([pull]) : [pull];
+  if (!state.actions) {
+    const limited: ExplorerMenuItem[] = state.updateNotice
+      ? [pull, SEP, entry("host-update", "More actions need a newer MonoCode Host", false, { description: state.updateNotice })]
+      : [pull];
+    return state.busy ? lock(limited) : limited;
+  }
 
   const items: ExplorerMenuItem[] = [
     pull,

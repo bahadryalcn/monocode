@@ -40,7 +40,7 @@ const INPUT =
 /** The branch being created, or renamed from `from`. */
 type Editing = { kind: "create" } | { kind: "rename"; from: string };
 
-/** Switch to, merge, rebase, create, rename, and delete branches. Local projects only. */
+/** Switch to, merge, rebase, create, rename, and delete branches. Needs git.actions on a project on another machine. */
 export function BranchManagerDialog({ cwd, onClose }: Props) {
   const { branches } = useProjectBranchesState(cwd, true);
   const [busy, setBusy] = useState(false);

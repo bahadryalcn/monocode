@@ -243,10 +243,10 @@ describe("merge conflicts and blame in the file editor", () => {
     );
   });
 
-  it("disables blame for remote projects", async () => {
+  it("disables blame for a remote project until its host is known to support it", async () => {
     disk = "one\n";
     await render("remote://env/repo", false);
     expect(blameToggle().disabled).toBe(true);
-    expect(blameToggle().title).toMatch(/remote/);
+    expect(blameToggle().title).toMatch(/machine/);
   });
 });

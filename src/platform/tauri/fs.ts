@@ -473,7 +473,7 @@ export function gitStashClear(cwd: string): Promise<void> {
   return invoke<void>("git_stash_clear", { cwd });
 }
 
-/** Check out a commit without moving any branch. Local projects only. */
+/** Check out a commit without moving any branch. */
 export function gitCheckoutCommit(cwd: string, sha: string): Promise<void> {
   return invoke<void>("git_checkout_commit", { cwd, sha });
 }
@@ -597,6 +597,23 @@ export function gitStashAction(
 /** Repo-relative paths with unresolved merge conflicts. */
 export function gitConflicts(cwd: string): Promise<string[]> {
   return invoke<string[]>("git_conflicts", { cwd });
+}
+
+/** `gitOperationState` and `gitConflicts` together, for the banner that polls
+ * both: a project on another machine answers in one request. */
+export async function gitOperationStatus(
+  cwd: string,
+): Promise<{ operation: GitOperation | null; conflicts: string[] }> {
+  if (isRemotePath(cwd))
+    return invoke<{ operation: GitOperation | null; conflicts: string[] }>(
+      "git_operation_status",
+      { cwd },
+    );
+  const [operation, conflicts] = await Promise.all([
+    gitOperationState(cwd).catch(() => null),
+    gitConflicts(cwd).catch(() => []),
+  ]);
+  return { operation, conflicts };
 }
 
 /** Take one whole side of a conflicted file and stage it. */

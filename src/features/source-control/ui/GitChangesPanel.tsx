@@ -83,6 +83,13 @@ import { MOD } from "../../../platform/tauri/platform";
 import { applyProjectDiffStats } from "../hooks/useProjectDiffStats";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import { GIT_ACTIONS, useRemoteSupports } from "../../connections/model/remoteCapabilities";
+import {
+  remotePollDue,
+  reportRemoteLoad,
+  useRemoteLoadFailure,
+} from "../../connections/model/remoteHealth";
+import { RemoteLoadError } from "../../connections/ui/RemoteLoadError";
 import type { CommitMenuOptions } from "../model/gitActionsMenu";
 import { appName } from "../../../shared/lib/appName";
 
@@ -148,9 +155,9 @@ export function GitChangesPanel({
     return () => window.clearTimeout(timer);
   }, [status]);
 
-  // Fetch, branch management, and stashes are not implemented for connected machines.
-  const local = !isRemoteProjectPath(cwd);
-  const canFetch = local && Boolean(index?.remote);
+  // Fetch needs this computer or a host with `git.actions`.
+  const gitActions = useRemoteSupports(cwd, GIT_ACTIONS) === true;
+  const canFetch = gitActions && Boolean(index?.remote);
   const [autoFetch, setAutoFetch] = useState(loadAutoFetch);
 
   const onMutated = (paths?: string[]) => {
@@ -163,7 +170,7 @@ export function GitChangesPanel({
   useEffect(() => {
     if (!enabled || !autoFetch || !canFetch) return;
     const timer = window.setInterval(() => {
-      if (document.hidden) return;
+      if (document.hidden || !remotePollDue(cwd)) return;
       // Quiet: a failed background fetch should not interrupt with a dialog.
       void gitFetch(cwd).then(
         () => {
@@ -333,6 +340,7 @@ function ChangedFiles({
   onMutated: (paths?: string[]) => void;
 }) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
+  const failure = useRemoteLoadFailure(cwd, "changes");
   const menuRef = useRef<HTMLDivElement>(null);
   const messageRef = useRef<HTMLTextAreaElement>(null);
   const generateAbortRef = useRef<AbortController | null>(null);
@@ -831,9 +839,12 @@ function ChangedFiles({
           />
         ) : null}
       </div>
+      {failure ? (
+        <RemoteLoadError cwd={cwd} failure={failure} stale={!!index} onRetry={() => onMutated()} />
+      ) : null}
       <div
         ref={lockOverscroll}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-none py-1"
+        className={`min-h-0 flex-1 overflow-y-auto overscroll-none py-1 ${failure ? "opacity-60" : ""}`}
       >
         {files.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/45">
@@ -841,7 +852,9 @@ function ChangedFiles({
               ? index.ahead > 0 || index.behind > 0
                 ? syncStatusLabel(index)
                 : "No uncommitted changes"
-              : "Loading changes…"}
+              : failure
+                ? ""
+                : "Loading changes…"}
           </p>
         ) : (
           <>
@@ -1574,6 +1587,9 @@ function useDiffIndex(
   index: GitDiffIndex | null;
   reload: () => void;
 } {
+  // A remote project keeps its last good index when a load fails; the failure
+  // is shown by `ChangedFiles`.
+  const remote = isRemoteProjectPath(cwd);
   const [index, setIndex] = useState<GitDiffIndex | null>(() =>
     cachedIndex(cwd),
   );
@@ -1605,6 +1621,7 @@ function useDiffIndex(
       try {
         const next = await gitDiffIndex(cwd);
         if (cancelled) return;
+        if (remote) reportRemoteLoad(cwd, "changes");
         const prev = indexRef.current;
         if (sameIndex(prev, next)) return;
         indexByCwd.set(cwd, next);
@@ -1620,8 +1637,11 @@ function useDiffIndex(
           invalidateWatchedFiles(paths);
           notifyGitChanged();
         }
-      } catch {
-        if (!cancelled) {
+      } catch (error) {
+        if (cancelled) return;
+        if (remote) {
+          reportRemoteLoad(cwd, "changes", error);
+        } else {
           indexByCwd.delete(cwd);
           setIndex(null);
         }
@@ -1638,7 +1658,10 @@ function useDiffIndex(
     const onResume = () => {
       if (!document.hidden) void load();
     };
-    const timer = window.setInterval(onResume, GIT_POLL_MS);
+    // Polling slows while a remote machine is unreachable.
+    const timer = window.setInterval(() => {
+      if (!remote || remotePollDue(cwd)) onResume();
+    }, GIT_POLL_MS);
     window.addEventListener("focus", onResume);
     document.addEventListener("visibilitychange", onResume);
     const unsubGit = subscribeGitChanged(onResume);
@@ -1649,7 +1672,7 @@ function useDiffIndex(
       document.removeEventListener("visibilitychange", onResume);
       unsubGit();
     };
-  }, [cwd, enabled, nonce]);
+  }, [cwd, enabled, nonce, remote]);
 
   return { index, reload };
 }

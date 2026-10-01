@@ -6,6 +6,7 @@ import {
   notifyGitChanged,
 } from "../../../platform/tauri/fs";
 import { Popover } from "../../../shared/ui/Popover";
+import { GIT_ACTIONS, requireRemoteSupport } from "../../connections/model/remoteCapabilities";
 import { fetchAllProjects, type FetchAllResult } from "../model/groupGit";
 
 const LABELS: Record<FetchAllResult["status"], string> = {
@@ -14,7 +15,8 @@ const LABELS: Record<FetchAllResult["status"], string> = {
   failed: "Failed",
 };
 
-/** Runs `git fetch` for the group's local projects, one at a time. */
+/** Runs `git fetch` for the group's projects, one at a time. A project on another
+ * machine needs a host that supports it. */
 export function GroupFetchPopover({
   x,
   y,
@@ -37,7 +39,10 @@ export function GroupFetchPopover({
     void fetchAllProjects(
       paths,
       {
-        hasRemote: async (path) => (await gitRemotes(path)).length > 0,
+        hasRemote: async (path) => {
+          await requireRemoteSupport(path, GIT_ACTIONS);
+          return (await gitRemotes(path)).length > 0;
+        },
         fetch: (path) => gitFetch(path),
       },
       (next, index) => {
@@ -71,7 +76,7 @@ export function GroupFetchPopover({
     >
       <p className="px-2.5 pb-1 pt-1.5 text-xs text-content/50">
         {paths.length === 0
-          ? "No local projects to fetch"
+          ? "No projects to fetch"
           : done
             ? `Fetched ${results.filter((r) => r.status === "fetched").length} of ${paths.length}`
             : `Fetching ${Math.min(current + 1, paths.length)} of ${paths.length}…`}

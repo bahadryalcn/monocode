@@ -16,6 +16,7 @@ vi.mock("../../../platform/tauri/fs", () => ({
   gitHistory: vi.fn(async () => []),
   gitOperationState: vi.fn(async () => null),
   gitConflicts: vi.fn(async () => []),
+  gitOperationStatus: vi.fn(async () => ({ operation: null, conflicts: [] })),
   gitStashList: vi.fn(async () => []),
   gitBranches: vi.fn(async () => ({ current: "main", detached: false, branches: [] })),
   gitRemotes: vi.fn(async () => []),

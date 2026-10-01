@@ -556,7 +556,13 @@ it("shows a preloaded conversation's transcript on its first render", async () =
 
 it("shows an unavailable branch when Git lookup fails", async () => {
   branchFailure = "fatal: not a git repository";
-  await render();
+  // A remote project keeps the branches it last had, so use one never looked up.
+  const unlisted = rememberRemoteProject("env", {
+    id: "project",
+    name: "unlisted",
+    cwd: "/home/me/unlisted",
+  });
+  await render({ ...shell(), cwd: unlisted.key });
   const picker = byLabel("No git repository");
   expect(picker).not.toBeNull();
   expect((picker as HTMLButtonElement).disabled).toBe(true);

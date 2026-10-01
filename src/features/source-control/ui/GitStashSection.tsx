@@ -10,7 +10,7 @@ import {
   type GitHistoryCommit,
   type GitStashEntry,
 } from "../../../platform/tauri/fs";
-import { isRemoteProjectPath } from "../../projects/model/recents";
+import { GIT_ACTIONS, useRemoteSupports } from "../../connections/model/remoteCapabilities";
 import { appName } from "../../../shared/lib/appName";
 
 type Props = {
@@ -44,9 +44,10 @@ export function stashCommit(entry: GitStashEntry): GitHistoryCommit {
 const ACTION =
   "shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-content/65 hover:bg-content/10 hover:text-content disabled:opacity-40";
 
-/** Lists the repository's stashes. Local projects only. */
+/** Lists the repository's stashes. On another machine, needs a host with `git.actions`. */
 export function GitStashSection({ cwd, enabled, hasChanges, onOpenCommit }: Props) {
-  const active = enabled && !!cwd && cwd !== "~" && !isRemoteProjectPath(cwd);
+  const supported = useRemoteSupports(cwd, GIT_ACTIONS) === true;
+  const active = enabled && !!cwd && cwd !== "~" && supported;
   const [entries, setEntries] = useState<GitStashEntry[]>([]);
   const [open, setOpen] = useState(stashOpen);
   const [busy, setBusy] = useState(false);

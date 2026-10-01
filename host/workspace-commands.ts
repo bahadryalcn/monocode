@@ -15,6 +15,14 @@ import { promisify } from "node:util";
 import type { FileMtime, FsEntry, GitPr, ProjectFile } from "../src/platform/tauri/fs";
 import { hostWorktrees } from "./git-worktrees";
 import { createHostBranch, hostBranches, switchHostBranch } from "./git-branches";
+import {
+  GIT_ACTION_COMMANDS,
+  GIT_ACTIONS_NEEDING_IDLE,
+  HISTORY_FORMAT,
+  parseHistoryLog,
+  runGitAction,
+  type GitActionCommand,
+} from "./git-actions";
 import type { HostStore } from "./store";
 import {
   createHostPath,
@@ -73,7 +81,7 @@ export const WORKSPACE_COMMANDS = [
   "git_branches",
   "git_checkout",
   "git_create_branch",
-  "git_stash",
+  ...GIT_ACTION_COMMANDS,
   "git_worktrees",
   "search_project",
 ] as const;
@@ -115,7 +123,9 @@ export class WorkspaceCommands {
       args && typeof args === "object" && !Array.isArray(args)
         ? (args as Record<string, unknown>)
         : {};
-    switch (command as WorkspaceCommand) {
+    if (GIT_ACTION_COMMANDS.includes(command as GitActionCommand))
+      return this.gitActionCommand(command as GitActionCommand, input);
+    switch (command as Exclude<WorkspaceCommand, GitActionCommand>) {
       case "list_dir":
         return this.listDir(input.path);
       case "list_project_files":
@@ -166,13 +176,14 @@ export class WorkspaceCommands {
       case "git_unstage_all":
         return this.gitAction(input.cwd, "unstageAll");
       case "git_commit":
-        return this.gitCommit(input.cwd, input.message, input.amend);
+        return this.gitCommit(input.cwd, input.message, input.amend, input.signoff);
       case "git_head_message":
         return this.gitCommand(input.cwd, ["log", "-1", "--format=%B"]);
       case "git_push":
         return this.gitAction(input.cwd, "push");
       case "git_pull":
-        return this.gitCommand(input.cwd, ["pull", "--ff-only"]).then(() => undefined);
+        return this.gitCommand(input.cwd, ["pull", input.rebase === true ? "--rebase" : "--ff-only"])
+          .then(() => undefined);
       case "git_sync":
         return this.gitSync(input.cwd);
       case "git_pr_status":
@@ -180,7 +191,7 @@ export class WorkspaceCommands {
       case "git_pr_create":
         return this.gitPrCreate(input.cwd, input.title, input.body, input.base, input.head);
       case "git_history":
-        return this.gitHistory(input.cwd, input.limit);
+        return this.gitHistory(input.cwd, input.limit, input.all === true);
       case "git_commit_files":
         return this.gitCommitFiles(input.cwd, input.sha);
       case "git_commit_file_diff":
@@ -195,8 +206,6 @@ export class WorkspaceCommands {
         return this.gitCheckout(input.cwd, input.name, input.remote);
       case "git_create_branch":
         return this.gitCreateBranch(input.cwd, input.name);
-      case "git_stash":
-        return this.gitStash(input.cwd, input.message);
       case "git_worktrees":
         return this.gitWorktrees(input.cwd);
       case "search_project":
@@ -490,10 +499,16 @@ export class WorkspaceCommands {
     })).stdout;
   }
 
-  private async gitCommit(cwd: unknown, message: unknown, amend: unknown) {
+  private async gitCommit(cwd: unknown, message: unknown, amend: unknown, signoff: unknown) {
     if (typeof message !== "string" || !message.trim() || message.length > 100_000)
       throw new Error("Enter a commit message");
-    await this.gitCommand(cwd, ["commit", ...(amend === true ? ["--amend"] : []), "-m", message]);
+    await this.gitCommand(cwd, [
+      "commit",
+      ...(amend === true ? ["--amend"] : []),
+      ...(signoff === true ? ["--signoff"] : []),
+      "-m",
+      message,
+    ]);
   }
 
   private async gitSync(cwd: unknown) {
@@ -541,7 +556,7 @@ export class WorkspaceCommands {
     return resolved.trim();
   }
 
-  private async gitHistory(cwd: unknown, limit: unknown) {
+  private async gitHistory(cwd: unknown, limit: unknown, all: boolean) {
     const count = Number.isSafeInteger(limit) ? Math.min(500, Math.max(1, Number(limit))) : 200;
     const [head, upstream, index, remoteNames] = await Promise.all([
       this.gitCommand(cwd, ["rev-parse", "--verify", "HEAD"]).catch(() => ""),
@@ -551,33 +566,20 @@ export class WorkspaceCommands {
     ]);
     const headSha = head.trim() || null;
     if (!headSha) return { head: null, commits: [] };
-    const tips = ["HEAD"];
-    if (upstream.trim()) tips.push("@{upstream}");
-    if (index.defaultBranch && index.remote) {
+    // Not `--all`: that would pull in `refs/stash` and its index commits.
+    const tips = all ? ["HEAD", "--branches", "--remotes", "--tags"] : ["HEAD"];
+    if (!all && upstream.trim()) tips.push("@{upstream}");
+    if (!all && index.defaultBranch && index.remote) {
       const defaultRef = `refs/remotes/origin/${index.defaultBranch}`;
       const exists = await this.gitCommand(cwd, ["rev-parse", "--verify", defaultRef])
         .then(() => true, () => false);
       if (exists) tips.push(`origin/${index.defaultBranch}`);
     }
     const output = await this.gitCommand(cwd, [
-      "log", "--topo-order", "--decorate=short", `--max-count=${count}`,
-      "--format=%H%x00%h%x00%P%x00%an%x00%at%x00%D%x00%s%x1e", ...tips,
+      "log", "--topo-order", "--decorate=short", `--max-count=${count}`, HISTORY_FORMAT, ...tips,
     ]).catch(() => "");
     const remotes = remoteNames.split("\n").map((name) => name.trim()).filter(Boolean);
-    const commits = output.split("\x1e").flatMap((record) => {
-      const [sha, shortSha, parents, author, timestamp, decorations, subject] = record.trim().split("\0");
-      if (!sha || !/^[0-9a-f]{40,64}$/i.test(sha)) return [];
-      const refs = (decorations ?? "").split(",").map((raw) => raw.trim()).filter(Boolean)
-        .flatMap((raw) => {
-          if (raw === "HEAD" || raw.endsWith("/HEAD")) return [];
-          if (raw.startsWith("HEAD -> ")) return [{ name: raw.slice(8), kind: "local" }];
-          if (raw.startsWith("tag: ")) return [{ name: raw.slice(5), kind: "tag" }];
-          return [{ name: raw, kind: remotes.some((remote) => raw === remote || raw.startsWith(`${remote}/`))
-            ? "remote" : "local" }];
-        });
-      return [{ sha, shortSha: shortSha || sha.slice(0, 7), parents: parents ? parents.split(" ") : [],
-        author, timestamp: Number(timestamp), subject, refs, head: sha === headSha }];
-    });
+    const commits = parseHistoryLog(output, headSha, remotes);
     return { head: headSha, commits };
   }
 
@@ -686,10 +688,10 @@ export class WorkspaceCommands {
     return this.withIdleProject(project.id, action);
   }
 
-  private async gitStash(cwd: unknown, message: unknown) {
-    if (message != null && (typeof message !== "string" || message.length > 1000))
-      throw new Error("Invalid stash message");
-    await this.gitCommand(cwd, ["stash", "push", "-u", ...(message ? ["-m", message] : [])]);
+  private async gitActionCommand(command: GitActionCommand, input: Record<string, unknown>) {
+    const root = await this.gitRoot(input.cwd);
+    const run = () => runGitAction(command, root, input);
+    return GIT_ACTIONS_NEEDING_IDLE.has(command) ? this.withIdleGitProject(root, run) : run();
   }
 
   private async gitWorktrees(cwd: unknown) {

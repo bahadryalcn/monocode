@@ -12,7 +12,9 @@ const { remoteRequest, remoteMachineFor, invokeLocal } = vi.hoisted(() => ({
 vi.mock("./connections", () => ({ remoteRequest, remoteMachineFor }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeLocal }));
 
-import { runRemoteCommand } from "./remoteCommands";
+import { WORKSPACE_COMMANDS } from "../../../../host/workspace-commands";
+import { GIT_ACTION_COMMANDS } from "../../../../host/git-actions";
+import { HOST_COMMANDS, runRemoteCommand } from "./remoteCommands";
 import { parseRemotePath, remotePath } from "./remoteProjects";
 import { listDir, readBinaryFile, readTextFile, statFiles, writeTextFile } from "../../../platform/tauri/fs";
 
@@ -121,6 +123,35 @@ it("routes project search through the host and maps match paths", async () => {
     command: "search_project",
     args: { options: { cwd: "/home/me/repo", query: "hello" } },
   });
+});
+
+it("forwards exactly the commands the host answers", () => {
+  expect([...HOST_COMMANDS].sort()).toEqual([...WORKSPACE_COMMANDS].sort());
+  for (const command of GIT_ACTION_COMMANDS) expect(HOST_COMMANDS.has(command)).toBe(true);
+});
+
+it("sends git actions with the project translated and files left relative", async () => {
+  remoteRequest.mockResolvedValueOnce([{ line: 1, sha: "a" }]);
+  await runRemoteCommand("git_blame", {
+    cwd: "remote://env/home/me/repo",
+    relative: "src/app.ts",
+  });
+  expect(remoteRequest).toHaveBeenLastCalledWith("machine", "workspace.run", {
+    command: "git_blame",
+    args: { cwd: "/home/me/repo", relative: "src/app.ts" },
+  });
+  // Conflicts and operation state are repo-relative already.
+  remoteRequest.mockResolvedValueOnce({ operation: "merge", conflicts: ["src/app.ts"] });
+  expect(
+    await runRemoteCommand("git_operation_status", { cwd: "remote://env/home/me/repo" }),
+  ).toEqual({ operation: "merge", conflicts: ["src/app.ts"] });
+});
+
+it("reports a host that predates a command as outdated", async () => {
+  remoteRequest.mockRejectedValueOnce("Host rejected request: Unsupported workspace command");
+  await expect(
+    runRemoteCommand("git_tags", { cwd: "remote://env/home/me/repo" }),
+  ).rejects.toThrow("Update MonoCode Host");
 });
 
 it("refuses what the host cannot do and explains outdated hosts", async () => {

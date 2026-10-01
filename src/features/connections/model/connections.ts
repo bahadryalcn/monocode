@@ -11,6 +11,7 @@ import {
   type SessionSyncResponse,
 } from "./protocol";
 import { remoteProjectFor } from "./remoteProjects";
+import { notifyRemoteRecovered } from "./remoteHealth";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
 
 const CHANGE = "monocode:remote-machines";
@@ -24,6 +25,68 @@ export const OPEN_CONNECTIONS_EVENT = "monocode:open-connections";
 export const OPEN_REMOTE_PROJECT_EVENT = "monocode:open-remote-project";
 export const refreshRemoteMachines = () =>
   window.dispatchEvent(new Event(CHANGE));
+const RECONNECT = "monocode:reconnect-machine";
+let reconnectRequest: string | undefined;
+
+/** Opens Connections settings and starts reconnecting this machine there, where
+ * the SSH password and host-key prompts are answered. */
+export function requestMachineReconnect(machineId: string) {
+  reconnectRequest = machineId;
+  window.dispatchEvent(new Event(RECONNECT));
+  window.dispatchEvent(new Event(OPEN_CONNECTIONS_EVENT));
+}
+
+/** The machine a view asked to reconnect, once, if it is one of `machines`. */
+export function takeReconnectRequest(machines: RemoteMachine[]): RemoteMachine | undefined {
+  const machine = machines.find((entry) => entry.id === reconnectRequest);
+  if (machine) reconnectRequest = undefined;
+  return machine;
+}
+
+export function subscribeReconnectRequests(listener: () => void): () => void {
+  window.addEventListener(RECONNECT, listener);
+  return () => window.removeEventListener(RECONNECT, listener);
+}
+
+const capabilitiesByEnvironment = new Map<string, string[]>();
+const capabilityListeners = new Set<() => void>();
+const capabilityLookups = new Map<string, Promise<string[] | undefined>>();
+
+/** What a machine's host last advertised in `environment.describe`. */
+export function cachedRemoteCapabilities(environmentId: string): string[] | undefined {
+  return capabilitiesByEnvironment.get(environmentId);
+}
+
+export function subscribeRemoteCapabilities(listener: () => void): () => void {
+  capabilityListeners.add(listener);
+  return () => capabilityListeners.delete(listener);
+}
+
+export function recordRemoteCapabilities(environmentId: string, advertised: unknown) {
+  const next = Array.isArray(advertised)
+    ? advertised.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const previous = capabilitiesByEnvironment.get(environmentId);
+  if (previous?.length === next.length && previous.every((entry, i) => entry === next[i]))
+    return;
+  capabilitiesByEnvironment.set(environmentId, next);
+  capabilityListeners.forEach((listener) => listener());
+}
+
+/** Asks a machine for its capabilities, to learn whether its host is new enough. */
+export function loadRemoteCapabilities(environmentId: string): Promise<string[] | undefined> {
+  const pending = capabilityLookups.get(environmentId);
+  if (pending) return pending;
+  const lookup = (async () => {
+    const machine = await remoteMachineFor(environmentId);
+    if (!machine) return undefined;
+    const host = await remoteRequest<{ capabilities?: unknown }>(machine.id, "environment.describe");
+    recordRemoteCapabilities(environmentId, host.capabilities);
+    return cachedRemoteCapabilities(environmentId);
+  })().finally(() => capabilityLookups.delete(environmentId));
+  capabilityLookups.set(environmentId, lookup);
+  return lookup;
+}
 const TAB_KEY = "monocode.remote-tabs.v2";
 const WORKTREE_KEY = "monocode.remote-pending-worktrees.v1";
 
@@ -299,9 +362,12 @@ const statusWatchers = new Map<
 /** Records whether a machine answered its latest request, for every view
  * that shows its connection state. */
 export function reportRemoteMachineStatus(machineId: string, online: boolean) {
+  const wasOffline = machineOnline.get(machineId) === false;
   if (machineOnline.get(machineId) === online) return;
   machineOnline.set(machineId, online);
   window.dispatchEvent(new Event(STATUS));
+  // Views that gave up on this machine reload as soon as it answers again.
+  if (online && wasOffline) notifyRemoteRecovered();
 }
 
 function watchMachineStatus(machineId: string): () => void {
@@ -315,7 +381,11 @@ function watchMachineStatus(machineId: string): () => void {
     let failures = 0;
     const poll = async () => {
       try {
-        await remoteRequest(machineId, "environment.describe");
+        const host = await remoteRequest<{ environmentId?: string; capabilities?: unknown }>(
+          machineId,
+          "environment.describe",
+        );
+        if (host?.environmentId) recordRemoteCapabilities(host.environmentId, host.capabilities);
         failures = 0;
         reportRemoteMachineStatus(machineId, true);
       } catch {

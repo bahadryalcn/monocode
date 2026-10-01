@@ -284,6 +284,7 @@ export function createHostServer(
                 "git.index",
                 "git.fileDiff",
                 "git.action",
+                "git.actions",
                 "attachments.upload",
                 "attachments.read",
                 "sessions.draft",

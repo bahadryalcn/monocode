@@ -6,6 +6,8 @@ import {
 } from "../../../platform/tauri/fs";
 import { subscribeDirsChanged } from "../../files/model/fileTree";
 import { parentPath } from "../../../shared/lib/paths";
+import { remotePollDue, reportRemoteLoad } from "../../connections/model/remoteHealth";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 
 export type GitStatusMap = {
   files: Map<string, string>;
@@ -104,8 +106,12 @@ async function load(entry: Entry, force = false) {
   try {
     const index = await gitDiffIndex(entry.cwd);
     publish(entry, buildStatusMaps(index, entry.cwd));
-  } catch {
-    publish(entry, EMPTY);
+    if (isRemoteProjectPath(entry.cwd)) reportRemoteLoad(entry.cwd, "statuses");
+  } catch (error) {
+    // On a remote project the decorations stay as they were; the Changes panel
+    // is where a connection failure is explained.
+    if (!isRemoteProjectPath(entry.cwd)) publish(entry, EMPTY);
+    else reportRemoteLoad(entry.cwd, "statuses", error);
   } finally {
     entry.inFlight = false;
     if (entry.pending) {
@@ -124,7 +130,11 @@ function start(entry: Entry) {
   window.addEventListener("focus", entry.onResume);
   document.addEventListener("visibilitychange", entry.onResume);
   entry.unsubscribeGit = subscribeGitChanged(entry.onResume);
-  entry.unsubscribeDirs = subscribeDirsChanged(entry.onResume);
+  // The explorer's own remote refresh fires this every few seconds; skip it
+  // while the machine is unreachable.
+  entry.unsubscribeDirs = subscribeDirsChanged(() => {
+    if (remotePollDue(entry.cwd)) entry.onResume?.();
+  });
 }
 
 function stop(entry: Entry) {

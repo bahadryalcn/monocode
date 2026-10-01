@@ -133,8 +133,8 @@ import { EditorConflictBar } from "./EditorConflictBar";
 import { FilePreviewSearch } from "./FilePreviewSearch";
 import {
   InlineBlameToggle,
-  inlineBlameUnavailableReason,
   useInlineBlame,
+  useInlineBlameUnavailableReason,
 } from "./InlineBlameToggle";
 
 type EditorNavigationRequest = EditorNavigation & { token: number };
@@ -453,6 +453,7 @@ export function FileEditor({
   const relativePath = path.startsWith(`${cwd}/`)
     ? path.slice(cwd.length + 1)
     : path;
+  const footerBlameReason = useInlineBlameUnavailableReason(cwd, path);
 
   if (loadState.status === "loading") {
     return (
@@ -568,7 +569,7 @@ export function FileEditor({
         <span className="min-w-0 flex-1 truncate" title={path}>
           {relativePath}
         </span>
-        <InlineBlameToggle reason={inlineBlameUnavailableReason(cwd, path)} />
+        <InlineBlameToggle reason={footerBlameReason} />
         {saveState.status === "saving" ? (
           <span>Saving…</span>
         ) : saveState.status === "saved" ? (
@@ -668,7 +669,7 @@ export function CodeMirrorEditor({
     busy: false,
     error: null,
   });
-  const blameReason = inlineBlameUnavailableReason(cwd, path);
+  const blameReason = useInlineBlameUnavailableReason(cwd, path);
   const gitRelative = blameReason === null ? displayPath(path, cwd) : null;
   const gitTargetRef = useRef({ cwd, relative: gitRelative });
   gitTargetRef.current = { cwd, relative: gitRelative };

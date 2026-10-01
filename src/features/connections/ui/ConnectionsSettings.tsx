@@ -4,10 +4,14 @@ import { Internet, Loader, Plus, Trash2 } from "../../../shared/ui/icons";
 import {
   connectMachine,
   disconnectMachine,
+  recordRemoteCapabilities,
   refreshRemoteMachines,
   remoteRequest,
+  subscribeReconnectRequests,
+  takeReconnectRequest,
   useRemoteMachines,
 } from "../model/connections";
+import { notifyRemoteRecovered } from "../model/remoteHealth";
 import {
   REMOTE_PROVIDERS,
   type HostDescriptor,
@@ -86,6 +90,8 @@ export function ConnectionsSettings() {
               [next.machine!.id]: "Connected",
             }));
             refreshRemoteMachines();
+            // Views that were waiting on this machine reload now.
+            notifyRemoteRecovered();
           }
           return;
         }
@@ -132,6 +138,7 @@ export function ConnectionsSettings() {
               );
               if (host.environmentId !== machine.environmentId)
                 throw new Error("Host identity changed");
+              recordRemoteCapabilities(host.environmentId, host.capabilities);
               if (!host.providers.length)
                 label = "Connected · install a supported provider on the host";
               const update =
@@ -193,6 +200,18 @@ export function ConnectionsSettings() {
       }
     }
   };
+  // A view that cannot reach a machine asks for it to be reconnected here, where
+  // the SSH prompts are answered.
+  useEffect(() => {
+    const start = () => {
+      const machine = takeReconnectRequest(machines);
+      if (machine?.ssh) void begin(machine);
+    };
+    start();
+    return subscribeReconnectRequests(start);
+    // `begin` only reads refs and state setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machines]);
   const respond = async (value: string) => {
     if (!jobId || !job?.prompt || answering) return;
     setAnswering(true);

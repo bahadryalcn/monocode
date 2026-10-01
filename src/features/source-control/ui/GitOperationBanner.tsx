@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import {
-  gitConflicts,
   gitOperationAbort,
   gitOperationContinue,
-  gitOperationState,
+  gitOperationStatus,
   gitResolveConflict,
   gitStageFile,
   notifyGitChanged,
@@ -15,6 +14,8 @@ import {
   type GitOperation,
 } from "../../../platform/tauri/fs";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import { GIT_ACTIONS, useRemoteSupports } from "../../connections/model/remoteCapabilities";
+import { remotePollDue, reportRemoteLoad } from "../../connections/model/remoteHealth";
 import { operationLabel } from "../model/commitActions";
 import {
   hasConflictMarkers,
@@ -40,26 +41,43 @@ const ACTION =
 
 /**
  * Shown while git is stopped in the middle of a merge, rebase, cherry-pick, or
- * revert, and whenever files have unresolved conflicts. Local projects only.
+ * revert, and whenever files have unresolved conflicts. On another machine,
+ * needs a host with `git.actions`, which answers both questions in one request;
+ * polling slows while that machine is unreachable.
  */
 export function GitOperationBanner({ cwd, enabled, onOpenFile }: Props) {
-  const active = enabled && !!cwd && cwd !== "~" && !isRemoteProjectPath(cwd);
+  const remote = isRemoteProjectPath(cwd);
+  const supported = useRemoteSupports(cwd, GIT_ACTIONS) === true;
+  const active = enabled && !!cwd && cwd !== "~" && supported;
   const [operation, setOperation] = useState<GitOperation | null>(null);
   const [conflicts, setConflicts] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
     if (!active || document.hidden) return;
-    void gitOperationState(cwd).then(setOperation, () => setOperation(null));
-    void gitConflicts(cwd).then(setConflicts, () => setConflicts([]));
-  }, [active, cwd]);
+    void gitOperationStatus(cwd).then(
+      (status) => {
+        if (remote) reportRemoteLoad(cwd, "banner");
+        setOperation(status.operation);
+        setConflicts(status.conflicts);
+      },
+      (error: unknown) => {
+        // A remote machine that cannot be reached keeps the last state shown.
+        if (remote) return reportRemoteLoad(cwd, "banner", error);
+        setOperation(null);
+        setConflicts([]);
+      },
+    );
+  }, [active, cwd, remote]);
 
   useEffect(() => {
     setOperation(null);
     setConflicts([]);
     if (!active) return;
     load();
-    const timer = window.setInterval(load, POLL_MS);
+    const timer = window.setInterval(() => {
+      if (!remote || remotePollDue(cwd)) load();
+    }, POLL_MS);
     window.addEventListener("focus", load);
     const unsub = subscribeGitChanged(load);
     return () => {
@@ -67,7 +85,7 @@ export function GitOperationBanner({ cwd, enabled, onOpenFile }: Props) {
       window.removeEventListener("focus", load);
       unsub();
     };
-  }, [active, load]);
+  }, [active, cwd, load, remote]);
 
   if (!operation && conflicts.length === 0) return null;
   const label = operation ? operationLabel(operation) : null;

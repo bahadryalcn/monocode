@@ -70,7 +70,7 @@ import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { RemoveProjectDialog } from "../../features/projects/ui/RemoveProjectDialog";
 import { AdditionalDirsDialog } from "../../features/projects/ui/AdditionalDirsDialog";
-import { isLocalProject } from "../../features/projects/model/recents";
+import { isLocalProject, isRemoteProjectPath } from "../../features/projects/model/recents";
 import {
   TabGroupMenu,
   type TabGroupMenuExtraItem,
@@ -575,7 +575,7 @@ export function useProjectMenu({
           {
             id: "fetch-all",
             label: "Fetch all",
-            description: "Run git fetch in each local project",
+            description: "Run git fetch in each project",
             icon: ArrowDownCircle,
             sepBefore: true,
           },
@@ -602,7 +602,7 @@ export function useProjectMenu({
                 .map((project) => project.path)
                 .filter(
                   (path) =>
-                    isLocalProject(path) &&
+                    (isLocalProject(path) || isRemoteProjectPath(path)) &&
                     projectGroupIdForPath(path, assignments) === group.id,
                 ),
             });

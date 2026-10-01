@@ -1,10 +1,12 @@
-import { setRemoteCommandRunner } from "../../../platform/tauri/fs";
+import { notifyGitChanged, setRemoteCommandRunner } from "../../../platform/tauri/fs";
+import { notifyDirsChanged } from "../../files/model/fileTree";
 import { remoteMachineFor, remoteRequest } from "./connections";
+import { subscribeRemoteRecovered } from "./remoteHealth";
 import { parseRemotePath, remotePath } from "./remoteProjects";
 
 /** File commands a connected machine answers exactly as this computer does
  * (see host/workspace-commands.ts). */
-const HOST_COMMANDS = new Set([
+export const HOST_COMMANDS = new Set([
   "list_dir",
   "list_project_files",
   "read_text_file",
@@ -43,7 +45,39 @@ const HOST_COMMANDS = new Set([
   "git_branches",
   "git_checkout",
   "git_create_branch",
+  // The `git.actions` set (host/git-actions.ts). Their results carry no host
+  // paths: `git_conflicts` and the file arguments are repo-relative.
   "git_stash",
+  "git_stash_list",
+  "git_stash_action",
+  "git_stash_clear",
+  "git_checkout_commit",
+  "git_create_branch_at",
+  "git_create_branch_from",
+  "git_create_tag",
+  "git_tags",
+  "git_delete_tag",
+  "git_cherry_pick",
+  "git_revert",
+  "git_reset",
+  "git_undo_last_commit",
+  "git_operation_state",
+  "git_operation_abort",
+  "git_operation_continue",
+  "git_operation_status",
+  "git_delete_branch",
+  "git_rename_branch",
+  "git_delete_remote_branch",
+  "git_merge",
+  "git_rebase",
+  "git_fetch",
+  "git_remotes",
+  "git_remote_add",
+  "git_remote_remove",
+  "git_conflicts",
+  "git_resolve_conflict",
+  "git_file_history",
+  "git_blame",
   "git_worktrees",
   "search_project",
 ]);
@@ -104,7 +138,7 @@ export async function runRemoteCommand(
       args: hostArgs,
     });
   } catch (reason) {
-    if (/Unsupported (host method|remote operation)/i.test(String(reason)))
+    if (/Unsupported (host method|remote operation|workspace command)/i.test(String(reason)))
       throw new Error(OUTDATED);
     throw reason;
   }
@@ -163,3 +197,8 @@ export async function runRemoteCommand(
 }
 
 setRemoteCommandRunner(runRemoteCommand);
+// When a machine comes back, every view of it reloads at once.
+subscribeRemoteRecovered(() => {
+  notifyGitChanged();
+  notifyDirsChanged();
+});
