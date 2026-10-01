@@ -4139,6 +4139,7 @@ function Workspace({
         return;
       }
       if (replaceBlankPaneWithSession(session)) {
+        followProject(session.cwd);
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
         return;
       }
