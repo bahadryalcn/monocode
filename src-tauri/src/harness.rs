@@ -1988,7 +1988,7 @@ fn resolve_harness_binary_override(provider: &str, binary_path: &str) -> Result<
         "omp" => &["omp"],
         "fx" => &["fx"],
         "hermes" => &["hermes"],
-        "antigravity" if cfg!(windows) => &["agy"],
+        "antigravity" if cfg!(windows) => &["agy_acp_server", "agy"],
         "antigravity" => &["agy_acp_server.par"],
         _ => {
             return Err(format!(
@@ -2367,12 +2367,21 @@ fn agy_cli_candidates(local_app_data: Option<&Path>) -> Vec<PathBuf> {
 }
 
 fn resolve_antigravity() -> Option<PathBuf> {
-    // The .par wrapper is a POSIX self-extracting archive — Antigravity ships
-    // no Windows ACP binary, so Windows drives the agy CLI's headless
-    // stream-json mode instead of probing paths that can never be executable.
+    // The .par wrapper is a POSIX self-extracting archive. On Windows the
+    // official ACP server (a separate download, extracted to
+    // %LOCALAPPDATA%\agy-acp) is preferred when present, since it can ask for
+    // approval; otherwise the agy CLI's headless stream-json mode is driven.
     if cfg!(windows) {
         let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-        return first_binary(agy_cli_candidates(local_app_data.as_deref()));
+        let mut candidates = Vec::new();
+        if let Some(dir) = local_app_data.as_deref() {
+            candidates.push(dir.join("agy-acp/agy_acp_server"));
+        }
+        if let Some(from_path) = which_via_login_shell("agy_acp_server") {
+            candidates.push(from_path);
+        }
+        candidates.extend(agy_cli_candidates(local_app_data.as_deref()));
+        return first_binary(candidates);
     }
     let mut candidates = Vec::new();
     if let Some(home) = dirs_home().map(PathBuf::from) {
