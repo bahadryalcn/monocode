@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub automations can trigger on more than a newly opened item: **Issue reopened**, **Issue closed**, **Pull request reopened**, **Pull request closed**, **Pull request merged**, and **Pull request ready for review**. Each change runs once, so a second reopen starts a new run while the same reopen never repeats. Changes are detected while MonoCode is running; the first refresh after launch only records the current state.
 - GitHub automations can trigger when a label is added: **Issue labeled** and **Pull request labeled**. Name the label in the trigger to run only for that one, for example to start a fix when `auto-fix` is added, or leave it empty for any label. An item opened with the label already on it counts.
 
+### Added
+
+- The automation gallery has an **Auto-fix GitHub issues** example under Incidents & Triage. When an issue is opened, the agent validates and reproduces it in its own worktree, fixes it, and pushes an `autofix/issue-<number>` branch for review. It never opens a pull request or comments on the issue.
+
 ## [0.6.0] - 2026-09-30
 
 ### Added
