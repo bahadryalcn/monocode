@@ -12,8 +12,12 @@ import {
 export const UPDATABLE_HARNESSES: ReadonlySet<HarnessId> = new Set([
   "claude",
   "codex",
+  "cursor",
+  "grok",
   "opencode",
   "pi",
+  "omp",
+  "fx",
 ]);
 
 export type HarnessUpdate = {
@@ -22,8 +26,13 @@ export type HarnessUpdate = {
   latest: string;
 };
 
+export type HarnessVersionCheck =
+  | (HarnessUpdate & { status: "current" })
+  | (HarnessUpdate & { status: "behind" })
+  | { harness: HarnessId; status: "unknown"; error: string };
+
 export type HarnessUpdateDeps = {
-  /** Installed harnesses the user has not hidden. */
+  /** Installed harnesses to check. */
   harnesses: HarnessId[];
   installedVersion: (harness: HarnessId) => Promise<string | undefined>;
   latestVersion: (harness: HarnessId) => Promise<string>;
@@ -61,33 +70,79 @@ export function fetchLatestHarnessVersion(harness: HarnessId): Promise<string> {
 }
 
 /**
- * A failed lookup, offline or otherwise, drops that harness silently: this
- * runs unprompted at launch and must never surface an error of its own.
- * Nothing is remembered between launches: a harness still behind is offered
- * again, at whatever release is newest by then.
+ * Compares each harness with its newest release. A failed lookup becomes an
+ * "unknown" entry for that harness instead of failing the whole check.
+ * Installed builds newer than the feed, such as a dev channel, count as
+ * current.
  */
-export async function findHarnessUpdates({
+export async function checkHarnessVersions({
   harnesses,
   installedVersion,
   latestVersion,
-}: HarnessUpdateDeps): Promise<HarnessUpdate[]> {
-  const results = await Promise.all(
-    harnesses.map(async (harness): Promise<HarnessUpdate | null> => {
-      if (!UPDATABLE_HARNESSES.has(harness)) return null;
-      try {
-        const [installedOutput, latestOutput] = await Promise.all([
-          installedVersion(harness),
-          latestVersion(harness),
-        ]);
-        const installed = parseOpenCodeVersion(installedOutput ?? "");
-        const latest = parseOpenCodeVersion(latestOutput);
-        if (!installed || !latest) return null;
-        if (compareSemver(latest, installed) <= 0) return null;
-        return { harness, installed, latest };
-      } catch {
-        return null;
-      }
-    }),
+}: HarnessUpdateDeps): Promise<HarnessVersionCheck[]> {
+  return Promise.all(
+    harnesses
+      .filter((harness) => UPDATABLE_HARNESSES.has(harness))
+      .map(async (harness): Promise<HarnessVersionCheck> => {
+        try {
+          const [installedOutput, latestOutput] = await Promise.all([
+            installedVersion(harness),
+            latestVersion(harness),
+          ]);
+          const installed = parseOpenCodeVersion(installedOutput ?? "");
+          if (!installed) {
+            return {
+              harness,
+              status: "unknown",
+              error: "The CLI reported no version.",
+            };
+          }
+          const latest = parseOpenCodeVersion(latestOutput);
+          if (!latest) {
+            return {
+              harness,
+              status: "unknown",
+              error: "The release feed returned no version.",
+            };
+          }
+          const status =
+            compareSemver(latest, installed) > 0 ? "behind" : "current";
+          return { harness, status, installed, latest };
+        } catch (error) {
+          return {
+            harness,
+            status: "unknown",
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }),
   );
-  return results.filter((update): update is HarnessUpdate => update !== null);
+}
+
+/** Only the harnesses behind their newest release. */
+export function pendingHarnessUpdates(
+  checks: HarnessVersionCheck[],
+): HarnessUpdate[] {
+  return checks.flatMap((check) =>
+    check.status === "behind"
+      ? [
+          {
+            harness: check.harness,
+            installed: check.installed,
+            latest: check.latest,
+          },
+        ]
+      : [],
+  );
+}
+
+/**
+ * This runs unprompted at launch, so a failed lookup drops that harness
+ * silently. Nothing is remembered between launches: a harness still behind
+ * is offered again, at whatever release is newest by then.
+ */
+export async function findHarnessUpdates(
+  deps: HarnessUpdateDeps,
+): Promise<HarnessUpdate[]> {
+  return pendingHarnessUpdates(await checkHarnessVersions(deps));
 }

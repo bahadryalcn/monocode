@@ -697,6 +697,62 @@ describe("settings pages", () => {
     }
   });
 
+  it("checks CLI versions on request and updates one from settings", async () => {
+    let claudeVersion = "2.1.284 (Claude Code)";
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const payload = args as { binaryProvider?: string; provider?: string };
+      if (command.startsWith("harness_resolve_")) {
+        return { path: `/bin/${command.slice("harness_resolve_".length)}` };
+      }
+      if (command === "harness_exec") {
+        return payload.binaryProvider === "claude"
+          ? claudeVersion
+          : "2026.09.28-64d2043";
+      }
+      if (command === "harness_latest_version") {
+        return payload.provider === "claude" ? "2.1.285" : "2026.09.28-64d2043";
+      }
+      if (command === "harness_update") {
+        claudeVersion = "2.1.285 (Claude Code)";
+      }
+      return undefined;
+    });
+    await render("providers");
+    const group = container.querySelector('[data-setting-id="harness-updates"]')!;
+    expect(group.textContent).toContain("Not checked yet");
+    expect(
+      vi.mocked(invoke).mock.calls.some(([command]) => command === "harness_exec"),
+    ).toBe(false);
+
+    const checkButton = Array.from(group.querySelectorAll("button")).find(
+      (button) => button.textContent === "Check for updates",
+    )!;
+    await act(async () => checkButton.click());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(group.textContent).toContain("Claude Code2.1.284");
+    expect(group.textContent).toContain("Version 2.1.285 is available.");
+    expect(group.textContent).toContain("Cursor2026.09.28");
+    expect(group.textContent).toContain("Up to date.");
+
+    await act(async () =>
+      group
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Update Claude Code to 2.1.285"]',
+        )!
+        .click(),
+    );
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(invoke).toHaveBeenCalledWith("harness_update", {
+      command: "/bin/claude",
+      binaryProvider: "claude",
+      binaryPath: null,
+    });
+    expect(group.textContent).toContain("Updated to 2.1.285.");
+    expect(
+      group.querySelector('[aria-label="Update Claude Code to 2.1.285"]'),
+    ).toBeNull();
+  });
+
   it("returns focus to the CLI trigger when the details popover closes", async () => {
     await render("providers");
     const trigger = container.querySelector<HTMLButtonElement>(
