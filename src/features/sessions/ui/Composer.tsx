@@ -2009,23 +2009,28 @@ export function Composer({
     }
 
     // Shift+Tab (rebindable) queues the message behind the running turn.
-    // Outside that state it is not handled, so focus still moves backwards.
+    // With nothing to queue it does nothing: the key stays in the composer
+    // either way, so a press between turns never throws focus onto the toolbar.
     if (
       keybindingPressed(QUEUE_MESSAGE_COMMAND, e, isDefaultQueueChord(e)) &&
-      queueShortcutApplies({
-        busy,
-        backgroundOnly,
-        allowBusySubmit,
-        disabled: disabled || worktreeRemoved,
-        remote,
-        popupOpen: !!slash || mentionOpen || pickerOpen,
-        draftMode: draftActive,
-        text: e.currentTarget.value,
-        attachmentCount: attachmentsRef.current.length,
-      })
+      !(slash || mentionOpen || pickerOpen)
     ) {
       e.preventDefault();
-      submit(e.currentTarget.value, true);
+      if (
+        queueShortcutApplies({
+          busy,
+          backgroundOnly,
+          allowBusySubmit,
+          disabled: disabled || worktreeRemoved,
+          remote,
+          popupOpen: false,
+          draftMode: draftActive,
+          text: e.currentTarget.value,
+          attachmentCount: attachmentsRef.current.length,
+        })
+      ) {
+        submit(e.currentTarget.value, true);
+      }
       return;
     }
 

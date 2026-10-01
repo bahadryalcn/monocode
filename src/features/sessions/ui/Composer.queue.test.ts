@@ -112,19 +112,19 @@ describe("Shift+Tab queues while a turn runs", () => {
     );
   });
 
-  it("does not touch Shift+Tab when idle, empty, or background-only", async () => {
+  it("keeps Shift+Tab in the composer without sending when idle, empty, or background-only", async () => {
     const onSubmit = vi.fn(() => true);
     const idle = await renderComposer({ busy: false }, onSubmit);
     await type(idle, "hello");
-    expect(press(idle, shiftTab).defaultPrevented).toBe(false);
+    expect(press(idle, shiftTab).defaultPrevented).toBe(true);
 
     const empty = await renderComposer({ busy: true }, onSubmit);
     await type(empty, "");
-    expect(press(empty, shiftTab).defaultPrevented).toBe(false);
+    expect(press(empty, shiftTab).defaultPrevented).toBe(true);
 
     const bg = await renderComposer({ busy: true, backgroundOnly: true }, onSubmit);
     await type(bg, "hello");
-    expect(press(bg, shiftTab).defaultPrevented).toBe(false);
+    expect(press(bg, shiftTab).defaultPrevented).toBe(true);
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
