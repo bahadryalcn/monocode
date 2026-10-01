@@ -134,6 +134,30 @@ export type ProjectFile = {
   isDir?: boolean;
 };
 
+/** A Claude Code conversation stored on disk for the current project. */
+export type ClaudeSessionSummary = {
+  id: string;
+  path: string;
+  title: string;
+  updatedAt: number;
+  messageCount: number;
+};
+
+/**
+ * Conversations Claude Code recorded for this working directory, newest first.
+ * Summarized in Rust: a single session file routinely runs past half a
+ * megabyte, and reading a project's worth of them in the UI would stall it.
+ */
+export function claudeSessions(
+  cwd: string,
+  providerAccountId?: string,
+): Promise<ClaudeSessionSummary[]> {
+  return invoke<ClaudeSessionSummary[]>("claude_sessions", {
+    cwd,
+    providerAccountId: providerAccountId ?? null,
+  });
+}
+
 export function listDir(path: string): Promise<FsEntry[]> {
   return invoke<FsEntry[]>("list_dir", { path });
 }
@@ -261,8 +285,9 @@ export type GitHistory = {
   commits: GitHistoryCommit[];
 };
 
-export function gitHistory(cwd: string, limit = 200): Promise<GitHistory> {
-  return invoke<GitHistory>("git_history", { cwd, limit });
+/** `all` widens the graph from the current branch to every branch and tag. */
+export function gitHistory(cwd: string, limit = 200, all = false): Promise<GitHistory> {
+  return invoke<GitHistory>("git_history", { cwd, limit, all });
 }
 
 export function gitCommitFiles(
@@ -316,8 +341,19 @@ export function gitCommit(
   cwd: string,
   message: string,
   amend = false,
+  signoff = false,
 ): Promise<void> {
-  return invoke<void>("git_commit", { cwd, message, amend });
+  return invoke<void>("git_commit", {
+    cwd,
+    message,
+    amend,
+    ...(signoff ? { signoff } : {}),
+  });
+}
+
+/** Move HEAD back one commit, keeping its changes staged. */
+export function gitUndoLastCommit(cwd: string): Promise<void> {
+  return invoke<void>("git_undo_last_commit", { cwd });
 }
 
 export function gitHeadMessage(cwd: string): Promise<string> {
@@ -338,8 +374,9 @@ export function gitPush(cwd: string): Promise<void> {
   return invoke<void>("git_push", { cwd });
 }
 
-export function gitPull(cwd: string): Promise<void> {
-  return invoke<void>("git_pull", { cwd });
+/** Fast-forward only, or rebase onto the upstream with `rebase`. */
+export function gitPull(cwd: string, rebase = false): Promise<void> {
+  return invoke<void>("git_pull", { cwd, ...(rebase ? { rebase } : {}) });
 }
 
 export function gitSync(cwd: string): Promise<void> {
@@ -407,8 +444,189 @@ export function gitCreateBranch(cwd: string, name: string): Promise<string> {
   return invoke<string>("git_create_branch", { cwd, name });
 }
 
-export function gitStash(cwd: string, message?: string): Promise<void> {
-  return invoke<void>("git_stash", { cwd, message: message ?? null });
+/** `reference` is a local branch name or `remote/branch`. */
+export function gitCreateBranchFrom(
+  cwd: string,
+  name: string,
+  reference: string,
+): Promise<string> {
+  return invoke<string>("git_create_branch_from", { cwd, name, reference });
+}
+
+export type GitStashMode = "tracked" | "untracked" | "staged";
+
+/** `mode` defaults to `untracked`: tracked and untracked files both. */
+export function gitStash(
+  cwd: string,
+  message?: string,
+  mode?: GitStashMode,
+): Promise<void> {
+  return invoke<void>("git_stash", {
+    cwd,
+    message: message ?? null,
+    ...(mode ? { mode } : {}),
+  });
+}
+
+/** Delete every stash entry. */
+export function gitStashClear(cwd: string): Promise<void> {
+  return invoke<void>("git_stash_clear", { cwd });
+}
+
+/** Check out a commit without moving any branch. Local projects only. */
+export function gitCheckoutCommit(cwd: string, sha: string): Promise<void> {
+  return invoke<void>("git_checkout_commit", { cwd, sha });
+}
+
+export function gitCreateBranchAt(
+  cwd: string,
+  name: string,
+  sha: string,
+): Promise<string> {
+  return invoke<string>("git_create_branch_at", { cwd, name, sha });
+}
+
+export function gitCreateTag(cwd: string, name: string, sha: string): Promise<void> {
+  return invoke<void>("git_create_tag", { cwd, name, sha });
+}
+
+export function gitCherryPick(cwd: string, sha: string): Promise<void> {
+  return invoke<void>("git_cherry_pick", { cwd, sha });
+}
+
+export function gitRevert(cwd: string, sha: string): Promise<void> {
+  return invoke<void>("git_revert", { cwd, sha });
+}
+
+export type GitResetMode = "soft" | "mixed" | "hard";
+
+export function gitReset(cwd: string, sha: string, mode: GitResetMode): Promise<void> {
+  return invoke<void>("git_reset", { cwd, sha, mode });
+}
+
+export type GitOperation = "merge" | "rebase" | "cherry-pick" | "revert";
+
+/** The operation git stopped in the middle of, or null when idle. */
+export function gitOperationState(cwd: string): Promise<GitOperation | null> {
+  return invoke<GitOperation | null>("git_operation_state", { cwd });
+}
+
+export function gitOperationAbort(cwd: string): Promise<void> {
+  return invoke<void>("git_operation_abort", { cwd });
+}
+
+/** Finish the stopped operation once every conflict is staged. */
+export function gitOperationContinue(cwd: string): Promise<void> {
+  return invoke<void>("git_operation_continue", { cwd });
+}
+
+export function gitDeleteBranch(cwd: string, name: string, force = false): Promise<void> {
+  return invoke<void>("git_delete_branch", { cwd, name, force });
+}
+
+export function gitRenameBranch(cwd: string, from: string, to: string): Promise<string> {
+  return invoke<string>("git_rename_branch", { cwd, from, to });
+}
+
+/** `reference` is a local branch name or `remote/branch`. */
+export function gitMerge(cwd: string, reference: string): Promise<void> {
+  return invoke<void>("git_merge", { cwd, reference });
+}
+
+export function gitRebase(cwd: string, reference: string): Promise<void> {
+  return invoke<void>("git_rebase", { cwd, reference });
+}
+
+/** Fetch every remote. `prune` also drops tracking branches deleted there. */
+export function gitFetch(cwd: string, prune = false): Promise<void> {
+  return invoke<void>("git_fetch", { cwd, ...(prune ? { prune } : {}) });
+}
+
+/** Delete a branch on its remote, for everyone. */
+export function gitDeleteRemoteBranch(
+  cwd: string,
+  remote: string,
+  name: string,
+): Promise<void> {
+  return invoke<void>("git_delete_remote_branch", { cwd, remote, name });
+}
+
+export type GitRemote = { name: string; url: string };
+
+export function gitRemotes(cwd: string): Promise<GitRemote[]> {
+  return invoke<GitRemote[]>("git_remotes", { cwd });
+}
+
+export function gitRemoteAdd(cwd: string, name: string, url: string): Promise<void> {
+  return invoke<void>("git_remote_add", { cwd, name, url });
+}
+
+export function gitRemoteRemove(cwd: string, name: string): Promise<void> {
+  return invoke<void>("git_remote_remove", { cwd, name });
+}
+
+/** Tag names, newest first. */
+export function gitTags(cwd: string): Promise<string[]> {
+  return invoke<string[]>("git_tags", { cwd });
+}
+
+/** Delete a local tag. A pushed tag stays on the remote. */
+export function gitDeleteTag(cwd: string, name: string): Promise<void> {
+  return invoke<void>("git_delete_tag", { cwd, name });
+}
+
+export type GitStashEntry = {
+  index: number;
+  sha: string;
+  message: string;
+  timestamp: number;
+};
+
+export function gitStashList(cwd: string): Promise<GitStashEntry[]> {
+  return invoke<GitStashEntry[]>("git_stash_list", { cwd });
+}
+
+export function gitStashAction(
+  cwd: string,
+  action: "apply" | "pop" | "drop",
+  index: number,
+): Promise<void> {
+  return invoke<void>("git_stash_action", { cwd, action, index });
+}
+
+/** Repo-relative paths with unresolved merge conflicts. */
+export function gitConflicts(cwd: string): Promise<string[]> {
+  return invoke<string[]>("git_conflicts", { cwd });
+}
+
+/** Take one whole side of a conflicted file and stage it. */
+export function gitResolveConflict(
+  cwd: string,
+  relative: string,
+  side: "ours" | "theirs",
+): Promise<void> {
+  return invoke<void>("git_resolve_conflict", { cwd, relative, side });
+}
+
+export function gitFileHistory(
+  cwd: string,
+  relative: string,
+  limit = 200,
+): Promise<GitHistoryCommit[]> {
+  return invoke<GitHistoryCommit[]>("git_file_history", { cwd, relative, limit });
+}
+
+export type GitBlameLine = {
+  line: number;
+  sha: string;
+  shortSha: string;
+  author: string;
+  timestamp: number;
+  summary: string;
+};
+
+export function gitBlame(cwd: string, relative: string): Promise<GitBlameLine[]> {
+  return invoke<GitBlameLine[]>("git_blame", { cwd, relative });
 }
 
 /** Git refused a checkout because the working tree would be overwritten. */
@@ -500,6 +718,17 @@ export async function pickFolders(title = "Open projects"): Promise<string[]> {
     return selected.filter((path) => !!path).map(slash);
   }
   return typeof selected === "string" && selected ? [slash(selected)] : [];
+}
+
+/** A VS Code `.code-workspace` file, or null when the picker is dismissed. */
+export async function pickCodeWorkspaceFile(): Promise<string | null> {
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    title: "Open VS Code workspace",
+    filters: [{ name: "VS Code workspace", extensions: ["code-workspace"] }],
+  });
+  return typeof selected === "string" && selected ? slash(selected) : null;
 }
 
 export async function pickFiles(title = "Attach files"): Promise<string[] | null> {

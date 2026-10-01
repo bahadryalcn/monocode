@@ -1,5 +1,8 @@
 import type { HarnessId } from "../../../features/sessions/model/session";
-import { HARNESSES } from "../../../features/sessions/model/session";
+import {
+  HARNESSES,
+  setHarnessAttachmentsSupported,
+} from "../../../features/sessions/model/session";
 import {
   resolveAntigravityBinary,
   resolveClaudeBinary,
@@ -50,7 +53,9 @@ const CLI: Record<HarnessId, { name: string; install?: string }> = {
     install:
       "Install from hermes-agent.nousresearch.com, then run hermes model",
   },
-  antigravity: { name: "Antigravity ACP server (agy_acp_server.par)" },
+  antigravity: {
+    name: "Antigravity (agy.exe on Windows, agy_acp_server.par elsewhere)",
+  },
 };
 
 let inflight: Promise<void> | null = null;
@@ -154,7 +159,12 @@ export function probeHarnessAvailability(
       }
       if (id === "antigravity") {
         try {
-          await resolveAntigravityBinary();
+          const binary = await resolveAntigravityBinary();
+          // The agy CLI transport has no way to carry attachments.
+          setHarnessAttachmentsSupported(
+            "antigravity",
+            binary.transport !== "stream-json",
+          );
           return [id, true] as const;
         } catch {
           return [id, false] as const;

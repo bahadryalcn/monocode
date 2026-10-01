@@ -14,6 +14,12 @@ const { invalidateWatchedFiles } = vi.hoisted(() => ({
 vi.mock("../../../platform/tauri/fs", () => ({
   gitDiffIndex: vi.fn(),
   gitHistory: vi.fn(async () => []),
+  gitOperationState: vi.fn(async () => null),
+  gitConflicts: vi.fn(async () => []),
+  gitStashList: vi.fn(async () => []),
+  gitBranches: vi.fn(async () => ({ current: "main", detached: false, branches: [] })),
+  gitRemotes: vi.fn(async () => []),
+  gitTags: vi.fn(async () => []),
   gitPrStatus: vi.fn(async () => null),
   gitPull: vi.fn(async () => {}),
   gitPush: vi.fn(async () => {}),
@@ -240,6 +246,62 @@ describe("GitChangesPanel pull action", () => {
 
     expect(gitPull).toHaveBeenCalledWith("/repo");
     expect(invalidateWatchedFiles).toHaveBeenCalled();
+  });
+});
+
+describe("GitChangesPanel actions menu", () => {
+  const menuLabels = () =>
+    [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].map(
+      (item) => item.textContent?.trim(),
+    );
+
+  it("stays available on a detached HEAD without a remote", async () => {
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ branch: null }));
+    await renderPanel();
+
+    const pull = await openBranchMenu();
+    expect(pull.disabled).toBe(true);
+    expect(menuLabels()).toEqual([
+      "Pull",
+      "Push",
+      "Checkout to…",
+      "Fetch",
+      "Commit",
+      "Changes",
+      "Pull, Push",
+      "Branch",
+      "Remote",
+      "Stash",
+      "Tags",
+    ]);
+    const checkout = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+      (item) => item.textContent === "Checkout to…",
+    );
+    expect(checkout?.disabled).toBe(false);
+  });
+
+  it("pulls with a rebase from the Pull, Push group", async () => {
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ remote: "origin", upstream: "origin/feature/pull" }),
+    );
+    await renderPanel();
+    await openBranchMenu();
+
+    const group = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+      (item) => item.textContent === "Pull, Push",
+    )!;
+    await act(async () => group.click());
+    await act(async () => {});
+    const rebase = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
+      (item) => item.textContent === "Pull (Rebase)",
+    )!;
+    expect(rebase.disabled).toBe(false);
+
+    await act(async () => {
+      rebase.click();
+      await Promise.resolve();
+    });
+    expect(gitPull).toHaveBeenCalledWith("/repo", true);
   });
 });
 

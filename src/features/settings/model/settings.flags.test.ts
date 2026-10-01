@@ -5,7 +5,9 @@ import * as appearance from "./appearance";
 
 const platform = vi.hoisted(() => ({ isWindows: true }));
 vi.mock("../../../platform/tauri/platform", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../platform/tauri/platform")>()),
+  ...(await importOriginal<
+    typeof import("../../../platform/tauri/platform")
+  >()),
   get IS_WIN() {
     return platform.isWindows;
   },
@@ -67,6 +69,20 @@ describe.each([
     "monocode:live-agents-enabled-change",
   ],
   [
+    "monocode.keepAwakeWhileAgentsWork",
+    settings.loadKeepAwakeEnabled,
+    settings.saveKeepAwakeEnabled,
+    false,
+    settings.KEEP_AWAKE_CHANGE_EVENT,
+  ],
+  [
+    "monocode.keepAwakeScreen",
+    settings.loadKeepAwakeScreen,
+    settings.saveKeepAwakeScreen,
+    false,
+    settings.KEEP_AWAKE_SCREEN_CHANGE_EVENT,
+  ],
+  [
     "monocode.closeToTray",
     settings.loadCloseToTray,
     settings.saveCloseToTray,
@@ -84,6 +100,13 @@ describe.each([
     "monocode.claudeHooks",
     settings.loadClaudeHooks,
     settings.saveClaudeHooks,
+    true,
+    undefined,
+  ],
+  [
+    "monocode.resumeAtReset",
+    settings.loadResumeAtReset,
+    settings.saveResumeAtReset,
     true,
     undefined,
   ],
@@ -194,4 +217,41 @@ it("disables close-to-tray outside Windows without consulting storage", () => {
 
   expect(settings.loadCloseToTray()).toBe(false);
   expect(read).not.toHaveBeenCalled();
+});
+
+it("reads keep-awake on Linux and macOS from storage", () => {
+  platform.isWindows = false;
+  settings.saveKeepAwakeEnabled(true);
+
+  expect(settings.loadKeepAwakeEnabled()).toBe(true);
+});
+
+it("persists how long to stay awake after an agent ends", () => {
+  expect(settings.loadKeepAwakeHoldAfter()).toBe("0");
+  settings.saveKeepAwakeHoldAfter("15m");
+  expect(settings.loadKeepAwakeHoldAfter()).toBe("15m");
+  expect(settings.keepAwakeHoldAfterMs("15m")).toBe(15 * 60 * 1000);
+  expect(settings.keepAwakeHoldAfterMs("forever")).toBe(
+    Number.POSITIVE_INFINITY,
+  );
+  localStorage.setItem("monocode.keepAwakeHoldAfter", "nope");
+  expect(settings.loadKeepAwakeHoldAfter()).toBe("0");
+});
+
+it("notifies another window when the keep-awake setting changes", () => {
+  const listener = vi.fn();
+  const unsubscribe = settings.subscribeKeepAwakeEnabled(listener);
+  window.dispatchEvent(
+    new StorageEvent("storage", {
+      key: "monocode.keepAwakeWhileAgentsWork",
+    }),
+  );
+  expect(listener).toHaveBeenCalledTimes(1);
+  unsubscribe();
+  window.dispatchEvent(
+    new StorageEvent("storage", {
+      key: "monocode.keepAwakeWhileAgentsWork",
+    }),
+  );
+  expect(listener).toHaveBeenCalledTimes(1);
 });

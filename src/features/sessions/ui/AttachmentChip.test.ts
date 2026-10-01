@@ -121,4 +121,41 @@ describe("AttachmentChip image preview", () => {
     expect(onRemove).toHaveBeenCalledOnce();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
+
+  it("shows its token label and inserts the token without opening the preview", () => {
+    const onInsertToken = vi.fn();
+    act(() =>
+      root.render(
+        createElement(AttachmentChip, {
+          attachment,
+          token: "[image2]",
+          onInsertToken,
+        }),
+      ),
+    );
+    const label = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Insert [image2] into the message"]',
+    )!;
+    expect(label.textContent).toBe("image2");
+
+    act(() => label.click());
+
+    expect(onInsertToken).toHaveBeenCalledOnce();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("shows a plain label when the token cannot be inserted", () => {
+    act(() =>
+      root.render(
+        createElement(AttachmentChip, { attachment, token: "[image1]" }),
+      ),
+    );
+    expect(container.textContent).toContain("image1");
+    expect(container.querySelector('[aria-label^="Insert "]')).toBeNull();
+  });
+
+  it("shows no label without a token", () => {
+    render();
+    expect(container.textContent).toBe("");
+  });
 });

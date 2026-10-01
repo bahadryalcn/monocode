@@ -13,6 +13,7 @@ import {
   unwatchChild,
   watchChild,
 } from "../../core/child";
+import { additionalDirsFor } from "../../core/additionalDirs";
 import {
   asRecord,
   buildThreadStartParams,
@@ -560,6 +561,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
               controlsAgents: input.controlsAgents,
               model,
               serviceTier,
+              additionalDirs: additionalDirsFor(input.sessionId),
             }),
           },
         );
@@ -580,6 +582,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           controlsAgents: input.controlsAgents,
           model,
           serviceTier,
+          additionalDirs: additionalDirsFor(input.sessionId),
         }),
       );
       threadId = opened.thread?.id?.trim();
@@ -656,6 +659,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     effort,
     serviceTier,
     intent: input.intent,
+    additionalDirs: additionalDirsFor(input.sessionId),
   });
 
   if (Array.isArray(params.input) && params.input.length === 0) {

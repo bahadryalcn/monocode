@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import { basename, pickFiles as pickFilePaths } from "../../../platform/tauri/fs";
+import {
+  basename,
+  pickFiles as pickFilePaths,
+} from "../../../platform/tauri/fs";
+import { attachmentLegend, stripAttachmentTokens } from "./attachmentTokens";
 import type { Attachment, AttachmentKind } from "./session";
 
 export const MAX_ATTACHMENTS = 20;
@@ -37,19 +41,28 @@ export const ATTACHMENT_ONLY_PROMPT =
   "The user attached these files without saying anything. Use the conversation above to work out what they want done with them, then do that. If the conversation gives you nothing to go on, ask.";
 
 /**
- * The turn's text, or a stand-in when files arrived without any.
+ * The turn's text as the provider receives it.
  *
  * A turn carrying only attachments never says what to do with them, leaving a
  * model to guess or to ask what the files are for. The conversation so far is
- * the only clue the user left behind, so point the model at it instead.
+ * the only clue the user left behind, so point the model at it instead. A turn
+ * whose only words are attachment tokens says no more than that.
+ *
+ * With attachments, the text ends with a legend naming what each token stands
+ * for. Every provider builds its prompt here, so this is the one place the
+ * legend is added, and it exists on the wire only: the stored message never
+ * carries it, so an edited or queued message cannot pick up a second one.
  */
 export function promptText(
   text: string,
   attachments: Attachment[] = [],
 ): string {
   const trimmed = text.trim();
-  if (trimmed || !attachments.length) return trimmed;
-  return ATTACHMENT_ONLY_PROMPT;
+  if (!attachments.length) return trimmed;
+  const spoken = stripAttachmentTokens(trimmed, attachments).trim();
+  return `${spoken ? trimmed : ATTACHMENT_ONLY_PROMPT}
+
+${attachmentLegend(attachments)}`;
 }
 
 /** A copied folder. No harness can open one, so it travels as its path. */

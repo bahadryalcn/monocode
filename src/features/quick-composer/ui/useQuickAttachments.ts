@@ -37,8 +37,7 @@ function releaseCaptures(files: Attachment[]) {
 }
 
 type CapturedClipboardPaste =
-  | { files: Attachment[]; warning?: string }
-  | { error: unknown };
+  { files: Attachment[]; warning?: string } | { error: unknown };
 
 function discardCapturedPaste(paste: CapturedClipboardPaste) {
   if ("files" in paste) paste.files.forEach(revokeAttachment);
@@ -47,6 +46,8 @@ function discardCapturedPaste(paste: CapturedClipboardPaste) {
 export function useQuickAttachments(
   supported: boolean,
   onError: (message: string | null) => void,
+  /** Called with what was attached and the files already there before it. */
+  onAdded?: (added: Attachment[], previous: Attachment[]) => void,
 ) {
   const [files, setFiles] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -59,6 +60,8 @@ export function useQuickAttachments(
   const queuedScreenshot = useRef<Promise<CapturedClipboardPaste> | null>(null);
   const supportedRef = useRef(supported);
   supportedRef.current = supported;
+  const onAddedRef = useRef(onAdded);
+  onAddedRef.current = onAdded;
 
   useEffect(() => {
     alive.current = true;
@@ -113,8 +116,10 @@ export function useQuickAttachments(
           return;
         }
         // Read the current list again: files may have been removed while loading.
-        filesRef.current = [...filesRef.current, ...stored];
+        const previous = filesRef.current;
+        filesRef.current = [...previous, ...stored];
         setFiles(filesRef.current);
+        if (stored.length) onAddedRef.current?.(stored, previous);
       } catch (reason) {
         incoming.forEach(revokeAttachment);
         if (alive.current)

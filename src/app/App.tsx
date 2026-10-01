@@ -72,6 +72,15 @@ import { Sidebar } from "./shell/Sidebar";
 import { ApprovalToasts } from "../features/sessions/ui/ApprovalToasts";
 import { HarnessUpdateNotice } from "../features/providers/ui/HarnessUpdateNotice";
 import { WhatsNewDialog } from "./shell/WhatsNewDialog";
+import { ClaudeSessionPicker } from "../features/sessions/ui/ClaudeSessionPicker";
+import {
+  buildImportedSession,
+  claudeImportTarget,
+  type ClaudeImportTarget,
+} from "../features/sessions/model/claudeSessionImport";
+import {
+  type ClaudeSessionSummary,
+} from "../platform/tauri/fs";
 import { ProviderSignInDialog } from "../features/sessions/ui/ProviderSignInDialog";
 import { TitleBar, type Tab as TitleTab } from "./shell/TitleBar";
 import { MenuBar } from "./shell/MenuBar";
@@ -130,11 +139,22 @@ import {
 } from "../features/sessions/model/attachments";
 import {
   basename,
+  listDir,
   notifyGitChanged,
+  pickCodeWorkspaceFile,
   pickFolders,
+  readTextFile,
   type GitFileDiffKind,
   type GitHistoryCommit,
 } from "../platform/tauri/fs";
+import {
+  OPEN_CODE_WORKSPACE_EVENT,
+  parseCodeWorkspace,
+} from "../features/projects/model/codeWorkspace";
+import { assignProjectsToNamedGroup } from "../features/projects/model/projectGroups";
+import { GitFileInspector } from "../features/source-control/ui/GitFileInspector";
+import { loadAdditionalDirs } from "../features/projects/model/additionalDirs";
+import { setAdditionalDirsResolver } from "../integrations/harness/core/additionalDirs";
 import {
   invalidateProjectFiles,
   prefetchProjectFiles,
@@ -460,6 +480,7 @@ import {
 } from "../features/sessions/ui/TranscriptPool";
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
 import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
+import { useKeepAwake } from "../features/settings/model/keepAwake";
 import { hiddenApprovalNotices } from "../features/notifications/model/approvalToast";
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
@@ -655,7 +676,7 @@ import {
   isAppQuitting,
   persistLiveTranscripts,
   persistQuitState,
-  reapWindowRuntime,
+  reapUnloadRuntime,
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
@@ -939,6 +960,7 @@ function Workspace({
   const [sessions, setSessions] = useState<Session[]>(
     () => windowTransfer?.sessions ?? resumed?.sessions ?? [seed.session],
   );
+  useKeepAwake(sessions);
   const [sessionDeleteDialog, setSessionDeleteDialog] = useState<{
     title: string;
     unusedWorktree: string;
@@ -1128,6 +1150,16 @@ function Workspace({
   const usageResetLookups = useRef(new WeakSet<UsageLimit>());
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  // Provider adapters ask this for a session's extra folders at launch.
+  useEffect(() => {
+    setAdditionalDirsResolver((sessionId) => {
+      const session = sessionsRef.current.find((item) => item.id === sessionId);
+      return session && isLocalProject(session.cwd)
+        ? loadAdditionalDirs(session.cwd)
+        : [];
+    });
+    return () => setAdditionalDirsResolver(() => []);
+  }, []);
   const dirtyFilesRef = useRef(dirtyFiles);
   dirtyFilesRef.current = dirtyFiles;
   const projectTerminalsRef = useRef(projectTerminals);
@@ -1392,11 +1424,7 @@ function Workspace({
         projectTerminalsRef.current,
         lastDockSideRef.current ?? undefined,
       ).finally(() => {
-        void reapWindowRuntime(
-          sessionsRef.current,
-          tabsRef.current,
-          projectTerminalsRef.current,
-        );
+        void reapUnloadRuntime(sessionsRef.current);
       });
     };
     window.addEventListener("pagehide", reap);
@@ -2154,6 +2182,17 @@ function Workspace({
     [],
   );
 
+  // The title tabs, explorer, changes and session list all follow
+  // `projectCwd`, so anything that reveals a tab from another project has to
+  // move it along with the active tab.
+  const followProject = useCallback((cwd: string | null | undefined) => {
+    if (!cwd || !looksLikeProject(cwd)) return;
+    const normalized = normalizeProjectPath(cwd);
+    if (sameProjectPath(normalized, projectCwdRef.current)) return;
+    setProjectCwd(normalized);
+    setRecents(rememberProject(normalized));
+  }, []);
+
   const activateTab = useCallback((id: string, paneId?: string) => {
     const tab = tabsRef.current.find((entry) => entry.id === id);
     const nextFocusedId =
@@ -2180,20 +2219,13 @@ function Workspace({
       const focusedTab = nextFocusedId
         ? { ...tab, focusedId: nextFocusedId }
         : tab;
-      const cwd = focusedWorkspaceTabCwd(focusedTab, sessionsRef.current);
-      if (cwd && looksLikeProject(cwd)) {
-        const normalized = normalizeProjectPath(cwd);
-        if (!sameProjectPath(normalized, projectCwdRef.current)) {
-          setProjectCwd(normalized);
-          setRecents(rememberProject(normalized));
-        }
-      }
+      followProject(focusedWorkspaceTabCwd(focusedTab, sessionsRef.current));
     }
     setComposerFocused(
       !!nextFocusedId &&
         sessionsRef.current.some((session) => session.id === nextFocusedId),
     );
-  }, []);
+  }, [followProject]);
 
   const commitTabVisit = useCallback((history: TabVisitHistory) => {
     tabVisitRef.current = history;
@@ -3541,16 +3573,14 @@ function Workspace({
       session?: { sessionId: string; cwd: string },
       changeKind?: GitFileDiffKind,
       pin = false,
+      exact = false,
     ) => {
-      void (async () => {
-        const diffCwd = session?.cwd ?? gitCwdRef.current;
-        const diffProjectCwd = session
-          ? sessionsRef.current.find((entry) => entry.id === session.sessionId)
-              ?.cwd
-          : sidebarCwdRef.current;
-        const resolved = path
-          ? ((await resolveOpenablePath(diffCwd, path)) ?? path)
-          : undefined;
+      const diffCwd = session?.cwd ?? gitCwdRef.current;
+      const diffProjectCwd = session
+        ? sessionsRef.current.find((entry) => entry.id === session.sessionId)
+            ?.cwd
+        : sidebarCwdRef.current;
+      const open = (resolved: string | undefined) => {
         if (resolved) rememberOpenedFile(diffCwd, resolved);
         setTabs((prev) =>
           prev.map((tab) => {
@@ -3584,14 +3614,24 @@ function Workspace({
         );
         setSidebarTab("changes", diffProjectCwd);
         setComposerFocused(false);
-      })();
+      };
+      // Source control hands over exact paths from git. Only shortened paths
+      // (a transcript link, a session file) need the project file index, and
+      // waiting on it here held the click until the whole project was listed.
+      if (!path || exact) {
+        open(path);
+        return;
+      }
+      void resolveOpenablePath(diffCwd, path).then((resolved) =>
+        open(resolved ?? path),
+      );
     },
     [activeTabId],
   );
 
   const onOpenWorkingTreeDiff = useCallback(
     (path: string, kind?: GitFileDiffKind, pin?: boolean) =>
-      onOpenDiff(path, undefined, kind, pin),
+      onOpenDiff(path, undefined, kind, pin, true),
     [onOpenDiff],
   );
 
@@ -3732,9 +3772,15 @@ function Workspace({
         entry.id === tab.id ? { ...entry, focusedId: sessionId } : entry,
       ),
     );
+    followProject(
+      focusedWorkspaceTabCwd(
+        { ...tab, focusedId: sessionId },
+        sessionsRef.current,
+      ),
+    );
     setComposerFocused(true);
     return true;
-  }, []);
+  }, [followProject]);
 
   const replaceBlankPaneWithSession = useCallback((session: Session) => {
     const tab =
@@ -3750,6 +3796,17 @@ function Workspace({
           isBlankSession(sessionsRef.current.find((entry) => entry.id === id)),
         );
     if (!paneId || paneId === session.id) return false;
+    // A blank pane belongs to its own project; a session from another one
+    // gets its own tab in that project instead.
+    const blankCwd = sessionsRef.current.find(
+      (entry) => entry.id === paneId,
+    )?.cwd;
+    if (
+      blankCwd &&
+      looksLikeProject(blankCwd) &&
+      !sameProjectPath(blankCwd, session.cwd)
+    )
+      return false;
 
     lastPersisted.current.delete(paneId);
     {
@@ -4118,12 +4175,14 @@ function Workspace({
         return;
       }
       if (replaceBlankPaneWithSession(session)) {
+        followProject(session.cwd);
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
         return;
       }
       const tab = newTab(session.id);
       appendTab(tab, session.cwd);
       setActiveTabId(tab.id);
+      followProject(session.cwd);
       setComposerFocused(true);
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
     },
@@ -4131,6 +4190,7 @@ function Workspace({
       appendTab,
       ensureOpenSession,
       focusOpenSession,
+      followProject,
       replaceBlankPaneWithSession,
       revealLinkedSessionUpdate,
     ],
@@ -5304,6 +5364,136 @@ function Workspace({
     // the last one selected ends up focused.
     openProjects(await pickFolders());
   }, [openProjects]);
+
+  /**
+   * Open the folders of a VS Code workspace file as projects, collected in a
+   * rail group named after the file.
+   */
+  const openCodeWorkspace = useCallback(async () => {
+    const title = "Open VS Code workspace";
+    const file = await pickCodeWorkspaceFile();
+    if (!file) return;
+    try {
+      const workspace = parseCodeWorkspace(await readTextFile(file), file);
+      const present = await Promise.all(
+        workspace.folders.map((folder) =>
+          listDir(folder).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      );
+      const found = workspace.folders.filter((_, index) => present[index]);
+      const skipped = [
+        ...workspace.folders.filter((_, index) => !present[index]),
+        ...workspace.unsupported,
+      ];
+      if (found.length === 0) {
+        await message(
+          skipped.length > 0
+            ? `None of the workspace's folders could be opened:\n\n${skipped.join("\n")}`
+            : "The workspace has no folders.",
+          { title, kind: "error" },
+        );
+        return;
+      }
+      openProjects(found);
+      assignProjectsToNamedGroup(workspace.name, found);
+      if (skipped.length > 0) {
+        await message(
+          `These folders could not be opened and were skipped:\n\n${skipped.join("\n")}`,
+          { title, kind: "warning" },
+        );
+      }
+    } catch (error) {
+      await message(error instanceof Error ? error.message : String(error), {
+        title,
+        kind: "error",
+      });
+    }
+  }, [openProjects]);
+
+  useEffect(() => {
+    const open = () => void openCodeWorkspace();
+    window.addEventListener(OPEN_CODE_WORKSPACE_EVENT, open);
+    return () => window.removeEventListener(OPEN_CODE_WORKSPACE_EVENT, open);
+  }, [openCodeWorkspace]);
+
+  const [resumePickerFor, setResumePickerFor] =
+    useState<ClaudeImportTarget | null>(null);
+
+  const onResumeProviderSession = useCallback((sessionId: string) => {
+    const source = sessionsRef.current.find(
+      (session) => session.id === sessionId,
+    );
+    if (!source) return;
+    setResumePickerFor({
+      sessionId,
+      // Claude files conversations under the directory it ran in, which for a
+      // worktree session is the checkout rather than the project root.
+      cwd: sessionWorkCwd(source),
+      turnGen: turnGen.current.get(sessionId) ?? 0,
+      ...(source.providerAccountId
+        ? { providerAccountId: source.providerAccountId }
+        : {}),
+    });
+  }, []);
+
+  /**
+   * Load a conversation Claude Code recorded into the thread the command was
+   * run from, and bind it so the next turn continues that conversation rather
+   * than starting a new one.
+   */
+  const importClaudeConversation = useCallback(
+    async (target: ClaudeImportTarget, summary: ClaudeSessionSummary) => {
+      // Each step below is a round trip the thread can change across, so the
+      // target is rechecked at every one rather than once at the start. The
+      // picker has already closed by now, so the composer is live throughout.
+      const stillTarget = () =>
+        claudeImportTarget(
+          sessionsRef.current,
+          target,
+          turnGen.current.get(target.sessionId) ?? 0,
+        );
+      if (!stillTarget()) return;
+      const transcript = await readTextFile(summary.path).catch(() => null);
+      if (transcript === null) return;
+      if (!stillTarget()) return;
+
+      // A child that is already running ignores the new binding: `ensureLive`
+      // hands back the existing one before the resume state is read, so the
+      // next turn would carry on the old conversation. Stopping it first makes
+      // that turn spawn with `--resume`; the resume state itself survives.
+      await stopHarnessSession("claude", target.sessionId).catch(
+        () => undefined,
+      );
+      if (!stillTarget()) return;
+
+      setSessions((current) =>
+        current.map((session) =>
+          session.id === target.sessionId
+            ? buildImportedSession({
+                base: session,
+                transcript,
+                providerSessionId: summary.id,
+                providerAccountId: session.providerAccountId,
+              })
+            : session,
+        ),
+      );
+      bindHarnessSession(
+        "claude",
+        target.sessionId,
+        summary.id,
+        // Claude only resumes when the bound directory matches the one the
+        // next turn runs in — which is the directory these conversations were
+        // listed for, the checkout rather than the project root.
+        target.cwd,
+        target.providerAccountId,
+      );
+    },
+    [],
+  );
 
   const onPlaceSessionInFolder = useCallback(
     (sessionId: string, target: SessionFolderTarget) => {
@@ -6866,7 +7056,7 @@ function Workspace({
           );
           if (operatorCommand.matched) {
             const cli = `${shellPath(await invoke<string>("app_cli_path"))} app`;
-            sendText += `\n\n<monocode_app>\nThe user's Operator command enables app access in this thread, including later turns without the command. You can start session tabs or split session panes right or down, list and create project worktrees, choose a new session's checkout, read and continue other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` for exact commands and JSON fields, then use it as needed for the user's request. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`;
+            sendText += `\n\n<monocode_app>\nThe user's Operator command enables app access in this thread, including later turns without the command. You can start session tabs or split session panes right or down, list and create project worktrees, choose a new session's checkout, read and continue other project sessions, save unsent drafts, organize session folders, and read or write saved notes through its local CLI. Run \`${cli} --help\` for exact commands and JSON fields, then use it as needed for the user's request. After sessions.send, call sessions.wait with the returned requestId as sentRequestId to get that session's reply. When reading another session, start with its latest two or three user/assistant exchanges. Request older exchanges with nextBefore or a larger excerpt only if needed. The CLI uses a session credential already in your environment; never print it. New sessions inherit this session's permission mode unless runtimeMode is set explicitly. For a new session with a draft, call sessions.start with its prompt and draft:true; do not submit a seed prompt. The returned ID can be used as besideSessionId to split its pane again or moved into a folder immediately. A normal sessions.start submits its prompt but returns after acceptance, so do not wait for that agent to finish before organizing it.\n</monocode_app>`;
           }
           await sendTurn(sendText);
           acceptEditedResend();
@@ -7344,10 +7534,13 @@ function Workspace({
     };
   }, [ensureAutomationRecovery, launchAutomation]);
 
-  const onInboxAppeared = useCallback(
-    (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
+  const onInboxActivity = useCallback(
+    (
+      items: Parameters<typeof claimInboxAutomationRuns>[0],
+      transitions: Parameters<typeof claimInboxAutomationRuns>[2],
+    ) => {
       void ensureAutomationRecovery()
-        .then(() => claimInboxAutomationRuns(items))
+        .then(() => claimInboxAutomationRuns(items, Date.now(), transitions))
         .then((due) => {
           for (const item of due) {
             void launchAutomation(
@@ -9510,7 +9703,7 @@ function Workspace({
     linkedSessionUpdateIds,
     linkedSessionUpdates,
   } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
-    onAppeared: onInboxAppeared,
+    onActivity: onInboxActivity,
   });
   linkedSessionUpdatesRef.current = linkedSessionUpdates;
   const inboxRelatedSessions = useMemo(() => {
@@ -10516,6 +10709,7 @@ function Workspace({
     onStop,
     onCompactContext,
     onPlaceSessionInFolder,
+    onResumeProviderSession,
     onDeleteQueuedMessage,
     onEditQueuedMessage,
     onQueuedMessageEditingChange,
@@ -11097,12 +11291,24 @@ function Workspace({
             onOpenSettings={() => openSettings("general", "notifications")}
             onHeightChange={setReminderNoticesHeight}
           />
+          {resumePickerFor ? (
+            <ClaudeSessionPicker
+              cwd={resumePickerFor.cwd}
+              providerAccountId={resumePickerFor.providerAccountId}
+              onClose={() => setResumePickerFor(null)}
+              onPick={(summary) => {
+                void importClaudeConversation(resumePickerFor, summary);
+                setResumePickerFor(null);
+              }}
+            />
+          ) : null}
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}
               onClose={() => setWhatsNewVersion(null)}
             />
           ) : null}
+          <GitFileInspector onOpenCommit={onOpenCommit} />
           {remoteProjectDialogOpen ? (
             <AddRemoteProjectDialog
               onCancel={() => setRemoteProjectDialogOpen(false)}

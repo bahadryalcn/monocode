@@ -8,6 +8,10 @@ import type {
   ToolPreview,
 } from "../../../features/sessions/model/session";
 import { mergeContextUsage } from "../../../features/sessions/model/contextUsage";
+import {
+  mergeSessionUsage,
+  resetProcessCounters,
+} from "../../../features/sessions/model/sessionUsage";
 import { displayPath } from "../../../shared/lib/paths";
 import {
   composeToolTitle,
@@ -20,6 +24,7 @@ import { joinStreamText } from "./streamText";
 import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
+import { loadResumeAtReset } from "../../../features/settings/model/settings";
 import type { HarnessEvent } from "./types";
 
 /** Apply one delivery batch without copying the transcript for every token. */
@@ -51,9 +56,15 @@ export function applyHarnessEvents(
   return next;
 }
 
+export type ApplyHarnessEventOptions = {
+  /** The desktop's "Resume at reset" setting, for callers that cannot read it. */
+  resumeAtReset?: boolean;
+};
+
 export function applyHarnessEvent(
   session: Session,
   event: HarnessEvent,
+  options: ApplyHarnessEventOptions = {},
 ): Session {
   switch (event.type) {
     case "message.delta":
@@ -138,6 +149,12 @@ export function applyHarnessEvent(
           window: event.window,
         }),
       };
+    case "usage":
+      return { ...session, usage: mergeSessionUsage(session.usage, event) };
+    case "session.started":
+      return session.usage
+        ? { ...session, usage: resetProcessCounters(session.usage) }
+        : session;
     case "turn.metrics":
       return mergeTurnMetrics(session, event);
     case "tasks.updated":
@@ -145,10 +162,18 @@ export function applyHarnessEvent(
     case "background.updated":
       if (event.tasks.length === 0) {
         if (!session.backgroundTasks) return session;
-        const { backgroundTasks: _cleared, ...rest } = session;
+        const {
+          backgroundTasks: _cleared,
+          backgroundAgents: _agents,
+          ...rest
+        } = session;
         return rest;
       }
-      return { ...session, backgroundTasks: event.tasks };
+      return {
+        ...session,
+        backgroundTasks: event.tasks,
+        backgroundAgents: event.agents,
+      };
     case "plan":
       return upsertPlan(session, event);
     case "session.error":
@@ -190,7 +215,15 @@ export function applyHarnessEvent(
     case "usage.limited":
       return {
         ...session,
-        usageLimit: event.resetsAt != null ? { resetsAt: event.resetsAt } : {},
+        usageLimit: {
+          ...(event.resetsAt != null ? { resetsAt: event.resetsAt } : {}),
+          // Armed even before the reset time is known; a later lookup fills it in.
+          // A repeated limit event keeps the choice already made for this one.
+          resumeAtReset:
+            session.usageLimit?.resumeAtReset ??
+            options.resumeAtReset ??
+            loadResumeAtReset(),
+        },
       };
     case "interjection":
       // A visible boundary the user must not miss, so unlike status it never
@@ -498,8 +531,11 @@ export function appendSteerUser(
 }
 
 export function stopStreaming(session: Session, endedAt = Date.now()): Session {
-  const { backgroundTasks: _cleared, ...settled } =
-    settlePendingApprovals(session);
+  const {
+    backgroundTasks: _cleared,
+    backgroundAgents: _agents,
+    ...settled
+  } = settlePendingApprovals(session);
   return {
     ...settled,
     busy: false,

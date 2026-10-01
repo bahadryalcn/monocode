@@ -6,6 +6,7 @@ import {
   getIndentUnit,
   indentUnit,
 } from "@codemirror/language";
+import type { MergeView } from "@codemirror/merge";
 import {
   Annotation,
   Compartment,
@@ -15,6 +16,7 @@ import {
   StateField,
   Transaction,
   type EditorState,
+  type Extension,
   type Text,
 } from "@codemirror/state";
 import {
@@ -31,10 +33,17 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCcw,
+  SplitSquare,
 } from "../../../shared/ui/icons";
 import { formatInteger } from "../../../shared/lib/numbers";
 import { minimalSetup } from "codemirror";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   MarkdownViewShell,
   useMarkdownMode,
@@ -42,7 +51,14 @@ import {
 import { useColorScheme } from "../../../shared/hooks/useColorScheme";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { isLightScheme } from "../../settings/model/appearance";
-import { loadAutosave, loadFormatOnSave } from "../../settings/model/settings";
+import {
+  loadAutosave,
+  loadDiffLayout,
+  loadFormatOnSave,
+  saveDiffLayout,
+  subscribeDiffLayout,
+  type DiffLayout,
+} from "../../settings/model/settings";
 import { formatText } from "../../../shared/lib/format";
 import {
   basename,
@@ -72,6 +88,8 @@ import {
   preserveEditorViewport,
   replaceEditorDoc,
   restoreLineEnding,
+  scrollLineToTop,
+  topVisibleLine,
 } from "../editor/editorDoc";
 import {
   editorMatching,
@@ -91,6 +109,13 @@ import {
   editorGit,
   setGitOriginal,
 } from "../editor/editorGit";
+import {
+  createSplitDiff,
+  setSplitOriginal,
+  splitLineStats,
+  splitNavigablePositions,
+  splitNavUpdateRelevant,
+} from "../editor/editorSplitDiff";
 import { editorLint } from "../editor/editorLint";
 import { editorSearch } from "../editor/editorSearch";
 import { editorScrollbar } from "../editor/editorScrollbar";
@@ -573,6 +598,7 @@ export function CodeMirrorEditor({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const leftViewRef = useRef<EditorView | null>(null);
   const savedDocumentRef = useRef<Text | null>(null);
   const dirtyRef = useRef(false);
   const activeRef = useRef(active);
@@ -588,8 +614,22 @@ export function CodeMirrorEditor({
   const pendingNavigationRef = useRef<EditorNavigationRequest | null>(null);
   const gitOriginalRef = useRef(gitOriginal);
   const chunkNavPinnedRef = useRef<number | null>(null);
+  // The side-by-side pair, when that layout is showing. `viewRef` is then its
+  // right pane, so saving, dirty tracking and reloads need no second path.
+  const splitRef = useRef<MergeView | null>(null);
+  // What scrolls the editor: its own scroller, or the pair's shared container.
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  // What a rebuilt editor needs to pick up where the last one stopped.
+  const carryRef = useRef<EditorCarry | null>(null);
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const colorScheme = useColorScheme();
+  const diffLayout = useSyncExternalStore(
+    subscribeDiffLayout,
+    loadDiffLayout,
+    loadDiffLayout,
+  );
+  // Without a "before" there is nothing to put on the left.
+  const splitDiff = showDiff && diffLayout === "split" && gitOriginal !== null;
   const [chunkNav, setChunkNav] = useState<{
     positions: number[];
     index: number;
@@ -617,8 +657,13 @@ export function CodeMirrorEditor({
   gitOriginalRef.current = gitOriginal;
 
   const syncChunkNav = useCallback((view: EditorView, fromScroll = true) => {
-    const positions = diffNavigablePositions(view);
-    const { additions, deletions } = diffLineStatsForView(view);
+    const split = splitRef.current;
+    const positions = split
+      ? splitNavigablePositions(split)
+      : diffNavigablePositions(view);
+    const { additions, deletions } = split
+      ? splitLineStats(split)
+      : diffLineStatsForView(view);
     if (positions.length === 0) {
       setChunkNav((current) =>
         current && current.positions.length === 0
@@ -640,7 +685,11 @@ export function CodeMirrorEditor({
       index < 0 ||
       index >= positions.length
     ) {
-      index = diffActiveChunkIndex(view, positions);
+      index = diffActiveChunkIndex(
+        view,
+        positions,
+        scrollerRef.current ?? view.scrollDOM,
+      );
     }
     chunkNavPinnedRef.current = index;
     setChunkNav((current) => {
@@ -694,6 +743,9 @@ export function CodeMirrorEditor({
     let saveGeneration = 0;
     let autosaveTimer = 0;
     let view: EditorView;
+    let split: MergeView | null = null;
+    const carry = carryRef.current;
+    carryRef.current = null;
 
     const markDirty = () => {
       const saved = savedDocumentRef.current;
@@ -726,6 +778,7 @@ export function CodeMirrorEditor({
                   result.formatted.length,
                 ),
               },
+              scroller: scrollerRef.current ?? undefined,
             });
           }
         }
@@ -767,90 +820,134 @@ export function CodeMirrorEditor({
       }, FILE_EDITOR_AUTOSAVE_DELAY_MS);
     }
 
-    view = new EditorView({
-      doc: valueRef.current,
-      parent: host,
-      extensions: [
-        minimalSetup,
-        showDiff ? editorGitConfig.of(editorGit(gitOptions)) : [],
-        lineNumbers(),
-        foldGutter(),
-        highlightActiveLine(),
-        highlightActiveLineGutter(),
-        EditorView.lineWrapping,
-        wrappedLineIndent,
-        language.of([]),
-        editorScheme.of(schemeExtensions(isLightScheme() ? "light" : "dark")),
-        editorMatching,
-        editorTyping(path),
-        editorAutocomplete,
-        editorLint(path, (count) => onErrorCountChangeRef.current(count)),
-        editorScrollbar,
-        editorSearch,
-        Prec.high(
-          keymap.of([
-            ...foldKeymap,
-            { key: "Mod-s", run: () => save(), preventDefault: true },
-            {
-              key: "Tab",
-              run: (view) => {
-                if (
-                  completionStatus(view.state) === "active" &&
-                  acceptCompletion(view)
-                ) {
-                  return true;
-                }
-                return tryExpandEmmet(view) || indentOrInsertTab(view);
-              },
-              shift: indentLess,
-              preventDefault: true,
+    // Folding would pull one pane's lines out of line with the other, and the
+    // pair scrolls as a whole, so the editor's own scrollbar has no job.
+    const extensions: Extension[] = [
+      minimalSetup,
+      showDiff && !splitDiff ? editorGitConfig.of(editorGit(gitOptions)) : [],
+      lineNumbers(),
+      splitDiff ? [] : foldGutter(),
+      highlightActiveLine(),
+      highlightActiveLineGutter(),
+      EditorView.lineWrapping,
+      wrappedLineIndent,
+      language.of([]),
+      editorScheme.of(schemeExtensions(isLightScheme() ? "light" : "dark")),
+      editorMatching,
+      editorTyping(path),
+      editorAutocomplete,
+      editorLint(path, (count) => onErrorCountChangeRef.current(count)),
+      splitDiff ? [] : editorScrollbar,
+      editorSearch,
+      Prec.high(
+        keymap.of([
+          ...(splitDiff ? [] : foldKeymap),
+          { key: "Mod-s", run: () => save(), preventDefault: true },
+          {
+            key: "Tab",
+            run: (view) => {
+              if (
+                completionStatus(view.state) === "active" &&
+                acceptCompletion(view)
+              ) {
+                return true;
+              }
+              return tryExpandEmmet(view) || indentOrInsertTab(view);
             },
-          ]),
-        ),
-        EditorView.updateListener.of((update) => {
-          if (
-            update.transactions.some(
-              (tr) =>
-                (tr.selection || tr.docChanged) &&
-                !tr.annotation(diskReload) &&
-                !tr.annotation(sourceNavigation),
-            )
-          ) {
-            pendingNavigationRef.current = null;
-          }
-          if (update.selectionSet) {
-            setSelectionTarget(editorSelectionTarget(update.view, commentPath));
-          } else if (update.docChanged) {
-            setSelectionTarget(null);
-          }
-          if (!update.docChanged) return;
-          onDocChangeRef.current?.(update.state.doc.toString());
-          if (update.transactions.some((tr) => tr.annotation(diskReload))) {
-            return;
-          }
-          markDirty();
-          scheduleAutosave();
-        }),
-        EditorView.domEventHandlers({
-          blur: () => {
-            pendingNavigationRef.current = null;
+            shift: indentLess,
+            preventDefault: true,
           },
-        }),
-        showDiff
-          ? EditorView.updateListener.of((update) => {
-              if (!diffNavUpdateRelevant(update)) return;
-              chunkNavPinnedRef.current = null;
-              syncChunkNav(update.view);
-            })
-          : [],
-      ],
-    });
-    savedDocumentRef.current = view.state.doc;
-    dirtyRef.current = false;
+        ]),
+      ),
+      EditorView.updateListener.of((update) => {
+        if (
+          update.transactions.some(
+            (tr) =>
+              (tr.selection || tr.docChanged) &&
+              !tr.annotation(diskReload) &&
+              !tr.annotation(sourceNavigation),
+          )
+        ) {
+          pendingNavigationRef.current = null;
+        }
+        if (update.selectionSet) {
+          setSelectionTarget(
+            editorSelectionTarget(
+              update.view,
+              commentPath,
+              scrollerRef.current ?? update.view.scrollDOM,
+            ),
+          );
+        } else if (update.docChanged) {
+          setSelectionTarget(null);
+        }
+        if (!update.docChanged) return;
+        onDocChangeRef.current?.(update.state.doc.toString());
+        if (update.transactions.some((tr) => tr.annotation(diskReload))) {
+          return;
+        }
+        markDirty();
+        scheduleAutosave();
+      }),
+      EditorView.domEventHandlers({
+        blur: () => {
+          pendingNavigationRef.current = null;
+        },
+      }),
+      showDiff
+        ? EditorView.updateListener.of((update) => {
+            const relevant = splitDiff
+              ? splitNavUpdateRelevant(update)
+              : diffNavUpdateRelevant(update);
+            if (!relevant) return;
+            chunkNavPinnedRef.current = null;
+            syncChunkNav(update.view);
+          })
+        : [],
+    ];
+    // Unsaved edits survive a rebuild; anything else re-reads the file.
+    const initialDoc = carry?.doc ?? valueRef.current;
+    let leftView: EditorView | null = null;
+    if (splitDiff) {
+      split = createSplitDiff({
+        parent: host,
+        original: gitOriginalRef.current ?? "",
+        doc: initialDoc,
+        extensions,
+        originalExtensions: [
+          minimalSetup,
+          lineNumbers(),
+          EditorView.lineWrapping,
+          wrappedLineIndent,
+          language.of([]),
+          editorScheme.of(schemeExtensions(isLightScheme() ? "light" : "dark")),
+        ],
+      });
+      view = split.b;
+      leftView = split.a;
+      leftViewRef.current = leftView;
+    } else {
+      view = new EditorView({ doc: initialDoc, parent: host, extensions });
+    }
+    splitRef.current = split;
+    scrollerRef.current = split ? split.dom : view.scrollDOM;
+    if (carry?.saved) {
+      savedDocumentRef.current = carry.saved;
+    } else {
+      savedDocumentRef.current = view.state.doc;
+      dirtyRef.current = false;
+    }
     viewRef.current = view;
-    lockOverscroll(view.scrollDOM as HTMLDivElement);
+    lockOverscroll(scrollerRef.current as HTMLDivElement);
+    if (carry) {
+      view.dispatch({
+        selection: { anchor: Math.min(carry.head, view.state.doc.length) },
+      });
+      scrollLineToTop(view, carry.topLine);
+      if (dirtyRef.current) scheduleAutosave();
+    }
     if (showDiff) {
-      if (gitOriginalRef.current) {
+      if (!splitDiff && gitOriginalRef.current) {
         setGitOriginal(view, gitOriginalRef.current);
       }
       syncChunkNav(view);
@@ -866,7 +963,9 @@ export function CodeMirrorEditor({
 
     void languageForPath(path).then((extension) => {
       if (!disposed && extension) {
-        view.dispatch({ effects: language.reconfigure(extension) });
+        const reconfigure = { effects: language.reconfigure(extension) };
+        view.dispatch(reconfigure);
+        leftView?.dispatch(reconfigure);
       }
     });
 
@@ -875,52 +974,70 @@ export function CodeMirrorEditor({
       window.clearTimeout(autosaveTimer);
       onErrorCountChangeRef.current(0);
       lockOverscroll(null);
+      carryRef.current = {
+        doc: dirtyRef.current ? view.state.doc : null,
+        saved: dirtyRef.current ? savedDocumentRef.current : null,
+        head: view.state.selection.main.head,
+        topLine: topVisibleLine(view, scrollerRef.current ?? view.scrollDOM),
+      };
       viewRef.current = null;
+      leftViewRef.current = null;
+      splitRef.current = null;
+      scrollerRef.current = null;
       savedDocumentRef.current = null;
       setChunkNav(null);
       setSelectionTarget(null);
-      view.destroy();
+      if (split) split.destroy();
+      else view.destroy();
     };
-  }, [formatOnSave, lockOverscroll, path, showDiff, syncChunkNav]);
+  }, [formatOnSave, lockOverscroll, path, showDiff, splitDiff, syncChunkNav]);
 
   useEffect(() => {
-    const view = viewRef.current;
-    if (!view) return;
-    view.dispatch({
+    const reconfigure = {
       effects: editorScheme.reconfigure(schemeExtensions(colorScheme)),
-    });
+    };
+    viewRef.current?.dispatch(reconfigure);
+    leftViewRef.current?.dispatch(reconfigure);
   }, [colorScheme]);
 
   useEffect(() => {
     const view = viewRef.current;
-    if (!view || !showDiff) return;
+    if (!view || !showDiff || splitDiff) return;
     view.dispatch({
       effects: editorGitConfig.reconfigure(editorGit(gitOptions)),
     });
-  }, [canStage, showDiff]);
+  }, [canStage, showDiff, splitDiff]);
 
   useEffect(() => {
     const view = viewRef.current;
     if (!view || !showDiff) return;
+    const split = splitRef.current;
     let changed = false;
-    preserveEditorViewport(view, () => {
-      changed = setGitOriginal(view, gitOriginal);
-    });
+    preserveEditorViewport(
+      view,
+      () => {
+        changed = split
+          ? setSplitOriginal(split, gitOriginal ?? "")
+          : setGitOriginal(view, gitOriginal);
+      },
+      scrollerRef.current ?? view.scrollDOM,
+    );
     if (!changed) return;
     chunkNavPinnedRef.current = null;
     syncChunkNav(view);
-  }, [gitOriginal, showDiff, syncChunkNav]);
+  }, [gitOriginal, showDiff, splitDiff, syncChunkNav]);
 
   useEffect(() => {
     const view = viewRef.current;
-    if (!view || !showDiff) return;
+    const scroller = scrollerRef.current;
+    if (!view || !scroller || !showDiff) return;
     const onScroll = () => {
       chunkNavPinnedRef.current = null;
       syncChunkNav(view);
     };
-    view.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
-    return () => view.scrollDOM.removeEventListener("scroll", onScroll);
-  }, [showDiff, syncChunkNav, path]);
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+    return () => scroller.removeEventListener("scroll", onScroll);
+  }, [showDiff, splitDiff, syncChunkNav, path]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -928,6 +1045,7 @@ export function CodeMirrorEditor({
     if (view.state.doc.toString() === value) return;
     replaceEditorDoc(view, value, {
       annotations: [Transaction.addToHistory.of(false), diskReload.of(true)],
+      scroller: scrollerRef.current ?? undefined,
     });
     savedDocumentRef.current = view.state.doc;
     setDirty(false);
@@ -999,6 +1117,8 @@ export function CodeMirrorEditor({
             deletions={chunkNav?.deletions ?? 0}
             onPrev={() => stepChunkNav(-1)}
             onNext={() => stepChunkNav(1)}
+            layout={diffLayout}
+            onLayoutChange={saveDiffLayout}
           />
         ) : null}
         <div ref={hostRef} className="min-h-0 flex-1" />
@@ -1021,6 +1141,7 @@ export function CodeMirrorEditor({
 function editorSelectionTarget(
   view: EditorView,
   path: string,
+  scroller: HTMLElement,
 ): EditorSelectionTarget | null {
   if (view.state.selection.ranges.length !== 1) return null;
   const selection = view.state.selection.main;
@@ -1034,7 +1155,7 @@ function editorSelectionTarget(
   );
   if (!coordinates) return null;
 
-  const viewport = view.scrollDOM.getBoundingClientRect();
+  const viewport = scroller.getBoundingClientRect();
   if (
     coordinates.bottom < viewport.top ||
     coordinates.top > viewport.bottom ||
@@ -1065,6 +1186,8 @@ function DiffChunkNav({
   deletions,
   onPrev,
   onNext,
+  layout,
+  onLayoutChange,
 }: {
   index: number;
   total: number;
@@ -1072,7 +1195,10 @@ function DiffChunkNav({
   deletions: number;
   onPrev: () => void;
   onNext: () => void;
+  layout: DiffLayout;
+  onLayoutChange: (layout: DiffLayout) => void;
 }) {
+  const split = layout === "split";
   return (
     <header
       className="flex h-8 shrink-0 items-center justify-between gap-3 border-b border-stroke px-3 pr-1"
@@ -1081,6 +1207,19 @@ function DiffChunkNav({
     >
       <DiffChunkStat additions={additions} deletions={deletions} />
       <div className="flex items-center gap-0.5">
+        <button
+          type="button"
+          title="Side-by-side view"
+          aria-label="Side-by-side view"
+          aria-pressed={split}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => onLayoutChange(split ? "inline" : "split")}
+          className={`mr-1 grid size-6 place-items-center rounded hover:bg-content/10 hover:text-content ${
+            split ? "bg-content/10 text-content" : "text-content/70"
+          }`}
+        >
+          <SplitSquare className="size-3.5" strokeWidth={1.75} />
+        </button>
         <button
           type="button"
           title="Previous change"
@@ -1189,6 +1328,14 @@ function indentOrInsertTab(view: EditorView): boolean {
 }
 
 type LineRange = { from: number; to: number };
+
+type EditorCarry = {
+  /** Set only when the old editor held unsaved edits. */
+  doc: Text | null;
+  saved: Text | null;
+  head: number;
+  topLine: number;
+};
 
 const wrappedLineIndent = StateField.define<DecorationSet>({
   create(state) {

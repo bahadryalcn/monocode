@@ -83,6 +83,7 @@ import { useNotificationProjects } from "../../features/notifications/hooks/useN
 import { GithubStarPrompt } from "./GithubStarPrompt";
 import { Popover } from "../../shared/ui/Popover";
 import { OPEN_REMOTE_PROJECT_EVENT } from "../../features/connections/model/connections";
+import { OPEN_CODE_WORKSPACE_EVENT } from "../../features/projects/model/codeWorkspace";
 import {
   useRemoteMachineOnline,
   useRemoteMachines,
@@ -1183,6 +1184,18 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
           >
             <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />
             Open folder…
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={item}
+            onClick={() => {
+              setOpen(false);
+              window.dispatchEvent(new Event(OPEN_CODE_WORKSPACE_EVENT));
+            }}
+          >
+            <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />
+            Open VS Code workspace…
           </button>
           <button
             type="button"

@@ -46,6 +46,9 @@ import {
 } from "../model/session";
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
+import { ActivityDock } from "./ActivityDock";
+import { isBackgroundOnly } from "../model/activityDock";
+import { requestOpenSubagent } from "./subagentFocus";
 import { AgentTranscript } from "./AgentTranscript";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
@@ -139,6 +142,8 @@ export type SessionPaneProps = {
   onRemoveDraft: (sessionId: string, draftBlockId: string) => boolean | void;
   onStop: (sessionId: string) => void;
   onCompactContext: (sessionId: string) => boolean;
+  /** Open the picker of conversations Claude Code stored for this project. */
+  onResumeProviderSession?: (sessionId: string) => void;
   onPlaceSessionInFolder: (
     sessionId: string,
     target: SessionFolderTarget,
@@ -277,6 +282,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onStop,
   onCompactContext,
   onPlaceSessionInFolder,
+  onResumeProviderSession,
   onDeleteQueuedMessage,
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
@@ -470,6 +476,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
       navigateBlockRef.current?.(blockId, query) ?? false,
     [],
   );
+  // The dock's rows: bring the run into view, and open it once it is there.
+  const openDockAgent = useCallback(
+    (blockId: string) => {
+      requestOpenSubagent(blockId);
+      navigateBlock(blockId);
+    },
+    [navigateBlock],
+  );
   const jumpRequest = useSyncExternalStore(
     subscribeTranscriptJump,
     () => peekTranscriptJump(session.id),
@@ -570,6 +584,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       hideBranchPicker={!!session.inboxAsk || managed}
       hideTopBar={!!session.inboxAsk}
       context={session.context}
+      sessionUsage={session.usage}
       quoteRequest={quoteRequest}
       initialDraft={
         draftRef.current ??
@@ -651,6 +666,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onStop={() => onStop(session.id)}
       onCompactContext={() => onCompactContext(session.id)}
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
+      onResumeProviderSession={
+        onResumeProviderSession
+          ? () => onResumeProviderSession(session.id)
+          : undefined
+      }
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}
       onDeleteQueuedMessage={(messageId) =>
@@ -674,13 +694,31 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onUsageLimitDismiss={() => onUsageLimitDismiss(session.id)}
       onOpenFile={onOpenFile}
       busy={!!session.busy}
+      backgroundOnly={isBackgroundOnly(
+        !!session.busy,
+        session.backgroundTasks,
+        session.backgroundAgents,
+      )}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
       onRecallLastTurnReady={(recall) => {
         recallLastTurnRef.current = recall;
       }}
       onEditingLastTurnChange={setEditingLastTurn}
-    />
+    >
+      {/* Above the queue and the input, below any question form. */}
+      <ActivityDock
+        sessionId={session.id}
+        blocks={session.blocks}
+        busy={!!session.busy}
+        pendingQuestion={!!session.pendingQuestion}
+        backgroundTasks={session.backgroundTasks}
+        backgroundAgents={session.backgroundAgents}
+        visible={visible}
+        atEnd={!showJumpToBottom}
+        onOpenAgent={openDockAgent}
+      />
+    </Composer>
   );
 
   return (
@@ -826,6 +864,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   modelSettings={session.modelSettings}
                   pendingQuestion={!!session.pendingQuestion}
                   backgroundTasks={session.backgroundTasks}
+                  backgroundAgents={session.backgroundAgents}
                   onApproval={session.worktreeRemoved ? undefined : approve}
                   onAddToChat={addSelectionToChat}
                   onSaveNote={notesEnabled ? saveNote : undefined}

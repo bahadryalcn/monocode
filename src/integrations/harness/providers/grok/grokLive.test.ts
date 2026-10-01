@@ -121,7 +121,10 @@ describe("grok live turn sequence", () => {
     );
     const promptRequest = parse().find((m) => m.method === "session/prompt")!;
     expect(promptRequest.params.prompt).toEqual([
-      { type: "text", text: "hey" },
+      {
+        type: "text",
+        text: "hey\n\nAttachments: [image1] = screenshot.png (1st attached image)",
+      },
       { type: "image", mimeType: "image/png", data: "YWJj" },
     ]);
     reply(promptRequest.id, {

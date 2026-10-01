@@ -158,7 +158,10 @@ describe("Codex attachment delivery", () => {
         await prepared("screenshot.png"),
       );
       expect(input).toEqual([
-        { type: "text", text: "Read attached" },
+        {
+          type: "text",
+          text: "Read attached\n\nAttachments: [image1] = screenshot.png (1st attached image)",
+        },
         { type: "image", url: "data:image/png;base64,aW1hZ2U=" },
       ]);
     });
@@ -166,7 +169,10 @@ describe("Codex attachment delivery", () => {
     it(`${method} uses native localImage inputs for images without embedded bytes`, async () => {
       const input = await outbound(method, "", await prepared("large.png"));
       expect(input).toEqual([
-        { type: "text", text: ATTACHMENT_ONLY_PROMPT },
+        {
+          type: "text",
+          text: `${ATTACHMENT_ONLY_PROMPT}\n\nAttachments: [image1] = large.png (1st attached image)`,
+        },
         { type: "localImage", path: "/tmp/issue174/large.png" },
       ]);
     });
@@ -178,7 +184,10 @@ describe("Codex attachment delivery", () => {
       ];
       const input = await outbound(method, "Review both", files);
       expect(input).toEqual([
-        { type: "text", text: "Review both" },
+        {
+          type: "text",
+          text: "Review both\n\nAttachments: [image1] = screenshot.png (1st attached image), [file1] = /tmp/issue174/report.pdf",
+        },
         { type: "image", url: "data:image/png;base64,aW1hZ2U=" },
         {
           type: "text",

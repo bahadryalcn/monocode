@@ -8,6 +8,7 @@ import type {
   TurnIntent,
   TurnMetrics,
 } from "../../../features/sessions/model/session";
+import type { TurnUsage } from "../../../features/sessions/model/sessionUsage";
 import type { UserQuestion } from "../../../features/sessions/model/userQuestion";
 
 export type HarnessEvent =
@@ -27,8 +28,11 @@ export type HarnessEvent =
   /**
    * The agent has yielded but the turn is not over: work it started is still
    * running and will wake it again. Empty once it is back at work.
+   *
+   * `agents` is how many of `tasks` are subagents; the rest are commands,
+   * which may never end (a dev server). Omitted when the provider cannot tell.
    */
-  | { type: "background.updated"; tasks: string[] }
+  | { type: "background.updated"; tasks: string[]; agents?: number }
   | ({ type: "interjection"; text: string } & InterjectionMeta)
   | { type: "message.delta"; text: string }
   | { type: "message.completed" }
@@ -149,6 +153,7 @@ export type HarnessEvent =
     }
   /** Context-window level after the harness's latest request. */
   | { type: "context"; used?: number; window?: number }
+  | ({ type: "usage" } & TurnUsage)
   /** Provider token accounting for the active user turn. */
   | ({ type: "turn.metrics" } & TurnMetrics);
 

@@ -1,4 +1,6 @@
+import { stripAttachmentTokens } from "./attachmentTokens";
 import { dropContextWindow, type ContextUsage } from "./contextUsage";
+import type { SessionUsage } from "./sessionUsage";
 import type { UserQuestionPrompt } from "./userQuestion";
 import type { HandoffComposerCard } from "./handoff";
 import type { InboxComposerCard } from "../../inbox/model/githubTasks";
@@ -414,6 +416,11 @@ export type Session = {
    * running in the background. In-memory only.
    */
   backgroundTasks?: string[];
+  /**
+   * How many of `backgroundTasks` are subagents rather than commands.
+   * Undefined when the provider cannot tell them apart. In-memory only.
+   */
+  backgroundAgents?: number;
   /** Follow-ups waiting for current turn. In-memory only. */
   queuedMessages?: QueuedMessage[];
   /** Paused after user stops current turn; resuming waits for continued turn. */
@@ -428,6 +435,8 @@ export type Session = {
   providerAccountId?: string;
   /** Context-window level reported by the harness. Absent until it reports. */
   context?: ContextUsage;
+  /** Running totals from Claude turn results. In-memory only. */
+  usage?: SessionUsage;
   /**
    * Composer switched providers, but the previous child is still live.
    * Handoff runs on the next send, not on picker change.
@@ -501,8 +510,19 @@ export const HARNESS_TITLE: Record<HarnessId, string> = {
 };
 
 /** fx ACP rejects attachment prompt blocks. */
+const attachmentless = new Set<HarnessId>(["fx"]);
+
+/** Antigravity learns this from its binary: agy stream-json takes text only. */
+export function setHarnessAttachmentsSupported(
+  id: HarnessId,
+  supported: boolean,
+): void {
+  if (supported) attachmentless.delete(id);
+  else attachmentless.add(id);
+}
+
 export function harnessSupportsAttachments(id: HarnessId): boolean {
-  return id !== "fx";
+  return !attachmentless.has(id);
 }
 
 export function newSession(
@@ -632,7 +652,11 @@ export function titleFromPrompt(
   harness: HarnessId,
   attachments: Attachment[] = [],
 ): string {
-  const line = prompt.trim().split(/\r?\n/)[0]?.trim() ?? "";
+  const firstLine = prompt.trim().split(/\r?\n/)[0]?.trim() ?? "";
+  // A message that only points at its attachments is titled by their names.
+  const line = stripAttachmentTokens(firstLine, attachments).trim()
+    ? firstLine
+    : "";
   const fromFiles =
     !line && attachments.length > 0
       ? attachments

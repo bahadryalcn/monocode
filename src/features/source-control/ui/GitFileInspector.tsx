@@ -1,0 +1,218 @@
+import { useEffect, useState } from "react";
+import { Loader } from "../../../shared/ui/icons";
+import { Modal } from "../../../shared/ui/Modal";
+import {
+  gitBlame,
+  gitFileHistory,
+  readTextFile,
+  type GitBlameLine,
+  type GitHistoryCommit,
+} from "../../../platform/tauri/fs";
+
+export const GIT_FILE_INSPECT_EVENT = "monocode:git-file-inspect";
+
+export type GitFileInspectRequest = {
+  kind: "history" | "blame";
+  cwd: string;
+  /** Path relative to `cwd`. */
+  relative: string;
+};
+
+export function requestGitFileInspect(request: GitFileInspectRequest): void {
+  window.dispatchEvent(new CustomEvent(GIT_FILE_INSPECT_EVENT, { detail: request }));
+}
+
+type Props = {
+  onOpenCommit: (commit: GitHistoryCommit, pin?: boolean) => void;
+};
+
+function errorText(error: unknown): string {
+  if (typeof error === "string") return error;
+  return error instanceof Error ? error.message : String(error);
+}
+
+function shortDate(timestamp: number): string {
+  return timestamp > 0 ? new Date(timestamp * 1000).toLocaleDateString() : "";
+}
+
+const UNCOMMITTED = /^0+$/;
+
+/** Hosts the file history and blame dialogs opened from the explorer menu. */
+export function GitFileInspector({ onOpenCommit }: Props) {
+  const [request, setRequest] = useState<GitFileInspectRequest | null>(null);
+
+  useEffect(() => {
+    const open = (event: Event) =>
+      setRequest((event as CustomEvent<GitFileInspectRequest>).detail);
+    window.addEventListener(GIT_FILE_INSPECT_EVENT, open);
+    return () => window.removeEventListener(GIT_FILE_INSPECT_EVENT, open);
+  }, []);
+
+  if (!request) return null;
+  const close = () => setRequest(null);
+  const openCommit = (commit: GitHistoryCommit) => {
+    close();
+    onOpenCommit(commit, true);
+  };
+  return request.kind === "history" ? (
+    <FileHistoryDialog request={request} onClose={close} onOpenCommit={openCommit} />
+  ) : (
+    <BlameDialog request={request} onClose={close} onOpenCommit={openCommit} />
+  );
+}
+
+type DialogProps = {
+  request: GitFileInspectRequest;
+  onClose: () => void;
+  onOpenCommit: (commit: GitHistoryCommit) => void;
+};
+
+function Loading() {
+  return (
+    <div className="flex items-center gap-2 p-4 text-[12px] text-content/50">
+      <Loader className="size-3.5 animate-spin" strokeWidth={1.75} />
+      Loading…
+    </div>
+  );
+}
+
+function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
+  const [commits, setCommits] = useState<GitHistoryCommit[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let stale = false;
+    gitFileHistory(request.cwd, request.relative).then(
+      (next) => !stale && setCommits(next),
+      (err) => !stale && setError(errorText(err)),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [request]);
+
+  return (
+    <Modal
+      title="File history"
+      description={request.relative}
+      size="md"
+      fitViewport
+      onClose={onClose}
+    >
+      {error ? (
+        <p role="alert" className="p-4 text-[12px] text-red-400/90">
+          {error}
+        </p>
+      ) : !commits ? (
+        <Loading />
+      ) : commits.length === 0 ? (
+        <p className="p-4 text-[12px] text-content/50">No commits touch this file</p>
+      ) : (
+        <ul className="min-h-0 overflow-y-auto p-1.5">
+          {commits.map((commit) => (
+            <li key={commit.sha}>
+              <button
+                type="button"
+                onClick={() => onOpenCommit(commit)}
+                className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] hover:bg-content/5"
+              >
+                <span className="shrink-0 font-mono text-[11px] text-content/45">
+                  {commit.shortSha}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-content">
+                  {commit.subject}
+                </span>
+                <span className="shrink-0 truncate text-content/45">{commit.author}</span>
+                <span className="shrink-0 tabular-nums text-content/40">
+                  {shortDate(commit.timestamp)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Modal>
+  );
+}
+
+function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
+  const [data, setData] = useState<{ blame: GitBlameLine[]; lines: string[] } | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let stale = false;
+    Promise.all([
+      gitBlame(request.cwd, request.relative),
+      readTextFile(`${request.cwd}/${request.relative}`),
+    ]).then(
+      ([blame, text]) => !stale && setData({ blame, lines: text.split(/\r?\n/) }),
+      (err) => !stale && setError(errorText(err)),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [request]);
+
+  return (
+    <Modal
+      title="Blame"
+      description={request.relative}
+      size="md"
+      fitViewport
+      onClose={onClose}
+    >
+      {error ? (
+        <p role="alert" className="p-4 text-[12px] text-red-400/90">
+          {error}
+        </p>
+      ) : !data ? (
+        <Loading />
+      ) : (
+        <div className="min-h-0 overflow-auto p-1.5 font-mono text-[12px] leading-5">
+          {data.blame.map((entry, index) => {
+            // Only the first line of a run names its commit, like an editor gutter.
+            const first = data.blame[index - 1]?.sha !== entry.sha;
+            const uncommitted = UNCOMMITTED.test(entry.sha);
+            return (
+              <div
+                key={entry.line}
+                className={`flex whitespace-pre ${first ? "border-t border-stroke/60" : ""}`}
+              >
+                <button
+                  type="button"
+                  disabled={uncommitted}
+                  title={uncommitted ? "Not committed yet" : `${entry.shortSha} ${entry.summary}`}
+                  onClick={() =>
+                    onOpenCommit({
+                      sha: entry.sha,
+                      shortSha: entry.shortSha,
+                      parents: [],
+                      author: entry.author,
+                      timestamp: entry.timestamp,
+                      subject: entry.summary,
+                      refs: [],
+                      head: false,
+                    })
+                  }
+                  className="w-48 shrink-0 truncate pr-3 text-left font-sans text-[11px] text-content/50 enabled:hover:text-content enabled:hover:underline"
+                >
+                  {first
+                    ? uncommitted
+                      ? "Not committed yet"
+                      : `${entry.author} · ${shortDate(entry.timestamp)} · ${entry.summary}`
+                    : ""}
+                </button>
+                <span className="w-10 shrink-0 pr-3 text-right text-content/35 select-none">
+                  {entry.line}
+                </span>
+                <span className="text-content">{data.lines[entry.line - 1] ?? ""}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Modal>
+  );
+}

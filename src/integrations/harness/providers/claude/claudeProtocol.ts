@@ -5,6 +5,7 @@ import type {
   ToolPreview,
   TurnMetrics,
 } from "../../../../features/sessions/model/session";
+import type { TurnUsage } from "../../../../features/sessions/model/sessionUsage";
 import {
   attachmentPathText,
   promptText,
@@ -250,6 +251,8 @@ export function buildClaudeSpawnArgs(input: {
   includePartialMessages?: boolean;
   maxTurns?: number;
   isolated?: boolean;
+  /** Folders beyond the cwd the session may read and edit. */
+  additionalDirs?: readonly string[];
 }): string[] {
   const args = [
     "--output-format",
@@ -288,6 +291,9 @@ export function buildClaudeSpawnArgs(input: {
   if (input.permissionMode === "bypassPermissions") {
     args.push("--allow-dangerously-skip-permissions");
   }
+  // One flag per folder: `--add-dir` is variadic and would otherwise swallow
+  // whatever follows it.
+  for (const dir of input.additionalDirs ?? []) args.push("--add-dir", dir);
   if (input.resume) args.push("--resume", input.resume);
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));
@@ -599,6 +605,21 @@ export function inputJsonDeltaFromEvent(
 export function isSubagentMessage(rec: Record<string, unknown>): boolean {
   const parent = rec.parent_tool_use_id;
   return typeof parent === "string" && parent.length > 0;
+}
+
+/**
+ * On resume, the CLI re-reports every background task the session started
+ * that it considers unfinished — even ones already stopped and reported —
+ * and answers each with an empty, zero-turn result. That result belongs to
+ * no turn, so it must not end the one MonoCode is waiting on.
+ */
+export function isReplayedTaskNotificationResult(
+  rec: Record<string, unknown>,
+): boolean {
+  return (
+    stringField(asRecord(rec.origin), "kind") === "task-notification" &&
+    rec.num_turns === 0
+  );
 }
 
 export function isAgentTaskType(taskType: string | undefined): boolean {
@@ -1190,4 +1211,19 @@ export function contextFromResult(
 
   if (!used && !window) return undefined;
   return { used: used > 0 ? used : undefined, window };
+}
+
+export function usageFromResult(
+  rec: Record<string, unknown>,
+): TurnUsage | undefined {
+  const processCostUsd = optionalNumber(rec.total_cost_usd);
+  const processApiMs = optionalNumber(rec.duration_api_ms);
+  if (processCostUsd == null && processApiMs == null) return undefined;
+  return { processCostUsd, processApiMs };
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }

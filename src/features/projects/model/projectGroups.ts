@@ -207,3 +207,29 @@ export function createProjectGroup(groups: ProjectGroup[]): ProjectGroup {
     collapsed: false,
   };
 }
+
+/**
+ * Puts the projects in the group with this name, creating it when there is
+ * none. A project already in another group moves.
+ */
+export function assignProjectsToNamedGroup(
+  name: string,
+  paths: readonly string[],
+): ProjectGroup | null {
+  const trimmed = name.trim();
+  if (!trimmed || paths.length === 0) return null;
+
+  const groups = loadProjectGroups();
+  let group = groups.find(
+    (item) => item.name.toLocaleLowerCase() === trimmed.toLocaleLowerCase(),
+  );
+  if (!group) {
+    group = { ...createProjectGroup(groups), name: trimmed };
+    if (!saveProjectGroups([...groups, group])) return null;
+  }
+
+  const assignments = loadProjectGroupAssignments();
+  for (const path of paths) assignments[pathKey(path)] = group.id;
+  saveProjectGroupAssignments(assignments);
+  return group;
+}

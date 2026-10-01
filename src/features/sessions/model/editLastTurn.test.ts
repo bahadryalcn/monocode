@@ -96,6 +96,25 @@ describe("editLastTurn", () => {
     });
   });
 
+  it("recalls the text with its tokens and the attachments in their original order", () => {
+    const attachments = [
+      { id: "a", name: "one.png", mimeType: "image/png", kind: "image", size: 1 },
+      { id: "b", name: "two.png", mimeType: "image/png", kind: "image", size: 1 },
+    ] as const;
+    const session = chat([
+      {
+        id: "u1",
+        role: "user",
+        text: "[image2] is wrong, [image1] is right",
+        attachments: [...attachments],
+      },
+      { id: "a1", role: "assistant", text: "hi" },
+    ]);
+    const recall = lastTurnRecall(session)!;
+    expect(recall.text).toBe("[image2] is wrong, [image1] is right");
+    expect(recall.attachments.map((file) => file.id)).toEqual(["a", "b"]);
+  });
+
   it("restores /operator when editing an activation turn", () => {
     const session = chat([
       { id: "u1", role: "user", text: "list notes", monocode: true },

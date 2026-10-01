@@ -3,6 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   gitCommit,
+  gitFetch,
+  gitPull,
+  gitStash,
   gitHeadMessage,
   isCheckoutBlockedByChanges,
   listSkills,
@@ -135,6 +138,33 @@ describe("gitCommit", () => {
       cwd: "/repo",
       message: "Fix feature",
       amend: true,
+    });
+  });
+});
+
+describe("git option flags", () => {
+  it("sends signoff, rebase, and prune only when asked for", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await gitCommit("/repo", "Msg", false, true);
+    expect(invoke).toHaveBeenLastCalledWith("git_commit", {
+      cwd: "/repo",
+      message: "Msg",
+      amend: false,
+      signoff: true,
+    });
+    await gitPull("/repo");
+    expect(invoke).toHaveBeenLastCalledWith("git_pull", { cwd: "/repo" });
+    await gitPull("/repo", true);
+    expect(invoke).toHaveBeenLastCalledWith("git_pull", { cwd: "/repo", rebase: true });
+    await gitFetch("/repo");
+    expect(invoke).toHaveBeenLastCalledWith("git_fetch", { cwd: "/repo" });
+    await gitFetch("/repo", true);
+    expect(invoke).toHaveBeenLastCalledWith("git_fetch", { cwd: "/repo", prune: true });
+    await gitStash("/repo", undefined, "staged");
+    expect(invoke).toHaveBeenLastCalledWith("git_stash", {
+      cwd: "/repo",
+      message: null,
+      mode: "staged",
     });
   });
 });

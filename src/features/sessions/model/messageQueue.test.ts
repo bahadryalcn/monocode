@@ -114,6 +114,24 @@ describe("queuedMessageForSubmit", () => {
     ).toBeUndefined();
   });
 
+  it("hands back the queued text and attachments as queued, so tokens keep their numbers", () => {
+    const attachments = [
+      { id: "a", name: "one.png", mimeType: "image/png", kind: "image", size: 1 },
+      { id: "b", name: "notes.md", mimeType: "text/plain", kind: "file", size: 1 },
+      { id: "c", name: "two.png", mimeType: "image/png", kind: "image", size: 1 },
+    ] as const;
+    const message = {
+      ...queued("q", "[image2] vs [image1] and [file1]"),
+      attachments: [...attachments],
+    };
+    const session = chat({ queuedMessages: [message] });
+    for (const mode of ["dispatch", "steer"] as const) {
+      const out = queuedMessageForSubmit(session, "q", mode)!;
+      expect(out.text).toBe("[image2] vs [image1] and [file1]");
+      expect(out.attachments.map((file) => file.id)).toEqual(["a", "b", "c"]);
+    }
+  });
+
   it("lets Steer target any remaining row, including while busy or paused", () => {
     expect(
       queuedMessageForSubmit(chat({ busy: true }), "b", "steer")?.id,

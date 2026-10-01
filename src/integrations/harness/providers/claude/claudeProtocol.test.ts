@@ -11,6 +11,7 @@ import {
   buildClaudeUserMessage,
   contextFromResult,
   contextUsedFromAssistant,
+  usageFromResult,
   extractExitPlanModePlan,
   isClaudeInitMessage,
   isSubagentMessage,
@@ -40,6 +41,7 @@ import {
   turnMetricsFromResult,
   isUsageLimitResult,
   usageLimitFromRateLimitEvent,
+  isReplayedTaskNotificationResult,
 } from "./claudeProtocol";
 
 describe("runtimeModeToPermission", () => {
@@ -189,7 +191,10 @@ describe("buildClaudeUserMessage", () => {
       ],
     });
     const content = (message.message as { content: unknown[] }).content;
-    expect(content[0]).toEqual({ type: "text", text: "look" });
+    expect(content[0]).toEqual({
+      type: "text",
+      text: "look\n\nAttachments: [image1] = diagram.png (1st attached image)",
+    });
     expect(content[1]).toEqual({
       type: "image",
       source: {
@@ -771,6 +776,37 @@ describe("contextUsedFromAssistant", () => {
   });
 });
 
+describe("usageFromResult", () => {
+  it("reads cost and API time", () => {
+    expect(
+      usageFromResult({
+        type: "result",
+        total_cost_usd: 0.0108758,
+        duration_ms: 1810,
+        duration_api_ms: 1759,
+        usage: {
+          input_tokens: 10,
+          cache_creation_input_tokens: 4522,
+          cache_read_input_tokens: 15118,
+          output_tokens: 62,
+        },
+      }),
+    ).toEqual({
+      processCostUsd: 0.0108758,
+      processApiMs: 1759,
+    });
+  });
+
+  it("omits fields the result does not carry", () => {
+    expect(usageFromResult({ type: "result", total_cost_usd: 0.2 })).toEqual({
+      processCostUsd: 0.2,
+    });
+    expect(
+      usageFromResult({ type: "result", subtype: "success" }),
+    ).toBeUndefined();
+  });
+});
+
 describe("contextFromResult", () => {
   it("reads the window the CLI reports rather than a model table", () => {
     const rec = {
@@ -983,5 +1019,20 @@ describe("applyClaudeTaskTool", () => {
     expect(applyClaudeTaskTool(tasks, "TaskUpdate", { taskId: "9", status: "completed" }, "")).toBe(false);
     expect(applyClaudeTaskTool(tasks, "TaskList", {}, "#1 [pending] One")).toBe(false);
     expect(tasks.size).toBe(0);
+  });
+});
+
+describe("isReplayedTaskNotificationResult", () => {
+  it("matches only a zero-turn result woken by a task notification", () => {
+    const origin = { kind: "task-notification" };
+    expect(
+      isReplayedTaskNotificationResult({ type: "result", num_turns: 0, origin }),
+    ).toBe(true);
+    expect(
+      isReplayedTaskNotificationResult({ type: "result", num_turns: 1, origin }),
+    ).toBe(false);
+    expect(
+      isReplayedTaskNotificationResult({ type: "result", num_turns: 0 }),
+    ).toBe(false);
   });
 });

@@ -14,6 +14,7 @@ import {
   watchChild,
   writeChild,
 } from "../../core/child";
+import { additionalDirsFor } from "../../core/additionalDirs";
 import {
   askUserQuestionAllowInput,
   asRecord,
@@ -22,6 +23,7 @@ import {
   assistantThinkingBlocks,
   assistantToolUses,
   contextFromResult,
+  usageFromResult,
   contextUsedFromAssistant,
   turnMetricsFromResult,
   buildClaudeSpawnArgs,
@@ -34,6 +36,7 @@ import {
   inputJsonDeltaFromEvent,
   isAgentTaskType,
   isClaudeUltracodeEffort,
+  isReplayedTaskNotificationResult,
   isSubagentMessage,
   isTerminalAgentTaskStatus,
   isTodoTool,
@@ -420,6 +423,176 @@ export function restoreClaudeTaskLists(
   });
 }
 
+/**
+ * Records in a stored session file that carry conversation content. The rest —
+ * modes, file snapshots, queue operations, generated titles — is bookkeeping
+ * the transcript never showed in the first place.
+ */
+function isReplayableRecord(rec: Record<string, unknown>): boolean {
+  const type = rec.type;
+  if (type !== "user" && type !== "assistant") return false;
+  // Subagent traffic is already represented by the Agent tool row on the
+  // parent message; replaying it too would duplicate the work inline.
+  return rec.isSidechain !== true;
+}
+
+/**
+ * The prompt a person typed, or nothing when this record is a tool result
+ * wearing the user role — those are answers to the agent's own calls and are
+ * replayed through `handleLine` onto their tool rows instead.
+ */
+function userPromptText(rec: Record<string, unknown>): string | undefined {
+  const message = rec.message as Record<string, unknown> | undefined;
+  const content = message?.content;
+  if (typeof content === "string") return content.trim() || undefined;
+  if (!Array.isArray(content)) return undefined;
+  const blocks = content as Array<Record<string, unknown>>;
+  if (blocks.some((block) => block?.type === "tool_result")) return undefined;
+  const text = blocks
+    .filter((block) => block?.type === "text")
+    .map((block) => (typeof block.text === "string" ? block.text : ""))
+    .join("\n")
+    .trim();
+  return text || undefined;
+}
+
+/**
+ * Rebuild a thread's transcript from a conversation Claude stored on disk.
+ *
+ * The stored records are the same shape as the ones the live process streams,
+ * so they go through `handleLine` unchanged and produce the same events —
+ * including tool rows and subagent steps. Passing the MonoCode thread id also
+ * means `handleLine` records the resume binding on its own, from `cwd`, so that
+ * has to be the directory the next turn will run in: the working copy, not the
+ * project root a worktree session is filed under.
+ */
+export function replayClaudeSession(input: {
+  sessionId: string;
+  /** Directory the next turn runs in; the binding replay records is keyed to it. */
+  cwd: string;
+  providerAccountId?: string;
+  runtimeMode: RuntimeMode;
+  transcript: string;
+  onEvent: (event: HarnessEvent) => void;
+  /** A prompt someone typed. These are blocks, not events, so the caller adds
+   * them to the transcript itself. */
+  onPrompt: (text: string, at?: number) => void;
+}): void {
+  // Two things can leave a reply open. `handleLine` holds its own boundary for
+  // a message carrying text, but a later tool-only record overwrites it; and
+  // live the final reply is closed by the turn's `result` message, which a
+  // stored conversation has no equivalent of. Watching what was actually
+  // emitted covers both without closing the same message twice.
+  let openReply = false;
+  const emit = (event: HarnessEvent) => {
+    if (event.type === "message.delta") openReply = true;
+    if (event.type === "message.completed") openReply = false;
+    input.onEvent(event);
+  };
+
+  const live = newLiveState({
+    cwd: input.cwd,
+    claudeSessionId: "",
+    providerAccountId: input.providerAccountId,
+    runtimeMode: input.runtimeMode,
+    planning: false,
+    settingsKey: "",
+    onEvent: emit,
+  });
+  live.initialized = true;
+
+  const finishReply = () => {
+    closePendingAssistantMessage(live);
+    if (openReply) emit({ type: "message.completed" });
+  };
+
+  for (const line of input.transcript.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let rec: Record<string, unknown>;
+    try {
+      rec = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (!isReplayableRecord(rec)) continue;
+
+    const prompt = rec.type === "user" ? userPromptText(rec) : undefined;
+    if (prompt) {
+      // End the reply this prompt follows, so the turns stay separate blocks.
+      finishReply();
+      input.onPrompt(prompt, timestampOf(rec));
+      continue;
+    }
+
+    handleLine(input.sessionId, live, trimmed);
+  }
+  finishReply();
+}
+
+function timestampOf(rec: Record<string, unknown>): number | undefined {
+  const raw = rec.timestamp;
+  if (typeof raw !== "string") return undefined;
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/**
+ * Every field of a fresh `Live`. Shared so that replaying a stored transcript
+ * runs against exactly the same state the live stream builds, rather than a
+ * second copy that drifts as the streaming path grows.
+ */
+function newLiveState(input: {
+  cwd: string;
+  claudeSessionId: string;
+  providerAccountId?: string;
+  runtimeMode: RuntimeMode;
+  planning: boolean;
+  settingsKey: string;
+  onEvent: (event: HarnessEvent) => void;
+  claudeTasks?: Map<string, TaskListItem>;
+}): Live {
+  return {
+    cwd: input.cwd,
+    claudeSessionId: input.claudeSessionId,
+    providerAccountId: input.providerAccountId,
+    runtimeMode: input.runtimeMode,
+    planning: input.planning,
+    settingsKey: input.settingsKey,
+    onEvent: input.onEvent,
+    approvals: new Map(),
+    questions: new Map(),
+    visibleQuestionId: null,
+    nextApprovalUiId: 1,
+    nextControlId: 1,
+    toolsByIndex: new Map(),
+    toolsById: new Map(),
+    agentTasks: new Map(),
+    backgroundTasks: new Map(),
+    backgroundRows: new Map(),
+    awaitingResume: null,
+    backgroundKey: "",
+    taskNotes: [],
+    claudeTasks: input.claudeTasks ?? new Map(),
+    turnResultSeen: false,
+    usageLimit: null,
+    cancelled: false,
+    muteUpdates: false,
+    turns: Promise.resolve(),
+    turnDone: null,
+    turnFailed: null,
+    turnEndPending: false,
+    activeTurn: false,
+    initDone: null,
+    initialized: false,
+    emittedAssistant: "",
+    emittedReasoning: "",
+    pendingAssistantBoundary: false,
+    manualCompaction: false,
+    compactionConfirmed: false,
+  };
+}
+
 async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const settingsKey = settingsKeyFor(input);
   const planning = input.intent === "plan";
@@ -473,7 +646,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     claudeSessionId,
   );
 
-  const live: Live = {
+  const live: Live = newLiveState({
     cwd: input.cwd,
     claudeSessionId,
     providerAccountId: input.providerAccountId,
@@ -481,37 +654,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     planning,
     settingsKey,
     onEvent: input.onEvent,
-    approvals: new Map(),
-    questions: new Map(),
-    visibleQuestionId: null,
-    nextApprovalUiId: 1,
-    nextControlId: 1,
-    toolsByIndex: new Map(),
-    toolsById: new Map(),
-    agentTasks: new Map(),
-    backgroundTasks: new Map(),
-    backgroundRows: new Map(),
-    awaitingResume: null,
-    backgroundKey: "",
-    taskNotes: [],
     claudeTasks,
-    turnResultSeen: false,
-    usageLimit: null,
-    cancelled: false,
-    muteUpdates: false,
-    turns: Promise.resolve(),
-    turnDone: null,
-    turnFailed: null,
-    turnEndPending: false,
-    activeTurn: false,
-    initDone: null,
-    initialized: false,
-    emittedAssistant: "",
-    emittedReasoning: "",
-    pendingAssistantBoundary: false,
-    manualCompaction: false,
-    compactionConfirmed: false,
-  };
+  });
   liveRef.current = live;
 
   watchChild(
@@ -967,12 +1111,16 @@ function settleInlineAgentTask(live: Live, toolUseId: string): void {
 
 function handleResult(live: Live, rec: Record<string, unknown>): void {
   if (isSubagentMessage(rec)) return;
+  if (isReplayedTaskNotificationResult(rec)) return;
   // A /compact result reports the summarizer call's usage, not the rebuilt
   // conversation level. The next real turn will provide the fresh reading.
   if (!live.manualCompaction) {
     const context = contextFromResult(rec);
     if (context) live.onEvent({ type: "context", ...context });
   }
+  // Compaction is billed too, so its result counts.
+  const usage = usageFromResult(rec);
+  if (usage) live.onEvent({ type: "usage", ...usage });
   const metrics = turnMetricsFromResult(rec);
   if (metrics) live.onEvent({ type: "turn.metrics", ...metrics });
 
@@ -1683,15 +1831,30 @@ function clearAwaitingResume(live: Live): void {
  * still running, and clears it when Claude picks the thread back up.
  */
 function syncBackgroundWait(live: Live): void {
-  const waiting =
+  const tasks =
     live.activeTurn && live.turnResultSeen && !live.cancelled
-      ? [...live.backgroundTasks.values()].map((task) => task.description)
+      ? [...live.backgroundTasks]
       : [];
-  const key = waiting.join("\n");
+  const waiting = tasks.map(([, task]) => task.description);
+  const agents = tasks.filter(([taskId, task]) =>
+    isBackgroundAgent(live, taskId, task),
+  ).length;
+  const key = waiting.length ? `${agents}\n${waiting.join("\n")}` : "";
   if (key === live.backgroundKey) return;
   live.backgroundKey = key;
   if (live.muteUpdates) return;
-  live.onEvent({ type: "background.updated", tasks: waiting });
+  live.onEvent({ type: "background.updated", tasks: waiting, agents });
+}
+
+/** A subagent, as opposed to a command left running in the background. */
+function isBackgroundAgent(
+  live: Live,
+  taskId: string,
+  task: BackgroundTask,
+): boolean {
+  if (live.agentTasks.has(taskId)) return true;
+  const source = task.toolUseId ? live.toolsById.get(task.toolUseId) : undefined;
+  return Boolean(source && isAgentToolName(source.name));
 }
 
 function maybeFinishTurn(live: Live): void {
@@ -1768,7 +1931,8 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     context: input.modelSettings?.context,
     runtimeMode: input.runtimeMode,
     hooks: loadClaudeHooks(),
-  })}`;
+    // Folders are fixed at launch, so a change needs a fresh process.
+  })}:${additionalDirsFor(input.sessionId).join("|")}`;
 }
 
 function launchOptions(
@@ -1782,6 +1946,7 @@ function launchOptions(
   resume?: string;
   sessionId?: string;
   settings?: ClaudeCliSettings;
+  additionalDirs: string[];
 } {
   const native = nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
@@ -1809,6 +1974,7 @@ function launchOptions(
     resume,
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
+    additionalDirs: additionalDirsFor(input.sessionId),
   };
 }
 

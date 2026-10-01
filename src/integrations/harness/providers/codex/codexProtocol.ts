@@ -31,9 +31,25 @@ export type CodexThreadConfig = {
   approvalsReviewer: "user" | "auto_review";
   sandboxPolicy:
     | { type: "readOnly"; networkAccess?: boolean }
-    | { type: "workspaceWrite"; networkAccess?: boolean }
+    | { type: "workspaceWrite"; networkAccess?: boolean; writableRoots?: string[] }
     | { type: "dangerFullAccess" };
 };
+
+/**
+ * Lets a workspace-write sandbox edit folders beyond the cwd. Read-only and
+ * full-access policies need nothing: reads are not confined to the cwd.
+ */
+function withWritableRoots(
+  config: CodexThreadConfig,
+  additionalDirs?: readonly string[],
+): CodexThreadConfig {
+  if (!additionalDirs?.length || config.sandboxPolicy.type !== "workspaceWrite")
+    return config;
+  return {
+    ...config,
+    sandboxPolicy: { ...config.sandboxPolicy, writableRoots: [...additionalDirs] },
+  };
+}
 
 /**
  * `readOnly` and `workspaceWrite` both default to networkAccess: false, which
@@ -100,10 +116,11 @@ export function buildThreadStartParams(input: {
   controlsAgents?: boolean;
   model?: string;
   serviceTier?: string;
+  additionalDirs?: readonly string[];
 }): Record<string, unknown> {
-  const config = runtimeModeToCodexConfig(
-    input.runtimeMode,
-    input.controlsAgents,
+  const config = withWritableRoots(
+    runtimeModeToCodexConfig(input.runtimeMode, input.controlsAgents),
+    input.additionalDirs,
   );
   return {
     cwd: input.cwd,
@@ -141,10 +158,11 @@ export function buildTurnStartParams(input: {
   effort?: string;
   serviceTier?: string;
   intent?: TurnIntent;
+  additionalDirs?: readonly string[];
 }): Record<string, unknown> {
-  const runtimeConfig = runtimeModeToCodexConfig(
-    input.runtimeMode,
-    input.controlsAgents,
+  const runtimeConfig = withWritableRoots(
+    runtimeModeToCodexConfig(input.runtimeMode, input.controlsAgents),
+    input.additionalDirs,
   );
   const config: CodexThreadConfig =
     input.intent === "plan"

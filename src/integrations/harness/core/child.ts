@@ -336,7 +336,13 @@ export function killAllChildren(): Promise<void> {
   return invoke("harness_kill_all");
 }
 
-type ResolvedHarnessBinary = { path: string; args?: string[] };
+export type AntigravityTransport = "acp" | "stream-json";
+
+type ResolvedHarnessBinary = {
+  path: string;
+  args?: string[];
+  transport?: AntigravityTransport;
+};
 
 async function resolveHarnessBinary(
   provider: ConfigurableBinaryProvider,
@@ -423,10 +429,16 @@ export function resolveHermesBinary(
 
 export function resolveAntigravityBinary(
   binaryPath?: string | null,
-): Promise<{ path: string; args: string[] }> {
+): Promise<{
+  path: string;
+  args: string[];
+  /** Absent means ACP: older hosts never reported it. */
+  transport?: AntigravityTransport;
+}> {
   return resolveHarnessBinary("antigravity", binaryPath) as Promise<{
     path: string;
     args: string[];
+    transport?: AntigravityTransport;
   }>;
 }
 
@@ -469,7 +481,11 @@ export function inspectHarnessBinary(
 ): Promise<HarnessBinaryInspection> {
   return resolveHarnessBinary(provider, binaryPath).then(async (resolved) => {
     if (provider === "antigravity") {
-      return { path: resolved.path, version: "ACP server" };
+      return {
+        path: resolved.path,
+        version:
+          resolved.transport === "stream-json" ? "agy CLI (stream-json)" : "ACP server",
+      };
     }
     try {
       const version = (

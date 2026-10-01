@@ -22,7 +22,8 @@ import {
 } from "@codemirror/view";
 import type { UnifiedLine } from "../../source-control/model/unifiedDiff";
 
-const DIFF_CONFIG = { scanLimit: 5_000, timeout: 100 };
+/** Shared with the split layout so both draw the same hunks. */
+export const DIFF_CONFIG = { scanLimit: 5_000, timeout: 100 };
 
 const setOriginalEffect = StateEffect.define<string | null>();
 
@@ -198,8 +199,10 @@ export function diffNavigablePositions(view: EditorView): number[] {
 export function diffActiveChunkIndex(
   view: EditorView,
   positions: number[],
+  /** The element that scrolls the editor, when it is not `view.scrollDOM`. */
+  scroller: HTMLElement = view.scrollDOM,
 ): number {
-  return activeChunkIndex(view, positions);
+  return activeChunkIndex(view, positions, scroller);
 }
 
 export function diffScrollToChunk(view: EditorView, pos: number): void {
@@ -711,10 +714,13 @@ const gitGutter = gutter({
     update.startState.field(chunksField) !== update.state.field(chunksField),
 });
 
-function activeChunkIndex(view: EditorView, positions: number[]): number {
+function activeChunkIndex(
+  view: EditorView,
+  positions: number[],
+  scroller: HTMLElement,
+): number {
   if (positions.length === 0) return -1;
-  const scrollTop = view.scrollDOM.scrollTop;
-  const centerY = scrollTop + view.scrollDOM.clientHeight * 0.35;
+  const centerY = scroller.scrollTop + scroller.clientHeight * 0.35;
   const block = view.lineBlockAtHeight(centerY);
   const pos = block.from;
   let index = 0;

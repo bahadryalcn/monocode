@@ -2,6 +2,7 @@ import { homeDir } from "../../../../platform/tauri/fs";
 import { setHarnessModels } from "../../../../features/sessions/model/models";
 import { AcpClient } from "../../core/acp";
 import {
+  execChild,
   killChild,
   resolveAntigravityBinary,
   spawnChild,
@@ -12,6 +13,7 @@ import {
   antigravitySpawnCwd,
   modelsFromSessionNew,
 } from "./antigravityProtocol";
+import { parseAntigravityModels } from "./antigravityStreamProtocol";
 
 const PROBE_ID = "monocode-antigravity-probe";
 const REQUEST_TIMEOUT_MS = 12_000;
@@ -34,7 +36,13 @@ export function refreshAntigravityCatalog(): Promise<void> {
 }
 
 export async function discoverAntigravityModels(workingDirectory?: string) {
-  const { path, args } = await resolveAntigravityBinary();
+  const { path, args, transport } = await resolveAntigravityBinary();
+  if (transport === "stream-json") {
+    // No ACP server on this machine: the CLI lists its own models.
+    return parseAntigravityModels(
+      await execChild(path, ["models"], undefined, "antigravity"),
+    );
+  }
   const cwd = workingDirectory ?? (await homeDir());
   const probeId = `${PROBE_ID}-${crypto.randomUUID()}`;
   const acp = new AcpClient(probeId, {

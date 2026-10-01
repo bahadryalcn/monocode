@@ -81,8 +81,10 @@
   --theme-saturation: 0%;
   --theme-dark-lightness: 9%;
   --sidebar-opacity: 0.85;
+  --main-opacity: 0.85;
   --chat-background-empty-opacity: 0.24;
   --chat-background-session-opacity: 0.24;
+  --chat-background-blur: 0px;
   --selection-subtle-strength: 8%;
   --selection-strength: 10%;
   --selection-strong-strength: 12%;
@@ -327,6 +329,20 @@ html.has-native-glass:not(.theme-light) .sidebar-glass {
   opacity: 0;
   transition: opacity var(--motion-feedback-duration) var(--motion-ease-out);
   pointer-events: none;
+}
+
+/* Blur fades the image toward its edges, so grow it past the pane on every
+   side. The pane clips the overflow. */
+html.chat-background-blurred .chat-pane-background::before {
+  left: calc(var(--chat-background-left, 0%) - 2 * var(--chat-background-blur));
+  top: calc(var(--chat-background-top, 0%) - 2 * var(--chat-background-blur));
+  width: calc(
+    var(--chat-background-width, 100%) + 4 * var(--chat-background-blur)
+  );
+  height: calc(
+    var(--chat-background-height, 100%) + 4 * var(--chat-background-blur)
+  );
+  filter: blur(var(--chat-background-blur));
 }
 
 /* Each masked copy samples the same artwork; only the image is blurred. */
@@ -1233,6 +1249,16 @@ html.has-user-accent .user-message-bubble[data-draft="true"] {
 html.has-native-glass.glass-body:not(.theme-light) .body-glass {
   background: color-mix(
     in srgb,
+    var(--color-background-base) calc(var(--main-opacity) * 100%),
+    transparent
+  );
+}
+
+/* The session sidebar keeps the main pane's opaque look, but its glass follows
+   the sidebar setting and does not depend on the main pane glass toggle. */
+html.has-native-glass:not(.theme-light) .body-glass.sidebar-pane {
+  background: color-mix(
+    in srgb,
     var(--color-background-base) calc(var(--sidebar-opacity) * 100%),
     transparent
   );
@@ -1987,6 +2013,66 @@ header[data-tauri-drag-region] button {
 
 @media (prefers-reduced-motion: reduce) {
   .linked-activity-notice {
+    animation: none;
+  }
+}
+
+/* Composer activity dock: the finished state lights up once and stays put. */
+@keyframes activity-dock-done {
+  from {
+    background-color: color-mix(
+      in srgb,
+      var(--color-emerald-400) 22%,
+      transparent
+    );
+    transform: translateY(4px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes activity-dock-check {
+  from {
+    opacity: 0;
+    transform: scale(0.4) rotate(-20deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Calmer than the working pulse: the agent is idle, only its tasks are not. */
+@keyframes activity-dock-waiting {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+}
+
+.activity-dock-done {
+  animation: activity-dock-done 1200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.activity-dock-check {
+  animation: activity-dock-check 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.activity-dock-waiting {
+  animation: activity-dock-waiting 3.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-dock-done,
+  .activity-dock-check,
+  .activity-dock-waiting,
+  [data-activity-dock] .shimmer-text {
     animation: none;
   }
 }
@@ -3185,4 +3271,24 @@ html.theme-light .btw-burst {
     var(--color-content) 10%,
     var(--color-background-base)
   );
+}
+
+/* Sidebar graph rows: the row is the container, so the author avatar and the
+   date drop out as the pane narrows (date first) without any resize listeners. */
+.git-graph-row {
+  container-type: inline-size;
+}
+.git-graph-author,
+.git-graph-date {
+  display: none;
+}
+@container (min-width: 230px) {
+  .git-graph-author {
+    display: grid;
+  }
+}
+@container (min-width: 290px) {
+  .git-graph-date {
+    display: block;
+  }
 }

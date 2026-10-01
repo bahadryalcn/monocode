@@ -31,6 +31,8 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AttachmentChip } from "./AttachmentChip";
+import { AttachmentTokenText } from "./AttachmentTokenText";
+import { attachmentTokens, findTokens } from "../model/attachmentTokens";
 import { GeneratedImage } from "./GeneratedImage";
 import { MonocodeSparkles } from "./MonocodeSparkles";
 import { OrchestratorConstellation } from "./OrchestratorConstellation";
@@ -80,6 +82,9 @@ import {
   type TurnMetrics,
 } from "../model/session";
 import { HarnessIcon } from "./HarnessIcon";
+import { formatElapsed, useElapsedFrom } from "./useElapsedFrom";
+import { isBackgroundOnly } from "../model/activityDock";
+import { consumeOpenSubagent, OPEN_SUBAGENT_EVENT } from "./subagentFocus";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { useTranscriptLayout } from "../hooks/useTranscriptLayout";
 import { useTranscriptAnchor } from "../hooks/useTranscriptAnchor";
@@ -99,7 +104,6 @@ import {
   groupTurnItems,
   groupTurns,
   initialThinkingIndex,
-  isFailedStatus,
   isIncompleteTool,
   isSubagentBlock,
   isThinkingBlock,
@@ -113,6 +117,7 @@ import {
   subagentModelName,
   subagentName,
   subagentReport,
+  subagentStatusLine,
   toolCallLabel,
   toolCallState,
   turnCopyText,
@@ -171,6 +176,7 @@ type Props = {
   pendingQuestion?: boolean;
   /** Work the agent left running when it yielded; the turn waits on it. */
   backgroundTasks?: string[];
+  backgroundAgents?: number;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onAddToChat?: (text: string) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
@@ -214,6 +220,7 @@ function AgentTranscriptComponent({
   modelSettings,
   pendingQuestion = false,
   backgroundTasks,
+  backgroundAgents,
   onApproval,
   onAddToChat,
   onSaveNote,
@@ -714,7 +721,7 @@ function AgentTranscriptComponent({
           // it again here would be two lines telling the same story.
           const foldTitle: ReactNode = live ? (
             <LiveFoldTitle
-              startedAt={startedAt}
+              startedAt={turnClockStart(blocks, userBlock)}
               paused={waitingForApproval}
               waitingLabel={
                 managed && waitingForApproval
@@ -724,6 +731,7 @@ function AgentTranscriptComponent({
                     : undefined
               }
               background={backgroundTasks}
+              backgroundAgents={backgroundAgents}
               modelName={turnModelName}
             />
           ) : durationMs != null ? (
@@ -1021,15 +1029,31 @@ function LiveFoldTitle({
   paused,
   waitingLabel,
   background,
+  backgroundAgents,
   modelName,
 }: {
   startedAt?: number;
   paused: boolean;
   waitingLabel?: string;
   background?: string[];
+  backgroundAgents?: number;
   modelName?: string;
 }) {
   const elapsedMs = useElapsedFrom(startedAt, paused);
+  // Only commands are left (a dev server, a watcher): the agent is done, so
+  // the line stops shimmering and counting rather than looking busy forever.
+  if (!paused && background && isBackgroundOnly(true, background, backgroundAgents)) {
+    return (
+      <span
+        className="min-w-0 truncate font-sans text-sm text-content/55"
+        title={background.join("\n")}
+      >
+        {background.length === 1
+          ? "Finished · 1 command running in background"
+          : `Finished · ${background.length} commands running in background`}
+      </span>
+    );
+  }
   // Yielding with a command still going is not the end of the turn. The clock
   // keeps running and the line says what it is waiting on.
   const text = paused
@@ -1622,6 +1646,14 @@ function UserMessageBlock({
     ? `${messageLink.beforeText}${messageLink.afterText}`
     : text;
   const chat = layout === "chat";
+  // A chip carries its token's label only when the message mentions it, so
+  // messages sent before tokens existed look as they always did.
+  const referencedTokens = useMemo(() => {
+    const files = block.attachments ?? [];
+    const tokens = attachmentTokens(files);
+    const used = new Set(findTokens(text, files).map((match) => match.index));
+    return tokens.map((token, index) => (used.has(index) ? token : undefined));
+  }, [block.attachments, text]);
   const textOnly =
     Boolean(text) &&
     !block.draft &&
@@ -1708,8 +1740,12 @@ function UserMessageBlock({
             <div
               className={`flex flex-wrap gap-1.5 ${text || card || note ? "mb-2" : ""}`}
             >
-              {block.attachments.map((file) => (
-                <AttachmentChip key={file.id} attachment={file} />
+              {block.attachments.map((file, index) => (
+                <AttachmentChip
+                  key={file.id}
+                  attachment={file}
+                  token={referencedTokens[index]}
+                />
               ))}
             </div>
           ) : null}
@@ -1731,9 +1767,15 @@ function UserMessageBlock({
               className="user-message-with-link min-w-0 whitespace-pre-wrap break-words font-sans text-sm"
               data-selectable-agent-response={block.id}
             >
-              {messageLink.beforeText}
+              <AttachmentTokenText
+                text={messageLink.beforeText}
+                attachments={block.attachments}
+              />
               <UserLinkPreview link={messageLink.link} cwd={cwd} compact />
-              {messageLink.afterText}
+              <AttachmentTokenText
+                text={messageLink.afterText}
+                attachments={block.attachments}
+              />
             </div>
           ) : displayText ? (
             <pre
@@ -1743,7 +1785,10 @@ function UserMessageBlock({
               }}
               className={`min-w-0 whitespace-pre-wrap break-words font-sans text-sm ${expanded ? "" : "line-clamp-4"}`}
             >
-              {displayText}
+              <AttachmentTokenText
+                text={displayText}
+                attachments={block.attachments}
+              />
             </pre>
           ) : null}
           {overflows ? (
@@ -2512,6 +2557,16 @@ function SubagentRow({
 }) {
   const [override, setOverride] = useState<boolean | null>(null);
   const open = override ?? toolCallState(block) === "rejected";
+  // The composer's activity dock opens a run from outside the transcript. The
+  // row may only mount after the transcript reveals it, so check on mount too.
+  useEffect(() => {
+    const openIfAsked = () => {
+      if (consumeOpenSubagent(block.id)) setOverride(true);
+    };
+    openIfAsked();
+    window.addEventListener(OPEN_SUBAGENT_EVENT, openIfAsked);
+    return () => window.removeEventListener(OPEN_SUBAGENT_EVENT, openIfAsked);
+  }, [block.id]);
   return (
     <SubagentPanel
       block={block}
@@ -2729,26 +2784,6 @@ function agentStepBlock(step: AgentStep): Block {
       ...(step.preview ? { preview: step.preview } : {}),
     },
   };
-}
-
-/** What a delegated run is up to: its newest step, or how much it got through. */
-/**
- * A run is counted, never narrated. Echoing the call in flight put a second
- * scrolling command line on every row — the shimmer on the name already says
- * the agent is working, and the count says how far it has got.
- */
-function subagentStatusLine(block: Block, steps: AgentStep[]): string {
-  if (toolCallState(block) === "rejected") return "failed";
-  const tools = steps.filter((step) => step.kind === "tool").length;
-  if (tools === 0) return "";
-  const count = tools === 1 ? "1 step" : `${tools} steps`;
-  // A step that failed inside a run that went on to finish still has to say so
-  // here, or the row reads clean until someone opens the trail.
-  const failed = steps.filter(
-    (step) => step.kind === "tool" && isFailedStatus(step.status),
-  ).length;
-  if (!failed) return count;
-  return `${count}, ${failed === 1 ? "1 failed" : `${failed} failed`}`;
 }
 
 /** Whether the line that titled a group has more in it than the header shows. */
@@ -3279,47 +3314,6 @@ function ToolCallStatusIcon({ state }: { state: ToolCallState }) {
   return null;
 }
 
-function useElapsedFrom(
-  startedAt: number | undefined,
-  paused: boolean,
-): number | null {
-  const fallback = useRef<number | null>(null);
-  const pausedMs = useRef(0);
-  const pauseStarted = useRef<number | null>(null);
-  const seenStartedAt = useRef(startedAt);
-
-  if (seenStartedAt.current !== startedAt) {
-    seenStartedAt.current = startedAt;
-    fallback.current = null;
-    pausedMs.current = 0;
-    pauseStarted.current = paused ? Date.now() : null;
-  }
-
-  const origin = startedAt ?? (fallback.current ??= Date.now());
-  const [elapsedMs, setElapsedMs] = useState(() =>
-    Math.max(0, Date.now() - origin),
-  );
-
-  useEffect(() => {
-    const start = startedAt ?? (fallback.current ??= Date.now());
-    if (paused) {
-      if (pauseStarted.current == null) pauseStarted.current = Date.now();
-      return;
-    }
-    if (pauseStarted.current != null) {
-      pausedMs.current += Date.now() - pauseStarted.current;
-      pauseStarted.current = null;
-    }
-    const tick = () =>
-      setElapsedMs(Math.max(0, Date.now() - start - pausedMs.current));
-    tick();
-    const id = window.setInterval(tick, 1000);
-    return () => window.clearInterval(id);
-  }, [startedAt, paused]);
-
-  return elapsedMs;
-}
-
 function formatWorkingDuration(
   elapsedMs: number | null,
   modelName?: string,
@@ -3333,15 +3327,6 @@ function formatWorkingDuration(
     return who ? `${who} ${verb}…` : `${verb}…`;
   }
   return who ? `${who} ${verb} for ${elapsed}` : `${verb} for ${elapsed}`;
-}
-
-function formatElapsed(elapsedMs: number | null): string | null {
-  if (elapsedMs == null) return null;
-  const totalSec = Math.max(1, Math.round(elapsedMs / 1000));
-  if (totalSec < 60) return `${totalSec}s`;
-  const minutes = Math.floor(totalSec / 60);
-  const seconds = totalSec % 60;
-  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
 function ToolCall({
@@ -3785,6 +3770,27 @@ function turnUserBlock(blocks: Block[], managed = false): Block | undefined {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i];
     if (block.role === "user" && (managed || !block.internal)) return block;
+  }
+  return undefined;
+}
+
+/**
+ * When the live turn's clock started. A message sent while the agent is still
+ * going (a steer, or a reply while background work runs) joins that run and
+ * carries no clock of its own, so the clock keeps the time of the prompt that
+ * started it. Without that the clock falls back to when it was drawn, and
+ * starts over every time the transcript is shown again.
+ */
+function turnClockStart(
+  blocks: Block[],
+  userBlock: Block | undefined,
+): number | undefined {
+  if (!userBlock || userBlock.startedAt != null) return userBlock?.startedAt;
+  for (let i = blocks.indexOf(userBlock) - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (block.role === "user" && block.startedAt != null) {
+      return block.startedAt;
+    }
   }
   return undefined;
 }

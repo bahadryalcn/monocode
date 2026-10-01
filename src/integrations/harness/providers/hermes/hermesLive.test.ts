@@ -137,7 +137,10 @@ describe("Hermes live ACP sequence", () => {
       (message) => message.method === "session/prompt",
     )!;
     expect(prompt.params.prompt).toEqual([
-      { type: "text", text: "inspect this" },
+      {
+        type: "text",
+        text: "inspect this\n\nAttachments: [image1] = screen.png (1st attached image)",
+      },
       { type: "image", mimeType: "image/png", data: "AAAA" },
     ]);
     reply(prompt.id, { stopReason: "end_turn" });

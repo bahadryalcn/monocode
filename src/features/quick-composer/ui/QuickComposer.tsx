@@ -47,6 +47,12 @@ import {
 } from "../../sessions/model/session";
 import { Popover } from "../../../shared/ui/Popover";
 import { AttachmentChip } from "../../sessions/ui/AttachmentChip";
+import {
+  attachmentTokens,
+  insertAtSelection,
+  removeAttachmentFromText,
+  tokensForIncoming,
+} from "../../sessions/model/attachmentTokens";
 import { quickLaunchAttachments } from "../model/quickAttachments";
 import { useQuickAttachments } from "./useQuickAttachments";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
@@ -147,6 +153,7 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
   const attachments = useQuickAttachments(
     attachmentsSupported && !busy,
     setError,
+    (added, previous) => insertPromptText(tokensForIncoming(previous, added)),
   );
   const frameRef = useRef<HTMLDivElement>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -155,6 +162,23 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
   const highlightRef = useRef<HTMLDivElement>(null);
   const queryRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  /** Text goes at the caret when the prompt has focus, otherwise at the end. */
+  function insertPromptText(insertion: string) {
+    const field = promptRef.current;
+    if (!field || !insertion) return;
+    const focused = document.activeElement === field;
+    const edit = insertAtSelection(
+      field.value,
+      focused ? { start: field.selectionStart, end: field.selectionEnd } : null,
+      insertion,
+    );
+    setPrompt(edit.text);
+    // A controlled value moves the caret to the end when it is set.
+    requestAnimationFrame(() =>
+      field.setSelectionRange(edit.caret, edit.caret),
+    );
+  }
 
   const focusPrompt = useCallback(() => {
     requestAnimationFrame(() => {
@@ -339,6 +363,17 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
     } else {
       setPicker((current) => (current === "commands" ? null : current));
     }
+  };
+
+  const removeAttachment = (id: string) => {
+    setPrompt((current) =>
+      removeAttachmentFromText(
+        current,
+        attachments.files,
+        attachments.files.findIndex((file) => file.id === id),
+      ),
+    );
+    attachments.remove(id);
   };
 
   const dismiss = () => {
@@ -535,11 +570,20 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
           aria-label="Attachments"
           className="flex max-h-28 shrink-0 flex-wrap gap-1.5 overflow-y-auto px-5 pt-4 pb-1"
         >
-          {attachments.files.map((file) => (
+          {attachments.files.map((file, index) => (
             <AttachmentChip
               key={file.id}
               attachment={file}
-              onRemove={busy ? undefined : () => attachments.remove(file.id)}
+              token={attachmentTokens(attachments.files)[index]}
+              onInsertToken={
+                busy
+                  ? undefined
+                  : () =>
+                      insertPromptText(
+                        attachmentTokens(attachments.files)[index],
+                      )
+              }
+              onRemove={busy ? undefined : () => removeAttachment(file.id)}
             />
           ))}
         </div>

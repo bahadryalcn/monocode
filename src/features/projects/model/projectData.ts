@@ -15,6 +15,7 @@ import {
   rebaseProjectGroupAssignment,
   removeProjectGroupAssignment,
 } from "./projectGroups";
+import { rebaseAdditionalDirs, removeAdditionalDirs } from "./additionalDirs";
 import { rebaseSessionFolderSettings } from "../../sessions/model/sessionFolders";
 import { clearProjectProviders, rebaseProjectProviders } from "../../sessions/model/projectProviders";
 import {
@@ -42,6 +43,7 @@ export async function removeProjectData(path: string): Promise<void> {
   clearProjectChatBackgroundSetting(key);
   clearTabGroupSettings(key);
   removeProjectGroupAssignment(normalized);
+  removeAdditionalDirs(normalized);
   clearProjectProviders(key);
   clearProjectSidebarTab(normalized);
 }
@@ -52,6 +54,7 @@ export function rebaseProjectData(from: string, to: string): void {
   const newKey = projectKey(normalizeProjectPath(to));
   rebaseProjectTabGroupSettings(from, to);
   rebaseProjectGroupAssignment(from, to);
+  rebaseAdditionalDirs(from, to);
   rebaseProjectChatBackgroundSetting(oldKey, newKey);
   rebaseSessionFolderSettings(from, to);
   rebaseProjectProviders(oldKey, newKey);

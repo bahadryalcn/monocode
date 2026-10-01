@@ -154,6 +154,19 @@ const UnfoldVerticalIcon: IconSvgElement = [
   ["path", { d: "M7 17L12 22L17 17", ...stroke, key: "5" }],
 ];
 
+/** Two panes side by side: a framed box split down the middle. */
+const SplitSquareIcon: IconSvgElement = [
+  [
+    "path",
+    {
+      d: "M3 6C3 4.343 4.343 3 6 3H18C19.657 3 21 4.343 21 6V18C21 19.657 19.657 21 18 21H6C4.343 21 3 19.657 3 18V6Z",
+      ...stroke,
+      key: "0",
+    },
+  ],
+  ["path", { d: "M12 3V21", ...stroke, key: "1" }],
+];
+
 export const AlertCircle = wrap(AlertCircleIcon, "AlertCircle");
 export const AppWindow = wrap(AppWindowIcon, "AppWindow");
 export const Archive = wrap(Archive02Icon, "Archive");
@@ -260,6 +273,7 @@ export const SlidersHorizontal = wrap(
 );
 export const Sparkles = wrap(SparklesIcon, "Sparkles");
 export const Square = wrap(SquareIcon, "Square");
+export const SplitSquare = wrap(SplitSquareIcon, "SplitSquare");
 export const SquarePlus = wrap(AddSquareIcon, "SquarePlus");
 export const Star = wrap(StarIcon, "Star");
 export const StickyNote = wrap(Note01Icon, "StickyNote");

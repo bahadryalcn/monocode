@@ -40,7 +40,10 @@ describe("grok protocol", () => {
         },
       ]),
     ).toEqual([
-      { type: "text", text: "describe this" },
+      {
+        type: "text",
+        text: "describe this\n\nAttachments: [image1] = screenshot.png (1st attached image)",
+      },
       { type: "image", mimeType: "image/png", data: "YWJj" },
     ]);
     expect(grokPromptBlocks("   ")).toEqual([]);

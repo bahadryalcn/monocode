@@ -7,6 +7,7 @@ import {
   SETTINGS_INDEX,
   settingsSectionsByGroup,
   MODEL_CONTROLS_DEFAULT,
+  DIFF_LAYOUT_DEFAULT,
   DIFF_VIEWER_DEFAULT,
   FORMAT_ON_SAVE_DEFAULT,
   FILE_TAB_MODE_DEFAULT,
@@ -19,6 +20,7 @@ import {
   loadAutosave,
   loadCollapsedProjectRailMode,
   loadModelControls,
+  loadDiffLayout,
   loadDiffViewer,
   loadKeybindingOverrides,
   loadFormatOnSave,
@@ -36,6 +38,7 @@ import {
   saveAutosave,
   saveCollapsedProjectRailMode,
   saveModelControls,
+  saveDiffLayout,
   saveDiffViewer,
   saveFormatOnSave,
   saveFileTabMode,
@@ -59,6 +62,7 @@ const QUICK_COMPOSER_SHORTCUT_KEY = "monocode.quickComposerShortcut";
 const LIVE_AGENTS_KEY = "monocode.liveAgentsEnabled";
 const GRID_ARCADE_KEY = "monocode.gridArcadeEnabled";
 const DIFF_VIEWER_KEY = "monocode.diffViewer";
+const DIFF_LAYOUT_KEY = "monocode.diffLayout";
 const FORMAT_ON_SAVE_KEY = "monocode.formatOnSave";
 const AUTOSAVE_KEY = "monocode.autosave";
 const FILE_TAB_MODE_KEY = "monocode.fileTabMode";
@@ -527,6 +531,31 @@ describe("diff viewer setting", () => {
   });
 });
 
+describe("diff layout setting", () => {
+  beforeEach(mockLocalStorage);
+  afterEach(() => {
+    localStorage.removeItem(DIFF_LAYOUT_KEY);
+  });
+
+  it("defaults to the inline layout", () => {
+    expect(DIFF_LAYOUT_DEFAULT).toBe("inline");
+    expect(loadDiffLayout()).toBe("inline");
+  });
+
+  it("persists the split layout", () => {
+    saveDiffLayout("split");
+    expect(localStorage.getItem(DIFF_LAYOUT_KEY)).toBe("split");
+    expect(loadDiffLayout()).toBe("split");
+    saveDiffLayout("inline");
+    expect(loadDiffLayout()).toBe("inline");
+  });
+
+  it("ignores unknown stored values", () => {
+    localStorage.setItem(DIFF_LAYOUT_KEY, "side-by-side");
+    expect(loadDiffLayout()).toBe("inline");
+  });
+});
+
 describe("file tab mode setting", () => {
   beforeEach(mockLocalStorage);
   afterEach(() => {
@@ -637,6 +666,7 @@ describe("settings search", () => {
     expect(searchSettings("glass").map((result) => result.label)).toEqual([
       "Main pane glass",
       "Blur radius",
+      "Main pane opacity",
       "Sidebar opacity",
       "Appearance",
     ]);

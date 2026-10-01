@@ -24,6 +24,14 @@ import {
   HARNESS_TITLE,
 } from "../../sessions/model/session";
 
+const platform = vi.hoisted(() => ({ isWindows: false }));
+vi.mock("../../../platform/tauri/platform", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../platform/tauri/platform")>()),
+  get IS_WIN() {
+    return platform.isWindows;
+  },
+}));
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => undefined),
   convertFileSrc: (path: string) => path,
@@ -93,6 +101,7 @@ function renderedSettingIds(): string[] {
 }
 
 beforeEach(() => {
+  platform.isWindows = false;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   mockLocalStorage();
   container = document.createElement("div");
@@ -113,6 +122,75 @@ afterEach(async () => {
 });
 
 describe("settings pages", () => {
+  it("shows the off-by-default sleep setting with Linux lock guidance", async () => {
+    await render("general");
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Prevent sleep while agents work"]',
+    )!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.closest(".settings-row")?.textContent).toContain(
+      "Prevent idle sleep during agent work",
+    );
+    expect(toggle.closest(".settings-row")?.textContent).not.toContain(
+      "battery-powered Modern Standby",
+    );
+    expect(toggle.closest(".settings-row")?.textContent).toContain(
+      "Automatic screen locking remains available",
+    );
+    expect(toggle.closest(".settings-row")?.textContent).not.toContain(
+      "choosing Sleep still works",
+    );
+
+    const hold = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Stay awake after an agent ends: When it ends"]',
+    )!;
+    expect(hold.closest(".settings-row")).toBe(toggle.closest(".settings-row"));
+    expect(
+      hold.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+
+    await act(async () => toggle.click());
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(localStorage.getItem("monocode.keepAwakeWhileAgentsWork")).toBe("1");
+
+    await act(async () => hold.click());
+    const fifteen = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((button) => button.textContent?.includes("15 minutes"))!;
+    await act(async () => fifteen.click());
+    expect(localStorage.getItem("monocode.keepAwakeHoldAfter")).toBe("15m");
+
+    const screen = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Keep the screen on"]',
+    )!;
+    expect(screen.getAttribute("aria-checked")).toBe("false");
+    expect(screen.disabled).toBe(false);
+    await act(async () => screen.click());
+    expect(localStorage.getItem("monocode.keepAwakeScreen")).toBe("1");
+
+    const sleepGroup = Array.from(container.querySelectorAll("section")).find(
+      (section) => section.textContent?.includes("Keep this computer awake"),
+    )!;
+    expect(
+      sleepGroup.querySelector('[data-setting-id="keep-awake"]'),
+    ).not.toBeNull();
+    expect(
+      sleepGroup.querySelector('[data-setting-id="keep-awake-screen"]'),
+    ).not.toBeNull();
+    expect(sleepGroup.querySelector('[data-setting-id="file-tabs"]')).toBeNull();
+  });
+
+  it("mentions the Windows Modern Standby limit only on Windows", async () => {
+    platform.isWindows = true;
+    await render("general");
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Prevent sleep while agents work"]',
+    )!;
+    expect(toggle.closest(".settings-row")?.textContent).toContain(
+      "battery-powered Modern Standby",
+    );
+  });
+
   it("keeps account emails blurred until clicked and hides them when settings reopen", async () => {
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       if (command === "provider_account_identity") {
@@ -695,6 +773,82 @@ describe("settings pages", () => {
         ),
       ).not.toBeNull();
     }
+  });
+
+  it("checks CLI versions on request and updates one from settings", async () => {
+    let claudeVersion = "2.1.284 (Claude Code)";
+    let claudeLatest = "2.1.285";
+    let cursorLatest = "2026.09.28-64d2043";
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const payload = args as { binaryProvider?: string; provider?: string };
+      if (command.startsWith("harness_resolve_")) {
+        return { path: `/bin/${command.slice("harness_resolve_".length)}` };
+      }
+      if (command === "harness_exec") {
+        return payload.binaryProvider === "claude"
+          ? claudeVersion
+          : "2026.09.28-64d2043";
+      }
+      if (command === "harness_latest_version") {
+        return payload.provider === "claude" ? claudeLatest : cursorLatest;
+      }
+      if (command === "harness_update") {
+        claudeVersion = "2.1.285 (Claude Code)";
+      }
+      return undefined;
+    });
+    await render("providers");
+    const group = container.querySelector('[data-setting-id="harness-updates"]')!;
+    expect(group.textContent).toContain("Not checked yet");
+    expect(
+      vi.mocked(invoke).mock.calls.some(([command]) => command === "harness_exec"),
+    ).toBe(false);
+
+    const checkButton = Array.from(group.querySelectorAll("button")).find(
+      (button) => button.textContent === "Check for updates",
+    )!;
+    await act(async () => checkButton.click());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(group.textContent).toContain("Claude Code2.1.284");
+    expect(group.textContent).toContain("Version 2.1.285 is available.");
+    expect(group.textContent).toContain("Cursor2026.09.28");
+    expect(group.textContent).toContain("Up to date.");
+
+    await act(async () =>
+      group
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Update Claude Code to 2.1.285"]',
+        )!
+        .click(),
+    );
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(invoke).toHaveBeenCalledWith("harness_update", {
+      command: "/bin/claude",
+      binaryProvider: "claude",
+      binaryPath: null,
+    });
+    expect(group.textContent).toContain("Updated to 2.1.285.");
+    expect(
+      group.querySelector('[aria-label="Update Claude Code to 2.1.285"]'),
+    ).toBeNull();
+
+    // Claude Code, updated earlier in this session, falls behind again and
+    // still counts for Update all.
+    claudeLatest = "2.1.286";
+    cursorLatest = "2026.09.29-1234567";
+    await act(async () => checkButton.click());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    vi.mocked(invoke).mockClear();
+    const updateAll = Array.from(group.querySelectorAll("button")).find(
+      (button) => button.textContent === "Update all",
+    )!;
+    await act(async () => updateAll.click());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    const updated = vi
+      .mocked(invoke)
+      .mock.calls.filter(([command]) => command === "harness_update")
+      .map(([, args]) => (args as { binaryProvider: string }).binaryProvider);
+    expect(updated.sort()).toEqual(["claude", "cursor"]);
   });
 
   it("returns focus to the CLI trigger when the details popover closes", async () => {

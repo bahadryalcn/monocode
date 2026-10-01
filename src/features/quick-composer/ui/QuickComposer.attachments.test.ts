@@ -108,7 +108,7 @@ it("uploads from the plus menu, preserves attachments on dismissal, and submits 
   await act(async () => button("Start").click());
   expect(invoke).toHaveBeenCalledWith("quick_composer_submit", {
     request: expect.objectContaining({
-      prompt: "",
+      prompt: "[image1]",
       attachments: [
         expect.objectContaining({ path: "/tmp/image.png", kind: "image" }),
       ],
@@ -128,4 +128,22 @@ it("retains attachments for retry if starting the session fails", async () => {
     container.querySelector('button[aria-label="Open image.png full screen"]'),
   ).not.toBeNull();
   expect(button("Start").disabled).toBe(false);
+});
+
+it("references an attachment in the prompt and drops the token with the chip", async () => {
+  const prompt = container.querySelector<HTMLTextAreaElement>("textarea")!;
+  const setValue = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "value",
+  )!.set!;
+  act(() => {
+    setValue.call(prompt, "fix the");
+    prompt.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await attach();
+  expect(prompt.value).toBe("fix the [image1]");
+  expect(button("Insert [image1] into the message")).toBeDefined();
+
+  act(() => button("Remove image.png").click());
+  expect(prompt.value).toBe("fix the");
 });

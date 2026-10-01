@@ -15,6 +15,7 @@ mod harness;
 mod harness_updates;
 mod inbox_media;
 mod jira;
+mod keep_awake;
 mod linear;
 mod link_preview;
 #[cfg(target_os = "macos")]
@@ -28,6 +29,7 @@ mod notifications;
 mod pasteboard;
 mod pi_usage;
 mod project_logo;
+mod provider_usage;
 mod pty;
 #[cfg(target_os = "macos")]
 mod quick_composer;
@@ -225,6 +227,7 @@ pub fn run() {
                 .build(),
         )
         .manage(harness::HarnessHost::new())
+        .manage(keep_awake::KeepAwakeState::new())
         .manage(pty::PtyHost::new())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
@@ -280,6 +283,7 @@ pub fn run() {
             control::app_cli_path,
             default_cwd,
             home_dir,
+            keep_awake::set_keep_awake,
             notifications::notification_permission,
             notifications::request_notification_permission,
             notifications::show_notification,
@@ -304,6 +308,7 @@ pub fn run() {
             external_editor::open_in_external_editor,
             fs::resolve_project_location,
             fs::open_path_with_default_app,
+            fs::claude_sessions,
             fs::list_dir,
             fs::list_project_files,
             fs::git_diff_stats,
@@ -381,6 +386,35 @@ pub fn run() {
             fs::git_checkout,
             fs::git_create_branch,
             fs::git_stash,
+            fs::git_checkout_commit,
+            fs::git_create_branch_at,
+            fs::git_create_tag,
+            fs::git_cherry_pick,
+            fs::git_revert,
+            fs::git_reset,
+            fs::git_operation_state,
+            fs::git_operation_abort,
+            fs::git_operation_continue,
+            fs::git_delete_branch,
+            fs::git_rename_branch,
+            fs::git_merge,
+            fs::git_rebase,
+            fs::git_fetch,
+            fs::git_undo_last_commit,
+            fs::git_stash_clear,
+            fs::git_create_branch_from,
+            fs::git_delete_remote_branch,
+            fs::git_remotes,
+            fs::git_remote_add,
+            fs::git_remote_remove,
+            fs::git_tags,
+            fs::git_delete_tag,
+            fs::git_stash_list,
+            fs::git_stash_action,
+            fs::git_conflicts,
+            fs::git_resolve_conflict,
+            fs::git_file_history,
+            fs::git_blame,
             worktrees::git_worktrees,
             worktrees::git_worktree_create,
             worktrees::git_orchestration_worktree_create,
@@ -452,6 +486,8 @@ pub fn run() {
             pi_usage::fetch_pi_usage,
             rate_limits::fetch_claude_usage,
             rate_limits::fetch_opencode_go_usage,
+            provider_usage::provider_usage_report,
+            provider_usage::provider_model_prices,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,
@@ -571,8 +607,24 @@ pub fn run() {
                 .iter()
                 .any(|window| window.label() != label);
             control::window_closed(handle, &label);
+            if let Some(state) = handle.try_state::<keep_awake::KeepAwakeState>() {
+                state.window_closed(&label);
+            }
             if !other_window {
                 reap_harness_children(handle);
+            } else {
+                // A page unload no longer kills its terminals, because a
+                // reload keeps them. The window going away is what ends them.
+                // Off the event loop: the reap waits for the shells to die.
+                // Shutdown joins it so the shells are dead before we exit.
+                if let Some(host) = handle.try_state::<pty::PtyHost>() {
+                    let app = handle.clone();
+                    host.track_reaper(std::thread::spawn(move || {
+                        if let Some(host) = app.try_state::<pty::PtyHost>() {
+                            host.kill_window(&label);
+                        }
+                    }));
+                }
             }
         }
         tauri::RunEvent::ExitRequested { api, code, .. } => {
@@ -589,6 +641,9 @@ pub fn run() {
             window::request_quit(handle);
         }
         tauri::RunEvent::Exit => {
+            if let Some(state) = handle.try_state::<keep_awake::KeepAwakeState>() {
+                state.shutdown();
+            }
             handle.state::<remote::RemoteConnections>().shutdown();
             reap_harness_children(handle);
         }
@@ -602,6 +657,7 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(host) = handle.try_state::<pty::PtyHost>() {
         host.kill_all();
+        host.join_reapers();
     }
 }
 

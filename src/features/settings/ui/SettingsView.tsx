@@ -35,6 +35,21 @@ import {
 } from "react";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 import {
+  createUsagePricing,
+  fetchModelPrices,
+  fetchProviderUsage,
+  formatUsageCost,
+  formatUsageTokens,
+  summarizeUsage,
+  usageBreakdown,
+  usageDays,
+  USAGE_MAX_DAYS,
+  type AccountUsage,
+  type ModelPrices,
+  type UsageBreakdown,
+  type UsageDay,
+} from "../../providers/model/providerUsage";
+import {
   ColorPickerPopover,
   ColorSwatchRow,
 } from "../../../shared/ui/ColorPickerPopover";
@@ -50,6 +65,7 @@ import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { useColorScheme } from "../../../shared/hooks/useColorScheme";
 import {
   applyChatBackground,
+  applyChatBackgroundBlur,
   applyChatBackgroundEmptyOpacity,
   applyChatBackgroundSessionOpacity,
   applyChatBackgroundScope,
@@ -57,11 +73,15 @@ import {
   applyBodyGlass,
   applySidebarBlur,
   applySidebarOpacity,
+  applyMainOpacity,
   applyThemeDarkLightness,
   applyThemePreference,
   applyThemeTint,
   BODY_GLASS_DEFAULT,
   ACCENT_COLOR_DEFAULT,
+  CHAT_BACKGROUND_BLUR_DEFAULT,
+  CHAT_BACKGROUND_BLUR_MAX,
+  CHAT_BACKGROUND_BLUR_MIN,
   CHAT_BACKGROUND_EMPTY_OPACITY_DEFAULT,
   CHAT_BACKGROUND_OPACITY_MAX,
   CHAT_BACKGROUND_OPACITY_MIN,
@@ -71,6 +91,7 @@ import {
   chatBackgroundSrc,
   loadBodyGlass,
   loadAccentColor,
+  loadChatBackgroundBlur,
   loadChatBackgroundEmptyOpacity,
   loadChatBackgroundPath,
   loadChatBackgroundSessionOpacity,
@@ -80,12 +101,14 @@ import {
   loadThemePreference,
   loadSidebarBlur,
   loadSidebarOpacity,
+  loadMainOpacity,
   loadThemeHue,
   loadThemeSaturation,
   loadTranscriptLayout,
   loadTranscriptAnchor,
   saveBodyGlass,
   saveAccentColor,
+  saveChatBackgroundBlur,
   saveChatBackgroundEmptyOpacity,
   saveChatBackgroundPath,
   saveChatBackgroundSessionOpacity,
@@ -95,6 +118,7 @@ import {
   saveThemePreference,
   saveSidebarBlur,
   saveSidebarOpacity,
+  saveMainOpacity,
   saveThemeHue,
   saveThemeSaturation,
   isLightScheme,
@@ -109,6 +133,9 @@ import {
   SIDEBAR_BLUR_MAX,
   SIDEBAR_BLUR_MIN,
   SIDEBAR_OPACITY_DEFAULT,
+  MAIN_OPACITY_DEFAULT,
+  MAIN_OPACITY_MAX,
+  MAIN_OPACITY_MIN,
   SIDEBAR_OPACITY_MAX,
   SIDEBAR_OPACITY_MIN,
   THEME_DARK_LIGHTNESS_DEFAULT,
@@ -227,11 +254,29 @@ import {
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
 import {
+  checkInstalledHarnessVersions,
+  getHarnessUpdateSnapshot,
+  runHarnessUpdate,
+  subscribeHarnessUpdates,
+  type HarnessUpdateRun,
+} from "../../providers/model/harnessUpdateActions";
+import {
+  onHarnessUpdated,
+  pendingHarnessUpdates,
+  type HarnessUpdate,
+  type HarnessVersionCheck,
+} from "../../providers/model/harnessUpdates";
+import {
   accountStatus,
   accountUsageKey,
+  needsProviderLogin,
   useProviderAccountUsage,
 } from "../../providers/model/accountUsage";
-import { clearCachedRateLimits } from "../../providers/model/rateLimitsCache";
+import type { ProviderRateLimits } from "../../providers/model/rateLimits";
+import {
+  clearCachedRateLimits,
+  loadRateLimits,
+} from "../../providers/model/rateLimitsCache";
 import {
   AccountStatusLabel,
   AccountUsageMeters,
@@ -291,8 +336,15 @@ import {
   loadDiffViewer,
   loadFileTabMode,
   loadFollowUpBehavior,
+  loadResumeAtReset,
   loadFormatOnSave,
   loadGridArcadeEnabled,
+  KEEP_AWAKE_HOLD_AFTER,
+  KEEP_AWAKE_HOLD_AFTER_DEFAULT,
+  isKeepAwakeHoldAfter,
+  loadKeepAwakeEnabled,
+  loadKeepAwakeHoldAfter,
+  loadKeepAwakeScreen,
   loadLiveAgentsEnabled,
   loadModelControls,
   loadNotesEnabled,
@@ -307,8 +359,12 @@ import {
   saveDiffViewer,
   saveFileTabMode,
   saveFollowUpBehavior,
+  saveResumeAtReset,
   saveFormatOnSave,
   saveGridArcadeEnabled,
+  saveKeepAwakeEnabled,
+  saveKeepAwakeHoldAfter,
+  saveKeepAwakeScreen,
   saveLiveAgentsEnabled,
   saveModelControls,
   saveNotesEnabled,
@@ -316,6 +372,9 @@ import {
   validateKeybindingShortcut,
   saveQuickComposerEnabled,
   saveQuickComposerShortcut,
+  subscribeKeepAwakeEnabled,
+  subscribeKeepAwakeHoldAfter,
+  subscribeKeepAwakeScreen,
   subscribeKeybindings,
   type KeybindingOverride,
   saveTabAnimationsEnabled,
@@ -732,6 +791,21 @@ function GeneralPage({
     loadTabAnimationsEnabled,
   );
   const [closeToTray, setCloseToTray] = useState(loadCloseToTray);
+  const keepAwake = useSyncExternalStore(
+    subscribeKeepAwakeEnabled,
+    loadKeepAwakeEnabled,
+    () => false,
+  );
+  const keepAwakeHoldAfter = useSyncExternalStore(
+    subscribeKeepAwakeHoldAfter,
+    loadKeepAwakeHoldAfter,
+    () => KEEP_AWAKE_HOLD_AFTER_DEFAULT,
+  );
+  const keepAwakeScreen = useSyncExternalStore(
+    subscribeKeepAwakeScreen,
+    loadKeepAwakeScreen,
+    () => false,
+  );
   const [quickComposerEnabled, setQuickComposerEnabled] = useState(
     loadQuickComposerEnabled,
   );
@@ -797,6 +871,18 @@ function GeneralPage({
   const onCloseToTray = (next: boolean) => {
     saveCloseToTray(next);
     setCloseToTray(next);
+  };
+
+  const onKeepAwake = (next: boolean) => {
+    saveKeepAwakeEnabled(next);
+  };
+
+  const onKeepAwakeHoldAfter = (next: string) => {
+    if (isKeepAwakeHoldAfter(next)) saveKeepAwakeHoldAfter(next);
+  };
+
+  const onKeepAwakeScreen = (next: boolean) => {
+    saveKeepAwakeScreen(next);
   };
 
   return (
@@ -895,7 +981,7 @@ function GeneralPage({
         <Row
           id="working-agents"
           label="Working agents"
-          description="When two or more chats are in flight, a card on the project rail lists them so you can jump across projects. Finished turns stay until you open that session."
+          description="A card on the project rail lists working or just-finished chats you are not looking at, so you can jump across projects. Finished turns stay until you open that session."
         >
           <Toggle
             label="Working agents"
@@ -918,6 +1004,49 @@ function GeneralPage({
         )}
       </Group>
 
+      <Group
+        title="Sleep"
+        description="Keep this computer awake while an agent is working."
+      >
+        <Row
+          id="keep-awake"
+          label="Prevent sleep while agents work"
+          description={
+            IS_WIN
+              ? "Prevent idle sleep during agent work, and optionally after the last agent finishes. Closing the lid or choosing Sleep still works. On battery-powered Modern Standby PCs, Windows may stop the request five minutes after the sleep timeout."
+              : IS_MAC
+                ? "Prevent idle sleep during agent work, and optionally after the last agent finishes. Closing the lid or choosing Sleep still works."
+                : "Prevent idle sleep during agent work, and optionally after the last agent finishes. Automatic screen locking remains available. On GNOME, choosing Sleep may be blocked while this is active."
+          }
+        >
+          <Select
+            label="Stay awake after an agent ends"
+            value={keepAwakeHoldAfter}
+            options={[...KEEP_AWAKE_HOLD_AFTER]}
+            onChange={onKeepAwakeHoldAfter}
+          />
+          <Toggle
+            label="Prevent sleep while agents work"
+            on={keepAwake}
+            onChange={onKeepAwake}
+          />
+        </Row>
+        <Row
+          id="keep-awake-screen"
+          label="Keep the screen on"
+          description={IS_WIN || IS_MAC
+            ? "Keep the display awake while the sleep setting is active. Closing the lid or choosing Sleep still works."
+            : "Keep the display awake while the sleep setting is active. Automatic screen locking may be prevented."}
+        >
+          <Toggle
+            label="Keep the screen on"
+            on={keepAwakeScreen}
+            onChange={onKeepAwakeScreen}
+            disabled={!keepAwake}
+          />
+        </Row>
+      </Group>
+
       <Group title="About">
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
       </Group>
@@ -932,6 +1061,7 @@ function ChatPage() {
     useState(loadTranscriptAnchor);
   const [followUpBehavior, setFollowUpBehavior] =
     useState<FollowUpBehavior>(loadFollowUpBehavior);
+  const [resumeAtReset, setResumeAtReset] = useState(loadResumeAtReset);
   const [modelControls, setModelControls] =
     useState<ModelControls>(loadModelControls);
   const [diffViewer, setDiffViewer] = useState<DiffViewer>(loadDiffViewer);
@@ -964,6 +1094,11 @@ function ChatPage() {
   const onFollowUpBehavior = (next: FollowUpBehavior) => {
     saveFollowUpBehavior(next);
     setFollowUpBehavior(next);
+  };
+
+  const onResumeAtReset = (next: boolean) => {
+    saveResumeAtReset(next);
+    setResumeAtReset(next);
   };
 
   const onModelControls = (next: ModelControls) => {
@@ -1042,6 +1177,17 @@ function ChatPage() {
               { value: "steer", label: "Steer" },
             ]}
             onChange={onFollowUpBehavior}
+          />
+        </Row>
+        <Row
+          id="resume-at-reset"
+          label="Resume at reset"
+          description="When a provider stops a turn at its usage limit, continue the session automatically once the limit resets. You can still cancel it from the notice above the composer."
+        >
+          <Toggle
+            label="Resume at reset"
+            on={resumeAtReset}
+            onChange={onResumeAtReset}
           />
         </Row>
         <Row
@@ -1797,6 +1943,7 @@ function useAppearanceSettings(
     useState<ThemePreference>(loadThemePreference);
   const [accentColor, setAccentColor] = useState(loadAccentColor);
   const [opacity, setOpacity] = useState(loadSidebarOpacity);
+  const [mainOpacity, setMainOpacity] = useState(loadMainOpacity);
   const [blur, setBlur] = useState(loadSidebarBlur);
   const [themeHue, setThemeHue] = useState(loadThemeHue);
   const [themeSaturation, setThemeSaturation] = useState(loadThemeSaturation);
@@ -1815,6 +1962,9 @@ function useAppearanceSettings(
   );
   const [chatBackgroundSessionOpacity, setChatBackgroundSessionOpacity] =
     useState(loadChatBackgroundSessionOpacity);
+  const [chatBackgroundBlur, setChatBackgroundBlur] = useState(
+    loadChatBackgroundBlur,
+  );
   const [chatBackgroundScope, setChatBackgroundScope] =
     useState<ChatBackgroundScope>(loadChatBackgroundScope);
   const [newThreadBackgroundEffect, setBackgroundEffect] =
@@ -1847,6 +1997,12 @@ function useAppearanceSettings(
     const next = applySidebarOpacity(percent / 100);
     saveSidebarOpacity(next);
     setOpacity(next);
+  }, []);
+
+  const onMainOpacity = useCallback((percent: number) => {
+    const next = applyMainOpacity(percent / 100);
+    saveMainOpacity(next);
+    setMainOpacity(next);
   }, []);
 
   const onBlur = useCallback((radius: number) => {
@@ -1928,6 +2084,12 @@ function useAppearanceSettings(
     setChatBackgroundSessionOpacity(next);
   }, []);
 
+  const onChatBackgroundBlur = useCallback((radius: number) => {
+    const next = applyChatBackgroundBlur(radius);
+    saveChatBackgroundBlur(next);
+    setChatBackgroundBlur(next);
+  }, []);
+
   const onChatBackgroundScope = useCallback((next: ChatBackgroundScope) => {
     applyChatBackgroundScope(next);
     saveChatBackgroundScope(next);
@@ -1961,6 +2123,7 @@ function useAppearanceSettings(
     onThemePreference(THEME_PREFERENCE_DEFAULT);
     onAccentColor(ACCENT_COLOR_DEFAULT);
     onOpacity(Math.round(SIDEBAR_OPACITY_DEFAULT * 100));
+    onMainOpacity(Math.round(MAIN_OPACITY_DEFAULT * 100));
     onBlur(SIDEBAR_BLUR_DEFAULT);
     onTint(THEME_HUE_DEFAULT, THEME_SATURATION_DEFAULT);
     onDarkLightness(THEME_DARK_LIGHTNESS_DEFAULT);
@@ -1973,6 +2136,7 @@ function useAppearanceSettings(
       Math.round(CHAT_BACKGROUND_SESSION_OPACITY_DEFAULT * 100),
     );
     onChatBackgroundScope(CHAT_BACKGROUND_SCOPE_DEFAULT);
+    onChatBackgroundBlur(CHAT_BACKGROUND_BLUR_DEFAULT);
     onNewThreadBackgroundEffect(NEW_THREAD_BACKGROUND_EFFECT_DEFAULT);
     if (chatBackgroundPath) void onClearChatBackground();
     onUiScale(Math.round(UI_SCALE_DEFAULT * 100));
@@ -1984,12 +2148,14 @@ function useAppearanceSettings(
     onChatBackgroundEmptyOpacity,
     onChatBackgroundSessionOpacity,
     onChatBackgroundScope,
+    onChatBackgroundBlur,
     onNewThreadBackgroundEffect,
     onClearChatBackground,
     onAccentColor,
     onShowExcludedFiles,
     onThemePreference,
     onOpacity,
+    onMainOpacity,
     onTint,
     onDarkLightness,
     onUiScale,
@@ -2000,6 +2166,7 @@ function useAppearanceSettings(
     themePreference,
     accentColor,
     opacity,
+    mainOpacity,
     blur,
     themeHue,
     themeSaturation,
@@ -2010,6 +2177,7 @@ function useAppearanceSettings(
     chatBackgroundEmptyOpacity,
     chatBackgroundSessionOpacity,
     chatBackgroundScope,
+    chatBackgroundBlur,
     newThreadBackgroundEffect,
     chatBackgroundBusy,
     chatBackgroundError,
@@ -2018,6 +2186,7 @@ function useAppearanceSettings(
     onThemePreference,
     onAccentColor,
     onOpacity,
+    onMainOpacity,
     onBlur,
     onTint,
     onDarkLightness,
@@ -2028,6 +2197,7 @@ function useAppearanceSettings(
     onChatBackgroundEmptyOpacity,
     onChatBackgroundSessionOpacity,
     onChatBackgroundScope,
+    onChatBackgroundBlur,
     onNewThreadBackgroundEffect,
     onUiScale,
     onCollapsedProjectRailMode,
@@ -2037,6 +2207,7 @@ function useAppearanceSettings(
 
 function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
   const percent = Math.round(appearance.opacity * 100);
+  const mainPercent = Math.round(appearance.mainOpacity * 100);
   const glassDisabled = useColorScheme() === "light";
 
   return (
@@ -2139,7 +2310,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
         <Row
           id="sidebar-opacity"
           label="Sidebar opacity"
-          description="Applies to the project rail and the other glass panes."
+          description="Applies to the project rail and the session sidebar."
         >
           <Slider
             label="Sidebar opacity"
@@ -2176,6 +2347,21 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
             on={appearance.bodyGlass}
             onChange={appearance.onBodyGlass}
             disabled={glassDisabled}
+          />
+        </Row>
+        <Row
+          id="main-pane-opacity"
+          label="Main pane opacity"
+          description="Applies to the main pane when main pane glass is on."
+        >
+          <Slider
+            label="Main pane opacity"
+            value={mainPercent}
+            display={`${mainPercent}%`}
+            min={Math.round(MAIN_OPACITY_MIN * 100)}
+            max={Math.round(MAIN_OPACITY_MAX * 100)}
+            onChange={appearance.onMainOpacity}
+            disabled={glassDisabled || !appearance.bodyGlass}
           />
         </Row>
       </Group>
@@ -2376,6 +2562,19 @@ function ChatBackgroundCard({
               min={Math.round(CHAT_BACKGROUND_OPACITY_MIN * 100)}
               max={Math.round(CHAT_BACKGROUND_OPACITY_MAX * 100)}
               onChange={appearance.onChatBackgroundSessionOpacity}
+            />
+          </Row>
+          <Row
+            label="Background blur"
+            description="Blurs the image behind chat panes, including project images. Haze keeps its own blur."
+          >
+            <Slider
+              label="Chat background blur"
+              value={appearance.chatBackgroundBlur}
+              display={`${appearance.chatBackgroundBlur}px`}
+              min={CHAT_BACKGROUND_BLUR_MIN}
+              max={CHAT_BACKGROUND_BLUR_MAX}
+              onChange={appearance.onChatBackgroundBlur}
             />
           </Row>
         </>
@@ -3170,6 +3369,7 @@ function ProvidersPage({
   return (
     <>
       <ProviderAccountsSettings />
+      <ProviderUsageSettings />
 
       <Group
         id="agent-clis"
@@ -3229,6 +3429,8 @@ function ProvidersPage({
         })}
       </Group>
 
+      <HarnessUpdatesGroup />
+
       <Group title="Advanced">
         <Row
           id="claude-hooks"
@@ -3246,11 +3448,563 @@ function ProvidersPage({
   );
 }
 
+/**
+ * Lists every installed CLI with a release feed. The launch toast offers only
+ * harnesses shown in the model picker and is gone once dismissed. Opening the
+ * page runs no CLI: it shows the last check, and the button runs a new one.
+ */
+function HarnessUpdatesGroup() {
+  const { checks, checking, runs } = useSyncExternalStore(
+    subscribeHarnessUpdates,
+    getHarnessUpdateSnapshot,
+    getHarnessUpdateSnapshot,
+  );
+
+  useEffect(() => {
+    // Another window's update leaves this window's versions stale.
+    const unlisten = onHarnessUpdated(() => {
+      if (getHarnessUpdateSnapshot().checks) {
+        void checkInstalledHarnessVersions();
+      }
+    }).catch(() => undefined);
+    return () => {
+      void unlisten.then((stop) => stop?.());
+    };
+  }, []);
+
+  const stateOf = (harness: HarnessId): HarnessUpdateRun =>
+    runs[harness] ?? { status: "idle" };
+  // A harness updated earlier in this session can fall behind again when a
+  // newer release ships, so only a running update is left out.
+  const pending = pendingHarnessUpdates(checks ?? []).filter(
+    (update) => stateOf(update.harness).status !== "updating",
+  );
+  const start = (targets: HarnessUpdate[]) => {
+    for (const update of targets) void runHarnessUpdate(update);
+  };
+
+  return (
+    <Group
+      id="harness-updates"
+      title="CLI updates"
+      description="MonoCode compares each installed CLI with its newest release and updates it with the CLI's own updater. Hermes Agent and Antigravity have no release feed to compare against, so they are not listed."
+      action={
+        <div className="flex items-center gap-2">
+          {pending.length > 1 ? (
+            <SecondaryButton onClick={() => start(pending)}>
+              <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />
+              Update all
+            </SecondaryButton>
+          ) : null}
+          <SecondaryButton
+            onClick={() =>
+              void checkInstalledHarnessVersions({ force: true }).catch(
+                () => undefined,
+              )
+            }
+            disabled={checking}
+          >
+            {checking ? (
+              <Loader className="size-3.5 animate-spin" aria-hidden />
+            ) : (
+              <RefreshCw className="size-3.5" strokeWidth={1.75} aria-hidden />
+            )}
+            Check for updates
+          </SecondaryButton>
+        </div>
+      }
+    >
+      {checks === null ? (
+        <Row
+          label={checking ? "Checking installed CLIs…" : "Not checked yet"}
+          description="Check for updates runs each installed CLI to read its version, then looks up its newest release."
+        />
+      ) : checks.length === 0 ? (
+        <Row
+          label="No CLIs to check"
+          description="None of the CLIs with a release feed are installed."
+        />
+      ) : (
+        checks.map((entry) => (
+          <HarnessUpdateSettingsRow
+            key={entry.harness}
+            check={entry}
+            state={stateOf(entry.harness)}
+            onUpdate={(update) => start([update])}
+          />
+        ))
+      )}
+    </Group>
+  );
+}
+
+function HarnessUpdateSettingsRow({
+  check,
+  state,
+  onUpdate,
+}: {
+  check: HarnessVersionCheck;
+  state: HarnessUpdateRun;
+  onUpdate: (update: HarnessUpdate) => void;
+}) {
+  const title = HARNESS_TITLE[check.harness];
+  const description =
+    check.status === "unknown"
+      ? `Could not check: ${check.error}`
+      : check.status === "current"
+        ? state.status === "updated"
+          ? `Updated to ${state.version}.`
+          : "Up to date."
+        : state.status === "updating"
+          ? "Updating…"
+          : state.status === "failed"
+            ? state.error
+            : `Version ${check.latest} is available.`;
+
+  return (
+    <Row
+      label={
+        <span className="flex items-center gap-2">
+          <HarnessIcon harness={check.harness} className="size-4 shrink-0" />
+          {title}
+          {check.status !== "unknown" ? (
+            <span className="font-mono text-[12px] text-content/45">
+              {check.installed}
+            </span>
+          ) : null}
+        </span>
+      }
+      description={description}
+    >
+      {check.status === "behind" ? (
+        <SecondaryButton
+          onClick={() => onUpdate(check)}
+          disabled={state.status === "updating"}
+          aria-label={
+            state.status === "failed"
+              ? `Retry updating ${title}`
+              : `Update ${title} to ${check.latest}`
+          }
+        >
+          {state.status === "updating" ? (
+            <Loader className="size-3.5 animate-spin" aria-hidden />
+          ) : (
+            <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />
+          )}
+          {state.status === "failed" ? "Retry" : "Update"}
+        </SecondaryButton>
+      ) : check.status === "current" ? (
+        <Check className="size-4 text-emerald-400" aria-hidden />
+      ) : null}
+    </Row>
+  );
+}
+
 type AccountEditor = {
   provider: ProviderAccountProvider;
   accountId?: string;
   label: string;
 };
+
+type UsageRange = "7d" | "30d";
+type UsageMetric = "tokens" | "cost";
+const USAGE_RANGE_DAYS: Record<UsageRange, number> = { "7d": 7, "30d": 30 };
+const ALL_USAGE_ACCOUNTS = "all";
+
+type UsageLoad =
+  | { status: "loading" }
+  | { status: "ready"; usage: AccountUsage[]; failed: string[] };
+
+function usageAccountLabel(account: ProviderAccount): string {
+  return `${HARNESS_TITLE[account.provider]} · ${account.label}`;
+}
+
+function ProviderUsageSettings() {
+  const [version, setVersion] = useState(0);
+  const [reload, setReload] = useState(0);
+  const [load, setLoad] = useState<UsageLoad>({ status: "loading" });
+  // True while a scan runs, including reloads that keep the last results shown.
+  const [refreshing, setRefreshing] = useState(true);
+  const [accountKey, setAccountKey] = useState(ALL_USAGE_ACCOUNTS);
+  const [range, setRange] = useState<UsageRange>("7d");
+  const [metric, setMetric] = useState<UsageMetric>("tokens");
+  const [breakdown, setBreakdown] = useState<UsageBreakdown>("model");
+  // undefined while loading; null when OpenRouter and the cached copy both fail.
+  const [prices, setPrices] = useState<ModelPrices | null | undefined>();
+
+  useEffect(
+    () => subscribeProviderAccounts(() => setVersion((value) => value + 1)),
+    [],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModelPrices().then((next) => {
+      if (!cancelled) setPrices(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [reload]);
+
+  const pricing = useMemo(() => createUsagePricing(prices?.models), [prices]);
+
+  const accounts = useMemo(
+    () => PROVIDER_ACCOUNT_PROVIDERS.flatMap(providerAccounts),
+    [version],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    setRefreshing(true);
+    setLoad((current) =>
+      current.status === "ready" ? current : { status: "loading" },
+    );
+    const since = usageDays(USAGE_MAX_DAYS, new Date())[0].getTime();
+    void Promise.all(
+      accounts.map(async (account) => {
+        try {
+          return {
+            account,
+            report: await fetchProviderUsage(
+              account.provider,
+              account.id,
+              since,
+            ),
+          };
+        } catch {
+          return { account, report: null };
+        }
+      }),
+    ).then((results) => {
+      if (cancelled) return;
+      setRefreshing(false);
+      setLoad({
+        status: "ready",
+        usage: results.flatMap(({ account, report }) =>
+          report ? [{ account, rows: report.rows }] : [],
+        ),
+        failed: results
+          .filter(({ report }) => !report)
+          .map(({ account }) => usageAccountLabel(account)),
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [accounts, reload]);
+
+  const selected = accounts.find(
+    (account) => identityKey(account) === accountKey,
+  );
+  const all = !selected;
+  // The Account breakdown only means something across several accounts.
+  const shownBreakdown = !all && breakdown === "account" ? "model" : breakdown;
+  const dayCount = USAGE_RANGE_DAYS[range];
+
+  const usage = useMemo(() => {
+    if (load.status !== "ready") return [];
+    return selected
+      ? load.usage.filter(
+          (entry) => identityKey(entry.account) === identityKey(selected),
+        )
+      : load.usage;
+  }, [load, selected]);
+
+  // Recomputed per render so "today" moves on when Settings stays open overnight.
+  const now = new Date();
+  const summary = summarizeUsage(usage, dayCount, now, pricing);
+  const rows = usageBreakdown(
+    usage,
+    dayCount,
+    now,
+    shownBreakdown,
+    usageAccountLabel,
+    pricing,
+  );
+
+  const accountOptions = [
+    { value: ALL_USAGE_ACCOUNTS, label: "All accounts" },
+    ...accounts.map((account) => ({
+      value: identityKey(account),
+      label: usageAccountLabel(account),
+      icon: <HarnessIcon harness={account.provider} className="size-3.5" />,
+    })),
+  ];
+
+  const notes = [
+    prices
+      ? `Prices from OpenRouter, updated ${formatUsageDay(new Date(prices.fetchedAt * 1000))}.`
+      : prices === null
+        ? "OpenRouter prices could not be loaded, so built-in prices are used."
+        : null,
+    summary.unpricedModels.length
+      ? `No price is known for ${summary.unpricedModels.join(", ")}, so its cost is left out.`
+      : null,
+    load.status === "ready" && load.failed.length
+      ? `Could not read the logs for ${load.failed.join(", ")}.`
+      : null,
+  ].filter(Boolean);
+
+  return (
+    <Group
+      id="provider-usage"
+      title="Usage"
+      description="Estimated from local session logs at standard API rates. Subscription plans are billed differently."
+      action={
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Select
+            label="Usage account"
+            value={selected ? accountKey : ALL_USAGE_ACCOUNTS}
+            options={accountOptions}
+            onChange={setAccountKey}
+          />
+          <Segmented
+            label="Usage range"
+            value={range}
+            options={[
+              { value: "7d", label: "7 days" },
+              { value: "30d", label: "30 days" },
+            ]}
+            onChange={setRange}
+          />
+          <button
+            type="button"
+            aria-label="Reload usage"
+            title="Reload usage"
+            disabled={refreshing}
+            onClick={() => setReload((value) => value + 1)}
+            className="grid size-[26px] place-items-center rounded-md border border-content/10 text-content/50 hover:bg-content/10 hover:text-content disabled:opacity-40"
+          >
+            <RefreshCw
+              className={`size-3.5${refreshing ? " animate-spin" : ""}`}
+              strokeWidth={1.75}
+              aria-hidden
+            />
+          </button>
+        </div>
+      }
+    >
+      {load.status === "loading" ? (
+        <div className="px-4 py-6 text-[12px] text-content/45">
+          Reading session logs…
+        </div>
+      ) : summary.tokens === 0 ? (
+        <div className="px-4 py-6 text-[12px] leading-relaxed text-content/45">
+          No usage in the last {dayCount} days
+          {selected ? ` for ${usageAccountLabel(selected)}` : ""}. Usage appears
+          here once a Claude Code or Codex conversation has run on this
+          computer.
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 divide-y divide-content/5 border-b border-content/5 @min-[560px]/settings:grid-cols-3 @min-[560px]/settings:divide-x @min-[560px]/settings:divide-y-0">
+            <UsageStat
+              label="Estimated cost"
+              value={formatUsageCost(summary.cost)}
+              detail={`${formatUsageCost(summary.cost / Math.max(1, summary.activeDays))} per active day`}
+            />
+            <UsageStat
+              label="Tokens"
+              value={formatUsageTokens(summary.tokens)}
+              detail={`${summary.activeDays} of ${dayCount} days active`}
+            />
+            <UsageStat
+              label="Cache hit rate"
+              value={`${(summary.cacheHitRate * 100).toFixed(1)}%`}
+              detail={`Saved about ${formatUsageCost(summary.cacheSavings)}`}
+            />
+          </div>
+
+          <div className="border-b border-content/5 px-4 py-3.5">
+            <div className="flex items-center gap-4 pb-3">
+              <div className="min-w-0 flex-1 text-[13px] font-medium text-content">
+                Daily {metric === "cost" ? "cost" : "tokens"}
+              </div>
+              <Segmented
+                label="Chart metric"
+                value={metric}
+                options={[
+                  { value: "tokens", label: "Tokens" },
+                  { value: "cost", label: "Cost" },
+                ]}
+                onChange={setMetric}
+              />
+            </div>
+            <UsageDailyBars days={summary.days} metric={metric} />
+          </div>
+
+          <div>
+            <div className="flex items-center gap-4 px-4 py-3">
+              <div className="min-w-0 flex-1 text-[13px] font-medium text-content">
+                Breakdown
+              </div>
+              <Segmented
+                label="Breakdown"
+                value={shownBreakdown}
+                options={[
+                  { value: "model", label: "Model" },
+                  { value: "project", label: "Project" },
+                  ...(all
+                    ? [{ value: "account" as const, label: "Account" }]
+                    : []),
+                ]}
+                onChange={setBreakdown}
+              />
+            </div>
+            <div className="border-t border-content/5 bg-content/[0.015]">
+              {rows.map((row) => (
+                <div
+                  key={row.key}
+                  className="flex h-11 items-center gap-4 border-b border-content/5 px-4 last:border-b-0"
+                >
+                  <div
+                    className="flex min-w-0 flex-1 items-center gap-2"
+                    title={row.title}
+                  >
+                    {row.provider ? (
+                      <HarnessIcon
+                        harness={row.provider}
+                        className="size-3.5 shrink-0"
+                      />
+                    ) : null}
+                    <span
+                      className={`truncate text-[12px] text-content/85 ${shownBreakdown === "model" ? "font-mono" : ""}`}
+                    >
+                      {row.label}
+                    </span>
+                  </div>
+                  <div
+                    className="hidden h-1 w-28 shrink-0 overflow-hidden rounded-full bg-content/[0.07] @min-[560px]/settings:block"
+                    aria-hidden
+                  >
+                    <div
+                      className="h-full rounded-full bg-accent/70"
+                      style={{ width: `${Math.max(2, row.share * 100)}%` }}
+                    />
+                  </div>
+                  <span className="w-16 shrink-0 text-right text-[12px] tabular-nums text-content/50">
+                    {formatUsageTokens(row.tokens)}
+                  </span>
+                  <span className="w-20 shrink-0 text-right text-[12px] tabular-nums text-content/85">
+                    {formatUsageCost(row.cost)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+      {notes.length ? (
+        <div className="border-t border-content/5 px-4 py-2.5 text-[11px] leading-relaxed text-content/40">
+          {notes.join(" ")}
+        </div>
+      ) : null}
+    </Group>
+  );
+}
+
+function UsageStat({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="min-w-0 px-4 py-3.5">
+      <div className="text-[12px] text-content/45">{label}</div>
+      <div className="mt-1 text-[20px] font-semibold leading-tight tabular-nums text-content">
+        {value}
+      </div>
+      <div className="mt-1 truncate text-[11px] text-content/40">{detail}</div>
+    </div>
+  );
+}
+
+function formatUsageDay(date: Date): string {
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function UsageDailyBars({
+  days,
+  metric,
+}: {
+  days: UsageDay[];
+  metric: UsageMetric;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const values = days.map((day) => (metric === "cost" ? day.cost : day.tokens));
+  const max = Math.max(...values, 0);
+  const format = metric === "cost" ? formatUsageCost : formatUsageTokens;
+
+  return (
+    <div>
+      <div className="relative">
+        <div className="pointer-events-none absolute inset-x-0 top-0 flex h-28 flex-col justify-between">
+          {[0, 1, 2].map((line) => (
+            <div
+              key={line}
+              className="border-t border-dashed border-content/[0.06]"
+            />
+          ))}
+        </div>
+        <div
+          className="relative flex h-28 items-end gap-[3px]"
+          onMouseLeave={() => setHover(null)}
+        >
+          {days.map((day, index) => {
+            const value = values[index];
+            return (
+              <div
+                key={day.date.getTime()}
+                className="flex h-full min-w-0 flex-1 items-end"
+                onMouseEnter={() => setHover(index)}
+              >
+                <div
+                  className={`mx-auto w-full max-w-8 rounded-t-[3px] transition-colors ${
+                    value <= 0
+                      ? "h-px bg-content/10"
+                      : hover === index
+                        ? "bg-accent"
+                        : hover != null
+                          ? "bg-accent/35"
+                          : "bg-accent/60"
+                  }`}
+                  style={
+                    value <= 0 || max <= 0
+                      ? undefined
+                      : { height: `${Math.max(3, (value / max) * 100)}%` }
+                  }
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-2 flex items-center justify-between text-[11px] tabular-nums text-content/40">
+        {hover != null ? (
+          <>
+            <span className="text-content/70">
+              {formatUsageDay(days[hover].date)}
+            </span>
+            <span className="text-content/70">
+              {values[hover] <= 0 ? "No activity" : format(values[hover])}
+            </span>
+          </>
+        ) : (
+          <>
+            <span>{formatUsageDay(days[0].date)}</span>
+            <span>Peak {format(max)}</span>
+            <span>{formatUsageDay(days[days.length - 1].date)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function ProviderAccountsSettings() {
   const [version, setVersion] = useState(0);
@@ -3299,6 +4053,30 @@ function ProviderAccountsSettings() {
         caught instanceof Error
           ? caught.message
           : "Could not save this account",
+      );
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const signInAccount = async (account: ProviderAccount) => {
+    if (working) return;
+    setWorking(`signin:${account.provider}:${account.id}`);
+    setError(null);
+    try {
+      await (account.isDefault
+        ? loginHarness(account.provider)
+        : loginHarness(account.provider, account.id));
+      const limits = await loadRateLimits(account.provider, account.id, true);
+      if (limits.status === "error" || needsProviderLogin(limits)) {
+        throw new Error(
+          limits.error ||
+            `${HARNESS_TITLE[account.provider]} sign-in could not be verified`,
+        );
+      }
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Could not complete sign-in",
       );
     } finally {
       setWorking(null);
@@ -3393,6 +4171,7 @@ function ProviderAccountsSettings() {
                   editor?.provider === provider &&
                   editor.accountId === account.id;
                 const removing = working === `remove:${provider}:${account.id}`;
+                const signingIn = working === `signin:${provider}:${account.id}`;
                 const identity = identities[identityKey(account)];
                 const orgTag = identityOrganizationTag(identity);
                 const limits = usage.usage[accountUsageKey(account)];
@@ -3442,7 +4221,24 @@ function ProviderAccountsSettings() {
                       </div>
                     </div>
                     <AccountUsageMeters limits={limits} now={usage.now} />
-                    <div className="flex w-24 shrink-0 items-center justify-end gap-1">
+                    <div className="flex min-w-24 shrink-0 items-center justify-end gap-1">
+                      {signingIn || (limits && canSignIn(limits)) ? (
+                        <button
+                          type="button"
+                          disabled={Boolean(working)}
+                          aria-label={`Sign in to ${account.label}`}
+                          onClick={() => void signInAccount(account)}
+                          className="mr-1 flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2 text-[11px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
+                        >
+                          {signingIn ? (
+                            <Loader
+                              className="size-3 animate-spin"
+                              aria-hidden
+                            />
+                          ) : null}
+                          {signingIn ? "Signing in…" : "Sign in"}
+                        </button>
+                      ) : null}
                       {account.isDefault ? (
                         <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-content/30">
                           Default
@@ -3504,6 +4300,14 @@ function ProviderAccountsSettings() {
         </p>
       ) : null}
     </Group>
+  );
+}
+
+/** Sign-in can fix this account; a missing CLI needs an install first. */
+function canSignIn(limits: ProviderRateLimits): boolean {
+  return (
+    needsProviderLogin(limits) &&
+    !limits.error?.toLowerCase().includes("cli not found")
   );
 }
 

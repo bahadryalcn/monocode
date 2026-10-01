@@ -406,11 +406,48 @@ describe("usage limits", () => {
       type: "usage.limited",
       resetsAt: 5_000,
     });
-    expect(limited.usageLimit).toEqual({ resetsAt: 5_000 });
+    expect(limited.usageLimit).toEqual({
+      resetsAt: 5_000,
+      resumeAtReset: true,
+    });
     expect(
       applyHarnessEvent(newSession("codex", "/tmp"), { type: "usage.limited" })
         .usageLimit,
-    ).toEqual({});
+    ).toEqual({ resumeAtReset: true });
+  });
+
+  it("leaves the notice unarmed when resume at reset is off", () => {
+    vi.stubGlobal("localStorage", { getItem: () => "0" });
+    try {
+      expect(
+        applyHarnessEvent(newSession("codex", "/tmp"), {
+          type: "usage.limited",
+          resetsAt: 5_000,
+        }).usageLimit,
+      ).toEqual({ resetsAt: 5_000, resumeAtReset: false });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it("keeps the choice already made when the limit is reported again", () => {
+    const cancelled = {
+      ...newSession("codex", "/tmp"),
+      usageLimit: { resumeAtReset: false },
+    };
+    expect(
+      applyHarnessEvent(cancelled, { type: "usage.limited", resetsAt: 9_000 })
+        .usageLimit,
+    ).toEqual({ resetsAt: 9_000, resumeAtReset: false });
+  });
+
+  it("uses the caller's setting when it cannot read the desktop's", () => {
+    expect(
+      applyHarnessEvent(
+        newSession("codex", "/tmp"),
+        { type: "usage.limited", resetsAt: 5_000 },
+        { resumeAtReset: false },
+      ).usageLimit,
+    ).toEqual({ resetsAt: 5_000, resumeAtReset: false });
   });
 });
 
@@ -887,6 +924,53 @@ describe("applyHarnessEvent context", () => {
       window: 200_000,
     });
     expect(session.blocks).toEqual([]);
+  });
+});
+
+describe("usage totals", () => {
+  it("folds result totals into the session and leaves blocks alone", () => {
+    let session = newSession("claude", "/repo");
+    session = applyHarnessEvent(session, {
+      type: "usage",
+      processCostUsd: 0.01,
+      processApiMs: 1_000,
+    });
+    session = applyHarnessEvent(session, {
+      type: "usage",
+      processCostUsd: 0.03,
+      processApiMs: 2_500,
+    });
+    expect(session.usage).toEqual({
+      costUsd: 0.03,
+      apiMs: 2_500,
+      lastProcessCostUsd: 0.03,
+      lastProcessApiMs: 2_500,
+    });
+    expect(session.blocks).toEqual([]);
+  });
+
+  it("adds a new child's counters on top of the old total after a restart", () => {
+    let session = newSession("claude", "/repo");
+    session = applyHarnessEvent(session, {
+      type: "usage",
+      processCostUsd: 0.5,
+      processApiMs: 100,
+    });
+    session = applyHarnessEvent(session, { type: "session.started" });
+    session = applyHarnessEvent(session, {
+      type: "usage",
+      processCostUsd: 0.6,
+      processApiMs: 200,
+    });
+    expect(session.usage?.costUsd).toBeCloseTo(1.1);
+    expect(session.usage?.apiMs).toBe(300);
+  });
+
+  it("ignores session.started before any usage arrived", () => {
+    const session = applyHarnessEvent(newSession("claude", "/repo"), {
+      type: "session.started",
+    });
+    expect(session.usage).toBeUndefined();
   });
 });
 

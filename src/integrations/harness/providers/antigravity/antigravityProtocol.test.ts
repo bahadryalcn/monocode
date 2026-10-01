@@ -22,7 +22,10 @@ describe.each(providers)("$id ACP protocol", ({ id, protocol, mode, blocks, mode
     } as const;
     expect(harnessSupportsAttachments(id)).toBe(true);
     expect(blocks("", [image])).toEqual([
-      { type: "text", text: ATTACHMENT_ONLY_PROMPT },
+      {
+        type: "text",
+        text: `${ATTACHMENT_ONLY_PROMPT}\n\nAttachments: [image1] = image.png (1st attached image)`,
+      },
       { type: "image", mimeType: "image/png", data: "aGV5" },
     ]);
     expect(blocks(" hi ")).toEqual([{ type: "text", text: "hi" }]);
