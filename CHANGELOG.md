@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A file's changes can be shown side by side, before on the left and after on the right, with aligned hunks, synchronized scrolling, and the same change navigator. The toggle sits beside the change counter and the choice is remembered. The right pane stays editable and saves as before; hunk stage, revert, and comment actions remain in the inline layout.
 
+### Added
+
+- `sessions.wait` in the `/operator` app CLI waits up to 25 seconds for the turn `sessions.send` submitted to finish and returns its reply, so an agent can hold a conversation with another session, including one on a different provider, without polling `sessions.read`. `sessions.send` and `sessions.start` now return the `requestId` that identifies the submitted turn. In #610.
+
 ## [0.6.0] - 2026-09-30
 
 ### Added
