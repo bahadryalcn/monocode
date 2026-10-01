@@ -1684,15 +1684,30 @@ function clearAwaitingResume(live: Live): void {
  * still running, and clears it when Claude picks the thread back up.
  */
 function syncBackgroundWait(live: Live): void {
-  const waiting =
+  const tasks =
     live.activeTurn && live.turnResultSeen && !live.cancelled
-      ? [...live.backgroundTasks.values()].map((task) => task.description)
+      ? [...live.backgroundTasks]
       : [];
-  const key = waiting.join("\n");
+  const waiting = tasks.map(([, task]) => task.description);
+  const agents = tasks.filter(([taskId, task]) =>
+    isBackgroundAgent(live, taskId, task),
+  ).length;
+  const key = waiting.length ? `${agents}\n${waiting.join("\n")}` : "";
   if (key === live.backgroundKey) return;
   live.backgroundKey = key;
   if (live.muteUpdates) return;
-  live.onEvent({ type: "background.updated", tasks: waiting });
+  live.onEvent({ type: "background.updated", tasks: waiting, agents });
+}
+
+/** A subagent, as opposed to a command left running in the background. */
+function isBackgroundAgent(
+  live: Live,
+  taskId: string,
+  task: BackgroundTask,
+): boolean {
+  if (live.agentTasks.has(taskId)) return true;
+  const source = task.toolUseId ? live.toolsById.get(task.toolUseId) : undefined;
+  return Boolean(source && isAgentToolName(source.name));
 }
 
 function maybeFinishTurn(live: Live): void {

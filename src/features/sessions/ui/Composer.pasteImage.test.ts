@@ -224,7 +224,8 @@ it("takes a file URI back out when the webview inserted it and the file attached
   await waitForAttachments(1);
 
   expect(event.defaultPrevented).toBe(true);
-  expect(field.value).toBe("keep");
+  // The URI is gone; the file is referenced by its token instead.
+  expect(field.value).toBe("keep [file1]");
 });
 
 it("sends a screenshot that is still being read when the turn is sent", async () => {
@@ -247,7 +248,7 @@ it("sends a screenshot that is still being read when the turn is sent", async ()
   release?.();
   await settleUntil(() => submit.mock.calls.length === 1, "the turn to include the screenshot");
 
-  expect(submit.mock.calls[0][0]).toBe("look");
+  expect(submit.mock.calls[0][0]).toBe("look [image1]");
   expect(submit.mock.calls[0][1]).toEqual([
     expect.objectContaining({ name: "clipboard-image.png", kind: "image" }),
   ]);

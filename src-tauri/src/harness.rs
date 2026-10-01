@@ -79,6 +79,9 @@ pub struct CursorBinary {
 pub struct ConfiguredBinary {
     pub path: String,
     pub args: Option<Vec<String>>,
+    /// Antigravity only: which wire protocol this binary speaks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -86,10 +89,25 @@ pub struct ConfiguredBinary {
 pub struct AntigravityBinary {
     pub path: String,
     pub args: Vec<String>,
+    /// `acp` for the separate ACP server, `stream-json` for the agy CLI's
+    /// headless mode (the only thing Windows has).
+    pub transport: &'static str,
 }
 
-fn antigravity_args() -> Vec<String> {
-    if cfg!(target_os = "linux") {
+const ANTIGRAVITY_ACP: &str = "acp";
+const ANTIGRAVITY_STREAM_JSON: &str = "stream-json";
+
+/// The ACP server is `agy_acp_server(.par)`; a binary named `agy` is the CLI.
+fn antigravity_transport(path: &Path) -> &'static str {
+    if binary_name_eq(path, "agy") {
+        ANTIGRAVITY_STREAM_JSON
+    } else {
+        ANTIGRAVITY_ACP
+    }
+}
+
+fn antigravity_args(transport: &str) -> Vec<String> {
+    if transport == ANTIGRAVITY_ACP && cfg!(target_os = "linux") {
         vec!["--uid=".into()]
     } else {
         Vec::new()
@@ -331,9 +349,13 @@ pub fn harness_resolve_configured(
     provider: String,
     binary_path: String,
 ) -> Result<ConfiguredBinary, String> {
-    resolve_harness_binary_override(&provider, &binary_path).map(|path| ConfiguredBinary {
-        path: path.to_string_lossy().into_owned(),
-        args: (provider == "antigravity").then(antigravity_args),
+    resolve_harness_binary_override(&provider, &binary_path).map(|path| {
+        let transport = (provider == "antigravity").then(|| antigravity_transport(&path));
+        ConfiguredBinary {
+            args: transport.map(antigravity_args),
+            path: path.to_string_lossy().into_owned(),
+            transport,
+        }
     })
 }
 
@@ -794,16 +816,25 @@ pub fn harness_resolve_hermes() -> Result<CursorBinary, String> {
         })
 }
 
-/// Antigravity's ACP server is separate from the interactive agy CLI.
+/// Antigravity's ACP server is separate from the interactive agy CLI; on
+/// Windows only the CLI exists and MonoCode drives its headless stream-json mode.
 #[tauri::command(async)]
 pub fn harness_resolve_antigravity() -> Result<AntigravityBinary, String> {
     resolve_antigravity()
-        .map(|path| AntigravityBinary {
-            path: path.to_string_lossy().into_owned(),
-            args: antigravity_args(),
+        .map(|path| {
+            let transport = antigravity_transport(&path);
+            AntigravityBinary {
+                path: path.to_string_lossy().into_owned(),
+                args: antigravity_args(transport),
+                transport,
+            }
         })
         .ok_or_else(|| {
-            "Antigravity ACP server (agy_acp_server.par) not found. Install Antigravity and run `agy` once in Terminal.".into()
+            if cfg!(windows) {
+                "Antigravity CLI (agy.exe) not found. Install Antigravity, then run `agy` once in a terminal to sign in.".into()
+            } else {
+                "Antigravity ACP server (agy_acp_server.par) not found. Install Antigravity and run `agy` once in Terminal.".into()
+            }
         })
 }
 
@@ -1947,9 +1978,6 @@ fn configured_binary_fingerprint(path: &Path) -> Option<String> {
 }
 
 fn resolve_harness_binary_override(provider: &str, binary_path: &str) -> Result<PathBuf, String> {
-    if provider == "antigravity" && cfg!(windows) {
-        return Err("Antigravity ACP server overrides are not supported on Windows.".into());
-    }
     let names: &[&str] = match provider {
         "claude" => &["claude"],
         "codex" => &["codex"],
@@ -1960,6 +1988,7 @@ fn resolve_harness_binary_override(provider: &str, binary_path: &str) -> Result<
         "omp" => &["omp"],
         "fx" => &["fx"],
         "hermes" => &["hermes"],
+        "antigravity" if cfg!(windows) => &["agy"],
         "antigravity" => &["agy_acp_server.par"],
         _ => {
             return Err(format!(
@@ -2325,12 +2354,25 @@ fn resolve_hermes() -> Option<PathBuf> {
     first_binary(candidates)
 }
 
+/// Where the Windows installer puts `agy.exe`, then wherever PATH finds it.
+fn agy_cli_candidates(local_app_data: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = local_app_data {
+        candidates.push(dir.join("agy/bin/agy"));
+    }
+    if let Some(from_path) = which_via_login_shell("agy") {
+        candidates.push(from_path);
+    }
+    candidates
+}
+
 fn resolve_antigravity() -> Option<PathBuf> {
     // The .par wrapper is a POSIX self-extracting archive — Antigravity ships
-    // no Windows ACP binary, so report the provider unavailable there instead
-    // of probing paths that can never be executable.
+    // no Windows ACP binary, so Windows drives the agy CLI's headless
+    // stream-json mode instead of probing paths that can never be executable.
     if cfg!(windows) {
-        return None;
+        let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        return first_binary(agy_cli_candidates(local_app_data.as_deref()));
     }
     let mut candidates = Vec::new();
     if let Some(home) = dirs_home().map(PathBuf::from) {
@@ -3728,15 +3770,6 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_launch_args_match_the_platform_registry() {
-        if cfg!(target_os = "linux") {
-            assert_eq!(antigravity_args(), vec!["--uid="]);
-        } else {
-            assert!(antigravity_args().is_empty());
-        }
-    }
-
-    #[test]
     fn command_basename_strips_path() {
         assert_eq!(command_basename("/Users/me/.local/bin/fx"), "fx");
         assert_eq!(command_basename("fx"), "fx");
@@ -3749,6 +3782,69 @@ mod tests {
         let id = passwd_identity().expect("passwd");
         assert!(!id.user.is_empty());
         assert!(PathBuf::from(&id.home).is_dir());
+    }
+}
+
+#[cfg(test)]
+mod antigravity_binary_tests {
+    use super::*;
+
+    #[test]
+    fn antigravity_launch_args_match_the_platform_registry() {
+        if cfg!(target_os = "linux") {
+            assert_eq!(antigravity_args(ANTIGRAVITY_ACP), vec!["--uid="]);
+        } else {
+            assert!(antigravity_args(ANTIGRAVITY_ACP).is_empty());
+        }
+        // The CLI is never given the ACP server's launch flags.
+        assert!(antigravity_args(ANTIGRAVITY_STREAM_JSON).is_empty());
+    }
+
+    #[test]
+    fn antigravity_transport_follows_the_binary_name() {
+        assert_eq!(
+            antigravity_transport(Path::new("/opt/agy/bin/agy")),
+            ANTIGRAVITY_STREAM_JSON
+        );
+        for acp in [
+            "/home/u/.local/bin/agy_acp_server.par",
+            "/home/u/.local/share/agy-acp/agy_acp_server",
+        ] {
+            assert_eq!(
+                antigravity_transport(Path::new(acp)),
+                ANTIGRAVITY_ACP,
+                "{acp}"
+            );
+        }
+    }
+
+    #[test]
+    fn agy_cli_candidates_prefer_the_installer_directory() {
+        let candidates = agy_cli_candidates(Some(Path::new("/local")));
+        assert_eq!(candidates[0], Path::new("/local").join("agy/bin/agy"));
+        assert!(agy_cli_candidates(None)
+            .iter()
+            .all(|path| !path.starts_with("/local")));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_resolves_agy_exe_from_the_installer_directory() {
+        let dir = std::env::temp_dir().join(format!("monocode-agy-win-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("agy/bin")).unwrap();
+        let exe = dir.join("agy/bin/agy.exe");
+        std::fs::write(&exe, b"MZ").unwrap();
+        assert_eq!(
+            first_binary(agy_cli_candidates(Some(&dir))).as_deref(),
+            Some(exe.as_path())
+        );
+        assert_eq!(antigravity_transport(&exe), ANTIGRAVITY_STREAM_JSON);
+        // A configured override is accepted on Windows, and only for `agy`.
+        assert_eq!(
+            resolve_configured_harness_binary(&exe.to_string_lossy(), "antigravity", &["agy"]),
+            Ok(exe.clone())
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

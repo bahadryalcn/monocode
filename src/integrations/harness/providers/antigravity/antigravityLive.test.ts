@@ -163,7 +163,7 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
     expect(mock.sent.find((m) => m.method === "session/set_config_option")?.params)
       .toMatchObject({ configId: "thinking", value: "high" });
     expect(mock.sent.find((m) => m.method === "session/prompt")?.params?.prompt)
-      .toMatchObject([{ type: "text", text: "hi" }, { type: "image", data: "aGV5" }]);
+      .toMatchObject([{ type: "text", text: "hi\n\nAttachments: [image1] = img.png (1st attached image)" }, { type: "image", data: "aGV5" }]);
     expect(mock.sent.find((m) => m.method === "session/new")?.params?.cwd).toBe("/repo");
     permission();
     await vi.waitFor(() => expect(events.some((e) => e.type === "approval.requested")).toBe(true));

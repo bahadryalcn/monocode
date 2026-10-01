@@ -46,6 +46,9 @@ import {
 } from "../model/session";
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
+import { ActivityDock } from "./ActivityDock";
+import { isBackgroundOnly } from "../model/activityDock";
+import { requestOpenSubagent } from "./subagentFocus";
 import { AgentTranscript } from "./AgentTranscript";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
@@ -470,6 +473,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
       navigateBlockRef.current?.(blockId, query) ?? false,
     [],
   );
+  // The dock's rows: bring the run into view, and open it once it is there.
+  const openDockAgent = useCallback(
+    (blockId: string) => {
+      requestOpenSubagent(blockId);
+      navigateBlock(blockId);
+    },
+    [navigateBlock],
+  );
   const jumpRequest = useSyncExternalStore(
     subscribeTranscriptJump,
     () => peekTranscriptJump(session.id),
@@ -674,13 +685,31 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onUsageLimitDismiss={() => onUsageLimitDismiss(session.id)}
       onOpenFile={onOpenFile}
       busy={!!session.busy}
+      backgroundOnly={isBackgroundOnly(
+        !!session.busy,
+        session.backgroundTasks,
+        session.backgroundAgents,
+      )}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
       onRecallLastTurnReady={(recall) => {
         recallLastTurnRef.current = recall;
       }}
       onEditingLastTurnChange={setEditingLastTurn}
-    />
+    >
+      {/* Above the queue and the input, below any question form. */}
+      <ActivityDock
+        sessionId={session.id}
+        blocks={session.blocks}
+        busy={!!session.busy}
+        pendingQuestion={!!session.pendingQuestion}
+        backgroundTasks={session.backgroundTasks}
+        backgroundAgents={session.backgroundAgents}
+        visible={visible}
+        atEnd={!showJumpToBottom}
+        onOpenAgent={openDockAgent}
+      />
+    </Composer>
   );
 
   return (
@@ -826,6 +855,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   modelSettings={session.modelSettings}
                   pendingQuestion={!!session.pendingQuestion}
                   backgroundTasks={session.backgroundTasks}
+                  backgroundAgents={session.backgroundAgents}
                   onApproval={session.worktreeRemoved ? undefined : approve}
                   onAddToChat={addSelectionToChat}
                   onSaveNote={notesEnabled ? saveNote : undefined}

@@ -145,10 +145,18 @@ export function applyHarnessEvent(
     case "background.updated":
       if (event.tasks.length === 0) {
         if (!session.backgroundTasks) return session;
-        const { backgroundTasks: _cleared, ...rest } = session;
+        const {
+          backgroundTasks: _cleared,
+          backgroundAgents: _agents,
+          ...rest
+        } = session;
         return rest;
       }
-      return { ...session, backgroundTasks: event.tasks };
+      return {
+        ...session,
+        backgroundTasks: event.tasks,
+        backgroundAgents: event.agents,
+      };
     case "plan":
       return upsertPlan(session, event);
     case "session.error":
@@ -498,8 +506,11 @@ export function appendSteerUser(
 }
 
 export function stopStreaming(session: Session, endedAt = Date.now()): Session {
-  const { backgroundTasks: _cleared, ...settled } =
-    settlePendingApprovals(session);
+  const {
+    backgroundTasks: _cleared,
+    backgroundAgents: _agents,
+    ...settled
+  } = settlePendingApprovals(session);
   return {
     ...settled,
     busy: false,

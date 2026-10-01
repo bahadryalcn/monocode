@@ -881,6 +881,49 @@ export function subscribeDiffViewer(onStoreChange: () => void) {
     window.removeEventListener(DIFF_VIEWER_CHANGE_EVENT, onStoreChange);
 }
 
+const DIFF_LAYOUT_KEY = "monocode.diffLayout";
+
+/** How a single file's changes are drawn: one column, or before | after. */
+export type DiffLayout = "inline" | "split";
+
+export const DIFF_LAYOUT_DEFAULT: DiffLayout = "inline";
+
+/** Fired on `window` when the single-file diff layout flips. */
+export const DIFF_LAYOUT_CHANGE_EVENT = "monocode:diff-layout-change";
+
+function isDiffLayout(value: unknown): value is DiffLayout {
+  return value === "inline" || value === "split";
+}
+
+export function loadDiffLayout(): DiffLayout {
+  try {
+    const raw = localStorage.getItem(DIFF_LAYOUT_KEY);
+    return isDiffLayout(raw) ? raw : DIFF_LAYOUT_DEFAULT;
+  } catch {
+    return DIFF_LAYOUT_DEFAULT;
+  }
+}
+
+export function saveDiffLayout(value: DiffLayout) {
+  const next = isDiffLayout(value) ? value : DIFF_LAYOUT_DEFAULT;
+  try {
+    localStorage.setItem(DIFF_LAYOUT_KEY, next);
+  } catch {
+    // private mode / quota
+  }
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<DiffLayout>(DIFF_LAYOUT_CHANGE_EVENT, { detail: next }),
+  );
+}
+
+export function subscribeDiffLayout(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(DIFF_LAYOUT_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(DIFF_LAYOUT_CHANGE_EVENT, onStoreChange);
+}
+
 const FORMAT_ON_SAVE_KEY = "monocode.formatOnSave";
 
 export const FORMAT_ON_SAVE_DEFAULT = true;

@@ -143,7 +143,10 @@ describe("buildThreadStartParams / buildTurnStartParams", () => {
     expect(turn.effort).toBe("high");
     expect(turn.serviceTier).toBe("fast");
     expect(turn.input).toEqual([
-      { type: "text", text: "hello" },
+      {
+        type: "text",
+        text: "hello\n\nAttachments: [image1] = shot.png (1st attached image)",
+      },
       { type: "image", url: "data:image/png;base64,abc" },
     ]);
     expect(turn.sandboxPolicy).toEqual({ type: "workspaceWrite" });

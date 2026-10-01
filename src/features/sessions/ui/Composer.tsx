@@ -38,6 +38,12 @@ import {
   pickAttachments,
   revokeAttachment,
 } from "../model/attachments";
+import {
+  attachmentTokens,
+  insertAtSelection,
+  removeAttachmentFromText,
+  tokensForIncoming,
+} from "../model/attachmentTokens";
 import { resizeComposer } from "../model/composerResize";
 import {
   isFileReferenceText,
@@ -244,6 +250,8 @@ type Props = {
   handoffCard?: HandoffComposerCard;
   question?: UserQuestionPrompt;
   busy?: boolean;
+  /** The agent is done and only background commands keep the turn open. */
+  backgroundOnly?: boolean;
   /** Allow typed text to replace Stop with Send while a turn is running. */
   allowBusySubmit?: boolean;
   editLastTurnSupported?: boolean;
@@ -535,6 +543,7 @@ export function Composer({
   handoffCard,
   question,
   busy = false,
+  backgroundOnly = false,
   allowBusySubmit = true,
   editLastTurnSupported = false,
   lastTurnRecall = null,
@@ -681,7 +690,7 @@ export function Composer({
   const [resendEdited, setResendEdited] = useState(false);
   const [runnerEnabled, setRunnerEnabled] = useState(loadComposerRunner);
   const [runnerLive, setRunnerLive] = useState(
-    () => busy && loadComposerRunner(),
+    () => busy && !backgroundOnly && loadComposerRunner(),
   );
   const groupLogos = useTabGroupLogos();
   const projectLogoPath = resolveTabGroupLogo(projectKey(cwd), groupLogos);
@@ -693,6 +702,7 @@ export function Composer({
 
   const mentionOpen =
     !remote && mention !== null && (looksLikeProject(cwd) || notesEnabled);
+  const tokens = useMemo(() => attachmentTokens(attachments), [attachments]);
   const navigationEmpty =
     draft.length === 0 &&
     attachments.length === 0 &&
@@ -866,18 +876,45 @@ export function Composer({
     syncHasValue(ref.current?.value ?? "", attachmentsRef.current);
   }, [inboxCard, noteCard, handoffCard, syncHasValue]);
 
+  /** Text goes at the caret when the input has focus, otherwise at the end. */
+  const insertIntoDraft = useCallback((insertion: string) => {
+    const el = ref.current;
+    if (!el || !insertion) return;
+    const focused = document.activeElement === el;
+    const edit = insertAtSelection(
+      el.value,
+      focused ? { start: el.selectionStart, end: el.selectionEnd } : null,
+      insertion,
+    );
+    applyTextareaEdit(el, edit.text, edit.caret);
+  }, []);
+
   const addAttachments = useCallback(
     (incoming: Attachment[]) => {
       if (!harnessSupportsAttachments(harness) || incoming.length === 0) return;
-      const next = mergeAttachments(attachmentsRef.current, incoming);
+      const previous = attachmentsRef.current;
+      const next = mergeAttachments(previous, incoming);
       attachmentsRef.current = next;
       setAttachments(next);
       setPasteError(null);
       draftRevisionRef.current += 1;
+      // Skipped duplicates are not in `next`, so they get no token either.
+      insertIntoDraft(tokensForIncoming(previous, next.slice(previous.length)));
       syncHasValue(ref.current?.value ?? "", next);
       ref.current?.focus();
     },
-    [harness, syncHasValue],
+    [harness, insertIntoDraft, syncHasValue],
+  );
+
+  const insertAttachmentToken = useCallback(
+    (id: string) => {
+      const index = attachmentsRef.current.findIndex((file) => file.id === id);
+      if (index < 0) return;
+      draftRevisionRef.current += 1;
+      insertIntoDraft(attachmentTokens(attachmentsRef.current)[index]);
+      ref.current?.focus();
+    },
+    [insertIntoDraft],
   );
 
   const removeAttachment = useCallback(
@@ -892,6 +929,19 @@ export function Composer({
       draftRevisionRef.current += 1;
       setAttachments(next);
       setPasteError(null);
+      // The text loses the removed token and the rest renumber with the chips.
+      const el = ref.current;
+      if (el) {
+        const text = removeAttachmentFromText(
+          el.value,
+          previous,
+          previous.findIndex((file) => file.id === id),
+        );
+        if (text !== el.value) {
+          const caret = Math.min(el.selectionStart ?? text.length, text.length);
+          applyTextareaEdit(el, text, caret);
+        }
+      }
       syncHasValue(ref.current?.value ?? "", next);
       ref.current?.focus();
     },
@@ -938,8 +988,8 @@ export function Composer({
       setRunnerLive(false);
       return;
     }
-    if (busy) setRunnerLive(true);
-  }, [busy, runnerEnabled]);
+    if (busy && !backgroundOnly) setRunnerLive(true);
+  }, [busy, backgroundOnly, runnerEnabled]);
 
   useEffect(() => {
     setSkillActive(0);
@@ -2251,10 +2301,12 @@ export function Composer({
 
           {attachments.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 px-3 pt-2">
-              {attachments.map((file) => (
+              {attachments.map((file, index) => (
                 <AttachmentChip
                   key={file.id}
                   attachment={file}
+                  token={tokens[index]}
+                  onInsertToken={() => insertAttachmentToken(file.id)}
                   onRemove={() => removeAttachment(file.id)}
                 />
               ))}
@@ -2653,7 +2705,7 @@ export function Composer({
           <ComposerRunner
             boxRef={boxRef}
             cwd={cwd}
-            busy={busy}
+            busy={busy && !backgroundOnly}
             enabled={enabled}
             onExited={() => setRunnerLive(false)}
           />
@@ -2837,6 +2889,17 @@ export function ComposerAction({
       <ArrowUp className="size-3.5" strokeWidth={2.25} />
     </button>
   );
+}
+
+/** Edits the textarea the way typing would, so React and every draft listener see it. */
+function applyTextareaEdit(
+  el: HTMLTextAreaElement,
+  text: string,
+  caret: number,
+) {
+  el.value = text;
+  el.setSelectionRange(caret, caret);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 function hasFiles(data: DataTransfer | null): data is DataTransfer {

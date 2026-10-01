@@ -43,12 +43,20 @@ export function replaceEditorDoc(
   options?: {
     selection?: { anchor: number; head?: number };
     annotations?: readonly Annotation<unknown>[];
+    /** Set when something other than `view.scrollDOM` scrolls the editor. */
+    scroller?: HTMLElement;
   },
 ): boolean {
   const prev = view.state.doc.toString();
   const target = normalizeLineBreaks(next);
   if (prev === target) return false;
   const changes = editorDocChanges(prev, target);
+  // A scroll snapshot only knows the editor's own scroller.
+  const outer =
+    options?.scroller && options.scroller !== view.scrollDOM
+      ? options.scroller
+      : null;
+  const outerTop = outer?.scrollTop ?? 0;
   view.dispatch({
     changes:
       changes.length > 0
@@ -57,16 +65,20 @@ export function replaceEditorDoc(
     selection: options?.selection,
     annotations: options?.annotations,
     scrollIntoView: false,
-    effects: view.scrollSnapshot(),
+    effects: outer ? [] : view.scrollSnapshot(),
   });
+  if (outer) outer.scrollTop = outerTop;
   return true;
 }
 
 /** Keep the caret at the same screen position across a layout-changing update. */
-export function preserveEditorViewport(view: EditorView, mutate: () => void) {
+export function preserveEditorViewport(
+  view: EditorView,
+  mutate: () => void,
+  scroller: HTMLElement = view.scrollDOM,
+) {
   const head = view.state.selection.main.head;
   const before = view.coordsAtPos(head);
-  const scroller = view.scrollDOM;
   const scrollerTop = scroller.getBoundingClientRect().top;
   const offsetY = before ? before.top - scrollerTop : null;
   const scrollTop = scroller.scrollTop;
@@ -91,5 +103,26 @@ export function preserveEditorViewport(view: EditorView, mutate: () => void) {
     key: preserveEditorViewport,
     read: () => true,
     write: restore,
+  });
+}
+
+/** The document line at the top of what `scroller` currently shows. */
+export function topVisibleLine(
+  view: EditorView,
+  scroller: HTMLElement,
+): number {
+  const block = view.lineBlockAtHeight(scroller.scrollTop);
+  return view.state.doc.lineAt(block.from).number;
+}
+
+/** Scroll so `line` (clamped to the document) sits at the top of the view. */
+export function scrollLineToTop(view: EditorView, line: number): void {
+  const doc = view.state.doc;
+  const clamped = Math.min(Math.max(1, line), doc.lines);
+  view.dispatch({
+    effects: EditorView.scrollIntoView(doc.line(clamped).from, {
+      y: "start",
+      yMargin: 0,
+    }),
   });
 }

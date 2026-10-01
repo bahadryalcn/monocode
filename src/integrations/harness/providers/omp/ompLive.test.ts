@@ -308,7 +308,7 @@ describe("OMP command lifecycle over the real RPC multiplexer", () => {
             (r) => r.sessionId === sessionId && r.command.type === "prompt",
           )?.command.message,
         ).toBe(
-          `${ATTACHMENT_ONLY_PROMPT}\n\nAttached file (read from disk): "/tmp/report.pdf"`,
+          `${ATTACHMENT_ONLY_PROMPT}\n\nAttachments: [file1] = /tmp/report.pdf\n\nAttached file (read from disk): "/tmp/report.pdf"`,
         );
         await steer(turnInput);
         expect(
@@ -316,7 +316,7 @@ describe("OMP command lifecycle over the real RPC multiplexer", () => {
             (r) => r.sessionId === sessionId && r.command.type === "steer",
           )?.command.message,
         ).toBe(
-          `${ATTACHMENT_ONLY_PROMPT}\n\nAttached file (read from disk): "/tmp/report.pdf"`,
+          `${ATTACHMENT_ONLY_PROMPT}\n\nAttachments: [file1] = /tmp/report.pdf\n\nAttached file (read from disk): "/tmp/report.pdf"`,
         );
       } finally {
         frame(sessionId, { type: "agent_end" });

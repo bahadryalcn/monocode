@@ -84,4 +84,32 @@ describe("file attachment preparation", () => {
     });
     expect(files[0].data).toBeUndefined();
   });
+
+  it("keeps the order the files were attached in, which numbers their tokens", async () => {
+    invoke.mockImplementation(
+      async (command: string, args?: { path?: string }) => {
+        // The first read finishes last, so a prepare that raced would reorder.
+        if (command === "read_file_base64") {
+          await new Promise((resolve) =>
+            setTimeout(resolve, args?.path === "/tmp/a.png" ? 20 : 0),
+          );
+          return "YWJj";
+        }
+        return [];
+      },
+    );
+    const names = ["a.png", "b.png", "c.png"];
+    const prepared = await prepareAttachments(
+      names.map((name) => ({
+        id: name,
+        name,
+        mimeType: "image/png",
+        kind: "image" as const,
+        size: 3,
+        path: `/tmp/${name}`,
+      })),
+    );
+    expect(prepared.map((file) => file.name)).toEqual(names);
+    expect(prepared.every((file) => file.data === "YWJj")).toBe(true);
+  });
 });

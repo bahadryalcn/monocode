@@ -14,7 +14,7 @@ import {
   resolveWorkspacePath,
 } from "../../../shared/lib/paths";
 import { INTERRUPT_MESSAGE } from "./inFlight";
-import type { Block, ToolPreview } from "./session";
+import type { AgentStep, Block, ToolPreview } from "./session";
 import { allModels } from "./models";
 import { monoCodeWorkSummary } from "./monocodeToolCall";
 
@@ -567,6 +567,25 @@ export function subagentModelName(block: Block): string | undefined {
 export function subagentReport(block: Block): string | undefined {
   if (toolCallState(block) === "pending") return undefined;
   return block.tool?.detail?.trim() || undefined;
+}
+
+/**
+ * A run is counted, never narrated. Echoing the call in flight put a second
+ * scrolling command line on every row — the shimmer on the name already says
+ * the agent is working, and the count says how far it has got.
+ */
+export function subagentStatusLine(block: Block, steps: AgentStep[]): string {
+  if (toolCallState(block) === "rejected") return "failed";
+  const tools = steps.filter((step) => step.kind === "tool").length;
+  if (tools === 0) return "";
+  const count = tools === 1 ? "1 step" : `${tools} steps`;
+  // A step that failed inside a run that went on to finish still has to say so
+  // here, or the row reads clean until someone opens the trail.
+  const failed = steps.filter(
+    (step) => step.kind === "tool" && isFailedStatus(step.status),
+  ).length;
+  if (!failed) return count;
+  return `${count}, ${failed === 1 ? "1 failed" : `${failed} failed`}`;
 }
 
 /** A failed delegated call must stay visible even when the work trail folds. */

@@ -63,13 +63,13 @@ it("pastes copied message text at the selection together with its attachment", a
       textarea.dispatchEvent(event);
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
-    expect(textarea.value).toBe("Before See image after");
+    expect(textarea.value).toBe("Before See image after [image1]");
     await act(async () =>
       container
         .querySelector<HTMLButtonElement>('button[aria-label="Send"]')!
         .click(),
     );
-    expect(submit.mock.calls[0][0]).toBe("Before See image after");
+    expect(submit.mock.calls[0][0]).toBe("Before See image after [image1]");
     expect(submit.mock.calls[0][1][0]).toMatchObject({
       name: "shot.png",
       data: "YWJj",
