@@ -97,6 +97,14 @@ describe("session work items", () => {
       linkedWorkItemFromAutomationEvent({
         trigger: "event",
         eventKind: "github",
+        eventKey:
+          "github:issue:openai/codex:321:labeled:good_first_issue:1790000000000",
+      })?.number,
+    ).toBe(321);
+    expect(
+      linkedWorkItemFromAutomationEvent({
+        trigger: "event",
+        eventKind: "github",
         eventKey: "github:pr:openai/codex:321:reopened",
       }),
     ).toBeNull();

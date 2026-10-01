@@ -22,6 +22,8 @@ export type InboxAutomationMatch = {
   trigger: AutomationTrigger;
   item: InboxItem;
   eventKey: string;
+  /** Key of the observed event this came from, which is what gets retried. */
+  sourceKey: string;
   occurredAt: number;
   prompt: string;
 };
@@ -32,7 +34,11 @@ export type ClaimedInboxAutomationRun = DueAutomationRun & {
 };
 
 /** An Inbox item that appeared, or one that went through `transition`. */
-type InboxEvent = { item: InboxItem; transition?: InboxTransitionKind };
+type InboxEvent = {
+  item: InboxItem;
+  transition?: InboxTransitionKind;
+  label?: string;
+};
 
 const RETRY_STORAGE_KEY = "monocode.automation-inbox-retries.v1";
 const MAX_RETRY_ITEMS = 500;
@@ -42,12 +48,17 @@ const TRANSITION_EVENTS: Record<
   "issue" | "pr",
   Partial<Record<InboxTransitionKind, string>>
 > = {
-  issue: { reopened: "issue_reopened", closed: "issue_closed" },
+  issue: {
+    reopened: "issue_reopened",
+    closed: "issue_closed",
+    labeled: "issue_labeled",
+  },
   pr: {
     reopened: "pull_request_reopened",
     closed: "pull_request_closed",
     merged: "pull_request_merged",
     ready_for_review: "pull_request_ready_for_review",
+    labeled: "pull_request_labeled",
   },
 };
 
@@ -56,6 +67,7 @@ const TRANSITION_PHRASES: Record<InboxTransitionKind, string> = {
   closed: "was closed",
   merged: "was merged",
   ready_for_review: "was marked ready for review",
+  labeled: "was labeled",
 };
 
 export const SUPPORTED_INBOX_TRIGGER_EVENTS = {
@@ -114,18 +126,24 @@ export function inboxTransitionEvent(
 
 /**
  * An item opens once, so its key is the item alone. Later changes can repeat,
- * so each carries the change and when it happened.
+ * so each carries the change, the label when one was added, and when it
+ * happened.
  */
 export function automationEventKey(
   item: InboxItem,
   transition?: InboxTransitionKind,
+  label?: string,
 ): string {
+  const slug = label
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, "_");
   const base =
     item.provider === "linear" || item.provider === "jira"
       ? `${item.provider}:issue:${item.id || item.identifier || item.number}`
       : `${item.provider}:${item.kind}:${item.repo}:${item.number}`;
   const identity = transition
-    ? `${base}:${transition}:${Date.parse(item.updatedAt) || 0}`
+    ? `${base}:${transition}${slug ? `:${slug}` : ""}:${Date.parse(item.updatedAt) || 0}`
     : base;
   return identity
     .trim()
@@ -134,13 +152,21 @@ export function automationEventKey(
     .slice(0, 400);
 }
 
+function inboxEventKey(event: InboxEvent): string {
+  return automationEventKey(event.item, event.transition, event.label);
+}
+
 function savedInboxEvent(saved: unknown): InboxEvent | null {
   if (!saved || typeof saved !== "object") return null;
   const entry = saved as Partial<InboxTransition>;
   // Appeared items are stored bare, as they were before transitions existed.
   if (!entry.transition) return { item: saved as InboxItem };
   if (!entry.item || !(entry.transition in TRANSITION_PHRASES)) return null;
-  return { item: entry.item, transition: entry.transition };
+  return {
+    item: entry.item,
+    transition: entry.transition,
+    ...(typeof entry.label === "string" ? { label: entry.label } : {}),
+  };
 }
 
 function pendingRetryItems(): Map<string, InboxEvent> {
@@ -152,7 +178,7 @@ function pendingRetryItems(): Map<string, InboxEvent> {
       for (const entry of saved) {
         const event = savedInboxEvent(entry);
         if (!event) continue;
-        const key = automationEventKey(event.item, event.transition);
+        const key = inboxEventKey(event);
         if (key) retryItems.set(key, event);
       }
     }
@@ -182,13 +208,12 @@ function saveRetryItems(items: ReadonlyMap<string, InboxEvent>) {
 function inboxTransitionDraft(
   item: InboxItem,
   transition: InboxTransitionKind,
+  label?: string,
 ): string {
   const [, ...details] = inboxStartDraft(item).trim().split("\n");
   const kind = item.kind === "pr" ? "pull request" : "issue";
-  return [
-    `This GitHub ${kind} ${TRANSITION_PHRASES[transition]}:`,
-    ...details,
-  ].join("\n");
+  const what = `${TRANSITION_PHRASES[transition]}${label ? ` "${label}"` : ""}`;
+  return [`This GitHub ${kind} ${what}:`, ...details].join("\n");
 }
 
 export function matchInboxAutomations(
@@ -198,37 +223,54 @@ export function matchInboxAutomations(
 ): InboxAutomationMatch[] {
   const matches: InboxAutomationMatch[] = [];
   const seen = new Set<string>();
-  const events: InboxEvent[] = [
-    ...appeared.map((item) => ({ item })),
-    ...transitions,
-  ];
-  for (const { item, transition } of events) {
+  const events: Array<InboxEvent & { sourceKey: string }> = [];
+  for (const item of appeared) {
+    const sourceKey = automationEventKey(item);
+    events.push({ item, sourceKey });
+    // The labels on a new item were added when it was created.
+    for (const label of item.labels) {
+      events.push({ item, transition: "labeled", label: label.name, sourceKey });
+    }
+  }
+  for (const transition of transitions) {
+    events.push({ ...transition, sourceKey: inboxEventKey(transition) });
+  }
+  for (const { item, transition, label, sourceKey } of events) {
     const event = transition
       ? inboxTransitionEvent(item, transition)
       : inboxAppearedEvent(item);
-    if (!event) continue;
-    const eventKey = automationEventKey(item, transition);
-    if (!eventKey) continue;
+    if (!event || !sourceKey) continue;
     for (const automation of automations) {
       if (!automation.enabled) continue;
       const trigger = automationTriggers(automation).find((candidate) =>
-        triggerMatchesInboxItem(candidate, automation.cwd, item, event),
+        triggerMatchesInboxItem(candidate, automation.cwd, item, event, label),
       );
       if (!trigger) continue;
-      const dedupe = `${automation.id}:${eventKey}`;
-      if (seen.has(dedupe)) continue;
-      seen.add(dedupe);
+      // A trigger for any label runs once for labels added together.
+      const eventKey = automationEventKey(
+        item,
+        transition,
+        triggerLabel(trigger) ? label : undefined,
+      );
+      // One run per automation for each event, and for each observed change:
+      // a new item that also satisfies a label trigger still runs once.
+      const byEvent = `${automation.id}:${eventKey}`;
+      const bySource = `${automation.id}:${sourceKey}`;
+      if (seen.has(byEvent) || seen.has(bySource)) continue;
+      seen.add(byEvent);
+      seen.add(bySource);
       matches.push({
         automation,
         trigger,
         item,
         eventKey,
+        sourceKey,
         occurredAt: transition
           ? Date.parse(item.updatedAt) || 0
           : itemOccurredAt(item),
         prompt: `${automation.prompt.trim()}\n\n${
           transition
-            ? inboxTransitionDraft(item, transition)
+            ? inboxTransitionDraft(item, transition, label)
             : inboxStartDraft(item).trim()
         }`,
       });
@@ -247,7 +289,7 @@ export async function claimInboxAutomationRuns(
     ...appeared.map((item): InboxEvent => ({ item })),
     ...transitions,
   ]) {
-    const key = automationEventKey(event.item, event.transition);
+    const key = inboxEventKey(event);
     if (key) pending.set(key, event);
   }
   while (pending.size > MAX_RETRY_ITEMS) {
@@ -294,11 +336,11 @@ export async function claimInboxAutomationRuns(
         });
       }
     } catch {
-      failed.add(match.eventKey);
+      failed.add(match.sourceKey);
     }
   }
   for (const event of candidates) {
-    const key = automationEventKey(event.item, event.transition);
+    const key = inboxEventKey(event);
     if (!failed.has(key)) pending.delete(key);
   }
   saveRetryItems(pending);
@@ -306,13 +348,20 @@ export async function claimInboxAutomationRuns(
   return claimed;
 }
 
+function triggerLabel(trigger: AutomationTrigger): string {
+  return (trigger.label ?? "").trim().toLowerCase();
+}
+
 function triggerMatchesInboxItem(
   trigger: AutomationTrigger,
   cwd: string,
   item: InboxItem,
   event: { kind: AutomationTriggerKind; event: string },
+  label?: string,
 ): boolean {
   if (trigger.kind !== event.kind || trigger.event !== event.event) return false;
+  const wanted = triggerLabel(trigger);
+  if (wanted && wanted !== label?.trim().toLowerCase()) return false;
   if (!matchesInboxProject(item, cwd)) return false;
   if (!matchesActor(trigger.actor)) return false;
   const repos = [...trigger.repos, trigger.repo]

@@ -172,6 +172,51 @@ describe("inbox transition tracker", () => {
     ).toEqual([{ item: closed, transition: "closed" }]);
   });
 
+  const label = (name: string) => ({ name, color: "ededed" });
+
+  it("reports each label added to an item, by name", () => {
+    const tracker = new InboxTransitionTracker();
+    tracker.observe([issue({ labels: [label("bug")] })], "open");
+    const labeled = issue({
+      labels: [label("bug"), label("auto-fix"), label("Good First Issue")],
+    });
+    expect(tracker.observe([labeled], "open").transitions).toEqual([
+      { item: labeled, transition: "labeled", label: "auto-fix" },
+      { item: labeled, transition: "labeled", label: "Good First Issue" },
+    ]);
+    expect(tracker.observe([labeled], "open")).toEqual(QUIET);
+  });
+
+  it("does not report labels an item already had, lost, or had re-cased", () => {
+    const tracker = new InboxTransitionTracker();
+    expect(
+      tracker.observe([issue({ labels: [label("bug"), label("auto-fix")] })], "open"),
+    ).toEqual(QUIET);
+    expect(
+      tracker.observe([issue({ labels: [label("Bug")] })], "open"),
+    ).toEqual(QUIET);
+  });
+
+  it("reports a label that comes back after being removed", () => {
+    const tracker = new InboxTransitionTracker();
+    tracker.observe([issue({ labels: [label("auto-fix")] })], "open");
+    tracker.observe([issue()], "open");
+    const again = issue({ labels: [label("auto-fix")] });
+    expect(tracker.observe([again], "open").transitions).toEqual([
+      { item: again, transition: "labeled", label: "auto-fix" },
+    ]);
+  });
+
+  it("reports a state change before the labels added with it", () => {
+    const tracker = new InboxTransitionTracker();
+    tracker.observe([issue({ state: "closed" })], "all");
+    const reopened = issue({ labels: [label("regression")] });
+    expect(tracker.observe([reopened], "all").transitions).toEqual([
+      { item: reopened, transition: "reopened" },
+      { item: reopened, transition: "labeled", label: "regression" },
+    ]);
+  });
+
   it("ignores providers other than GitHub", () => {
     const tracker = new InboxTransitionTracker();
     const gitlab = issue({ provider: "gitlab" });

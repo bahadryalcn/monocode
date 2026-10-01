@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  createAutomationTrigger,
   listAutomations,
   newAutomationDraft,
   notifyAutomationsChanged,
@@ -10,7 +11,11 @@ import {
   type Automation,
 } from "../model/automations";
 import { SUPPORTED_INBOX_TRIGGER_EVENTS } from "../model/automationEvents";
-import { AutomationsView, TRIGGER_EVENTS } from "./AutomationsView";
+import {
+  AutomationsView,
+  EventTriggerSentence,
+  TRIGGER_EVENTS,
+} from "./AutomationsView";
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", async (original) => ({
@@ -121,6 +126,66 @@ it("names the GitHub state-change triggers for what happened", () => {
     pull_request_closed: "Pull request closed",
     pull_request_merged: "Pull request merged",
     pull_request_ready_for_review: "Pull request ready for review",
+    issue_labeled: "Issue labeled",
+    pull_request_labeled: "Pull request labeled",
   });
+});
+
+async function renderSentence(
+  trigger: ReturnType<typeof createAutomationTrigger>,
+  onChange = vi.fn(),
+) {
+  await act(async () =>
+    root.render(
+      createElement(EventTriggerSentence, {
+        trigger,
+        branchOptions: [],
+        projectChosen: true,
+        onChange,
+      }),
+    ),
+  );
+  return onChange;
+}
+
+it("lets a label-added trigger name the label it waits for", async () => {
+  const trigger = createAutomationTrigger("github", "issue_labeled");
+  const onChange = await renderSentence(trigger);
+  const input = container.querySelector<HTMLInputElement>(
+    'input[aria-label="Label"]',
+  );
+  expect(input).not.toBeNull();
+  expect(input!.value).toBe("");
+  expect(input!.placeholder).toBe("any label");
+  expect(container.textContent).toContain("added to issue");
+
+  const setValue = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  )!.set!;
+  await act(async () => {
+    setValue.call(input, "auto-fix");
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(onChange).toHaveBeenCalledWith({ ...trigger, label: "auto-fix" });
+});
+
+it("shows the saved label and words the sentence for pull requests", async () => {
+  await renderSentence(
+    createAutomationTrigger("github", "pull_request_labeled", {
+      label: "needs-review",
+    }),
+  );
+  expect(
+    container.querySelector<HTMLInputElement>('input[aria-label="Label"]')
+      ?.value,
+  ).toBe("needs-review");
+  expect(container.textContent).toContain("added to pull request");
+});
+
+it("has no label field on triggers that are not about labels", async () => {
+  await renderSentence(createAutomationTrigger("github", "issue_reopened"));
+  expect(container.querySelector('input[aria-label="Label"]')).toBeNull();
+  expect(container.textContent).toContain("Issue reopened");
 });
 

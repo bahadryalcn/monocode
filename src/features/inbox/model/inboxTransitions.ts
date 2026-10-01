@@ -2,11 +2,13 @@ import type { GithubWorkItem, InboxItem, InboxProvider } from "./githubTasks";
 import { inboxNotificationProject } from "../../notifications/model/notificationProjects";
 
 export type InboxTransitionKind =
-  "reopened" | "closed" | "merged" | "ready_for_review";
+  "reopened" | "closed" | "merged" | "ready_for_review" | "labeled";
 
 export type InboxTransition = {
   item: InboxItem;
   transition: InboxTransitionKind;
+  /** The label that was added, for `labeled`. */
+  label?: string;
 };
 
 export type InboxTransitionObservation = {
@@ -38,10 +40,19 @@ function stateOf(item: InboxItem): string {
   return item.state.trim().toLowerCase();
 }
 
+function addedLabels(previous: InboxItem, current: InboxItem): string[] {
+  const had = new Set(
+    previous.labels.map((label) => label.name.trim().toLowerCase()),
+  );
+  return current.labels
+    .map((label) => label.name.trim())
+    .filter((name) => name && !had.has(name.toLowerCase()));
+}
+
 function transitionBetween(
   previous: InboxItem,
   current: InboxItem,
-): InboxTransitionKind | null {
+): Exclude<InboxTransitionKind, "labeled"> | null {
   const was = stateOf(previous);
   const now = stateOf(current);
   if (now === "open") {
@@ -81,6 +92,11 @@ export class InboxTransitionTracker {
         ? transitionBetween(previous.item, item)
         : null;
       if (transition) transitions.push({ item, transition });
+      if (previous) {
+        for (const label of addedLabels(previous.item, item)) {
+          transitions.push({ item, transition: "labeled", label });
+        }
+      }
       this.snapshots.set(key, { item, listed: true, failedLookups: 0 });
     }
     for (const [key, snapshot] of this.snapshots) {
