@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `sessions.wait` in the `/operator` app CLI waits up to 25 seconds for the turn `sessions.send` submitted to finish and returns its reply, so an agent can hold a conversation with another session, including one on a different provider, without polling `sessions.read`. `sessions.send` and `sessions.start` now return the `requestId` that identifies the submitted turn. In #610.
 
+### Added
+
+- GitHub automations can trigger on more than a newly opened item: **Issue reopened**, **Issue closed**, **Pull request reopened**, **Pull request closed**, **Pull request merged**, and **Pull request ready for review**. Each change runs once, so a second reopen starts a new run while the same reopen never repeats. Changes are detected while MonoCode is running; the first refresh after launch only records the current state.
+- GitHub automations can trigger when a label is added: **Issue labeled** and **Pull request labeled**. Name the label in the trigger to run only for that one, for example to start a fix when `auto-fix` is added, or leave it empty for any label. An item opened with the label already on it counts.
+
 ## [0.6.0] - 2026-09-30
 
 ### Added
