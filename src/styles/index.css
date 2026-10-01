@@ -3186,3 +3186,23 @@ html.theme-light .btw-burst {
     var(--color-background-base)
   );
 }
+
+/* Sidebar graph rows: the row is the container, so the author avatar and the
+   date drop out as the pane narrows (date first) without any resize listeners. */
+.git-graph-row {
+  container-type: inline-size;
+}
+.git-graph-author,
+.git-graph-date {
+  display: none;
+}
+@container (min-width: 230px) {
+  .git-graph-author {
+    display: grid;
+  }
+}
+@container (min-width: 290px) {
+  .git-graph-date {
+    display: block;
+  }
+}

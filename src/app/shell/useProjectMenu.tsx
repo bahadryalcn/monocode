@@ -4,6 +4,7 @@ import {
   Archive,
   BellOff,
   FolderOpen,
+  FolderPlus,
   FolderTree,
   ImagePlus,
   Pin,
@@ -57,6 +58,8 @@ import {
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { RemoveProjectDialog } from "../../features/projects/ui/RemoveProjectDialog";
+import { AdditionalDirsDialog } from "../../features/projects/ui/AdditionalDirsDialog";
+import { isLocalProject } from "../../features/projects/model/recents";
 import {
   TabGroupMenu,
   type TabGroupMenuExtraItem,
@@ -90,6 +93,7 @@ function projectMenuExtraItems(
   notificationReady: boolean,
   externalEditors: ExternalEditor[] | null,
   projectGroups: ProjectGroup[],
+  canAddDirs: boolean,
   currentProjectGroupId?: string,
 ): TabGroupMenuExtraItem[] {
   const groupSubmenu: ExplorerMenuItem[] = [
@@ -121,6 +125,9 @@ function projectMenuExtraItems(
       icon: FolderTree,
       submenu: groupSubmenu,
     },
+    ...(canAddDirs
+      ? [{ id: "additional-dirs", label: "Additional folders…", icon: FolderPlus }]
+      : []),
     pinned
       ? { id: "unpin", label: "Unpin project", icon: PinOff }
       : { id: "pin", label: "Pin project", icon: Pin },
@@ -215,6 +222,10 @@ export function useProjectMenu({
   } | null>(null);
   const [backgroundProject, setBackgroundProject] = useState<{
     project: string;
+    name: string;
+  } | null>(null);
+  const [additionalDirsProject, setAdditionalDirsProject] = useState<{
+    path: string;
     name: string;
   } | null>(null);
   const [menuError, setMenuError] = useState<string | null>(null);
@@ -377,6 +388,11 @@ export function useProjectMenu({
         project: key,
         name: resolveTabGroupLabel(key, groupLabels, basename(path)),
       });
+    } else if (action === "additional-dirs") {
+      setAdditionalDirsProject({
+        path,
+        name: resolveTabGroupLabel(key, groupLabels, basename(path)),
+      });
     } else if (action === "reveal") void revealPath(path);
     else if (action === "archive") {
       onRemoveProject?.(path, { purgeData: false });
@@ -445,6 +461,7 @@ export function useProjectMenu({
           Boolean(readyNotificationProject),
           externalEditors,
           loadProjectGroups(),
+          isLocalProject(projectMenu.path),
           projectGroupIdForPath(
             projectMenu.path,
             loadProjectGroupAssignments(),
@@ -574,6 +591,16 @@ export function useProjectMenu({
           }}
         />
       ) : null}
+      {additionalDirsProject ? (
+        <AdditionalDirsDialog
+          project={additionalDirsProject.path}
+          name={additionalDirsProject.name}
+          onClose={() => {
+            setAdditionalDirsProject(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
       {backgroundProject ? (
         <ProjectBackgroundDialog
           project={backgroundProject.project}
@@ -599,6 +626,7 @@ export function useProjectMenu({
       projectMenu != null ||
       groupMenu != null ||
       notificationMenu != null ||
+      additionalDirsProject != null ||
       removing != null ||
       backgroundProject != null,
     element,

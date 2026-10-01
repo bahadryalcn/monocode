@@ -250,6 +250,8 @@ export function buildClaudeSpawnArgs(input: {
   includePartialMessages?: boolean;
   maxTurns?: number;
   isolated?: boolean;
+  /** Folders beyond the cwd the session may read and edit. */
+  additionalDirs?: readonly string[];
 }): string[] {
   const args = [
     "--output-format",
@@ -288,6 +290,9 @@ export function buildClaudeSpawnArgs(input: {
   if (input.permissionMode === "bypassPermissions") {
     args.push("--allow-dangerously-skip-permissions");
   }
+  // One flag per folder: `--add-dir` is variadic and would otherwise swallow
+  // whatever follows it.
+  for (const dir of input.additionalDirs ?? []) args.push("--add-dir", dir);
   if (input.resume) args.push("--resume", input.resume);
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));

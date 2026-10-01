@@ -14,6 +14,7 @@ import {
   watchChild,
   writeChild,
 } from "../../core/child";
+import { additionalDirsFor } from "../../core/additionalDirs";
 import {
   askUserQuestionAllowInput,
   asRecord,
@@ -1768,7 +1769,8 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     context: input.modelSettings?.context,
     runtimeMode: input.runtimeMode,
     hooks: loadClaudeHooks(),
-  })}`;
+    // Folders are fixed at launch, so a change needs a fresh process.
+  })}:${additionalDirsFor(input.sessionId).join("|")}`;
 }
 
 function launchOptions(
@@ -1782,6 +1784,7 @@ function launchOptions(
   resume?: string;
   sessionId?: string;
   settings?: ClaudeCliSettings;
+  additionalDirs: string[];
 } {
   const native = nativeModelId(input.model);
   const effortRaw = input.modelSettings?.effort;
@@ -1809,6 +1812,7 @@ function launchOptions(
     resume,
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
+    additionalDirs: additionalDirsFor(input.sessionId),
   };
 }
 

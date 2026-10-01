@@ -130,11 +130,22 @@ import {
 } from "../features/sessions/model/attachments";
 import {
   basename,
+  listDir,
   notifyGitChanged,
+  pickCodeWorkspaceFile,
   pickFolders,
+  readTextFile,
   type GitFileDiffKind,
   type GitHistoryCommit,
 } from "../platform/tauri/fs";
+import {
+  OPEN_CODE_WORKSPACE_EVENT,
+  parseCodeWorkspace,
+} from "../features/projects/model/codeWorkspace";
+import { assignProjectsToNamedGroup } from "../features/projects/model/projectGroups";
+import { GitFileInspector } from "../features/source-control/ui/GitFileInspector";
+import { loadAdditionalDirs } from "../features/projects/model/additionalDirs";
+import { setAdditionalDirsResolver } from "../integrations/harness/core/additionalDirs";
 import {
   invalidateProjectFiles,
   prefetchProjectFiles,
@@ -1128,6 +1139,16 @@ function Workspace({
   const usageResetLookups = useRef(new WeakSet<UsageLimit>());
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+  // Provider adapters ask this for a session's extra folders at launch.
+  useEffect(() => {
+    setAdditionalDirsResolver((sessionId) => {
+      const session = sessionsRef.current.find((item) => item.id === sessionId);
+      return session && isLocalProject(session.cwd)
+        ? loadAdditionalDirs(session.cwd)
+        : [];
+    });
+    return () => setAdditionalDirsResolver(() => []);
+  }, []);
   const dirtyFilesRef = useRef(dirtyFiles);
   dirtyFilesRef.current = dirtyFiles;
   const projectTerminalsRef = useRef(projectTerminals);
@@ -5304,6 +5325,60 @@ function Workspace({
     // the last one selected ends up focused.
     openProjects(await pickFolders());
   }, [openProjects]);
+
+  /**
+   * Open the folders of a VS Code workspace file as projects, collected in a
+   * rail group named after the file.
+   */
+  const openCodeWorkspace = useCallback(async () => {
+    const title = "Open VS Code workspace";
+    const file = await pickCodeWorkspaceFile();
+    if (!file) return;
+    try {
+      const workspace = parseCodeWorkspace(await readTextFile(file), file);
+      const present = await Promise.all(
+        workspace.folders.map((folder) =>
+          listDir(folder).then(
+            () => true,
+            () => false,
+          ),
+        ),
+      );
+      const found = workspace.folders.filter((_, index) => present[index]);
+      const skipped = [
+        ...workspace.folders.filter((_, index) => !present[index]),
+        ...workspace.unsupported,
+      ];
+      if (found.length === 0) {
+        await message(
+          skipped.length > 0
+            ? `None of the workspace's folders could be opened:\n\n${skipped.join("\n")}`
+            : "The workspace has no folders.",
+          { title, kind: "error" },
+        );
+        return;
+      }
+      openProjects(found);
+      assignProjectsToNamedGroup(workspace.name, found);
+      if (skipped.length > 0) {
+        await message(
+          `These folders could not be opened and were skipped:\n\n${skipped.join("\n")}`,
+          { title, kind: "warning" },
+        );
+      }
+    } catch (error) {
+      await message(error instanceof Error ? error.message : String(error), {
+        title,
+        kind: "error",
+      });
+    }
+  }, [openProjects]);
+
+  useEffect(() => {
+    const open = () => void openCodeWorkspace();
+    window.addEventListener(OPEN_CODE_WORKSPACE_EVENT, open);
+    return () => window.removeEventListener(OPEN_CODE_WORKSPACE_EVENT, open);
+  }, [openCodeWorkspace]);
 
   const onPlaceSessionInFolder = useCallback(
     (sessionId: string, target: SessionFolderTarget) => {
@@ -11103,6 +11178,7 @@ function Workspace({
               onClose={() => setWhatsNewVersion(null)}
             />
           ) : null}
+          <GitFileInspector onOpenCommit={onOpenCommit} />
           {remoteProjectDialogOpen ? (
             <AddRemoteProjectDialog
               onCancel={() => setRemoteProjectDialogOpen(false)}

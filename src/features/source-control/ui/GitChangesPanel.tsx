@@ -13,7 +13,6 @@ import {
   ListBullet,
   Loader,
   Minus,
-  MoreHorizontal,
   Plus,
   RefreshCw,
   Undo2,
@@ -28,6 +27,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import {
@@ -38,16 +38,20 @@ import {
   loadGraphPanelHeight,
   saveGraphPanelHeight,
 } from "./GitHistoryGraph";
+import { GitOperationBanner } from "./GitOperationBanner";
+import { GitStashSection } from "./GitStashSection";
+import { GitActionsMenu, type ChangesActions } from "./GitActionsMenu";
+import { AUTO_FETCH_MS, loadAutoFetch, saveAutoFetch } from "../model/autoFetch";
 import {
   basename,
   gitCommit,
   gitDiffIndex,
   gitDiscardAll,
   gitDiscardFile,
+  gitFetch,
   gitHeadMessage,
   gitPrCreate,
   gitPrStatus,
-  gitPull,
   gitPush,
   gitRangeContext,
   gitStageAll,
@@ -79,6 +83,7 @@ import { MOD } from "../../../platform/tauri/platform";
 import { applyProjectDiffStats } from "../hooks/useProjectDiffStats";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import type { CommitMenuOptions } from "../model/gitActionsMenu";
 
 const GIT_POLL_MS = 2000;
 
@@ -127,8 +132,8 @@ export function GitChangesPanel({
   const { index, reload } = useDiffIndex(cwd, enabled);
   const files = index?.files ?? [];
   const paneRef = useRef<HTMLDivElement>(null);
-  const branchMenuRef = useRef<HTMLDivElement>(null);
-  const [branchMenuOpen, setBranchMenuOpen] = useState(false);
+  // Lets the header menu drive the commit box and bulk stage actions below.
+  const changesRef = useRef<ChangesActions | null>(null);
   // Shared across the header and the changed-files list so no two Git
   // mutations ever run against the same checkout at once.
   const [busy, setBusy] = useState<string | null>(null);
@@ -142,36 +147,33 @@ export function GitChangesPanel({
     return () => window.clearTimeout(timer);
   }, [status]);
 
-  useEffect(() => {
-    if (!branchMenuOpen) return;
-    const onPointer = (event: PointerEvent) => {
-      if (!branchMenuRef.current?.contains(event.target as Node)) {
-        setBranchMenuOpen(false);
-      }
-    };
-    window.addEventListener("pointerdown", onPointer);
-    return () => window.removeEventListener("pointerdown", onPointer);
-  }, [branchMenuOpen]);
+  // Fetch, branch management, and stashes are not implemented for connected machines.
+  const local = !isRemoteProjectPath(cwd);
+  const canFetch = local && Boolean(index?.remote);
+  const [autoFetch, setAutoFetch] = useState(loadAutoFetch);
 
-  const canPull = Boolean(index?.remote) && Boolean(index?.upstream);
-
-  const pull = async () => {
-    if (!canPull) return;
-    setStatus(null);
-    setBusy("pull");
-    try {
-      await gitPull(cwd);
-      reload();
-      notifyGitChanged();
-      invalidateWatchedFiles();
-      setStatus("Pull complete");
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(null);
-      setBranchMenuOpen(false);
-    }
+  const onMutated = (paths?: string[]) => {
+    reload();
+    notifyGitChanged();
+    invalidateWatchedFiles(paths);
+    window.setTimeout(() => invalidateWatchedFiles(paths), 150);
   };
+
+  useEffect(() => {
+    if (!enabled || !autoFetch || !canFetch) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      // Quiet: a failed background fetch should not interrupt with a dialog.
+      void gitFetch(cwd).then(
+        () => {
+          reload();
+          notifyGitChanged();
+        },
+        () => {},
+      );
+    }, AUTO_FETCH_MS);
+    return () => window.clearInterval(timer);
+  }, [autoFetch, canFetch, cwd, enabled, reload]);
 
   useLayoutEffect(() => {
     const pane = paneRef.current;
@@ -201,11 +203,8 @@ export function GitChangesPanel({
             {status}
           </span>
         ) : null}
-        {index?.branch ? (
-          <div
-            ref={branchMenuRef}
-            className="relative ml-auto flex min-w-0 items-center gap-1"
-          >
+        <div className="ml-auto flex min-w-0 items-center gap-1">
+          {index?.branch ? (
             <span className="flex min-w-0 items-center gap-1 text-[11px] text-content/50">
               <GitBranch className="size-3 shrink-0" strokeWidth={1.75} />
               <span className="min-w-0 truncate">{index.branch}</span>
@@ -220,56 +219,27 @@ export function GitChangesPanel({
                 </span>
               ) : null}
             </span>
-            <button
-              type="button"
-              aria-haspopup="menu"
-              aria-label="Branch actions"
-              aria-expanded={branchMenuOpen}
-              disabled={busy !== null}
-              onClick={() => setBranchMenuOpen((open) => !open)}
-              className="grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/10 hover:text-content disabled:opacity-40 aria-expanded:bg-content/10 aria-expanded:text-content"
-            >
-              {busy === "pull" ? (
-                <Loader className="size-3.5 animate-spin" strokeWidth={1.75} />
-              ) : (
-                <MoreHorizontal className="size-4" strokeWidth={2} />
-              )}
-            </button>
-            {branchMenuOpen ? (
-              <div
-                role="menu"
-                aria-label="Branch actions"
-                className="absolute top-full right-0 z-30 mt-1 min-w-36 rounded-md border border-content/10 bg-background-base py-1 shadow-lg"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={busy !== null || !canPull}
-                  title={
-                    canPull
-                      ? undefined
-                      : "This branch needs a remote and upstream before it can pull"
-                  }
-                  onClick={() => void pull()}
-                  className="flex h-7 w-full items-center gap-2 px-3 text-left text-[12px] text-content hover:bg-content/10 disabled:opacity-40"
-                >
-                  {busy === "pull" ? (
-                    <Loader
-                      className="size-3.5 animate-spin"
-                      strokeWidth={1.75}
-                    />
-                  ) : (
-                    <RefreshCw className="size-3.5" strokeWidth={1.75} />
-                  )}
-                  {busy === "pull" ? "Pulling…" : "Pull"}
-                </button>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <span className="ml-auto" />
-        )}
+          ) : null}
+          {index ? (
+            <GitActionsMenu
+              cwd={cwd}
+              index={index}
+              busy={busy}
+              setBusy={setBusy}
+              autoFetch={autoFetch}
+              onToggleAutoFetch={() => {
+                saveAutoFetch(!autoFetch);
+                setAutoFetch(!autoFetch);
+              }}
+              changes={changesRef}
+              onStatus={setStatus}
+              onMutated={onMutated}
+              onOpenCommit={onOpenCommit}
+            />
+          ) : null}
+        </div>
       </header>
+      <GitOperationBanner cwd={cwd} enabled={enabled} onOpenFile={onOpenFile} />
       <ChangedFiles
         cwd={cwd}
         textHarness={textHarness}
@@ -281,14 +251,16 @@ export function GitChangesPanel({
         fill
         busy={busy}
         setBusy={setBusy}
+        actionsRef={changesRef}
         onOpenFile={onOpenFile}
         onOpenAllChanges={onOpenAllChanges}
-        onMutated={(paths) => {
-          reload();
-          notifyGitChanged();
-          invalidateWatchedFiles(paths);
-          window.setTimeout(() => invalidateWatchedFiles(paths), 150);
-        }}
+        onMutated={onMutated}
+      />
+      <GitStashSection
+        cwd={cwd}
+        enabled={enabled}
+        hasChanges={files.length > 0}
+        onOpenCommit={onOpenCommit}
       />
       {graphExpanded ? (
         <GraphResizeSash
@@ -338,6 +310,7 @@ function ChangedFiles({
   fill,
   busy,
   setBusy,
+  actionsRef,
   onOpenFile,
   onOpenAllChanges,
   onMutated,
@@ -352,6 +325,8 @@ function ChangedFiles({
   fill: boolean;
   busy: string | null;
   setBusy: (value: string | null) => void;
+  /** Filled with the handlers the header menu calls into. */
+  actionsRef: RefObject<ChangesActions | null>;
   onOpenFile: (path: string, kind: GitFileDiffKind, pin?: boolean) => void;
   onOpenAllChanges: (kind: GitFileDiffKind) => void;
   onMutated: (paths?: string[]) => void;
@@ -402,7 +377,8 @@ function ChangedFiles({
   const canCommitPush =
     canCommit && hasRemote && !diverged && (!amend || !index?.headPushed);
   const canCommitPushPr = canCommitPush && !hasOpenPr && !onDefault;
-  const canEditMessage = (staged.length > 0 || amend) && !busy;
+  // Any change allows typing, so the menu's Commit All can use the message too.
+  const canEditMessage = (files.length > 0 || amend) && !busy;
 
   useEffect(() => {
     if (!amendTarget) return;
@@ -582,27 +558,48 @@ function ChangedFiles({
     }
   };
 
-  const confirmAmend = async () => {
-    if (!amend || !index?.headPushed) return true;
+  const confirmAmend = async (amending: boolean) => {
+    if (!amending || !index?.headPushed) return true;
     return confirmNative(
       "Amend a commit that is already pushed? MonoCode cannot push the result. You will need a force push from the terminal.",
       "Amend",
     );
   };
 
-  const commit = async (push: boolean, createPr = false) => {
-    if (!canCommit) return;
+  /**
+   * `options` come from the header menu, which picks what to stage, whether to
+   * amend, and whether to sign off. Without them this is the Commit button.
+   */
+  const commit = async (
+    push: boolean,
+    createPr = false,
+    options?: CommitMenuOptions,
+  ) => {
+    const amending = options ? options.amend : amend;
+    if (options ? busy : !canCommit) return;
+    if (!message.trim() && !amending) {
+      messageRef.current?.focus();
+      return;
+    }
     if (
       (push || createPr) &&
       !(await confirmDefault(createPr ? "pr" : "push"))
     ) {
       return;
     }
-    if (!(await confirmAmend())) return;
+    if (!(await confirmAmend(amending))) return;
+    // Nothing staged: Commit takes everything, but amending never sweeps in
+    // files the user did not stage.
+    const stageAll =
+      options?.scope === "all" ||
+      (options?.scope === "smart" && !amending && staged.length === 0);
     setBusy(createPr ? "pr" : "commit");
     setMenuOpen(false);
     try {
-      await gitCommit(cwd, message, amend);
+      if (stageAll) await gitStageAll(cwd);
+      // Amending with an empty box keeps the message the commit already has.
+      const text = message.trim() || (await gitHeadMessage(cwd));
+      await gitCommit(cwd, text, amending, options?.signoff ?? false);
       if (push || createPr) {
         await gitPush(cwd);
         recordPrActivity();
@@ -620,6 +617,11 @@ function ChangedFiles({
     } finally {
       setBusy(null);
     }
+  };
+
+  actionsRef.current = {
+    commit: (options) => commit(false, false, options),
+    runAll,
   };
 
   const sync = async () => {

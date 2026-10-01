@@ -22,8 +22,10 @@ type MenuAction = {
   checked?: boolean;
 };
 
+type MenuSeparator = { kind: "sep" };
+
 export type ExplorerMenuItem =
-  { kind: "sep" } | (MenuAction & { submenu?: MenuAction[] });
+  MenuSeparator | (MenuAction & { submenu?: (MenuAction | MenuSeparator)[] });
 
 type Props = (
   | { x: number; y: number; anchor?: never }
@@ -138,17 +140,24 @@ export function ExplorerMenu({
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const direction = e.key === "ArrowDown" ? 1 : -1;
-        setSubmenuActive((current) =>
-          current < 0
-            ? direction === 1
-              ? 0
-              : submenuItems.length - 1
-            : (current + direction + submenuItems.length) % submenuItems.length,
-        );
+        setSubmenuActive((current) => {
+          // Step over separators; the list always has at least one item.
+          let next = current;
+          for (let step = 0; step < submenuItems.length; step += 1) {
+            next =
+              next < 0
+                ? direction === 1
+                  ? 0
+                  : submenuItems.length - 1
+                : (next + direction + submenuItems.length) % submenuItems.length;
+            if (submenuItems[next]?.kind === "item") return next;
+          }
+          return current;
+        });
       } else if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         const item = submenuItems[submenuActive];
-        if (item && !item.disabled) onPick(item.id);
+        if (item?.kind === "item" && !item.disabled) onPick(item.id);
       }
       return;
     }
@@ -182,7 +191,7 @@ export function ExplorerMenu({
   };
 
   const renderItem = (
-    item: MenuAction & { submenu?: MenuAction[] },
+    item: MenuAction & { submenu?: unknown[] },
     index: number,
     inSubmenu = false,
   ) => {
@@ -349,7 +358,17 @@ export function ExplorerMenu({
           }}
           className="overflow-y-auto overscroll-none p-1"
         >
-          {submenuItems.map((item, index) => renderItem(item, index, true))}
+          {submenuItems.map((item, index) =>
+            item.kind === "sep" ? (
+              <div
+                key={`sep-${index}`}
+                role="separator"
+                className="my-1 h-px bg-content/10"
+              />
+            ) : (
+              renderItem(item, index, true)
+            ),
+          )}
         </Popover>
       ) : null}
     </>

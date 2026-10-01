@@ -6,21 +6,35 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { ChevronDown, ChevronRight, GitBranch } from "../../../shared/ui/icons";
-import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
+import { ask, message } from "@tauri-apps/plugin-dialog";
+import {
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
+  Maximize2,
+  Search,
+} from "../../../shared/ui/icons";
 import { suppressTextSelection } from "../../../shared/lib/drag";
 import {
+  gitCheckoutCommit,
+  gitCherryPick,
+  gitCreateBranchAt,
+  gitCreateTag,
   gitHistory,
+  gitReset,
+  gitRevert,
+  notifyGitChanged,
   subscribeGitChanged,
   type GitHistoryCommit,
 } from "../../../platform/tauri/fs";
-import {
-  GRAPH_ROW_PX,
-  historyItemGraph,
-  layoutGitGraph,
-  type GraphRef,
-  type HistoryItemViewModel,
-} from "../model/gitGraph";
+import { ExplorerMenu } from "../../files/ui/ExplorerMenu";
+import { isRemoteProjectPath } from "../../projects/model/recents";
+import { commitMenuItems, filterHistory } from "../model/commitActions";
+import { layoutGitGraph } from "../model/gitGraph";
+import { GitGraphDialog } from "./GitGraphDialog";
+import { GitGraphList, type GraphListItem } from "./GitGraphList";
+import { GraphSearchInput } from "./GitGraphParts";
+import { RefNameDialog } from "./RefNameDialog";
 
 type Props = {
   cwd: string;
@@ -31,7 +45,20 @@ type Props = {
   onOpenCommit: (commit: GitHistoryCommit, pin?: boolean) => void;
 };
 
+const HISTORY_PAGE = 200;
+
 const historyByCwd = new Map<string, GitHistoryCommit[]>();
+
+/** Remembered across remounts, like the panel height. */
+let graphShowAll = false;
+
+function errorText(error: unknown): string {
+  if (typeof error === "string") return error;
+  return error instanceof Error ? error.message : String(error);
+}
+
+const HEADER_BUTTON =
+  "mr-1 grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content aria-pressed:bg-content/10 aria-pressed:text-content";
 
 export function GitHistoryGraph({
   cwd,
@@ -41,195 +68,307 @@ export function GitHistoryGraph({
   onToggleExpanded,
   onOpenCommit,
 }: Props) {
-  const lockOverscroll = useLockOverscroll<HTMLDivElement>();
-  const { commits } = useGitHistory(cwd, enabled && expanded);
+  // Commit actions and the wider scope are not implemented for connected machines.
+  const local = !isRemoteProjectPath(cwd);
+  const [showAll, setShowAll] = useState(graphShowAll);
+  const [limit, setLimit] = useState(HISTORY_PAGE);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const { commits } = useGitHistory(cwd, enabled && expanded, local && showAll, limit);
   const rows = useMemo(() => layoutGitGraph(commits), [commits]);
+  const rowBySha = useMemo(
+    () => new Map(commits.map((commit, index) => [commit.sha, rows[index]])),
+    [commits, rows],
+  );
+  const [fullOpen, setFullOpen] = useState(false);
+  // The full-graph dialog has its own search field bound to the same query.
+  const searching = (searchOpen || fullOpen) && query.trim() !== "";
+  const items = useMemo(() => {
+    const visible = searching ? filterHistory(commits, query) : commits;
+    return visible.flatMap((commit): GraphListItem[] => {
+      const row = rowBySha.get(commit.sha);
+      return row ? [{ commit, row }] : [];
+    });
+  }, [commits, query, searching, rowBySha]);
+  const hasMore = commits.length >= limit;
+
+  useEffect(() => setLimit(HISTORY_PAGE), [cwd, showAll]);
+
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    commit: GitHistoryCommit;
+  } | null>(null);
+  const [naming, setNaming] = useState<{
+    kind: "branch" | "tag";
+    commit: GitHistoryCommit;
+  } | null>(null);
+  const [namingBusy, setNamingBusy] = useState(false);
+  const [namingError, setNamingError] = useState<string | null>(null);
+
+  const run = async (action: () => Promise<unknown>) => {
+    try {
+      await action();
+    } catch (error) {
+      await message(errorText(error), { title: "MonoCode", kind: "error" });
+    } finally {
+      // Also after a failure: a conflict leaves the tree and index changed.
+      notifyGitChanged();
+    }
+  };
+
+  const onPick = async (id: string, commit: GitHistoryCommit) => {
+    const { sha } = commit;
+    switch (id) {
+      case "checkout":
+        return run(() => gitCheckoutCommit(cwd, sha));
+      case "branch":
+      case "tag":
+        setNamingError(null);
+        setNaming({ kind: id, commit });
+        return;
+      case "cherry-pick":
+        return run(() => gitCherryPick(cwd, sha));
+      case "revert":
+        return run(() => gitRevert(cwd, sha));
+      case "reset-soft":
+        return run(() => gitReset(cwd, sha, "soft"));
+      case "reset-mixed":
+        return run(() => gitReset(cwd, sha, "mixed"));
+      case "reset-hard": {
+        const confirmed = await ask(
+          `Reset the current branch to ${commit.shortSha} and discard all uncommitted changes? This cannot be undone.`,
+          { title: "MonoCode", kind: "warning", okLabel: "Reset" },
+        );
+        if (confirmed) await run(() => gitReset(cwd, sha, "hard"));
+        return;
+      }
+      case "copy-sha":
+        await navigator.clipboard.writeText(sha);
+        return;
+    }
+  };
+
+  const submitName = async (name: string) => {
+    if (!naming) return;
+    setNamingBusy(true);
+    setNamingError(null);
+    try {
+      if (naming.kind === "branch") {
+        await gitCreateBranchAt(cwd, name, naming.commit.sha);
+      } else {
+        await gitCreateTag(cwd, name, naming.commit.sha);
+      }
+      setNaming(null);
+      notifyGitChanged();
+    } catch (error) {
+      setNamingError(errorText(error));
+    } finally {
+      setNamingBusy(false);
+    }
+  };
+
+  const showAllButton =
+    local ? (
+      <button
+        type="button"
+        title={showAll ? "Showing all branches" : "Show all branches"}
+        aria-label="Show all branches"
+        aria-pressed={showAll}
+        onClick={() => {
+          graphShowAll = !showAll;
+          setShowAll(graphShowAll);
+        }}
+        className={HEADER_BUTTON}
+      >
+        <GitBranch className="size-3.5" strokeWidth={1.75} />
+      </button>
+    ) : null;
+
+  const closeFull = () => {
+    setFullOpen(false);
+    if (!searchOpen) setQuery("");
+  };
+
+  const list = (variant: "compact" | "wide") => {
+    const empty =
+      !cwd || cwd === "~" ? (
+        <p className="px-3 py-2 text-[12px] text-content/45">No project folder</p>
+      ) : commits.length === 0 ? (
+        <p className="px-3 py-2 text-[12px] text-content/45">No commits yet</p>
+      ) : items.length === 0 ? (
+        <p className="px-3 py-2 text-[12px] text-content/45">
+          No matching commits in the {commits.length} loaded
+        </p>
+      ) : undefined;
+    return (
+      <GitGraphList
+        variant={variant}
+        items={items}
+        plain={searching}
+        selectedSha={selectedSha}
+        hasMore={hasMore}
+        empty={empty}
+        suspendHover={menu !== null}
+        onLoadMore={() => setLimit((value) => value + HISTORY_PAGE)}
+        onOpen={(commit, pin) => {
+          if (variant === "wide") closeFull();
+          onOpenCommit(commit, pin);
+        }}
+        onMenu={local ? (x, y, commit) => setMenu({ x, y, commit }) : undefined}
+      />
+    );
+  };
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
-      <button
-        type="button"
-        onClick={onToggleExpanded}
-        aria-expanded={expanded}
-        aria-label={expanded ? "Collapse graph" : "Expand graph"}
-        className={`flex w-full shrink-0 items-center gap-1 px-3 text-left leading-none hover:bg-content/5 ${
-          expanded ? "h-7" : "h-full"
-        }`}
+      <div
+        className={`flex w-full shrink-0 items-center ${expanded ? "h-7" : "h-full"}`}
       >
-        <span className="text-[10px] font-semibold tracking-[0.04em] text-content/55 uppercase">
-          Graph
-        </span>
-        {expanded ? (
-          <ChevronDown
-            className="ml-auto size-3.5 shrink-0 text-content/50"
-            strokeWidth={1.75}
-          />
-        ) : (
-          <ChevronRight
-            className="ml-auto size-3.5 shrink-0 text-content/50"
-            strokeWidth={1.75}
-          />
-        )}
-      </button>
-      {expanded ? (
-        <div
-          ref={lockOverscroll}
-          className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-none"
+        <button
+          type="button"
+          onClick={onToggleExpanded}
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse graph" : "Expand graph"}
+          className="flex h-full min-w-0 flex-1 items-center gap-1 px-3 text-left leading-none hover:bg-content/5"
         >
-          {!cwd || cwd === "~" ? (
-            <p className="px-3 py-2 text-[12px] text-content/45">No project folder</p>
-          ) : commits.length === 0 ? (
-            <p className="px-3 py-2 text-[12px] text-content/45">No commits yet</p>
+          <span className="text-[10px] font-semibold tracking-[0.04em] text-content/55 uppercase">
+            Graph
+          </span>
+          {expanded ? (
+            <ChevronDown
+              className="size-3.5 shrink-0 text-content/50"
+              strokeWidth={1.75}
+            />
           ) : (
-            <ul className="min-w-0 max-w-full">
-              {commits.map((commit, index) => {
-                const row = rows[index];
-                if (!row) return null;
-                return (
-                  <HistoryRow
-                    key={commit.sha}
-                    commit={commit}
-                    row={row}
-                    active={selectedSha === commit.sha}
-                    onOpen={(pin) => onOpenCommit(commit, pin)}
-                  />
-                );
-              })}
-            </ul>
+            <ChevronRight
+              className="ml-auto size-3.5 shrink-0 text-content/50"
+              strokeWidth={1.75}
+            />
           )}
+        </button>
+        {expanded ? showAllButton : null}
+        {expanded ? (
+          <button
+            type="button"
+            title="Search commits"
+            aria-label="Search commits"
+            aria-pressed={searchOpen}
+            onClick={() => {
+              setSearchOpen((open) => !open);
+              setQuery("");
+            }}
+            className={HEADER_BUTTON}
+          >
+            <Search className="size-3.5" strokeWidth={1.75} />
+          </button>
+        ) : null}
+        {expanded && cwd && cwd !== "~" ? (
+          <button
+            type="button"
+            title="Open full graph"
+            aria-label="Open full graph"
+            onClick={() => setFullOpen(true)}
+            className={HEADER_BUTTON}
+          >
+            <Maximize2 className="size-3.5" strokeWidth={1.75} />
+          </button>
+        ) : null}
+      </div>
+      {expanded && searchOpen ? (
+        <div className="shrink-0 px-2 pb-1.5">
+          <GraphSearchInput
+            value={query}
+            autoFocus
+            onChange={setQuery}
+            onEscape={() => {
+              setSearchOpen(false);
+              setQuery("");
+            }}
+          />
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function HistoryRow({
-  commit,
-  row,
-  active,
-  onOpen,
-}: {
-  commit: GitHistoryCommit;
-  row: HistoryItemViewModel;
-  active: boolean;
-  onOpen: (pin?: boolean) => void;
-}) {
-  const graph = historyItemGraph(row);
-  const badge = row.refs.find((ref) => ref.color) ?? row.refs[0];
-  return (
-    <li className="min-w-0 overflow-visible" style={{ height: GRAPH_ROW_PX }}>
-      <button
-        type="button"
-        title={`${commit.shortSha} ${commit.subject}${commit.author ? ` — ${commit.author}` : ""}`}
-        onClick={() => onOpen()}
-        onDoubleClick={() => onOpen(true)}
-        aria-pressed={active}
-        className={`git-history-item flex h-[22px] min-w-0 w-full items-stretch overflow-visible pr-2 text-left ${
-          row.kind === "HEAD" ? "is-head" : ""
-        } ${
-          active
-            ? "is-selected bg-selection text-content"
-            : "text-content hover:bg-content/5"
-        }`}
-      >
-        <svg
-          aria-hidden
-          className="git-history-graph pointer-events-none block shrink-0 overflow-visible"
-          width={graph.width}
-          height={graph.height}
-          overflow="visible"
+      {expanded ? list("compact") : null}
+      {fullOpen ? (
+        <GitGraphDialog
+          title="Commit Graph"
+          onClose={closeFull}
+          toolbar={
+            <>
+              {showAllButton}
+              <div className="max-w-sm min-w-0 flex-1">
+                <GraphSearchInput value={query} onChange={setQuery} />
+              </div>
+            </>
+          }
         >
-          {graph.paths.map((path, pathIndex) => (
-            <path
-              key={pathIndex}
-              d={path.d}
-              fill="none"
-              stroke={path.color}
-              strokeWidth={path.strokeWidth}
-              strokeLinecap="round"
-            />
-          ))}
-          {graph.circles.map((circle, circleIndex) => (
-            <circle
-              key={circleIndex}
-              cx={circle.cx}
-              cy={circle.cy}
-              r={circle.r}
-              fill={circle.fill ?? "none"}
-              strokeWidth={circle.strokeWidth}
-            />
-          ))}
-        </svg>
-        <span className="ml-1 flex min-w-0 flex-1 items-center overflow-hidden">
-          <span
-            className={`min-w-0 truncate text-[12px] leading-[22px] ${
-              row.kind === "HEAD" ? "font-semibold" : ""
-            }`}
-          >
-            {commit.subject || commit.shortSha}
-          </span>
-          {commit.author ? (
-            <span className="ml-2 min-w-0 shrink truncate text-[12px] leading-[22px] text-content/45">
-              {commit.author}
-            </span>
-          ) : null}
-        </span>
-        {badge ? <RefPill refInfo={badge} /> : null}
-      </button>
-    </li>
-  );
-}
-
-function RefPill({ refInfo }: { refInfo: GraphRef }) {
-  const local = refInfo.kind === "local";
-  return (
-    <span
-      className={`ml-1 flex h-3.5 min-w-0 max-w-[6.5rem] shrink-0 self-center items-center gap-0.5 truncate rounded-full px-1.5 text-[10px] leading-none ${
-        refInfo.color ? "" : "bg-content/10 text-content/55"
-      }`}
-      style={
-        refInfo.color
-          ? {
-              backgroundColor: refInfo.color,
-              color: "var(--color-background-base)",
-            }
-          : undefined
-      }
-    >
-      {local ? (
-        <GitBranch className="size-2.5 shrink-0" strokeWidth={2} />
+          {list("wide")}
+        </GitGraphDialog>
       ) : null}
-      <span className="min-w-0 truncate">{refInfo.name}</span>
-    </span>
+      {menu ? (
+        <ExplorerMenu
+          x={menu.x}
+          y={menu.y}
+          ariaLabel="Commit actions"
+          items={commitMenuItems(menu.commit)}
+          onPick={(id) => {
+            const { commit } = menu;
+            setMenu(null);
+            void onPick(id, commit);
+          }}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {naming ? (
+        <RefNameDialog
+          title={naming.kind === "branch" ? "New branch" : "New tag"}
+          description={
+            naming.kind === "branch"
+              ? `Create and check out a branch at ${naming.commit.shortSha}.`
+              : `Create a tag at ${naming.commit.shortSha}.`
+          }
+          label={naming.kind === "branch" ? "Branch name" : "Tag name"}
+          placeholder={naming.kind === "branch" ? "feature/my-branch" : "v1.0.0"}
+          submitLabel="Create"
+          busy={namingBusy}
+          error={namingError}
+          onSubmit={(name) => void submitName(name)}
+          onCancel={() => setNaming(null)}
+        />
+      ) : null}
+    </div>
   );
 }
 
 function useGitHistory(
   cwd: string,
   enabled: boolean,
+  all: boolean,
+  limit: number,
 ): { commits: GitHistoryCommit[] } {
+  const cacheKey = all ? `${cwd}\nall` : cwd;
   const [commits, setCommits] = useState<GitHistoryCommit[]>(
-    () => historyByCwd.get(cwd) ?? [],
+    () => historyByCwd.get(cacheKey) ?? [],
   );
   const commitsRef = useRef(commits);
   commitsRef.current = commits;
 
   const load = useCallback(() => {
     if (!enabled || !cwd || cwd === "~") return;
-    void gitHistory(cwd)
+    void gitHistory(cwd, limit, all)
       .then((next) => {
         const prev = commitsRef.current;
         if (sameHistory(prev, next.commits)) return;
-        historyByCwd.set(cwd, next.commits);
+        historyByCwd.set(cacheKey, next.commits);
         commitsRef.current = next.commits;
         setCommits(next.commits);
       })
       .catch(() => {
-        historyByCwd.delete(cwd);
+        historyByCwd.delete(cacheKey);
         commitsRef.current = [];
         setCommits([]);
       });
-  }, [cwd, enabled]);
+  }, [all, cacheKey, cwd, enabled, limit]);
 
   useEffect(() => {
     if (!enabled || !cwd || cwd === "~") {
@@ -237,7 +376,7 @@ function useGitHistory(
       setCommits([]);
       return;
     }
-    const cached = historyByCwd.get(cwd) ?? [];
+    const cached = historyByCwd.get(cacheKey) ?? [];
     commitsRef.current = cached;
     setCommits(cached);
     load();
@@ -252,7 +391,7 @@ function useGitHistory(
       document.removeEventListener("visibilitychange", onResume);
       unsub();
     };
-  }, [cwd, enabled, load]);
+  }, [cacheKey, cwd, enabled, load]);
 
   return { commits };
 }

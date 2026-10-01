@@ -60,6 +60,7 @@ import {
   type FsEntry,
 } from "../../../platform/tauri/fs";
 import { displayPath, parentPath, rebasePath } from "../../../shared/lib/paths";
+import { requestGitFileInspect } from "../../source-control/ui/GitFileInspector";
 import { IS_MAC, IS_WIN, MOD, SHIFT } from "../../../platform/tauri/platform";
 import type { OpenFileFn } from "../../search/model/search";
 import type { GitStatusMap } from "../../source-control/hooks/useGitFileStatuses";
@@ -171,6 +172,7 @@ function explorerItems(
   target: MenuTarget,
   clip: Clip | null,
   canOpenTerminal: boolean,
+  canInspectGit: boolean,
 ): ExplorerMenuItem[] {
   const pasteParent = target.isDir ? target.path : parentPath(target.path);
   const pasteBlocked =
@@ -232,6 +234,13 @@ function explorerItems(
       danger: true,
     },
     { kind: "sep" },
+    ...(canInspectGit && !target.isDir
+      ? [
+          { kind: "item" as const, id: "git-history", label: "File History" },
+          { kind: "item" as const, id: "git-blame", label: "Blame" },
+          { kind: "sep" as const },
+        ]
+      : []),
     ...(canOpenTerminal
       ? [
           {
@@ -684,6 +693,14 @@ export const FileTree = memo(function FileTree({
       case "reveal":
         await run(() => revealPath(target.path));
         return;
+      case "git-history":
+      case "git-blame":
+        requestGitFileInspect({
+          kind: id === "git-history" ? "history" : "blame",
+          cwd,
+          relative: displayPath(target.path, cwd),
+        });
+        return;
       case "open-terminal":
         onOpenTerminal?.(target.isDir ? target.path : parentPath(target.path));
         return;
@@ -978,7 +995,12 @@ export const FileTree = memo(function FileTree({
         <ExplorerMenu
           x={menu.x}
           y={menu.y}
-          items={explorerItems(menu.target, clip, !!onOpenTerminal)}
+          items={explorerItems(
+            menu.target,
+            clip,
+            !!onOpenTerminal,
+            !cwd.startsWith(REMOTE_PATH_PREFIX),
+          )}
           onPick={(id) => {
             const target = menu.target;
             setMenu(null);
