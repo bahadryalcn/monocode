@@ -43,7 +43,7 @@ export function reloadActionHint(mod = MOD, shift = SHIFT) {
   return `${mod}${shift}R`;
 }
 
-function paletteActions(cwd: string): Action[] {
+function paletteActions(cwd: string, stopBackgroundWork: boolean): Action[] {
   const notes = loadNotesEnabled()
     ? [
         {
@@ -57,6 +57,14 @@ function paletteActions(cwd: string): Action[] {
     : [];
   return [
     { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
+    ...(stopBackgroundWork
+      ? [
+          {
+            id: "stop-background",
+            label: "Stop Background Work in This Session",
+          },
+        ]
+      : []),
     ...(isRemoteProjectPath(cwd)
       ? [{ id: "reconnect-remote", label: "Reconnect Remote Machine" }]
       : []),
@@ -69,6 +77,8 @@ type Props = {
   cwd: string;
   openPaths?: string[];
   initialQuery?: string;
+  /** The open session has subagents or commands that can be stopped one by one. */
+  stopBackgroundWork?: boolean;
   onOpenFile: OpenFileFn;
   onRunAction: (id: string) => void;
   onClose: () => void;
@@ -79,6 +89,7 @@ export function FilePicker({
   cwd,
   openPaths = [],
   initialQuery = "",
+  stopBackgroundWork = false,
   onOpenFile,
   onRunAction,
   onClose,
@@ -112,7 +123,7 @@ export function FilePicker({
   );
   const actionResults = useMemo((): RankedAction[] => {
     if (!paletteMode) return [];
-    const actions = paletteActions(cwd);
+    const actions = paletteActions(cwd, stopBackgroundWork);
     if (!actionQuery) {
       return actions.map((action) => ({
         ...action,
@@ -126,7 +137,7 @@ export function FilePicker({
         return hit ? [{ ...action, ...hit }] : [];
       })
       .sort((a, b) => b.score - a.score);
-  }, [actionQuery, paletteMode, cwd]);
+  }, [actionQuery, paletteMode, cwd, stopBackgroundWork]);
   const optionCount = paletteMode ? actionResults.length : results.length;
 
   useEffect(() => {

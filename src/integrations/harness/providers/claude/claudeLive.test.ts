@@ -43,6 +43,7 @@ const {
   restoreClaudeTaskLists,
   sendClaudeTurn,
   replayClaudeSession,
+  stopClaudeBackgroundWork,
   stopClaudeSession,
   __claudeTestReset,
 } = await import("./claude");
@@ -2071,6 +2072,207 @@ describe("claude background tasks", () => {
     expect(events.some((event) => event.type === "message.completed")).toBe(
       true,
     );
+  });
+});
+
+describe("claude stopping background work", () => {
+  const stopRequests = () =>
+    parse().flatMap((m) => {
+      const request = m.request as Record<string, unknown> | undefined;
+      return request?.subtype === "stop_task" ? [request.task_id] : [];
+    });
+  const interrupts = () =>
+    parse().filter(
+      (m) => (m.request as Record<string, unknown> | undefined)?.subtype === "interrupt",
+    );
+
+  /** A backgrounded shell (b7) and a backgrounded subagent (t9) at yield. */
+  function emitShellAndAgent() {
+    emitBackgroundBash("b7");
+    emit({
+      type: "system",
+      subtype: "task_started",
+      task_id: "t9",
+      tool_use_id: "toolu_agent9",
+      description: "Review the diff",
+      task_type: "local_agent",
+      is_backgrounded: true,
+    });
+  }
+
+  function endShell(status: string) {
+    emit({
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: [
+        { task_id: "t9", task_type: "local_agent", description: "Review the diff" },
+      ],
+    });
+    emit({
+      type: "system",
+      subtype: "task_updated",
+      task_id: "b7",
+      patch: { status },
+    });
+    emit({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "b7",
+      tool_use_id: "toolu_bash",
+      status,
+      summary: "Background command was stopped",
+    });
+  }
+
+  it("stops one command by its row without touching the turn or the other task", async () => {
+    const { events } = await startTurn("s1");
+    emitShellAndAgent();
+
+    await stopClaudeBackgroundWork("s1", "background:b7");
+    expect(stopRequests()).toEqual(["b7"]);
+    expect(interrupts()).toHaveLength(0);
+
+    endShell("killed");
+    const session = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+    const row = session.blocks.find((b) => b.tool?.callId === "background:b7");
+    expect(row?.tool).toMatchObject({
+      status: "stopped",
+      detail: "Stopped by you.",
+    });
+    expect(row?.streaming).toBe(false);
+    // The subagent is still what the turn waits on.
+    expect(session.backgroundTasks).toEqual(["Review the diff"]);
+    expect(session.backgroundAgents).toBe(1);
+  });
+
+  it("stops one subagent by its Agent call", async () => {
+    const { events } = await startTurn("s1");
+    emitShellAndAgent();
+
+    await stopClaudeBackgroundWork("s1", "toolu_agent9");
+    expect(stopRequests()).toEqual(["t9"]);
+
+    emit({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "t9",
+      tool_use_id: "toolu_agent9",
+      status: "stopped",
+      summary: "Agent stopped",
+    });
+    const session = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+    expect(
+      session.blocks.find((b) => b.tool?.callId === "toolu_agent9")?.tool,
+    ).toMatchObject({ status: "stopped", detail: "Stopped by you." });
+  });
+
+  it("stops every task at once, still without interrupting the turn", async () => {
+    await startTurn("s1");
+    emitShellAndAgent();
+
+    await stopClaudeBackgroundWork("s1");
+    expect(stopRequests().sort()).toEqual(["b7", "t9"]);
+    expect(interrupts()).toHaveLength(0);
+  });
+
+  it("keeps a foreground subagent's stop through the error its call returns", async () => {
+    const { events } = await startTurn("s1");
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_inline",
+            name: "Agent",
+            input: { description: "Inline helper", subagent_type: "explore" },
+          },
+        ],
+      },
+    });
+    emit({
+      type: "system",
+      subtype: "task_started",
+      task_id: "t5",
+      tool_use_id: "toolu_inline",
+      description: "Inline helper",
+      task_type: "local_agent",
+      is_backgrounded: false,
+    });
+
+    await stopClaudeBackgroundWork("s1", "toolu_inline");
+    expect(stopRequests()).toEqual(["t5"]);
+    emit({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "t5",
+      tool_use_id: "toolu_inline",
+      status: "killed",
+      summary: "",
+    });
+    emit({
+      type: "user",
+      session_id: "sess_1",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_inline",
+            is_error: true,
+            content: "Agent was stopped by the user",
+          },
+        ],
+      },
+    });
+    const session = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+    const block = session.blocks.find((b) => b.tool?.callId === "toolu_inline");
+    expect(block?.tool?.status).toBe("stopped");
+    expect(block?.tool?.detail).toContain("stopped by the user");
+  });
+
+  it("does not claim a task that finished before the stop took effect", async () => {
+    const { events } = await startTurn("s1");
+    emitBackgroundBash("b7");
+
+    await stopClaudeBackgroundWork("s1", "background:b7");
+    emitBashFinished("b7");
+    const session = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+    expect(
+      session.blocks.find((b) => b.tool?.callId === "background:b7")?.tool?.status,
+    ).toBe("completed");
+  });
+
+  it("sends nothing for a call whose task is already gone", async () => {
+    await startTurn("s1");
+    emitBackgroundBash("b7");
+    const before = parse().length;
+
+    await stopClaudeBackgroundWork("s1", "toolu_gone");
+    await stopClaudeBackgroundWork("nobody");
+    expect(parse()).toHaveLength(before);
+  });
+
+  it("takes back its claim when the request never reached Claude", async () => {
+    const { events } = await startTurn("s1");
+    emitBackgroundBash("b7");
+
+    writeChild.mockRejectedValueOnce(new Error("pipe closed"));
+    await expect(
+      stopClaudeBackgroundWork("s1", "background:b7"),
+    ).rejects.toThrow("pipe closed");
+    // Claude ends it on its own: not asked for, so not "stopped by you".
+    emit({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "b7",
+      status: "killed",
+      summary: "",
+    });
+    const session = events.reduce(applyHarnessEvent, newSession("claude", "/repo"));
+    expect(
+      session.blocks.find((b) => b.tool?.callId === "background:b7")?.tool?.status,
+    ).toBe("failed");
   });
 });
 

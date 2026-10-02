@@ -259,6 +259,8 @@ import {
   appendSteerUser,
   bindHarnessSession,
   cancelHarnessTurn,
+  canStopHarnessBackgroundWork,
+  stopHarnessBackgroundWork,
   canCompactHarnessContext,
   canRewindHarnessLastTurn,
   canSteerHarness,
@@ -604,6 +606,7 @@ import {
 import { buildRemotePlan, remoteSessionActions } from "../features/connections/model/remoteSessionActions";
 import { remoteSessionState } from "../features/connections/model/remoteSessionState";
 import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
+import { sessionHasBackgroundWork } from "../features/sessions/model/backgroundStop";
 import { reconnectRemoteMachine } from "../features/connections/model/remoteReconnect";
 import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
@@ -11376,9 +11379,20 @@ function Workspace({
               cwd={filesCwd}
               openPaths={openFilePaths}
               initialQuery={filePickerInitialQuery}
+              stopBackgroundWork={
+                !!active &&
+                canStopHarnessBackgroundWork(active.harness) &&
+                sessionHasBackgroundWork(active)
+              }
               onOpenFile={onOpenFile}
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
+                else if (id === "stop-background" && active) {
+                  void stopHarnessBackgroundWork(
+                    active.harness,
+                    active.id,
+                  ).catch(console.error);
+                }
                 else if (id === "reconnect-remote") {
                   const remote = remoteProjectFor(filesCwd);
                   if (remote) void reconnectRemoteMachine(remote.environmentId, { signIn: true });

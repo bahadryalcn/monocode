@@ -40,6 +40,57 @@ describe("dock agent timing", () => {
   });
 });
 
+describe("stopped by the user", () => {
+  it("is its own status, counted apart from done and failed", () => {
+    const dock = derive({
+      busy: true,
+      blocks: [
+        user,
+        agent("a", "completed"),
+        agent("b", "failed"),
+        agent("c", "stopped"),
+        agent("d", "in_progress"),
+      ],
+    });
+    expect(dock.agents.map((entry) => entry.status)).toEqual([
+      "done",
+      "failed",
+      "stopped",
+      "running",
+    ]);
+    expect(dock).toMatchObject({
+      running: 1,
+      finished: 1,
+      failed: 1,
+      stopped: 1,
+    });
+    expect(dockCountLabel(dock)).toBe(
+      "1 running · 1 done · 1 failed · 1 stopped",
+    );
+  });
+
+  it("words a stopped command and a stopped subagent the same way", () => {
+    const dock = derive({
+      busy: true,
+      blocks: [user, agent("a", "stopped"), background("bg", "stopped")],
+    });
+    expect(dock.agents[0].detail).toBe("stopped by you");
+    expect(dock.agents[1]).toMatchObject({
+      kind: "command",
+      status: "stopped",
+      detail: "stopped by you",
+    });
+  });
+
+  it("carries the call id a stop request is addressed with", () => {
+    const dock = derive({
+      busy: true,
+      blocks: [user, agent("a1", "in_progress")],
+    });
+    expect(dock.agents[0].callId).toBe("a1");
+  });
+});
+
 function background(id: string, status: string): Block {
   return {
     id,

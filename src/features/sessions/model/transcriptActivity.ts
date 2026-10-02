@@ -20,6 +20,9 @@ import { monoCodeWorkSummary } from "./monocodeToolCall";
 
 export type ToolCallState = "pending" | "accepted" | "rejected";
 
+/** How a run or command the user stopped reads, lower case for a status line. */
+export const STOPPED_BY_YOU = "stopped by you";
+
 export type TurnItem =
   | { type: "block"; block: Block }
   | { type: "activity"; blocks: Block[] }
@@ -41,6 +44,18 @@ export function isFailedStatus(status?: string): boolean {
   );
 }
 
+/**
+ * A call the user ended from the activity dock or the agent panel. Not a
+ * failure, and not a completion: the work was cut short on purpose.
+ */
+export function isStoppedStatus(status?: string): boolean {
+  return status?.toLowerCase() === "stopped";
+}
+
+export function isStoppedBlock(block: Block): boolean {
+  return isStoppedStatus(block.tool?.status);
+}
+
 export function toolCallState(block: Block): ToolCallState {
   const status = block.tool?.status?.toLowerCase() ?? "";
   const decided = block.approval?.decided;
@@ -48,7 +63,10 @@ export function toolCallState(block: Block): ToolCallState {
   if (decided === "deny") return "rejected";
   if (isFailedStatus(status)) return "rejected";
   if (needsApproval(block)) return "pending";
-  if (status === "completed" || status === "success") return "accepted";
+  // Settled, and not red: what it did before the stop stays readable.
+  if (status === "completed" || status === "success" || status === "stopped") {
+    return "accepted";
+  }
   if (
     block.streaming ||
     status === "in_progress" ||
@@ -577,6 +595,11 @@ export function subagentReport(block: Block): string | undefined {
 export function subagentStatusLine(block: Block, steps: AgentStep[]): string {
   if (toolCallState(block) === "rejected") return "failed";
   const tools = steps.filter((step) => step.kind === "tool").length;
+  if (isStoppedBlock(block)) {
+    return tools === 0
+      ? STOPPED_BY_YOU
+      : `${tools === 1 ? "1 step" : `${tools} steps`}, ${STOPPED_BY_YOU}`;
+  }
   if (tools === 0) return "";
   const count = tools === 1 ? "1 step" : `${tools} steps`;
   // A step that failed inside a run that went on to finish still has to say so

@@ -22,6 +22,8 @@ import { SessionReview } from "./SessionReview";
 import { PromptOutline } from "./PromptOutline";
 import {
   canCompactHarnessContext,
+  canStopHarnessBackgroundWork,
+  stopHarnessBackgroundWork,
   type ApprovalDecision,
   type UserQuestionReply,
 } from "../../../integrations/harness";
@@ -503,6 +505,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const subagentSheet = useSubagentSheet(session.blocks, visible);
   const closeSubagentSheet = subagentSheet.close;
+  // Claude can end one task on its own; the others only end the whole turn.
+  const perItemStop = canStopHarnessBackgroundWork(session.harness);
+  const stopBackground = (callId?: string) =>
+    stopHarnessBackgroundWork(session.harness, session.id, callId);
   // Only one sheet over the pane at a time: a side question takes over.
   useEffect(() => {
     if (btw.open) closeSubagentSheet();
@@ -767,6 +773,15 @@ const LocalSessionPane = memo(function LocalSessionPane({
         visible={visible}
         atEnd={!showJumpToBottom}
         onOpenAgent={openDockAgent}
+        perItemStop={perItemStop}
+        onStopAgent={(agent) =>
+          agent.callId
+            ? stopBackground(agent.callId)
+            : Promise.reject(new Error("No call to stop"))
+        }
+        onStopAll={() =>
+          perItemStop ? stopBackground() : Promise.resolve(onStop(session.id))
+        }
       />
       {canAutoContinue(session) && !isAutoContinueDue(session.id) ? (
         <InterruptedNotice
@@ -1077,6 +1092,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
             visible={visible}
             cwd={workCwd}
             onClose={closeSubagentSheet}
+            onStop={
+              perItemStop && subagentSheet.block.tool?.callId
+                ? () => stopBackground(subagentSheet.block?.tool?.callId)
+                : undefined
+            }
             onShowInTranscript={(blockId) => {
               closeSubagentSheet();
               showAgentInTranscript(blockId);

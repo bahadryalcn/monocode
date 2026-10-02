@@ -7,11 +7,18 @@ import {
   useState,
 } from "react";
 import { GlassBackdrop } from "../../../app/shell/GlassBackdrop";
-import { Check, Copy, CornerDownRight, X } from "../../../shared/ui/icons";
+import {
+  Check,
+  Copy,
+  CornerDownRight,
+  Square,
+  X,
+} from "../../../shared/ui/icons";
 import { copyText } from "../../../platform/tauri/clipboard";
 import { agentRunMarkdown, isReportStep } from "../model/agentRunMarkdown";
 import type { AgentStep, Block } from "../model/session";
 import {
+  isStoppedBlock,
   isSubagentBlock,
   subagentModelName,
   subagentName,
@@ -23,6 +30,7 @@ import { AgentClock } from "./AgentClock";
 import { ActivityRow, agentStepBlock } from "./AgentTranscript";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { VIEW_SUBAGENT_EVENT } from "./subagentFocus";
+import { useStopRequests } from "./useStopRequests";
 
 /**
  * Which delegated run's panel is open in a session pane. The pane that owns the
@@ -98,6 +106,7 @@ function blockForStep(step: AgentStep): Block {
 }
 
 function runLabel(block: Block, busy: boolean): string {
+  if (isStoppedBlock(block)) return "Stopped by you";
   const state = toolCallState(block);
   if (state === "rejected") return "Failed";
   if (state === "pending") return busy ? "Running" : "Stopped";
@@ -120,6 +129,7 @@ export function SubagentSheet({
   visible,
   cwd,
   onClose,
+  onStop,
   onShowInTranscript,
   onOpenFile,
   onOpenDiff,
@@ -129,6 +139,8 @@ export function SubagentSheet({
   visible: boolean;
   cwd?: string;
   onClose: () => void;
+  /** Present when the harness can stop this one run without the whole turn. */
+  onStop?: () => Promise<void>;
   onShowInTranscript: (blockId: string) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
@@ -140,7 +152,12 @@ export function SubagentSheet({
   const state = toolCallState(block);
   const running = busy && state === "pending";
   const steps = run?.steps ?? [];
-  const summary = subagentStatusLine(block, steps);
+  const summary = isStoppedBlock(block)
+    ? ""
+    : subagentStatusLine(block, steps);
+  const stops = useStopRequests();
+  const stopKey = block.tool?.callId ?? block.id;
+  const stopping = stops.stopping.has(stopKey);
 
   // Esc closes from anywhere in this pane, as the side-question sheet does.
   useEffect(() => {
@@ -195,6 +212,26 @@ export function SubagentSheet({
                 block={block}
                 status={runLabel(block, busy)}
               />
+              {onStop && running ? (
+                <button
+                  type="button"
+                  disabled={stopping}
+                  title={
+                    stops.failed.has(stopKey)
+                      ? "Could not stop it. Try again."
+                      : "Stop this subagent"
+                  }
+                  onClick={() => stops.request(stopKey, onStop)}
+                  className={`flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:pointer-events-none ${
+                    stops.failed.has(stopKey)
+                      ? "text-red-400"
+                      : "text-content/55"
+                  }`}
+                >
+                  <Square className="size-3.5" strokeWidth={1.75} />
+                  {stopping ? "Stopping…" : "Stop"}
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => onShowInTranscript(block.id)}

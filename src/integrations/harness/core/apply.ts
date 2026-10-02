@@ -105,7 +105,10 @@ export function applyHarnessEvent(
         status: event.status,
         detail: event.detail,
         preview: event.preview,
-        streaming: event.status !== "completed" && event.status !== "failed",
+        streaming:
+          event.status !== "completed" &&
+          event.status !== "failed" &&
+          event.status !== "stopped",
         agentModel: event.agentModel,
         agentPrompt: event.agentPrompt,
       });
@@ -578,6 +581,7 @@ function settlePendingApprovals(session: Session): Session {
       status === "success" ||
       status === "failed" ||
       status === "error" ||
+      status === "stopped" ||
       status === "cancelled" ||
       status === "canceled";
     return [
