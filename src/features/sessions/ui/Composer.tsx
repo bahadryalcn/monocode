@@ -40,6 +40,8 @@ import {
 } from "../model/attachments";
 import {
   attachmentTokens,
+  attachmentsDroppedByEdit,
+  deleteTokenAtCaret,
   insertAtSelection,
   removeAttachmentFromText,
   tokensForIncoming,
@@ -634,6 +636,7 @@ export function Composer({
   const attachmentLifecycleRef = useRef(0);
   const consumedQuoteId = useRef<number | null>(null);
   const draftRevisionRef = useRef(0);
+  const userEditBeforeRef = useRef<string | null>(null);
   const draftResetTokenRef = useRef(draftResetToken);
   /** Bumped when the draft is cleared, so a late paste cannot land on the next one. */
   const pasteGenerationRef = useRef(0);
@@ -1006,7 +1009,12 @@ export function Composer({
           previous.findIndex((file) => file.id === id),
         );
         if (text !== el.value) {
-          const caret = Math.min(el.selectionStart ?? text.length, text.length);
+          // Renumbering ahead of the caret shifts it by the same amount.
+          const caret = removeAttachmentFromText(
+            el.value.slice(0, el.selectionStart ?? el.value.length),
+            previous,
+            previous.findIndex((file) => file.id === id),
+          ).length;
           applyTextareaEdit(el, text, caret);
         }
       }
@@ -1015,6 +1023,36 @@ export function Composer({
     },
     [syncHasValue],
   );
+  // The text as it was just before a user edit. Only a native `beforeinput`
+  // sets it, so programmatic text changes never count as the user deleting a
+  // token. Backspace/Delete against a token takes the whole token.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onBeforeInput = (event: InputEvent) => {
+      userEditBeforeRef.current = el.value;
+      const back = event.inputType === "deleteContentBackward";
+      if (
+        event.isComposing ||
+        (!back && event.inputType !== "deleteContentForward") ||
+        el.selectionStart !== el.selectionEnd
+      ) {
+        return;
+      }
+      const edit = deleteTokenAtCaret(
+        el.value,
+        el.selectionStart,
+        back ? "back" : "forward",
+        attachmentsRef.current,
+      );
+      if (!edit) return;
+      event.preventDefault();
+      applyTextareaEdit(el, edit.text, edit.caret);
+    };
+    el.addEventListener("beforeinput", onBeforeInput);
+    return () => el.removeEventListener("beforeinput", onBeforeInput);
+  }, []);
+
   useEffect(() => {
     const lifecycle = ++attachmentLifecycleRef.current;
     return () => {
@@ -2579,6 +2617,20 @@ export function Composer({
               onSelect={(e) => syncTokensFromTextarea(e.currentTarget)}
               onInput={(e) => {
                 const el = e.currentTarget;
+                // A user edit that took a token out of the text takes its
+                // attachment with it; the rest renumber like a chip removal.
+                const before = userEditBeforeRef.current;
+                userEditBeforeRef.current = null;
+                if (before !== null) {
+                  const files = attachmentsRef.current;
+                  for (const index of attachmentsDroppedByEdit(
+                    before,
+                    el.value,
+                    files,
+                  )) {
+                    removeAttachment(files[index].id);
+                  }
+                }
                 if (enterBtwFromPrefix(el)) return;
                 resizeComposer(el);
                 draftRevisionRef.current += 1;
@@ -2598,7 +2650,7 @@ export function Composer({
                 ) {
                   setSessionFolderSelected(false);
                 }
-                syncHasValue(el.value, attachments);
+                syncHasValue(el.value, attachmentsRef.current);
                 syncTokensFromTextarea(el);
               }}
             />

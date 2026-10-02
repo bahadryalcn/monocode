@@ -163,6 +163,46 @@ export function removeAttachmentFromText(
 }
 
 /**
+ * Indices of the attachments whose token an edit took out of the text: a real
+ * reference in `before` whose token text no longer appears anywhere in `after`.
+ * Typing inside a token breaks it, so that counts as removing it; typing next
+ * to one does not. Only meant for text the user just edited, never for a draft
+ * that was restored or replaced by the app.
+ */
+export function attachmentsDroppedByEdit(
+  before: string,
+  after: string,
+  files: Pick<Attachment, "kind">[],
+): number[] {
+  if (before === after) return [];
+  const dropped = new Set<number>();
+  for (const match of findTokens(before, files)) {
+    if (!after.includes(match.token)) dropped.add(match.index);
+  }
+  return [...dropped];
+}
+
+/**
+ * Backspace (`"back"`) right after a token or Delete (`"forward"`) right before
+ * one takes the whole token, and one space when that would leave two in a row.
+ * Null when the caret is not touching a token that way.
+ */
+export function deleteTokenAtCaret(
+  text: string,
+  caret: number,
+  direction: "back" | "forward",
+  files: Pick<Attachment, "kind">[],
+): { text: string; caret: number } | null {
+  const hit = findTokens(text, files).find((match) =>
+    direction === "back" ? match.end === caret : match.start === caret,
+  );
+  if (!hit) return null;
+  const doubled = text[hit.start - 1] === " " && text[hit.end] === " ";
+  const end = hit.end + (doubled ? 1 : 0);
+  return { text: text.slice(0, hit.start) + text.slice(end), caret: hit.start };
+}
+
+/**
  * Rebuild `text` with each token replaced by `replace(match)`. An empty
  * replacement removes the token along with the space it leaves doubled.
  */
