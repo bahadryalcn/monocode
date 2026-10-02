@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { runSyncCycle, subscribeSyncMerged } from "./syncClient";
+import {
+  getSyncStatus,
+  runSyncCycle,
+  startSyncLoop,
+  subscribeSyncMerged,
+  subscribeSyncStatus,
+  syncNow,
+} from "./syncClient";
 import { loadPeerState, peerRev, queueLocalChange } from "./syncPeerState";
 import { loadProjectGroups, saveProjectGroups } from "../../projects/model/projectGroups";
 
@@ -149,5 +156,42 @@ describe("runSyncCycle", () => {
   it("throws when the host returns a non-object result", async () => {
     const request = vi.fn(async () => "garbage");
     await expect(runSyncCycle(MACHINE, request)).rejects.toThrow();
+  });
+});
+
+describe("sync status", () => {
+  beforeEach(mockLocalStorage);
+
+  it("goes syncing -> ok and notifies subscribers", async () => {
+    const seen: string[] = [];
+    const off = subscribeSyncStatus(() => seen.push(getSyncStatus("st-ok").state));
+    await runSyncCycle("st-ok", async () => ({ rev: 1, records: [] }));
+    off();
+    expect(seen).toEqual(["syncing", "ok"]);
+    const status = getSyncStatus("st-ok");
+    expect(status.lastSyncAt).toBeGreaterThan(0);
+    expect(status.pendingOps).toBeGreaterThanOrEqual(0);
+  });
+
+  it("records the real error text and warns", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await expect(
+      runSyncCycle("st-err", async () => {
+        throw new Error("Machine is unreachable");
+      }),
+    ).rejects.toThrow();
+    expect(getSyncStatus("st-err")).toMatchObject({ state: "error", lastError: "Machine is unreachable" });
+    expect(warn).toHaveBeenCalledWith("[sync]", "st-err", expect.any(Error));
+    warn.mockRestore();
+  });
+
+  it("syncNow is a no-op without a loop and runs a cycle through a running one", async () => {
+    await syncNow("st-now");
+    expect(getSyncStatus("st-now").state).toBe("idle");
+    const request = vi.fn(async () => ({ rev: 1, records: [] }));
+    const loop = startSyncLoop(() => ["st-now"], () => request);
+    await syncNow("st-now");
+    expect(getSyncStatus("st-now").state).toBe("ok");
+    loop.stop();
   });
 });

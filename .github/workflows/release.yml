@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   release:
+    # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
+    if: github.repository == 'hardbeat920/monocode'
     needs: [linux, linux-rpm, windows, host]
     runs-on: macos-latest
     permissions:
@@ -393,6 +395,8 @@ jobs:
             --endpoint-url "$ENDPOINT"
 
   host:
+    # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
+    if: github.repository == 'hardbeat920/monocode'
     name: Standalone host packages
     strategy:
       fail-fast: false
@@ -422,6 +426,8 @@ jobs:
           if-no-files-found: error
 
   linux:
+    # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
+    if: github.repository == 'hardbeat920/monocode'
     name: Linux packages
     runs-on: ubuntu-22.04
     steps:
@@ -463,6 +469,8 @@ jobs:
           if-no-files-found: error
 
   linux-rpm:
+    # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
+    if: github.repository == 'hardbeat920/monocode'
     name: Linux rpm package
     runs-on: ubuntu-latest
     # Build on EL 10 so the published rpm's glibc requirement matches the
@@ -526,6 +534,8 @@ jobs:
           if-no-files-found: error
 
   windows:
+    # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
+    if: github.repository == 'hardbeat920/monocode'
     name: Windows packages
     runs-on: windows-latest
     steps:

@@ -21,6 +21,9 @@ import {
   parseMachineDraft,
 } from "../model/machineEdit";
 import { isLocalSyncMachine } from "../model/localSync";
+import { syncNow } from "../../sync/model/syncClient";
+import { describeSyncStatus } from "../../sync/model/syncStatusText";
+import { useSyncStatus } from "../../sync/model/useSyncStatus";
 import { notifyRemoteRecovered } from "../model/remoteHealth";
 import {
   REMOTE_PROVIDERS,
@@ -33,6 +36,28 @@ const input =
   "w-full rounded-lg border border-content/15 bg-content/3 px-3 py-2 text-[13px] outline-none focus:border-content/35";
 const button =
   "rounded-lg bg-selection px-3 py-2 text-[13px] font-medium hover:bg-selection-hover disabled:opacity-40";
+
+function SyncLine({ machineId }: { machineId: string }) {
+  const sync = useSyncStatus(machineId);
+  const failed = sync.state === "error";
+  return (
+    <div className="mt-1 flex items-center gap-2 text-[12px]">
+      <span
+        className={`min-w-0 truncate ${failed ? "text-red-400" : "text-content/50"}`}
+        title={sync.lastError}
+      >
+        {describeSyncStatus(sync, Date.now())}
+      </span>
+      <button
+        className="shrink-0 rounded px-1.5 py-0.5 text-content/60 hover:bg-selection hover:text-content disabled:opacity-40"
+        disabled={sync.state === "syncing"}
+        onClick={() => void syncNow(machineId)}
+      >
+        Sync now
+      </button>
+    </div>
+  );
+}
 
 export function ConnectionsSettings() {
   const { machines, loaded } = useRemoteMachines();
@@ -383,6 +408,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                   <div className="mt-1 text-[12px] text-content/50">
                     {status[machine.id] ?? "Checking connection…"}
                   </div>
+                  <SyncLine machineId={machine.id} />
                   {machine.ssh && needsUpdate[machine.id] ? (
                     <div className="mt-1 text-[11px] text-content/45">
                       Updating restarts the host and interrupts active agent

@@ -30,7 +30,7 @@ function candidate(overrides: Partial<ImportCandidate> = {}): ImportCandidate {
     provider: "claude",
     path: "C:/store/one.jsonl",
     providerSessionId: "conv-1",
-    cwd: "G:\\Projects\\Firisbe\\alpha",
+    cwd: "G:\\Projects\\Acme\\alpha",
     cwdExists: true,
     resumable: true,
     firstPrompt: "Fix the login bug",
@@ -123,7 +123,7 @@ describe("runSessionImport", () => {
     const { session, times } = h.persisted[0];
     expect(session.id).toBe("imp-claude-conv-1");
     expect(session.harness).toBe("claude");
-    expect(session.cwd).toBe("G:/Projects/Firisbe/alpha");
+    expect(session.cwd).toBe("G:/Projects/Acme/alpha");
     expect(session.providerSessionId).toBe("conv-1");
     expect(session.title).toBe("claude · Fix the login bug");
     expect(times).toEqual({
@@ -279,41 +279,41 @@ describe("runSessionImport", () => {
     rememberProject("G:/Projects/mine");
     const h = harness();
     const summary = await run(h, [
-      candidate({ providerSessionId: "1", cwd: "G:\\Projects\\Firisbe\\alpha" }),
-      candidate({ providerSessionId: "2", cwd: "g:\\Projects\\Firisbe\\beta" }),
-      candidate({ providerSessionId: "3", cwd: "G:\\Projects\\Firisbe\\beta" }),
+      candidate({ providerSessionId: "1", cwd: "G:\\Projects\\Acme\\alpha" }),
+      candidate({ providerSessionId: "2", cwd: "g:\\Projects\\Acme\\beta" }),
+      candidate({ providerSessionId: "3", cwd: "G:\\Projects\\Acme\\beta" }),
       candidate({ providerSessionId: "4", cwd: "G:\\Projects\\lonely\\gamma" }),
     ]);
 
     expect(summary.projects).toBe(3);
-    expect(summary.groups).toEqual(["Firisbe"]);
+    expect(summary.groups).toEqual(["Acme"]);
     // Same folder in two spellings is one project, and imported ones sit
     // after the project the user already had.
     const paths = loadRecents().map((p) => p.path);
     expect(paths[0]).toBe("G:/Projects/mine");
     expect(paths.slice(1).sort()).toEqual([
-      "G:/Projects/Firisbe/alpha",
-      "G:/Projects/Firisbe/beta",
+      "G:/Projects/Acme/alpha",
+      "G:/Projects/Acme/beta",
       "G:/Projects/lonely/gamma",
     ]);
     const assignments = loadProjectGroupAssignments();
     expect(Object.keys(assignments).sort()).toEqual([
-      "g:/projects/firisbe/alpha",
-      "g:/projects/firisbe/beta",
+      "g:/projects/acme/alpha",
+      "g:/projects/acme/beta",
     ]);
-    expect(loadProjectGroups().map((g) => g.name)).toEqual(["Firisbe"]);
+    expect(loadProjectGroups().map((g) => g.name)).toEqual(["Acme"]);
   });
 
   it("never moves a project the user already placed in a group", async () => {
     saveProjectGroups([{ id: "mine", name: "Mine", collapsed: false }]);
-    saveProjectGroupAssignments({ "g:/projects/firisbe/alpha": "mine" });
+    saveProjectGroupAssignments({ "g:/projects/acme/alpha": "mine" });
     const h = harness();
     await run(h, [
-      candidate({ providerSessionId: "1", cwd: "G:\\Projects\\Firisbe\\alpha" }),
-      candidate({ providerSessionId: "2", cwd: "G:\\Projects\\Firisbe\\beta" }),
+      candidate({ providerSessionId: "1", cwd: "G:\\Projects\\Acme\\alpha" }),
+      candidate({ providerSessionId: "2", cwd: "G:\\Projects\\Acme\\beta" }),
     ]);
     expect(loadProjectGroupAssignments()).toEqual({
-      "g:/projects/firisbe/alpha": "mine",
+      "g:/projects/acme/alpha": "mine",
     });
   });
 
@@ -322,8 +322,8 @@ describe("runSessionImport", () => {
     await run(
       h,
       [
-        candidate({ providerSessionId: "1", cwd: "G:\\Projects\\Firisbe\\alpha" }),
-        candidate({ providerSessionId: "2", cwd: "G:\\Projects\\Firisbe\\beta" }),
+        candidate({ providerSessionId: "1", cwd: "G:\\Projects\\Acme\\alpha" }),
+        candidate({ providerSessionId: "2", cwd: "G:\\Projects\\Acme\\beta" }),
       ],
       { groupProjects: false },
     );
@@ -341,13 +341,13 @@ describe("runSessionImport", () => {
 describe("previewProjectGroups", () => {
   it("shows the groups the import would create, missing folders apart", () => {
     const groups = previewProjectGroups([
-      candidate({ cwd: "G:\\Projects\\Firisbe\\alpha" }),
-      candidate({ cwd: "G:\\Projects\\Firisbe\\beta" }),
+      candidate({ cwd: "G:\\Projects\\Acme\\alpha" }),
+      candidate({ cwd: "G:\\Projects\\Acme\\beta" }),
       candidate({ cwd: "G:\\a\\gone", cwdExists: false }),
       candidate({ cwd: "G:\\b\\gone", cwdExists: false }),
     ]);
     expect(groups).toEqual([
-      { name: "Firisbe", count: 2 },
+      { name: "Acme", count: 2 },
       { name: "Missing folders", count: 2 },
     ]);
   });

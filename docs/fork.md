@@ -71,10 +71,10 @@ pwsh scripts/copy-official-data.ps1 -IncludeWebView    # copy for the installed 
 pwsh scripts/copy-official-data.ps1 -Target Dev        # copy for `tauri dev`
 ```
 
-Source on this machine: `C:\Users\kraba\AppData\Roaming\com.monocode.desktop`
+Source: `%APPDATA%\com.monocode.desktop`
 (`monocode.db` + WAL files, `checkpoints`, `provider-accounts`, `project-logos`,
 `backgrounds`, `jira-config.json`) and, with `-IncludeWebView`,
-`C:\Users\kraba\AppData\Local\com.monocode.desktop\EBWebView`. The source is
+`%LOCALAPPDATA%\com.monocode.desktop\EBWebView`. The source is
 only read. A non-empty target stops the script; `-Force` first moves it aside
 to `<dir>.bak-<timestamp>` (never deletes). After copying, the fork and the
 official app have independent copies, so do not run the same conversation in both.

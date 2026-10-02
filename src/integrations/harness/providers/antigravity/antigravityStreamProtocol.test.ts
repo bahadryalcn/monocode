@@ -15,7 +15,7 @@ import {
 // Lines below are captured from agy 1.2.14 on Windows (ids shortened, the
 // `tools` list trimmed).
 const CONV = "74441d50-2a24-4fab-a8d6-b0a4c8b75739";
-const DIR = "C:\\\\Users\\\\kraba\\\\AppData\\\\Local\\\\Temp\\\\agyprobe";
+const DIR = "C:\\\\Users\\\\dev\\\\AppData\\\\Local\\\\Temp\\\\agyprobe";
 const INIT = `{"event":"init","conversation_id":"${CONV}","init":{"model":"gemini-3.8-flash","cwd":"${DIR}","tools":["ask_permission","run_command","view_file"],"permission_mode":"request-review"}}`;
 const step = (index: number, state: string, type: string, extra = "") =>
   `{"event":"step_update","step_update":{"conversation_id":"${CONV}","step_index":${index},"state":"${state}","step_type":"${type}"${extra}}}`;

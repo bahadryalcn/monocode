@@ -7,7 +7,7 @@ import {
 import type { RemoteMachine } from "../../connections/model/protocol";
 import { subscribeLockRecordChanges } from "../../group-lock/model/groupLock";
 import { subscribeProjectPathsChanged } from "../../projects/model/recents";
-import { startSyncLoop } from "./syncClient";
+import { recordSyncStatus, startSyncLoop } from "./syncClient";
 
 export function collectSyncMachineIds(machines: readonly RemoteMachine[]): string[] {
   return machines.map((machine) => machine.id);
@@ -16,6 +16,17 @@ export function collectSyncMachineIds(machines: readonly RemoteMachine[]): strin
 /** Older hosts don't know the sync methods and would answer "Unsupported host method". */
 export function machineSupportsSync(capabilities: string[] | undefined): boolean {
   return !!capabilities?.includes("sync");
+}
+
+export const SYNC_UNSUPPORTED_MESSAGE = "Update the host on this machine";
+
+/** Records why a machine is skipped, so the UI can say so instead of showing nothing. */
+export function recordCapabilityStatus(machineId: string, capabilities: string[] | undefined): void {
+  if (capabilities === undefined) {
+    recordSyncStatus(machineId, { state: "unlinked", lastError: "Could not read the host's capabilities" });
+  } else if (!machineSupportsSync(capabilities)) {
+    recordSyncStatus(machineId, { state: "unsupported", lastError: SYNC_UNSUPPORTED_MESSAGE });
+  }
 }
 
 export const UNSUPPORTED_RECHECK_MS = 5 * 60_000;
@@ -63,6 +74,7 @@ async function syncCapableMachines(machines: readonly RemoteMachine[]): Promise<
         capabilities =
           (await loadRemoteCapabilities(machine.environmentId).catch(() => undefined)) ?? capabilities;
       }
+      recordCapabilityStatus(machine.id, capabilities);
       return machineSupportsSync(capabilities) ? machine : undefined;
     }),
   );

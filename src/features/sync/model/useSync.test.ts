@@ -1,8 +1,10 @@
+import { getSyncStatus } from "./syncClient";
 import { describe, expect, it, vi } from "vitest";
 import {
   collectSyncMachineIds,
   createDebouncer,
   machineSupportsSync,
+  recordCapabilityStatus,
   shouldLoadCapabilities,
   UNSUPPORTED_RECHECK_MS,
 } from "./useSync";
@@ -53,5 +55,16 @@ describe("createDebouncer", () => {
     vi.advanceTimersByTime(1000);
     expect(run).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
+  });
+});
+
+describe("recordCapabilityStatus", () => {
+  it("marks hosts without sync as unsupported and unreadable ones as unlinked", () => {
+    recordCapabilityStatus("cap-old", ["sessions"]);
+    expect(getSyncStatus("cap-old").state).toBe("unsupported");
+    recordCapabilityStatus("cap-none", undefined);
+    expect(getSyncStatus("cap-none").state).toBe("unlinked");
+    recordCapabilityStatus("cap-new", ["sync"]);
+    expect(getSyncStatus("cap-new").state).toBe("idle");
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Check,
   ChevronDown,
+  Clock,
   Internet,
   Pin,
   PinOff,
@@ -164,8 +165,12 @@ export function LastSessionsSection({
             drag ? "cursor-grab" : ""
           }`}
         >
+          <Clock
+            className="size-3.5 shrink-0 group-hover:hidden group-has-[:focus-visible]:hidden"
+            strokeWidth={1.75}
+          />
           <ChevronDown
-            className={`size-3.5 shrink-0 transition-transform duration-150 ${
+            className={`hidden size-3.5 shrink-0 group-hover:block group-has-[:focus-visible]:block ${
               prefs.collapsed ? "-rotate-90" : ""
             }`}
             strokeWidth={1.75}
