@@ -18,6 +18,7 @@ import {
   type EditorPane,
   type FilePaneTab,
 } from "../../workspace/model/layout";
+import { documentKind } from "../model/documentViewer";
 import { isImagePath } from "../model/filePreview";
 import type { TerminalMetaPatch } from "../../terminal/model/terminalTab";
 import type { EditorNavigationTarget } from "../../search/model/search";
@@ -32,6 +33,7 @@ import {
 import { AgentTabView } from "../../sessions/ui/AgentTabView";
 import { MarkdownPreview } from "../../sessions/ui/AgentMarkdown";
 import { BinaryFileView } from "./BinaryFileView";
+import { DocumentView } from "./DocumentView";
 import { ReleaseNotesSurface } from "../../../app/ui/ReleaseNotesSurface";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 
@@ -212,6 +214,8 @@ function FilePaneComponent({
                 />
               ) : isImagePath(file.path) ? (
                 <BinaryFileView path={file.path} cwd={file.cwd} />
+              ) : documentKind(file.path) ? (
+                <DocumentView path={file.path} cwd={file.cwd} />
               ) : (
                 <FileEditor
                   path={file.path}
