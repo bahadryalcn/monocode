@@ -1,5 +1,6 @@
 import { pathKey } from "../../../shared/lib/paths";
-import { openRemoteProject } from "../../connections/model/remoteProjects";
+import { openRemoteProject, parseRemotePath } from "../../connections/model/remoteProjects";
+import { autoNameOnConflict } from "../../projects/model/projectNames";
 import {
   isLocalProject,
   loadArchivedProjects,
@@ -9,9 +10,9 @@ import {
   rememberImportedProjects,
 } from "../../projects/model/recents";
 import { resolveProjectLocation } from "../../../platform/tauri/fs";
-import { markAutoAdded, persistDismissed } from "./syncAutoAdded";
+import { dismissProjectIds, markAutoAdded, persistDismissed } from "./syncAutoAdded";
+import { knownRecordValue } from "./syncPeerState";
 import {
-  linkLocalPathToProject,
   locallyAdoptableProjects,
   projectIdForPath,
   remoteOnlyProjects,
@@ -45,18 +46,15 @@ export function remoteOpenMatch(
   project: RemoteOnlyProject,
   targets: readonly RemoteOpenTarget[] = openTargets,
 ): RemoteOpenMatch | undefined {
-  for (const other of project.otherPaths) {
-    if (!other.hostEnvironmentId) continue;
-    const target = targets.find((entry) => entry.environmentId === other.hostEnvironmentId);
-    if (target) return { target, path: other.path };
-  }
-  return undefined;
+  if (!project.hostEnvironmentId) return undefined;
+  const target = targets.find((entry) => entry.environmentId === project.hostEnvironmentId);
+  return target ? { target, path: project.path } : undefined;
 }
 
 /** Tooltip for a project that is only on another machine. */
 export function remoteOnlyProjectHint(project: RemoteOnlyProject, match: RemoteOpenMatch | undefined): string {
   if (match) return `${match.path} on ${match.target.name}. Click to open it there.`;
-  return `${project.otherPaths.map((other) => other.path).join(", ")} (another machine, not connected here). Click to link a folder.`;
+  return `${project.path} is on a machine that is not connected to this one. Add that machine under Connections to open it.`;
 }
 
 const RETRY_BASE_MS = 60_000;
@@ -91,6 +89,9 @@ async function addRemotely(projectId: string, match: RemoteOpenMatch, userInitia
   // Appended, not opened: a background add must not reshuffle the rail or steal focus.
   rememberImportedProjects([{ path: remote.key, lastUsedAt: Date.now() }]);
   if (!onRail(remote.key)) throw new Error("The project rail is full");
+  // The host names the folder by another path (a symlink, say): the project
+  // is on the rail under that location, so the announced one is not offered again.
+  if (projectIdForPath(remote.key) !== projectId) dismissProjectIds([projectId]);
   markAutoAdded(projectId, remote.key);
   retries.delete(projectId);
   return remote.key;
@@ -158,13 +159,30 @@ export async function adoptLocalProjects(
     const path = normalizeProjectPath(project.path);
     if (!isLocalProject(path) || !(await exists(path))) continue;
     rememberImportedProjects([{ path, lastUsedAt: Date.now() }]);
-    if (!onRail(path)) continue;
-    if (projectIdForPath(path) !== project.projectId) linkLocalPathToProject(path, project.projectId);
+    if (!onRail(path) || projectIdForPath(path) !== project.projectId) continue;
     markAutoAdded(project.projectId, path);
     added.push(path);
   }
   if (added.length > 0) announce();
   return added;
+}
+
+/** A background add never asks for a name: a project whose name the rail
+ * already shows gets a unique automatic one (`name (Machine name)` for a
+ * project on another machine). Skipped when the project has a label here, or
+ * the host holds one for it, which the next capture applies. */
+export function nameAutoAddedProjects(machineId: string, paths: readonly string[]): void {
+  for (const path of paths) {
+    const projectId = projectIdForPath(path);
+    const known = projectId ? knownRecordValue(machineId, "appearance", projectId) : undefined;
+    const hostLabel = (known as { label?: unknown } | null | undefined)?.label;
+    if (typeof hostLabel === "string" && hostLabel.trim()) continue;
+    const remote = parseRemotePath(path);
+    const machine = remote
+      ? openTargets.find((target) => target.environmentId === remote.environmentId)
+      : undefined;
+    autoNameOnConflict(path, machine?.name);
+  }
 }
 
 export type OpenSyncedProjectResult =
@@ -174,7 +192,7 @@ export type OpenSyncedProjectResult =
 
 /** The user clicked a project that is only on another machine: open it on
  * that machine when it is connected here. `unavailable` means no connected
- * machine has it, so the caller should offer to link a local folder. */
+ * machine has it, so there is nothing to open. */
 export async function openSyncedProjectRemotely(projectId: string): Promise<OpenSyncedProjectResult> {
   const project = remoteOnlyProjects().find((entry) => entry.projectId === projectId);
   const match = project ? remoteOpenMatch(project) : undefined;

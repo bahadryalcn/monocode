@@ -309,7 +309,7 @@ type Props = {
   recentSessions?: RecentSessionsSource;
   onSelectProject?: (path: string) => void;
   onOpenProject?: () => void;
-  onLinkRemoteProject?: (projectId: string, name: string) => void | Promise<void>;
+  onOpenSyncedProject?: (projectId: string, name: string) => void | Promise<void>;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onNew?: () => string | void;
   onNewTerminal?: () => void;
@@ -406,7 +406,7 @@ function SidebarComponent({
   recentSessions,
   onSelectProject,
   onOpenProject,
-  onLinkRemoteProject,
+  onOpenSyncedProject,
   onRemoveProject,
   onNew,
   onSearch,
@@ -2242,7 +2242,7 @@ function SidebarComponent({
           onTogglePanel={onToggleProjectRail}
           onSelectProject={onSelectProject}
           onOpenProject={onOpenProject}
-          onLinkRemoteProject={onLinkRemoteProject}
+          onOpenSyncedProject={onOpenSyncedProject}
           onRemoveProject={onRemoveProject}
           settingsOpen={settingsOpen}
           settingsSection={settingsSection}

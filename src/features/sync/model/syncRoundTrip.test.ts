@@ -21,7 +21,7 @@ type Row = { table: string; id: string; rev: number; value: unknown };
 
 /** A deliberately naive host: every accepted op bumps the revision, even a
  * redundant one, so a stable revision proves the clients stopped pushing. */
-function fakeHost() {
+function fakeHost(unknownTables: readonly string[] = []) {
   let rev = 0;
   const rows = new Map<string, Row>();
   const pushedOps: { table: string; id: string; value: unknown }[] = [];
@@ -35,6 +35,8 @@ function fakeHost() {
     const rejected: unknown[] = [];
     for (const op of params.ops) {
       pushedOps.push(op);
+      // An older host skips an op for a table it does not know.
+      if (unknownTables.includes(op.table)) continue;
       const key = `${op.table}:${op.id}`;
       const existing = rows.get(key);
       if ((existing?.rev ?? 0) !== op.baseRev) {
@@ -54,6 +56,14 @@ function fakeHost() {
   return {
     request,
     rev: () => rev,
+    /** Puts a record on the host as an earlier client left it. */
+    seed: (table: string, id: string, value: unknown) => {
+      rev += 1;
+      rows.set(`${table}:${id}`, { table, id, rev, value });
+      return rev;
+    },
+    ids: (table: string) =>
+      [...rows.values()].filter((row) => row.table === table).map((row) => row.id).sort(),
     pushedOps,
     value: (table: string, id: string) => rows.get(`${table}:${id}`)?.value,
     tables: () => new Set([...rows.values()].map((row) => row.table)),
@@ -78,6 +88,8 @@ async function makeDesktop(machineId: string) {
   const lock = await import("../../group-lock/model/groupLock");
   const projects = await import("./syncProjects");
   const remoteProjects = await import("./syncRemoteProjects");
+  const appearance = await import("../../workspace/model/tabGroups");
+  const peerState = await import("./syncPeerState");
   const cycle = async (host: ReturnType<typeof fakeHost>) => {
     use();
     await client.runSyncCycle(HOST, host.request);
@@ -86,7 +98,20 @@ async function makeDesktop(machineId: string) {
     use();
     return groups.loadProjectGroupAssignments()[pathKey(path)];
   };
-  return { use, cycle, assignmentFor, groups, recents, lock, projects, remoteProjects };
+  const look = (path: string) => {
+    use();
+    const key = pathKey(path);
+    return {
+      label: appearance.resolveTabGroupLabel(key, appearance.loadTabGroupLabels(), "folder name"),
+      colorIndex: appearance.resolveTabGroupColorIndex(
+        key,
+        appearance.loadTabGroupColors(),
+        appearance.loadTabGroupCustomColors(),
+      ),
+      mascot: appearance.resolveTabGroupMascot(key, appearance.loadTabGroupMascots()),
+    };
+  };
+  return { use, storage, cycle, assignmentFor, look, client, groups, recents, lock, projects, remoteProjects, appearance, peerState };
 }
 
 describe("sync over a key-sorting transport", () => {
@@ -177,25 +202,31 @@ describe("sync over a key-sorting transport", () => {
     expect(b.groups.loadProjectGroups().find((group) => group.id === "g1")?.collapsed).toBe(false);
     expect(b.lock.getGroupLockView().hasPassword).toBe(true);
     expect(a.assignmentFor("/home/a/code/app")).toBe("g1");
-    expect(b.assignmentFor("C:/work/app")).toBe("g1");
+    // Same folder name, another machine: another project.
+    expect(b.assignmentFor("C:/work/app")).toBeUndefined();
     expect(b.assignmentFor("C:/work/tool")).toBe("g2");
     expect(host.value("group", "g1")).not.toHaveProperty("collapsed");
     expect((host.value("railLayout", "rail") as { order: string[] }).order.sort()).toEqual([
-      "name:app",
-      "name:site",
-      "name:tool",
+      "loc:machine:machine-a:/home/a/code/app",
+      "loc:machine:machine-a:/home/a/code/site",
+      "loc:machine:machine-b:c:/work/app",
+      "loc:machine:machine-b:c:/work/tool",
     ]);
+    expect(host.ids("projectPath")).toHaveLength(4);
     expect((host.value("groupOrder", "groups") as { order: string[] }).order.sort()).toEqual(["g1", "g2"]);
   });
 
   it("a machine without an assignment syncing first does not delete the other machine's membership", async () => {
     const host = fakeHost();
+    const id = "loc:env-a:/home/a/code/app";
+    const remote = "remote://env-a/home/a/code/app";
     const a = await makeDesktop("machine-a");
+    a.projects.setLocalHostEnvironmentId("env-a");
     a.recents.rememberProject("/home/a/code/app");
     a.groups.saveProjectGroups([{ id: "g1", name: "Work", collapsed: false }]);
     a.groups.saveProjectGroupAssignments({ [pathKey("/home/a/code/app")]: "g1" });
     const b = await makeDesktop("machine-b");
-    b.recents.rememberProject("C:/work/app");
+    b.recents.rememberProject(remote);
 
     await b.cycle(host);
     expect(host.pushedOps.some((op) => op.table === "assignment")).toBe(false);
@@ -203,9 +234,10 @@ describe("sync over a key-sorting transport", () => {
       await a.cycle(host);
       await b.cycle(host);
     }
-    expect(host.value("assignment", "name:app")).toEqual({ groupId: "g1", projectId: "name:app" });
+    expect(host.value("assignment", id)).toEqual({ groupId: "g1", projectId: id });
     expect(a.assignmentFor("/home/a/code/app")).toBe("g1");
-    expect(b.assignmentFor("C:/work/app")).toBe("g1");
+    expect(b.assignmentFor(remote)).toBe("g1");
+    expect(host.ids("projectPath")).toEqual([id]);
   });
 
   it("an empty desktop joining later keeps the host's layout and group order", async () => {
@@ -219,7 +251,8 @@ describe("sync over a key-sorting transport", () => {
     await a.cycle(host);
     const layout = host.value("railLayout", "rail");
     const order = host.value("groupOrder", "groups");
-    expect(layout).toEqual({ order: ["name:app"], pinned: ["name:app"] });
+    const id = "loc:machine:machine-a:/home/a/code/app";
+    expect(layout).toEqual({ order: [id], pinned: [id] });
 
     const b = await makeDesktop("machine-b");
     await b.cycle(host);
@@ -281,14 +314,19 @@ describe("sync over a key-sorting transport", () => {
     expect(order.indexOf(site)).toBeLessThan(order.indexOf(app));
     expect(b.projects.remoteOnlyProjects()).toEqual([]);
 
-    // The folder is only on A: B never claims a path for it, and A's data is intact.
-    expect(host.value("projectPath", "name:app:machine-a")).toMatchObject({ hostEnvironmentId: "env-a" });
-    expect(host.value("projectPath", "name:app:machine-b")).toBeUndefined();
-    expect(host.value("assignment", "name:app")).toEqual({ groupId: "g1", projectId: "name:app" });
-    expect(host.value("railLayout", "rail")).toEqual({
-      order: ["name:site", "name:app", "name:tool"],
-      pinned: ["name:app"],
+    // The folder is only on A: one record describes it, and A's data is intact.
+    const APP = "loc:env-a:/home/a/code/app";
+    const SITE = "loc:env-a:/home/a/code/site";
+    const TOOL = "loc:machine:machine-b:c:/work/tool";
+    expect(host.value("projectPath", APP)).toEqual({
+      archived: false,
+      hostEnvironmentId: "env-a",
+      path: "/home/a/code/app",
+      projectId: APP,
     });
+    expect(host.ids("projectPath")).toEqual([APP, SITE, TOOL].sort());
+    expect(host.value("assignment", APP)).toEqual({ groupId: "g1", projectId: APP });
+    expect(host.value("railLayout", "rail")).toEqual({ order: [SITE, APP, TOOL], pinned: [APP] });
     expect(a.assignmentFor("/home/a/code/app")).toBe("g1");
 
     // An edit made on B's remote project reaches the machine where it is local.
@@ -314,7 +352,7 @@ describe("sync over a key-sorting transport", () => {
     expect(b.projects.remoteOnlyProjects()).toEqual([]);
     expect(opened).toHaveLength(2);
     expect(a.assignmentFor("/home/a/code/app")).toBe("g2");
-    expect(host.value("assignment", "name:app")).toEqual({ groupId: "g2", projectId: "name:app" });
+    expect(host.value("assignment", APP)).toEqual({ groupId: "g2", projectId: APP });
     const revAfterRemoval = host.rev();
     await b.cycle(host);
     await a.cycle(host);
@@ -363,15 +401,15 @@ describe("sync over a key-sorting transport", () => {
     expect(host.pushedOps.slice(settledOps)).toEqual([]);
     expect(host.rev()).toBe(settledRev);
 
-    expect(host.value("projectPath", "name:clinic:env:env-m")).toEqual({
+    // W announced the folder; M, which holds it, describes it with the same record.
+    const CLINIC = "loc:env-m:/Users/me/projects/clinic";
+    expect(host.value("projectPath", CLINIC)).toEqual({
       archived: false,
       hostEnvironmentId: "env-m",
-      machineId: "env:env-m",
       path: local,
-      projectId: "name:clinic",
+      projectId: CLINIC,
     });
-    expect(host.value("projectPath", "name:clinic:machine-m")).toMatchObject({ path: local, hostEnvironmentId: "env-m" });
-    expect(host.value("projectPath", "name:clinic:machine-w")).toBeUndefined();
+    expect(host.ids("projectPath")).toEqual([CLINIC, "loc:env-w:c:/work/tool"]);
 
     // M holds the folder, so it gets a local project in W's group; W's tool is opened remotely.
     m.use();
@@ -407,5 +445,327 @@ describe("sync over a key-sorting transport", () => {
     await m.cycle(host);
     await w.cycle(host);
     expect(host.rev()).toBe(revAfterRemoval);
+  });
+
+  it("a project renamed on one desktop shows that name on the other, both ways", async () => {
+    const host = fakeHost();
+    const local = "C:/work/pf-ui-portal";
+    const remote = "remote://env-w/C:/work/pf-ui-portal";
+    const id = "loc:env-w:c:/work/pf-ui-portal";
+
+    const w = await makeDesktop("machine-w");
+    w.projects.setLocalHostEnvironmentId("env-w");
+    w.recents.rememberProject(local);
+    w.appearance.saveTabGroupLabel(pathKey(local), "ai ui-portal");
+    w.appearance.saveTabGroupColor(pathKey(local), 4);
+    w.appearance.saveTabGroupMascot(pathKey(local), "cat");
+    w.appearance.saveTabGroupLogo(pathKey(local), "C:/logos/portal.png");
+
+    const m = await makeDesktop("machine-m");
+    m.remoteProjects.setRemoteOpenTargets([
+      {
+        environmentId: "env-w",
+        name: "Windows PC",
+        request: async (_method, params) => {
+          const { cwd } = params as { cwd: string };
+          return { id: `host-${cwd}`, cwd, name: cwd.split("/").pop() };
+        },
+      },
+    ]);
+
+    // M syncs first with nothing to show: it must not wipe what W is about to push.
+    await m.cycle(host);
+    expect(host.pushedOps.some((op) => op.table === "appearance")).toBe(false);
+    for (let round = 0; round < 3; round += 1) {
+      await w.cycle(host);
+      await m.cycle(host);
+    }
+    m.use();
+    expect(m.recents.loadRecents().map((item) => item.path)).toEqual([remote]);
+    expect(m.look(remote)).toEqual({ label: "ai ui-portal", colorIndex: 4, mascot: "cat" });
+    expect(m.appearance.loadTabGroupLogos()).toEqual({});
+    expect(host.value("appearance", id)).toEqual({ colorIndex: 4, label: "ai ui-portal", mascot: "cat", projectId: id });
+
+    const settledRev = host.rev();
+    const settledOps = host.pushedOps.length;
+    for (let round = 0; round < 3; round += 1) {
+      await w.cycle(host);
+      await m.cycle(host);
+    }
+    expect(host.pushedOps.slice(settledOps)).toEqual([]);
+    expect(host.rev()).toBe(settledRev);
+
+    m.use();
+    m.appearance.saveTabGroupLabel(pathKey(remote), "portal");
+    m.appearance.saveTabGroupCustomColor(pathKey(remote), "#AABBCC");
+    await m.cycle(host);
+    await w.cycle(host);
+    expect(w.look(local)).toEqual({ label: "portal", colorIndex: null, mascot: "cat" });
+    w.use();
+    expect(w.appearance.loadTabGroupCustomColors()[pathKey(local)]).toBe("#aabbcc");
+    expect(w.appearance.loadTabGroupLogos()[pathKey(local)]).toBe("C:/logos/portal.png");
+
+    w.use();
+    w.appearance.saveTabGroupLabel(pathKey(local), "");
+    await w.cycle(host);
+    await m.cycle(host);
+    expect(m.look(remote).label).toBe("folder name");
+    m.use();
+    expect(m.appearance.loadTabGroupCustomColors()[pathKey(remote)]).toBe("#aabbcc");
+
+    // Resetting everything is a tombstone, and it clears the other side too.
+    w.use();
+    w.appearance.saveTabGroupColor(pathKey(local), null);
+    w.appearance.saveTabGroupMascot(pathKey(local), null);
+    await w.cycle(host);
+    await m.cycle(host);
+    expect(host.value("appearance", id)).toBeNull();
+    expect(m.look(remote)).toEqual({ label: "folder name", colorIndex: null, mascot: null });
+    m.use();
+    expect(m.appearance.loadTabGroupCustomColors()).toEqual({});
+
+    const finalRev = host.rev();
+    for (let round = 0; round < 2; round += 1) {
+      await w.cycle(host);
+      await m.cycle(host);
+    }
+    expect(host.rev()).toBe(finalRev);
+  });
+
+  it("a host that does not know the appearance table leaves the rename pending", async () => {
+    const host = fakeHost(["appearance"]);
+    const a = await makeDesktop("machine-a");
+    a.recents.rememberProject("/home/a/code/app");
+    a.appearance.saveTabGroupLabel(pathKey("/home/a/code/app"), "My app");
+    const id = "loc:machine:machine-a:/home/a/code/app";
+
+    await a.cycle(host);
+    await a.cycle(host);
+    a.use();
+    expect(a.client.getSyncStatus(HOST)).toMatchObject({ state: "ok", pendingOps: 1 });
+    expect(a.peerState.takeOutbox(HOST)).toEqual([
+      { table: "appearance", id, baseRev: 0, value: { projectId: id, label: "My app" } },
+    ]);
+    expect(a.peerState.knownRecordValue(HOST, "appearance", id)).toBeUndefined();
+    // One attempt per cycle, and the rest of the library still syncs.
+    expect(host.pushedOps.filter((op) => op.table === "appearance")).toHaveLength(2);
+    expect(host.tables().has("project")).toBe(true);
+    expect(a.look("/home/a/code/app").label).toBe("My app");
+  });
+
+  /** A machine saved on a desktop, whose host opens any folder asked for. */
+  const openTarget = (environmentId: string) => ({
+    environmentId,
+    name: environmentId,
+    request: async (_method: string, params: unknown) => {
+      const { cwd } = params as { cwd: string };
+      return { id: `host-${cwd}`, cwd, name: cwd.split("/").pop() };
+    },
+  });
+
+  const settles = async (host: ReturnType<typeof fakeHost>, desktops: { cycle: (h: typeof host) => Promise<void> }[]) => {
+    for (let round = 0; round < 4; round += 1) for (const desktop of desktops) await desktop.cycle(host);
+    const rev = host.rev();
+    const ops = host.pushedOps.length;
+    for (let round = 0; round < 3; round += 1) for (const desktop of desktops) await desktop.cycle(host);
+    expect(host.pushedOps.slice(ops)).toEqual([]);
+    expect(host.rev()).toBe(rev);
+  };
+
+  it("same-named folders on two machines are two projects, each with its own group and name", async () => {
+    const host = fakeHost();
+    const onW = "G:/Projects/x/monocode";
+    const onM = "/Users/me/projects/monocode";
+    const wOnM = "remote://E_W/G:/Projects/x/monocode";
+    const mOnW = "remote://E_M/Users/me/projects/monocode";
+
+    const w = await makeDesktop("machine-w");
+    w.projects.setLocalHostEnvironmentId("E_W");
+    w.remoteProjects.setRemoteOpenTargets([openTarget("E_M")]);
+    w.recents.rememberProject(onW);
+    w.groups.saveProjectGroups([{ id: "g-win", name: "Windows work", collapsed: false }]);
+    w.groups.saveProjectGroupAssignments({ [pathKey(onW)]: "g-win" });
+    w.appearance.saveTabGroupLabel(pathKey(onW), "mono (pc)");
+
+    const m = await makeDesktop("machine-m");
+    m.projects.setLocalHostEnvironmentId("E_M");
+    m.remoteProjects.setRemoteOpenTargets([openTarget("E_W")]);
+    m.recents.rememberProject(onM);
+    m.groups.saveProjectGroups([{ id: "g-mac", name: "Mac work", collapsed: false }]);
+    m.groups.saveProjectGroupAssignments({ [pathKey(onM)]: "g-mac" });
+    m.appearance.saveTabGroupLabel(pathKey(onM), "mono (mac)");
+
+    await settles(host, [w, m]);
+
+    expect(host.ids("projectPath")).toEqual(["loc:E_M:/Users/me/projects/monocode", "loc:E_W:g:/projects/x/monocode"]);
+    m.use();
+    expect(m.recents.loadRecents().map((item) => item.path).sort()).toEqual([onM, wOnM].sort());
+    expect(m.assignmentFor(onM)).toBe("g-mac");
+    expect(m.assignmentFor(wOnM)).toBe("g-win");
+    expect(m.look(onM).label).toBe("mono (mac)");
+    expect(m.look(wOnM).label).toBe("mono (pc)");
+    expect(m.projects.remoteOnlyProjects()).toEqual([]);
+    w.use();
+    expect(w.recents.loadRecents().map((item) => item.path).sort()).toEqual([onW, mOnW].sort());
+    expect(w.assignmentFor(onW)).toBe("g-win");
+    expect(w.assignmentFor(mOnW)).toBe("g-mac");
+    expect(w.look(onW).label).toBe("mono (pc)");
+    expect(w.look(mOnW).label).toBe("mono (mac)");
+  });
+
+  it("a Windows folder and its remote:// entry on another desktop are one project, whoever syncs first", async () => {
+    for (const windowsFirst of [true, false]) {
+      const host = fakeHost();
+      const onW = "G:\\Projects\\Firisbe\\UI DEVELOPMENTS\\pf-ui-portal";
+      const onM = "remote://E_W/G:/Projects/Firisbe/UI DEVELOPMENTS/pf-ui-portal";
+      const id = "loc:E_W:g:/projects/firisbe/ui developments/pf-ui-portal";
+
+      const w = await makeDesktop("machine-w");
+      w.projects.setLocalHostEnvironmentId("E_W");
+      w.recents.rememberProject(onW);
+      w.groups.saveProjectGroups([{ id: "g-ui", name: "UI", collapsed: false }]);
+      w.groups.saveProjectGroupAssignments({ [pathKey(onW)]: "g-ui" });
+      w.appearance.saveTabGroupLabel(pathKey(onW), "ai ui-portal");
+
+      const m = await makeDesktop("machine-m");
+      m.projects.setLocalHostEnvironmentId("E_M");
+      m.remoteProjects.setRemoteOpenTargets([openTarget("E_W")]);
+      m.recents.rememberProject(onM);
+
+      await settles(host, windowsFirst ? [w, m] : [m, w]);
+
+      expect(host.ids("projectPath")).toEqual([id]);
+      expect(host.value("projectPath", id)).toEqual({
+        archived: false,
+        hostEnvironmentId: "E_W",
+        path: "G:/Projects/Firisbe/UI DEVELOPMENTS/pf-ui-portal",
+        projectId: id,
+      });
+      expect(host.value("assignment", id)).toEqual({ groupId: "g-ui", projectId: id });
+      expect(host.value("appearance", id)).toEqual({ label: "ai ui-portal", projectId: id });
+      m.use();
+      expect(m.recents.loadRecents().map((item) => item.path)).toEqual([onM]);
+      expect(m.assignmentFor(onM)).toBe("g-ui");
+      expect(m.look(onM).label).toBe("ai ui-portal");
+      expect(m.projects.remoteOnlyProjects()).toEqual([]);
+      w.use();
+      expect(w.recents.loadRecents().map((item) => item.path)).toEqual([
+        "G:/Projects/Firisbe/UI DEVELOPMENTS/pf-ui-portal",
+      ]);
+      expect(w.assignmentFor(onW)).toBe("g-ui");
+      expect(w.look(onW).label).toBe("ai ui-portal");
+      expect(w.projects.locallyAdoptableProjects()).toEqual([]);
+    }
+  });
+
+  it("a desktop and a host left by the name-based build move to location ids without losing the local library", async () => {
+    const host = fakeHost();
+    const app = "C:/work/app";
+    const site = "C:/work/site";
+    host.seed("project", "name:app", { id: "name:app", createdAt: 0 });
+    host.seed("projectPath", "name:app:machine-w", {
+      projectId: "name:app",
+      machineId: "machine-w",
+      path: app,
+      archived: false,
+      hostEnvironmentId: "env-w",
+    });
+    host.seed("projectPath", "name:far:m2", {
+      projectId: "name:far",
+      machineId: "m2",
+      path: "/srv/far",
+      archived: false,
+      hostEnvironmentId: "env-far",
+    });
+    const groupRev = host.seed("group", "g1", { id: "g1", name: "Work" });
+    const assignmentRev = host.seed("assignment", "name:app", { projectId: "name:app", groupId: "g1" });
+    host.seed("appearance", "name:app", { projectId: "name:app", label: "Old label" });
+    host.seed("railLayout", "rail", { order: ["name:far", "name:app", "name:site"], pinned: ["name:far"] });
+    host.seed("groupOrder", "groups", { order: ["g1"] });
+    const seeded = host.rev();
+
+    const w = await makeDesktop("machine-w");
+    w.projects.setLocalHostEnvironmentId("env-w");
+    w.remoteProjects.setRemoteOpenTargets([openTarget("env-far")]);
+    w.recents.rememberProject(app);
+    w.recents.rememberProject(site);
+    w.recents.saveProjectRailOrder([site, app]);
+    w.recents.savePinnedProjects([app]);
+    w.groups.saveProjectGroups([{ id: "g1", name: "Work", collapsed: true }]);
+    w.groups.saveProjectGroupAssignments({ [pathKey(app)]: "g1" });
+    w.appearance.saveTabGroupLabel(pathKey(app), "My app");
+    // What the older build left behind, including ops that would now do harm.
+    w.storage.setItem("monocode.sync.localProjectIds.v2", JSON.stringify({ [pathKey(app)]: "name:app", [pathKey(site)]: "name:site" }));
+    w.storage.setItem(
+      "monocode.sync.peer:host-1",
+      JSON.stringify({
+        rev: seeded,
+        pulled: true,
+        recordRevs: { "group:g1": groupRev, "assignment:name:app": assignmentRev },
+        recordValues: { "group:g1": '{"id":"g1","name":"Work"}', "assignment:name:app": '{"groupId":"g1","projectId":"name:app"}' },
+        outbox: [
+          { table: "group", id: "g1", baseRev: groupRev, value: null },
+          { table: "assignment", id: "name:app", baseRev: assignmentRev, value: null },
+        ],
+      }),
+    );
+    w.storage.setItem("monocode.sync.seenGroups:host-1", JSON.stringify(["g1"]));
+    w.storage.setItem("monocode.sync.seenAssignments:host-1", JSON.stringify(["name:app", "name:site"]));
+    w.storage.setItem("monocode.sync.railOwned:host-1", JSON.stringify(["name:app", "name:site"]));
+    w.storage.setItem("monocode.sync.manualLinks", JSON.stringify({ [pathKey(site)]: "name:far" }));
+    w.storage.setItem("monocode.sync.remoteProjectPaths", JSON.stringify({ "name:far": { m2: { path: "/srv/far", archived: false, hostEnvironmentId: "env-far" } } }));
+    w.storage.setItem("monocode.sync.autoAddedRemoteProjects", JSON.stringify({ "name:far": "remote://env-far/srv/far" }));
+
+    await settles(host, [w]);
+
+    const APP = "loc:env-w:c:/work/app";
+    const SITE = "loc:env-w:c:/work/site";
+    expect(host.pushedOps.filter((op) => !op.id.startsWith("loc:")).map((op) => `${op.table}:${op.id}`)).toEqual([
+      "railLayout:rail",
+    ]);
+    expect(host.value("projectPath", APP)).toEqual({ archived: false, hostEnvironmentId: "env-w", path: app, projectId: APP });
+    expect(host.ids("projectPath")).toEqual([APP, SITE, "name:app:machine-w", "name:far:m2"]);
+    expect(host.value("assignment", APP)).toEqual({ groupId: "g1", projectId: APP });
+    expect(host.value("appearance", APP)).toEqual({ label: "My app", projectId: APP });
+    expect(host.value("railLayout", "rail")).toEqual({ order: [SITE, APP], pinned: [APP] });
+    // The older records are left alone, and nothing here resolves them.
+    expect(host.value("group", "g1")).toEqual({ id: "g1", name: "Work" });
+    expect(host.value("assignment", "name:app")).toEqual({ groupId: "g1", projectId: "name:app" });
+    expect(host.value("appearance", "name:app")).toEqual({ label: "Old label", projectId: "name:app" });
+
+    w.use();
+    expect(w.recents.loadRecents().map((item) => item.path).sort()).toEqual([app, site]);
+    expect(w.recents.loadProjectRailOrder()).toEqual([site, app]);
+    expect(w.recents.loadPinnedProjects()).toEqual([app]);
+    expect(w.groups.loadProjectGroups()).toEqual([{ id: "g1", name: "Work", collapsed: true }]);
+    expect(w.groups.loadProjectGroupAssignments()).toEqual({ [pathKey(app)]: "g1" });
+    expect(w.look(app).label).toBe("My app");
+    expect(w.look(site).label).toBe("folder name");
+    expect(w.projects.remoteOnlyProjects()).toEqual([]);
+    expect(w.projects.projectIdForPath(site)).toBe(SITE);
+  });
+
+  it("a desktop that gets a host later re-identifies its folders once and deletes its earlier records", async () => {
+    const host = fakeHost();
+    const a = await makeDesktop("machine-a");
+    a.recents.rememberProject("/home/a/code/app");
+    a.recents.saveProjectRailOrder(["/home/a/code/app"]);
+    a.groups.saveProjectGroups([{ id: "g1", name: "Work", collapsed: false }]);
+    a.groups.saveProjectGroupAssignments({ [pathKey("/home/a/code/app")]: "g1" });
+    await settles(host, [a]);
+    const before = "loc:machine:machine-a:/home/a/code/app";
+    expect(host.value("railLayout", "rail")).toEqual({ order: [before], pinned: [] });
+
+    a.use();
+    a.projects.setLocalHostEnvironmentId("env-a");
+    await settles(host, [a]);
+    const after = "loc:env-a:/home/a/code/app";
+    expect(host.value("projectPath", before)).toBeNull();
+    expect(host.value("projectPath", after)).toMatchObject({ hostEnvironmentId: "env-a" });
+    expect(host.value("assignment", after)).toEqual({ groupId: "g1", projectId: after });
+    expect(host.value("railLayout", "rail")).toEqual({ order: [after], pinned: [] });
+    a.use();
+    expect(a.recents.loadRecents().map((item) => item.path)).toEqual(["/home/a/code/app"]);
+    expect(a.assignmentFor("/home/a/code/app")).toBe("g1");
   });
 });

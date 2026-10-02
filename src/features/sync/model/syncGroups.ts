@@ -14,7 +14,10 @@ import type { SyncAssignmentValue, SyncGroupOrderValue, SyncGroupValue, SyncReco
 type SeenKind = "seenGroups" | "seenAssignments";
 
 function seenKey(kind: SeenKind, machineId: string): string {
-  return `monocode.sync.${kind}:${machineId}`;
+  // Assignments are keyed by project id, whose scheme changed; group ids did not.
+  return kind === "seenAssignments"
+    ? `monocode.sync.seenAssignments.v2:${machineId}`
+    : `monocode.sync.${kind}:${machineId}`;
 }
 
 /** Ids this machine has itself held locally. Only those may be tombstoned:

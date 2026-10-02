@@ -6,13 +6,20 @@ import {
   rememberProject,
 } from "../../projects/model/recents";
 import { remoteProjectFor } from "../../connections/model/remoteProjects";
+import { pathKey } from "../../../shared/lib/paths";
+import { loadCustomTabGroupLabels, loadTabGroupLabels } from "../../workspace/model/tabGroups";
+import { captureLocalAppearanceChanges } from "./syncAppearance";
+import { markPulled, takeOutbox } from "./syncPeerState";
 import {
   applyRemoteProjectRecords,
+  captureLocalProjectChanges,
+  localProjectIdsByPath,
   projectIdForPath,
   remoteOnlyProjects,
   setLocalHostEnvironmentId,
   type RemoteOnlyProject,
 } from "./syncProjects";
+import { hostProjectId, machineProjectId } from "./syncProjectId";
 import type { RemoteOpenTarget } from "./syncRemoteProjects";
 
 const PEER = "host-1";
@@ -29,10 +36,21 @@ function mockLocalStorage() {
   });
 }
 
-const pathRecord = (projectId: string, machineId: string, path: string, hostEnvironmentId?: string, archived = false) =>
+/** A folder's record: on a machine with a host, or on a desktop (`m-x`) without one. */
+const idOf = (path: string, hostEnvironmentId?: string) =>
+  hostEnvironmentId ? hostProjectId(hostEnvironmentId, path) : machineProjectId("m-x", path);
+
+const pathRecord = (path: string, hostEnvironmentId?: string, archived = false) =>
   ({
     table: "projectPath",
-    value: { projectId, machineId, path, archived, ...(hostEnvironmentId ? { hostEnvironmentId } : {}) },
+    id: idOf(path, hostEnvironmentId),
+    rev: 1,
+    value: {
+      projectId: idOf(path, hostEnvironmentId),
+      path,
+      archived,
+      ...(hostEnvironmentId ? { hostEnvironmentId } : { machineId: "m-x" }),
+    },
   }) as never;
 
 function target(environmentId: string, name = "Windows PC") {
@@ -60,15 +78,13 @@ async function load() {
 
 describe("remoteOpenMatch and remoteOnlyProjectHint", () => {
   const project: RemoteOnlyProject = {
-    projectId: "name:app",
+    projectId: idOf("C:/code/app", "env-2"),
     name: "app",
-    otherPaths: [
-      { machineId: "m1", path: "/srv/app" },
-      { machineId: "m2", path: "C:/code/app", hostEnvironmentId: "env-2" },
-    ],
+    path: "C:/code/app",
+    hostEnvironmentId: "env-2",
   };
 
-  it("matches the path whose host is a connected machine", async () => {
+  it("matches the machine whose host holds the folder", async () => {
     const { remoteOpenMatch, remoteOnlyProjectHint } = await load();
     const pc = target("env-2").value;
     const match = remoteOpenMatch(project, [target("env-9").value, pc]);
@@ -79,9 +95,10 @@ describe("remoteOpenMatch and remoteOnlyProjectHint", () => {
   it("has no match without a host id or without that machine", async () => {
     const { remoteOpenMatch, remoteOnlyProjectHint } = await load();
     expect(remoteOpenMatch(project, [target("env-9").value])).toBeUndefined();
-    expect(remoteOpenMatch({ ...project, otherPaths: [project.otherPaths[0]] }, [target("env-2").value])).toBeUndefined();
+    const { hostEnvironmentId: _host, ...hostless } = project;
+    expect(remoteOpenMatch(hostless, [target("env-2").value])).toBeUndefined();
     expect(remoteOnlyProjectHint(project, undefined)).toBe(
-      "/srv/app, C:/code/app (another machine, not connected here). Click to link a folder.",
+      "C:/code/app is on a machine that is not connected to this one. Add that machine under Connections to open it.",
     );
   });
 });
@@ -104,10 +121,10 @@ describe("autoAddRemoteProjects", () => {
     sync.subscribeSyncedProjectsAdded(added);
     rememberProject("/home/me/code/mine");
     applyRemoteProjectRecords(PEER, [
-      pathRecord("name:app", "m-a", "C:\\code\\app", "env-a"),
-      pathRecord("name:old", "m-a", "C:/code/old", "env-a", true),
-      pathRecord("name:far", "m-c", "/srv/far", "env-c"),
-      pathRecord("name:plain", "m-d", "/srv/plain"),
+      pathRecord("C:\\code\\app", "env-a"),
+      pathRecord("C:/code/old", "env-a", true),
+      pathRecord("/srv/far", "env-c"),
+      pathRecord("/srv/plain"),
     ]);
 
     expect(await sync.autoAddRemoteProjects()).toEqual(["remote://env-a/C:/code/app"]);
@@ -115,7 +132,10 @@ describe("autoAddRemoteProjects", () => {
     expect(pc.calls).toEqual([{ cwd: "C:\\code\\app", userInitiated: false }]);
     expect(loadRecents().map((item) => item.path)).toEqual(["/home/me/code/mine", "remote://env-a/C:/code/app"]);
     expect(remoteProjectFor("remote://env-a/C:/code/app")).toMatchObject({ environmentId: "env-a", cwd: "C:\\code\\app" });
-    expect(remoteOnlyProjects().map((project) => project.projectId)).toEqual(["name:far", "name:plain"]);
+    expect(remoteOnlyProjects()).toEqual([
+      { projectId: "loc:env-c:/srv/far", name: "far", path: "/srv/far", hostEnvironmentId: "env-c" },
+      { projectId: "loc:machine:m-x:/srv/plain", name: "plain", path: "/srv/plain" },
+    ]);
 
     expect(await sync.autoAddRemoteProjects()).toEqual([]);
     expect(pc.calls).toHaveLength(1);
@@ -126,10 +146,7 @@ describe("autoAddRemoteProjects", () => {
     const sync = await load();
     const pc = target("env-a");
     sync.setRemoteOpenTargets([pc.value]);
-    applyRemoteProjectRecords(PEER, [
-      pathRecord("name:app", "m-a", "/code/app", "env-a"),
-      pathRecord("name:site", "m-a", "/code/site", "env-a"),
-    ]);
+    applyRemoteProjectRecords(PEER, [pathRecord("/code/app", "env-a"), pathRecord("/code/site", "env-a")]);
     await sync.autoAddRemoteProjects();
     expect(pc.calls).toHaveLength(2);
 
@@ -155,10 +172,7 @@ describe("autoAddRemoteProjects", () => {
     const pc = target("env-a");
     pc.setOnline(false);
     sync.setRemoteOpenTargets([pc.value]);
-    applyRemoteProjectRecords(PEER, [
-      pathRecord("name:app", "m-a", "/code/app", "env-a"),
-      pathRecord("name:site", "m-a", "/code/site", "env-a"),
-    ]);
+    applyRemoteProjectRecords(PEER, [pathRecord("/code/app", "env-a"), pathRecord("/code/site", "env-a")]);
 
     expect(await sync.autoAddRemoteProjects(0)).toEqual([]);
     // One request for the unreachable machine, not one per project.
@@ -179,19 +193,25 @@ describe("autoAddRemoteProjects", () => {
     expect(remoteOnlyProjects()).toEqual([]);
   });
 
-  it("uses the path the host reports and still knows which project it added", async () => {
+  it("does not offer the announced folder again when the host reports it under another path", async () => {
     const sync = await load();
+    let opens = 0;
     sync.setRemoteOpenTargets([
       {
         environmentId: "env-a",
         name: "Mac",
-        request: async () => ({ id: "p1", cwd: "/private/code/real-name", name: "real-name" }),
+        request: async () => {
+          opens += 1;
+          return { id: "p1", cwd: "/private/code/real-name", name: "real-name" };
+        },
       },
     ]);
-    applyRemoteProjectRecords(PEER, [pathRecord("name:app", "m-a", "/code/app", "env-a")]);
+    applyRemoteProjectRecords(PEER, [pathRecord("/code/app", "env-a")]);
     expect(await sync.autoAddRemoteProjects()).toEqual(["remote://env-a/private/code/real-name"]);
+    expect(projectIdForPath("remote://env-a/private/code/real-name")).toBe("loc:env-a:/private/code/real-name");
     expect(remoteOnlyProjects()).toEqual([]);
     expect(await sync.autoAddRemoteProjects()).toEqual([]);
+    expect(opens).toBe(1);
   });
 });
 
@@ -213,13 +233,11 @@ describe("adoptLocalProjects", () => {
     let added = 0;
     sync.subscribeSyncedProjectsAdded(() => (added += 1));
     rememberProject("/home/me/mine");
-    applyRemoteProjectRecords(PEER, [
-      pathRecord("name:clinic", "env:env-own", `${CLINIC}/`, "env-own"),
-      pathRecord("name:tool", "env:env-own", "G:\\Projects\\tool", "env-own"),
-    ]);
+    applyRemoteProjectRecords(PEER, [pathRecord(CLINIC, "env-own"), pathRecord("G:/Projects/tool", "env-own")]);
 
     expect(await sync.adoptLocalProjects(async () => true)).toEqual([CLINIC, "G:/Projects/tool"]);
     expect(loadRecents().map((item) => item.path)).toEqual(["/home/me/mine", CLINIC, "G:/Projects/tool"]);
+    expect(projectIdForPath("G:\\Projects\\Tool")).toBe(idOf("G:/Projects/tool", "env-own"));
     expect(added).toBe(1);
     expect(await sync.adoptLocalProjects(async () => true)).toEqual([]);
     // Never as a remote project through its own host.
@@ -234,10 +252,10 @@ describe("adoptLocalProjects", () => {
   it("skips a folder that does not exist, an archived one, and one already here", async () => {
     const sync = await loadWithOwnHost();
     applyRemoteProjectRecords(PEER, [
-      pathRecord("name:clinic", "env:env-own", CLINIC, "env-own"),
-      pathRecord("name:gone", "env:env-own", "/Users/me/projects/gone", "env-own"),
-      pathRecord("name:old", "env:env-own", "/Users/me/projects/old", "env-own"),
-      pathRecord("name:far", "env:env-a", "/code/far", "env-a"),
+      pathRecord(CLINIC, "env-own"),
+      pathRecord("/Users/me/projects/gone", "env-own"),
+      pathRecord("/Users/me/projects/old", "env-own"),
+      pathRecord("/code/far", "env-a"),
     ]);
     rememberProject("/Users/me/projects/old");
     archiveProject("/Users/me/projects/old");
@@ -251,17 +269,55 @@ describe("adoptLocalProjects", () => {
     expect(loadRecents().map((item) => item.path)).toEqual([CLINIC]);
   });
 
-  it("keeps the announced project id when the folder name differs from it", async () => {
-    const sync = await loadWithOwnHost();
-    applyRemoteProjectRecords(PEER, [pathRecord("name:app", "env:env-own", "/private/real-name", "env-own")]);
-    expect(await sync.adoptLocalProjects(async () => true)).toEqual(["/private/real-name"]);
-    expect(projectIdForPath("/private/real-name")).toBe("name:app");
-  });
-
   it("does nothing until this machine knows its own host", async () => {
     const sync = await load();
-    applyRemoteProjectRecords(PEER, [pathRecord("name:clinic", "env:env-own", CLINIC, "env-own")]);
+    applyRemoteProjectRecords(PEER, [pathRecord(CLINIC, "env-own")]);
     expect(await sync.adoptLocalProjects(async () => true)).toEqual([]);
+  });
+});
+
+describe("nameAutoAddedProjects", () => {
+  beforeEach(mockLocalStorage);
+
+  const REMOTE_KEY = "remote://env-a/C:/code/app";
+
+  async function addAppFromPc() {
+    const sync = await load();
+    sync.setRemoteOpenTargets([target("env-a").value]);
+    rememberProject("/home/me/code/app");
+    applyRemoteProjectRecords(PEER, [pathRecord("C:\\code\\app", "env-a")]);
+    return { sync, added: await sync.autoAddRemoteProjects() };
+  }
+
+  it("names a clashing remote project after its machine, without touching synced labels", async () => {
+    const { sync, added } = await addAppFromPc();
+    expect(added).toEqual([REMOTE_KEY]);
+    sync.nameAutoAddedProjects(PEER, added);
+    expect(loadTabGroupLabels()).toEqual({ [pathKey(REMOTE_KEY)]: "app (Windows PC)" });
+    expect(loadCustomTabGroupLabels()).toEqual({});
+
+    captureLocalAppearanceChanges(PEER, localProjectIdsByPath());
+    expect(takeOutbox(PEER).filter((op) => op.table === "appearance")).toEqual([]);
+  });
+
+  it("leaves the name to a label the host already holds for the project", async () => {
+    const { sync, added } = await addAppFromPc();
+    const id = projectIdForPath(REMOTE_KEY)!;
+    markPulled(PEER, [{ table: "appearance", id, rev: 2, value: { projectId: id, label: "PC app" } }]);
+    sync.nameAutoAddedProjects(PEER, added);
+    expect(loadTabGroupLabels()).toEqual({});
+
+    captureLocalProjectChanges(PEER);
+    captureLocalAppearanceChanges(PEER, localProjectIdsByPath());
+    expect(loadTabGroupLabels()).toEqual({ [pathKey(REMOTE_KEY)]: "PC app" });
+  });
+
+  it("does nothing when the name is free", async () => {
+    const sync = await load();
+    sync.setRemoteOpenTargets([target("env-a").value]);
+    applyRemoteProjectRecords(PEER, [pathRecord("C:\\code\\app", "env-a")]);
+    sync.nameAutoAddedProjects(PEER, await sync.autoAddRemoteProjects());
+    expect(loadTabGroupLabels()).toEqual({});
   });
 });
 
@@ -271,9 +327,11 @@ describe("openSyncedProjectRemotely", () => {
   it("is unavailable when no connected machine has the project", async () => {
     const sync = await load();
     sync.setRemoteOpenTargets([target("env-a").value]);
-    applyRemoteProjectRecords(PEER, [pathRecord("name:far", "m-c", "/srv/far", "env-c")]);
-    expect(await sync.openSyncedProjectRemotely("name:far")).toEqual({ status: "unavailable" });
-    expect(await sync.openSyncedProjectRemotely("name:nope")).toEqual({ status: "unavailable" });
+    applyRemoteProjectRecords(PEER, [pathRecord("/srv/far", "env-c"), pathRecord("/srv/plain")]);
+    expect(await sync.openSyncedProjectRemotely(idOf("/srv/far", "env-c"))).toEqual({ status: "unavailable" });
+    expect(await sync.openSyncedProjectRemotely(idOf("/srv/plain"))).toEqual({ status: "unavailable" });
+    expect(await sync.openSyncedProjectRemotely("loc:env-a:/nope")).toEqual({ status: "unavailable" });
+    expect(loadRecents()).toEqual([]);
   });
 
   it("retries a failed machine at once, as a user request, and reports a failure", async () => {
@@ -281,12 +339,13 @@ describe("openSyncedProjectRemotely", () => {
     const pc = target("env-a");
     pc.setOnline(false);
     sync.setRemoteOpenTargets([pc.value]);
-    applyRemoteProjectRecords(PEER, [pathRecord("name:app", "m-a", "/code/app", "env-a")]);
+    applyRemoteProjectRecords(PEER, [pathRecord("/code/app", "env-a")]);
     await sync.autoAddRemoteProjects(0);
 
-    expect(await sync.openSyncedProjectRemotely("name:app")).toMatchObject({ status: "failed" });
+    const id = idOf("/code/app", "env-a");
+    expect(await sync.openSyncedProjectRemotely(id)).toMatchObject({ status: "failed" });
     pc.setOnline(true);
-    expect(await sync.openSyncedProjectRemotely("name:app")).toEqual({
+    expect(await sync.openSyncedProjectRemotely(id)).toEqual({
       status: "opened",
       key: "remote://env-a/code/app",
     });

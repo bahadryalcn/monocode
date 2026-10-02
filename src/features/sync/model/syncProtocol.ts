@@ -13,18 +13,22 @@ export const SYNC_TABLES = [
   "railLayout",
   "groupOrder",
   "lock",
+  "appearance",
 ] as const;
 
 export type SyncTable = (typeof SYNC_TABLES)[number];
 
 export type SyncProjectValue = { id: string; createdAt: number };
+/** Stored under its `projectId`: one record per folder, whoever pushes it. */
 export type SyncProjectPathValue = {
   projectId: string;
-  machineId: string;
   path: string;
+  /** Whether the machine that holds the folder has it archived. */
   archived: boolean;
-  /** The host running on that machine, through which its folders can be opened remotely. */
+  /** The host running on the folder's machine, through which it can be opened remotely. */
   hostEnvironmentId?: string;
+  /** Only for a desktop without a host of its own. */
+  machineId?: string;
 };
 export type SyncGroupValue = {
   id: string;
@@ -42,6 +46,14 @@ export type SyncAssignmentValue = { projectId: string; groupId: string };
 export type SyncRailLayoutValue = { order: string[]; pinned: string[] };
 export type SyncGroupOrderValue = { order: string[] };
 export type SyncLockValue = { record: unknown | null };
+/** A project's rail look. The logo is a local image file and stays per-machine. */
+export type SyncAppearanceValue = {
+  projectId: string;
+  label?: string;
+  colorIndex?: number;
+  customColor?: string;
+  mascot?: string;
+};
 
 export type SyncRecordValue =
   | SyncProjectValue
@@ -50,7 +62,8 @@ export type SyncRecordValue =
   | SyncAssignmentValue
   | SyncRailLayoutValue
   | SyncGroupOrderValue
-  | SyncLockValue;
+  | SyncLockValue
+  | SyncAppearanceValue;
 
 /** One row in the host's sync store. `value === null` is a tombstone: the
  * record existed at an earlier revision and was deleted. */

@@ -39,6 +39,22 @@ describe("syncPush / syncPull", () => {
     expect(result.applied).toHaveLength(1);
   });
 
+  it("accepts an appearance op and its tombstone", () => {
+    const store = setup();
+    const value = { projectId: "loc:env-w:g:/projects/pf-ui-portal", label: "ai ui-portal", colorIndex: 3 };
+    const result = syncPush(store.db, [{ table: "appearance", id: "loc:env-w:g:/projects/pf-ui-portal", baseRev: 0, value }]);
+    expect(result.rejected).toEqual([]);
+    expect(result.applied).toEqual([{ table: "appearance", id: "loc:env-w:g:/projects/pf-ui-portal", rev: result.rev }]);
+    expect(syncPull(store.db, 0).records).toEqual([
+      { table: "appearance", id: "loc:env-w:g:/projects/pf-ui-portal", rev: result.rev, value },
+    ]);
+    const cleared = syncPush(store.db, [
+      { table: "appearance", id: "loc:env-w:g:/projects/pf-ui-portal", baseRev: result.rev, value: null },
+    ]);
+    expect(cleared.applied).toHaveLength(1);
+    expect(syncPull(store.db, result.rev).records[0].value).toBeNull();
+  });
+
   it("rejects a push based on a stale revision and returns the current value", () => {
     const store = setup();
     const first = syncPush(store.db, [

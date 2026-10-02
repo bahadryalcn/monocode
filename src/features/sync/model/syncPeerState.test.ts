@@ -101,7 +101,7 @@ describe("syncPeerState", () => {
 
   it("canonicalizes a non-canonical value stored by an older build on read", () => {
     localStorage.setItem(
-      "monocode.sync.peer:host-1",
+      "monocode.sync.peer.v2:host-1",
       JSON.stringify({
         rev: 3,
         recordRevs: { "group:g1": 3 },

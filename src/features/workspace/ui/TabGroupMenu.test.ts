@@ -124,6 +124,60 @@ it("closes the mute submenu on a standard action and allows reopening it", () =>
   expect(onExtraPick).toHaveBeenCalledWith("mute:8");
 });
 
+it("warns about a rejected name, does not save it and stays open", () => {
+  const onRename = vi.fn();
+  const onClose = vi.fn();
+  act(() =>
+    root.render(
+      createElement(TabGroupMenu, {
+        x: 20,
+        y: 20,
+        groupId: "private",
+        label: "Private",
+        colorIndex: null,
+        customColor: null,
+        currentColor: "#7c3aed",
+        logoPath: null,
+        mascotName: null,
+        mascotProject: "private",
+        onRename,
+        validateName: (name) => (name === "Taken" ? "Already exists." : null),
+        onColorChange: vi.fn(),
+        onCustomColorChange: vi.fn(),
+        onMascotChange: vi.fn(),
+        onLogoChange: vi.fn(),
+        onPick: vi.fn(),
+        onClose,
+      }),
+    ),
+  );
+  const input = document.querySelector<HTMLInputElement>('input[aria-label="Group name"]')!;
+  const type = (value: string) =>
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  const enter = () =>
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+  type("Taken");
+  expect(document.querySelector('[role="alert"]')?.textContent).toBe("Already exists.");
+  enter();
+  act(() => input.blur());
+  expect(onRename).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+
+  act(() => input.focus());
+  type("Free");
+  expect(document.querySelector('[role="alert"]')).toBeNull();
+  enter();
+  expect(onRename).toHaveBeenCalledWith("private", "Free");
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
 it.each(["Tab group actions", "Mute notifications"])(
   "closes only the submenu after the pointer leaves %s and stays outside both panels",
   (panelLabel) => {

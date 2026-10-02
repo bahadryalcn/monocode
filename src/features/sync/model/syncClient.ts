@@ -1,7 +1,8 @@
+import { applyRemoteAppearanceRecords, captureLocalAppearanceChanges } from "./syncAppearance";
 import { applyRemoteGroupRecords, captureLocalGroupChanges } from "./syncGroups";
 import { applyRemoteLockRecords, captureLocalLockChanges } from "./syncLock";
 import { applyRemoteProjectRecords, captureLocalProjectChanges, localProjectIdsByPath } from "./syncProjects";
-import { adoptLocalProjects, autoAddRemoteProjects } from "./syncRemoteProjects";
+import { adoptLocalProjects, autoAddRemoteProjects, nameAutoAddedProjects } from "./syncRemoteProjects";
 import { canonicalJson } from "./canonicalJson";
 import {
   applyPushResult,
@@ -83,6 +84,7 @@ function applyIncoming(machineId: string, records: readonly SyncRecord[]): void 
   duringSyncWrite(() => {
     applyRemoteProjectRecords(machineId, records);
     applyRemoteGroupRecords(machineId, records);
+    applyRemoteAppearanceRecords(machineId, records);
     applyRemoteLockRecords(machineId, records);
   });
 }
@@ -126,8 +128,10 @@ export async function runSyncCycle(machineId: string, request: SyncRequest): Pro
   }
   // Needs the records just pulled; an unreachable machine is retried later
   // and never fails the cycle.
-  await adoptLocalProjects().catch(() => undefined);
-  await autoAddRemoteProjects().catch(() => undefined);
+  const adopted = await adoptLocalProjects().catch(() => []);
+  const added = await autoAddRemoteProjects().catch(() => []);
+  // After this cycle's apply step, so a label that came with it wins.
+  duringSyncWrite(() => nameAutoAddedProjects(machineId, [...adopted, ...added]));
   recordSyncStatus(machineId, {
     state: "ok",
     lastSyncAt: Date.now(),
@@ -156,6 +160,7 @@ async function runSyncCycleInner(machineId: string, request: SyncRequest): Promi
   duringSyncWrite(() => {
     captureLocalProjectChanges(machineId);
     captureLocalGroupChanges(machineId, localProjectIdsByPath());
+    captureLocalAppearanceChanges(machineId, localProjectIdsByPath());
     captureLocalLockChanges(machineId);
   });
 

@@ -12,7 +12,9 @@ type PeerState = {
   outbox: OutboxEntry[];
 };
 
-const keyFor = (machineId: string) => `monocode.sync.peer:${machineId}`;
+// Versioned: everything cached for the older name-based project ids is dropped,
+// which makes the next cycle a first contact (pull before push).
+const keyFor = (machineId: string) => `monocode.sync.peer.v2:${machineId}`;
 const recordKey = (table: SyncTable, id: string) => `${table}:${id}`;
 
 function emptyState(): PeerState {

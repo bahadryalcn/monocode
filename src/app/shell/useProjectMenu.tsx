@@ -77,6 +77,7 @@ import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackg
 import { RemoveProjectDialog } from "../../features/projects/ui/RemoveProjectDialog";
 import { AdditionalDirsDialog } from "../../features/projects/ui/AdditionalDirsDialog";
 import { isLocalProject, isRemoteProjectPath } from "../../features/projects/model/recents";
+import { projectNameError } from "../../features/projects/model/projectNames";
 import {
   TabGroupMenu,
   type TabGroupMenuExtraItem,
@@ -500,16 +501,17 @@ export function useProjectMenu({
     const key = projectMenu.projectKey;
     const colors = loadTabGroupColors();
     const customColors = loadTabGroupCustomColors();
+    const label = resolveTabGroupLabel(
+      key,
+      groupLabels,
+      basename(projectMenu.path),
+    );
     return (
       <TabGroupMenu
         x={projectMenu.x}
         y={projectMenu.y}
         groupId={key}
-        label={resolveTabGroupLabel(
-          key,
-          groupLabels,
-          basename(projectMenu.path),
-        )}
+        label={label}
         colorIndex={resolveTabGroupColorIndex(key, colors, customColors)}
         customColor={resolveTabGroupCustomColor(key, customColors)}
         currentColor={resolveTabGroupColor(
@@ -522,7 +524,12 @@ export function useProjectMenu({
         logoProject={projectMenu.path}
         mascotName={resolveTabGroupMascot(key, loadTabGroupMascots())}
         mascotProject={projectName(projectMenu.path)}
-        onRename={saveTabGroupLabel}
+        // An untouched name is not saved: that would turn the folder name, or
+        // an automatic name, into a label that syncs.
+        onRename={(project, name) => {
+          if (name !== label) saveTabGroupLabel(project, name);
+        }}
+        validateName={(name) => projectNameError(projectMenu.path, name)}
         onColorChange={saveTabGroupColor}
         onCustomColorChange={saveTabGroupCustomColor}
         onMascotChange={saveTabGroupMascot}

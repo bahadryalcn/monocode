@@ -1,8 +1,8 @@
 import { pathKey } from "../../../shared/lib/paths";
 import { loadArchivedProjects, loadRecents } from "../../projects/model/recents";
 
-const AUTO_ADDED_KEY = "monocode.sync.autoAddedRemoteProjects";
-const DISMISSED_KEY = "monocode.sync.dismissedRemoteProjects";
+const AUTO_ADDED_KEY = "monocode.sync.autoAddedRemoteProjects.v2";
+const DISMISSED_KEY = "monocode.sync.dismissedRemoteProjects.v2";
 
 /** Synced project id → the rail path sync added for it: a `remote://` path,
  * or a local folder another desktop had opened through this machine's host. */
@@ -39,10 +39,12 @@ export function markAutoAdded(projectId: string, remoteKey: string): void {
   write(AUTO_ADDED_KEY, { ...loadAutoAdded(), [projectId]: remoteKey });
 }
 
-/** The synced project a `remote://` rail path was auto-added for, if any. */
-export function autoAddedProjectIdFor(path: string): string | undefined {
-  const key = pathKey(path);
-  return Object.entries(loadAutoAdded()).find(([, added]) => pathKey(added) === key)?.[0];
+/** Remembers projects that left this machine's rail, so sync does not put them back. */
+export function dismissProjectIds(ids: readonly string[]): void {
+  const stored = loadStoredDismissed();
+  const known = new Set(stored);
+  const fresh = ids.filter((id) => !known.has(id));
+  if (fresh.length > 0) write(DISMISSED_KEY, [...stored, ...new Set(fresh)]);
 }
 
 function railPathKeys(): Set<string> {

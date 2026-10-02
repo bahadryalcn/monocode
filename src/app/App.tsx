@@ -1,4 +1,3 @@
-import { linkLocalPathToProject } from "../features/sync/model/syncProjects";
 import {
   openSyncedProjectRemotely,
   subscribeSyncedProjectsAdded,
@@ -262,6 +261,7 @@ import {
   applyGroupedReorder,
   insertTabBesideActive,
   removeTabFromGroup,
+  saveTabGroupLabel,
   tabGroupProject,
 } from "../features/workspace/model/tabGroups";
 import { type WindowTransferPayload } from "./model/windowTransfer";
@@ -387,6 +387,7 @@ import {
   displayPath,
   isEqualOrInside,
   pathKey,
+  projectKey,
   projectName,
   rebasePath,
   resolveWorkspacePath,
@@ -408,6 +409,7 @@ import {
   isLocalProject,
   isRemoteProjectPath,
   looksLikeProject,
+  newProjectPaths,
   normalizeProjectPath,
   projectRailItems,
   rememberProject,
@@ -622,6 +624,7 @@ import {
   OPEN_REMOTE_PROJECT_EVENT,
   REMOTE_HISTORY_UPDATED,
   cachedRemoteSessionSummary,
+  knownRemoteMachine,
   rememberRemotePendingWorktree,
   rememberRemoteSession,
   remotePendingWorktree,
@@ -637,6 +640,12 @@ import { startAppSync } from "../features/sync/model/useSync";
 import { SyncMergedNotice } from "../features/sync/ui/SyncMergedNotice";
 import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
+import {
+  autoNameOnConflict,
+  projectNameError,
+  type AutoNamedProject,
+} from "../features/projects/model/projectNames";
+import { ProjectNameConflictDialog } from "../features/projects/ui/ProjectNameConflictDialog";
 import { SessionImportHost } from "../features/sessions/ui/SessionImportHost";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
@@ -5561,8 +5570,31 @@ function Workspace({
    * Planning per folder from refs would read state React has not rendered yet,
    * so the whole run is planned first and applied here in selection order.
    */
+  const [nameConflicts, setNameConflicts] = useState<AutoNamedProject[]>([]);
+  /**
+   * Projects the user just added under a name the rail already shows. Each one
+   * gets a unique name at once, so closing the dialog leaves no two rows alike,
+   * and is then offered for renaming.
+   */
+  const promptAddedProjectNames = useCallback((before: readonly string[]) => {
+    const added = newProjectPaths(
+      before,
+      loadRecents().map((item) => item.path),
+    );
+    const found = added.flatMap((path) => {
+      const remote = remoteProjectFor(path);
+      const machine = remote
+        ? knownRemoteMachine(remote.environmentId)
+        : undefined;
+      const named = autoNameOnConflict(path, machine?.name);
+      return named ? [named] : [];
+    });
+    if (found.length > 0) setNameConflicts((prev) => [...prev, ...found]);
+  }, []);
+
   const openProjects = useCallback(
     (paths: readonly string[]) => {
+      const knownBefore = loadRecents().map((item) => item.path);
       const steps = planProjectOpenRun({
         memory: readProjectReturnMemory(),
         tabs: tabsRef.current,
@@ -5628,8 +5660,15 @@ function Workspace({
       }
       // Every project opened is remembered, the one chosen last most recently.
       for (const step of steps) setRecents(rememberProject(step.path));
+      promptAddedProjectNames(knownBefore);
     },
-    [activateTab, insertBeside, onCwdChange, readProjectReturnMemory],
+    [
+      activateTab,
+      insertBeside,
+      onCwdChange,
+      promptAddedProjectNames,
+      readProjectReturnMemory,
+    ],
   );
 
   const onSelectProject = useCallback(
@@ -5682,25 +5721,20 @@ function Workspace({
     openProjects(await pickFolders());
   }, [openProjects]);
 
-  const linkRemoteProject = useCallback(
+  const openSyncedProject = useCallback(
     async (projectId: string, name: string) => {
+      // Opening it remotely puts it on the rail before it is selected.
+      const knownBefore = loadRecents().map((item) => item.path);
       const remote = await openSyncedProjectRemotely(projectId);
       if (remote.status === "opened") {
+        promptAddedProjectNames(knownBefore);
         onSelectProject(remote.key);
-        return;
       }
-      if (remote.status === "failed") {
-        // Its machine is saved here but did not answer; a local folder is not
-        // what the user asked for, so the row stays and can be clicked again.
-        console.warn("[sync] could not open", name, remote.error);
-        return;
-      }
-      const [path] = await pickFolders(`Choose the folder for ${name}`);
-      if (!path) return;
-      linkLocalPathToProject(path, projectId);
-      openProjects([path]);
+      // Its machine is saved here but did not answer: the row stays and can be
+      // clicked again. With no such machine there is nothing to open.
+      else if (remote.status === "failed") console.warn("[sync] could not open", name, remote.error);
     },
-    [onSelectProject, openProjects],
+    [onSelectProject, promptAddedProjectNames],
   );
 
   /**
@@ -11317,7 +11351,7 @@ function Workspace({
               recentSessions={recentSessions}
               onSelectProject={onSelectProject}
               onOpenProject={pickProject}
-              onLinkRemoteProject={linkRemoteProject}
+              onOpenSyncedProject={openSyncedProject}
               onRemoveProject={onRemoveProject}
               onNew={onNew}
               openSessions={openProjectSessions}
@@ -11792,6 +11826,20 @@ function Workspace({
                 setRemoteProjectDialogOpen(false);
                 onSelectProject(key);
               }}
+            />
+          ) : null}
+          {nameConflicts[0] ? (
+            <ProjectNameConflictDialog
+              key={nameConflicts[0].path}
+              name={nameConflicts[0].name}
+              path={remoteProjectFor(nameConflicts[0].path)?.cwd ?? nameConflicts[0].path}
+              suggested={nameConflicts[0].suggested}
+              validate={(name) => projectNameError(nameConflicts[0].path, name)}
+              onConfirm={(name) => {
+                saveTabGroupLabel(projectKey(nameConflicts[0].path), name);
+                setNameConflicts((prev) => prev.slice(1));
+              }}
+              onCancel={() => setNameConflicts((prev) => prev.slice(1))}
             />
           ) : null}
           {providerSignInRequest ? (
