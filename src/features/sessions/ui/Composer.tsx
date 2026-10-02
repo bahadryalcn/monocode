@@ -103,6 +103,7 @@ import type {
   UserQuestionPrompt,
   UserQuestionReply,
 } from "../model/userQuestion";
+import { historyKey, type HistoryBrowse } from "../model/composerHistory";
 import { isImeComposition } from "../../../shared/lib/keyboard";
 import {
   captureDraft,
@@ -281,6 +282,8 @@ type Props = {
   allowBusySubmit?: boolean;
   editLastTurnSupported?: boolean;
   lastTurnRecall?: LastTurnRecall | null;
+  /** The session's own messages, newest first, for Up/Down in an empty composer. */
+  promptHistory?: () => string[];
   queuedMessages?: QueuedMessage[];
   queueStatus?: MessageQueueStatus;
   usageLimit?: UsageLimit;
@@ -575,6 +578,7 @@ export function Composer({
   allowBusySubmit = true,
   editLastTurnSupported = false,
   lastTurnRecall = null,
+  promptHistory,
   queuedMessages = [],
   queueStatus,
   usageLimit,
@@ -639,6 +643,8 @@ export function Composer({
   const positionedInitialDraft = useRef(false);
   const slashRef = useRef<SlashToken | null>(null);
   const mentionRef = useRef<MentionToken | null>(null);
+  /** Set while the text is an unedited entry recalled with Up/Down. */
+  const historyRef = useRef<HistoryBrowse | null>(null);
   const [draft, setDraft] = useState(initialDraft ?? "");
   const { branches: draftBranches } = useProjectBranchesState(
     executionCwd,
@@ -1193,6 +1199,8 @@ export function Composer({
 
   const syncTokensFromTextarea = (el: HTMLTextAreaElement) => {
     if (creatingSkill) return;
+    // A recalled "/plan" must not pop the menu over the next Up press.
+    if (historyRef.current?.text === el.value) return;
     const cursor = el.selectionStart ?? 0;
     const token = slashTokenAt(el.value, cursor, hasNativeCommands(harness));
     setSlash(token);
@@ -1639,6 +1647,10 @@ export function Composer({
   }, [sessionId, onEditingLastTurnChange]);
 
   useEffect(() => {
+    historyRef.current = null;
+  }, [sessionId]);
+
+  useEffect(() => {
     if (editLastTurnSupported) return;
     setResendEdited(false);
     onEditingLastTurnChange?.(false);
@@ -1840,6 +1852,7 @@ export function Composer({
       return;
     }
     pasteGenerationRef.current += 1;
+    historyRef.current = null;
     if (ref.current) {
       ref.current.value = "";
       ref.current.style.height = "auto";
@@ -2044,6 +2057,30 @@ export function Composer({
       e.preventDefault();
       recallLastTurn();
       return;
+    }
+
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      const el = e.currentTarget;
+      const result = historyKey({
+        key: e.key,
+        shiftKey: e.shiftKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        text: el.value,
+        selectionStart: el.selectionStart,
+        selectionEnd: el.selectionEnd,
+        composerEmpty: navigationEmpty,
+        menuOpen: !!slash || mentionOpen || pickerOpen,
+        entries: promptHistory?.() ?? [],
+        browse: historyRef.current,
+      });
+      historyRef.current = result.browse;
+      if (result.text !== undefined) {
+        e.preventDefault();
+        applyTextareaEdit(el, result.text, result.text.length);
+        return;
+      }
     }
 
     if (e.key === "Enter" && !e.shiftKey) {

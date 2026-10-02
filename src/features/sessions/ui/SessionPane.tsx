@@ -79,6 +79,7 @@ import { isOpus55Model } from "../model/opusWelcome";
 import { AstraWelcome } from "./AstraWelcome";
 import { OpusWelcome } from "./OpusWelcome";
 import { projectKey } from "../../../shared/lib/paths";
+import { userPromptHistory } from "../model/composerHistory";
 import { canEditLastTurn, lastTurnRecall } from "../model/editLastTurn";
 import {
   loadProjectChatBackgroundSettings,
@@ -715,6 +716,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       )}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
+      promptHistory={() => userPromptHistory(session)}
       onRecallLastTurnReady={(recall) => {
         recallLastTurnRef.current = recall;
       }}
