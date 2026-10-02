@@ -52,6 +52,7 @@ import {
 } from "../../platform/tauri/fs";
 import { IS_MAC, MOD } from "../../platform/tauri/platform";
 import { copyText } from "../../platform/tauri/clipboard";
+import { forgetRemoteQueue } from "../../features/connections/model/useRemoteQueue";
 import { resolveModel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
 import { sessionDisplayTitle } from "../../features/sessions/model/session";
@@ -129,6 +130,7 @@ import { useProjectDiffStats } from "../../features/source-control/hooks/useProj
 import { useSortable } from "../../shared/hooks/useSortable";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { normalizeHex } from "../../shared/lib/colorUtils";
+import { useVisibleProjects } from "../../features/group-lock/hooks/useGroupLock";
 import {
   collectRailProjects,
   looksLikeProject,
@@ -146,6 +148,8 @@ import {
 } from "../../features/files/ui/ExplorerMenu";
 import { FileTree } from "../../features/files/ui/FileTree";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import type { RecentSessionsSource } from "./LastSessionsSection";
+import { formatRelative } from "../../features/sessions/model/recentSessions";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectRail } from "./ProjectRail";
 import { InboxNotificationMenu } from "../../features/inbox/ui/InboxNotificationMenu";
@@ -279,6 +283,7 @@ type Props = {
   busyProjectPaths?: Iterable<string>;
   liveAgents?: LiveAgent[];
   onSelectAgent?: (sessionId: string) => void;
+  recentSessions?: RecentSessionsSource;
   onSelectProject?: (path: string) => void;
   onOpenProject?: () => void;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
@@ -313,6 +318,8 @@ type Props = {
   onOpenWhatsNew?: (version: string) => void;
   onDismissUpdate?: () => void;
 };
+
+const recentPath = (project: RecentProject) => project.path;
 
 function SidebarComponent({
   cwd,
@@ -368,6 +375,7 @@ function SidebarComponent({
   busyProjectPaths,
   liveAgents = [],
   onSelectAgent,
+  recentSessions,
   onSelectProject,
   onOpenProject,
   onRemoveProject,
@@ -438,6 +446,7 @@ function SidebarComponent({
           projectId: hostProject.projectId,
           sessionId,
         });
+        forgetRemoteQueue(sessionId);
         onRemoteSessionDeleted?.(sessionId);
       }
       refreshRemoteProjectSessions();
@@ -722,6 +731,9 @@ function SidebarComponent({
     },
     { axis: "y" },
   );
+  // The full rail gets every project (it keeps their order and pins and hides
+  // locked groups itself); the pickers and menus get only what is unlocked.
+  const visibleRecents = useVisibleProjects(recents, recentPath);
   const showProjectRail = Boolean(onSelectProject && onOpenProject);
   // Settings live in the rail slot, so they keep it visible even when the
   // project rail itself is collapsed.
@@ -1628,7 +1640,7 @@ function SidebarComponent({
           {onSelectProject && !compactRailVisible ? (
             <SidebarProjectPicker
               cwd={cwd}
-              recents={recents}
+              recents={visibleRecents}
               busy={projectPathBusy(busyProjectPaths, cwd)}
               onSelectProject={onSelectProject}
               onOpenProject={onOpenProject}
@@ -2009,6 +2021,9 @@ function SidebarComponent({
                   onOpenDiff ??
                   ((path) => onOpenFile(path, undefined, { exact: true }))
                 }
+                onOpenInEditor={(path, pin) =>
+                  onOpenFile(path, undefined, { exact: true, pin })
+                }
                 onOpenAllChanges={onOpenAllChanges ?? (() => {})}
                 onOpenCommit={onOpenCommit ?? (() => {})}
               />
@@ -2124,7 +2139,7 @@ function SidebarComponent({
       {compactRailVisible ? (
         <CompactProjectRail
           cwd={cwd}
-          recents={recents}
+          recents={visibleRecents}
           busy={projectPathBusy(busyProjectPaths, cwd)}
           tabs={visibleTabs}
           activeTab={tab}
@@ -2161,6 +2176,7 @@ function SidebarComponent({
           liveAgents={liveAgents}
           activeSessionId={activeSessionId}
           onSelectAgent={onSelectAgent}
+          recentSessions={recentSessions}
           canGoBack={canGoBack}
           canGoForward={canGoForward}
           onGoBack={onGoBack}
@@ -3607,27 +3623,4 @@ function TightDiffNumber({ value }: { value: number }) {
 function formatGitLabel(repo?: string, branch?: string): string {
   if (repo && branch) return `${repo}/${branch}`;
   return branch || repo || "";
-}
-
-function formatRelative(value: number, now: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "";
-  const seconds = Math.max(0, Math.round((now - value) / 1000));
-  if (seconds < 60) return "now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    const rest = minutes % 60;
-    return rest ? `${hours}h ${rest}m` : `${hours}h`;
-  }
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      month: "short",
-      day: "numeric",
-    }).format(new Date(value));
-  } catch {
-    return "";
-  }
 }

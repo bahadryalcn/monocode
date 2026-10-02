@@ -9,6 +9,7 @@ import {
   tabCommandForKeybinding,
   tabCommandKeybinding,
 } from "./tabKeys";
+import { NOTES_PANEL_COMMAND } from "../../notes/notesPanel";
 
 function key(
   partial: Partial<
@@ -41,6 +42,28 @@ function key(
 }
 
 describe("tabCommand", () => {
+  it("toggles the notes panel with Cmd+N or Ctrl+N, leaving Shift+N to New Window", () => {
+    expect(tabCommand(key({ key: "n", metaKey: true }))).toBe("toggle-notes");
+    expect(tabCommand(key({ key: "N", ctrlKey: true }))).toBe("toggle-notes");
+    expect(tabCommand(key({ key: "n", ctrlKey: true, shiftKey: true }))).toBe(
+      null,
+    );
+    expect(tabCommand(key({ key: "n", ctrlKey: true, altKey: true }))).toBe(
+      null,
+    );
+    expect(tabCommand(key({ key: "n" }))).toBe(null);
+    expect(tabCommand(key({ key: "n", ctrlKey: true, repeat: true }))).toBe(
+      null,
+    );
+  });
+
+  it("maps the notes panel command to its keybinding and back", () => {
+    expect(tabCommandKeybinding("toggle-notes")).toBe(NOTES_PANEL_COMMAND);
+    expect(tabCommandForKeybinding(NOTES_PANEL_COMMAND, { code: "KeyN" })).toBe(
+      "toggle-notes",
+    );
+  });
+
   it("archives with Cmd+Shift+A or Ctrl+Shift+A", () => {
     expect(tabCommand(key({ key: "A", metaKey: true, shiftKey: true }))).toBe(
       "archive-session",

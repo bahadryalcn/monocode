@@ -68,6 +68,10 @@ describe("Cursor stored subagents", () => {
       toolKind: "execute",
       status: "completed",
     });
+    // The stored child run carries its prompt and each call's result.
+    expect(row.agentRun?.prompt).toContain("defect-first code review");
+    expect(row.agentRun?.steps[1].output).toBe("diff --git a/a.ts b/a.ts");
+    expect(row.agentRun?.steps[1].preview?.output).toBeUndefined();
     expect(recovered.busy).toBeFalsy();
     expect((await recoverCursorSubagents(recovered)).blocks).toEqual(
       recovered.blocks,

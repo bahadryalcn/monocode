@@ -140,11 +140,12 @@ export function buildTurnSteerParams(input: {
   expectedTurnId: string;
   prompt?: string;
   attachments?: Attachment[];
+  skills?: ReadonlyMap<string, string>;
 }): Record<string, unknown> {
   return {
     threadId: input.threadId,
     expectedTurnId: input.expectedTurnId,
-    input: codexInput(input.prompt, input.attachments),
+    input: codexInput(input.prompt, input.attachments, input.skills),
   };
 }
 
@@ -159,6 +160,8 @@ export function buildTurnStartParams(input: {
   serviceTier?: string;
   intent?: TurnIntent;
   additionalDirs?: readonly string[];
+  /** Skill name to SKILL.md path, as Codex listed them for this thread. */
+  skills?: ReadonlyMap<string, string>;
 }): Record<string, unknown> {
   const runtimeConfig = withWritableRoots(
     runtimeModeToCodexConfig(input.runtimeMode, input.controlsAgents),
@@ -178,7 +181,7 @@ export function buildTurnStartParams(input: {
       : runtimeConfig;
   return {
     threadId: input.threadId,
-    input: codexInput(input.prompt, input.attachments),
+    input: codexInput(input.prompt, input.attachments, input.skills),
     approvalPolicy: config.approvalPolicy,
     approvalsReviewer: config.approvalsReviewer,
     sandboxPolicy: config.sandboxPolicy,
@@ -202,10 +205,15 @@ export function buildTurnStartParams(input: {
 function codexInput(
   prompt: string | undefined,
   attachments: Attachment[] = [],
+  skills?: ReadonlyMap<string, string>,
 ): Array<Record<string, unknown>> {
   const input: Array<Record<string, unknown>> = [];
   const body = promptText(prompt ?? "", attachments);
   if (body) input.push({ type: "text", text: body });
+  // The text keeps its `$name`; the structured item tells Codex which file.
+  for (const name of codexSkillMentions(body, skills)) {
+    input.push({ type: "skill", name, path: skills!.get(name) });
+  }
   for (const file of attachments) {
     if (isVisionImage(file.mimeType)) {
       input.push(
@@ -221,6 +229,48 @@ function codexInput(
     }
   }
   return input;
+}
+
+const SKILL_MENTION_RE = /(?:^|\s)\$([A-Za-z0-9][A-Za-z0-9_.-]*)(?=\s|$)/g;
+
+/** Names in `$name` mentions that Codex listed as skills for this thread. */
+export function codexSkillMentions(
+  text: string,
+  skills: ReadonlyMap<string, string> | undefined,
+): string[] {
+  if (!skills || skills.size === 0) return [];
+  const found = new Set<string>();
+  for (const match of text.matchAll(SKILL_MENTION_RE)) {
+    if (skills.has(match[1]!)) found.add(match[1]!);
+  }
+  return [...found];
+}
+
+/** Enabled skills from a `skills/list` response, with their SKILL.md paths. */
+export function codexSkillsFromList(
+  response: unknown,
+): Array<{ name: string; description: string; path: string }> {
+  const out = new Map<string, { name: string; description: string; path: string }>();
+  const entries = asRecord(response)?.data;
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const skills = asRecord(entry)?.skills;
+    for (const raw of Array.isArray(skills) ? skills : []) {
+      const skill = asRecord(raw);
+      const name = stringField(skill, "name");
+      const path = stringField(skill, "path");
+      if (!name || !path || skill?.enabled === false || out.has(name)) continue;
+      out.set(name, {
+        name,
+        path,
+        description:
+          stringField(asRecord(skill?.interface), "shortDescription") ??
+          stringField(skill, "shortDescription") ??
+          stringField(skill, "description") ??
+          "",
+      });
+    }
+  }
+  return [...out.values()];
 }
 
 export function isRecoverableThreadResumeError(error: unknown): boolean {
@@ -1037,6 +1087,9 @@ function mapCollabAgentToolCall(
     ...(spawns && stringField(item, "model")
       ? { agentModel: stringField(item, "model") }
       : {}),
+    ...(spawns && stringField(item, "prompt")
+      ? { agentPrompt: stringField(item, "prompt") }
+      : {}),
     status: settled ? (failed ? "failed" : "completed") : "in_progress",
     ...(detail ? { detail } : {}),
   };
@@ -1143,12 +1196,12 @@ export function mapCodexSubagentSteps(
   return mapCodexNotification(method, params).events.flatMap(
     (event): HarnessEvent[] => {
       if (event.type === "tool.started" || event.type === "tool.updated") {
-        // Only a failure earns detail: a settled result already rides in the
-        // preview, and a long one would weigh the run down for nothing.
-        const detail =
-          event.type === "tool.updated" && event.status === "failed"
-            ? event.detail
-            : undefined;
+        // A failure is shown open from `detail`; a settled result rides as
+        // `output`, which the shared layer caps and budgets per run.
+        const failed = event.type === "tool.updated" && event.status === "failed";
+        const detail = failed ? event.detail : undefined;
+        const output =
+          event.type === "tool.updated" && !failed ? event.detail : undefined;
         return [
           {
             type: "agent.step",
@@ -1159,6 +1212,7 @@ export function mapCodexSubagentSteps(
             ...(event.kind ? { toolKind: event.kind } : {}),
             ...(event.status ? { status: event.status } : {}),
             ...(detail ? { detail } : {}),
+            ...(output ? { output } : {}),
             ...(event.preview ? { preview: event.preview } : {}),
           },
         ];

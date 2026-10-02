@@ -11,6 +11,7 @@ import {
   canRunHarnessTextPrompt,
   runHarnessTextPrompt,
   canRewindHarnessLastTurn,
+  canStopHarnessBackgroundWork,
   compactHarnessContext,
   isLiveHarness,
   listHarnesses,
@@ -18,6 +19,7 @@ import {
   registerHarness,
   resetHarnessIdlePark,
   sendHarnessTurn,
+  stopHarnessBackgroundWork,
   type HarnessAdapter,
 } from "./registry";
 import type { SendTurnInput, SteerTurnInput } from "./types";
@@ -374,5 +376,26 @@ describe("harness registry", () => {
     expect(bindSession).toHaveBeenCalledWith("s2", "sess_2", "/repo", undefined);
     expect(restoreTaskLists).toHaveBeenCalledTimes(1);
     expect(restoreTaskLists).toHaveBeenCalledWith("s1", [taskList]);
+  });
+});
+
+describe("stopping background work", () => {
+  it("is offered only by an adapter that can stop one task by id", async () => {
+    const stopBackgroundWork = vi.fn(async () => {});
+    registerHarness(stub("claude", { stopBackgroundWork }));
+    registerHarness(stub("codex"));
+
+    expect(canStopHarnessBackgroundWork("claude")).toBe(true);
+    expect(canStopHarnessBackgroundWork("codex")).toBe(false);
+
+    await stopHarnessBackgroundWork("claude", "s1", "toolu_1");
+    await stopHarnessBackgroundWork("claude", "s1");
+    expect(stopBackgroundWork.mock.calls).toEqual([
+      ["s1", "toolu_1"],
+      ["s1", undefined],
+    ]);
+    await expect(stopHarnessBackgroundWork("codex", "s1")).rejects.toThrow(
+      "cannot stop background work",
+    );
   });
 });

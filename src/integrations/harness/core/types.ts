@@ -57,6 +57,8 @@ export type HarnessEvent =
   | {
       type: "tool.started";
       agentModel?: string;
+      /** The brief a subagent was given, on the Agent call that spawns it. */
+      agentPrompt?: string;
       callId: string;
       title: string;
       kind?: string;
@@ -70,6 +72,7 @@ export type HarnessEvent =
   | {
       type: "tool.updated";
       agentModel?: string;
+      agentPrompt?: string;
       callId: string;
       title?: string;
       kind?: string;
@@ -91,7 +94,10 @@ export type HarnessEvent =
       /** Tool kind for a "tool" step, so it gets the right icon. */
       toolKind?: string;
       status?: string;
+      /** Failure text; a failed step opens in red. */
       detail?: string;
+      /** What a successful call returned. Capped and budgeted when applied. */
+      output?: string;
       preview?: ToolPreview;
       /** The subagent's own name, when the provider only reveals it here. */
       agentName?: string;

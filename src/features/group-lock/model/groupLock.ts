@@ -1,0 +1,422 @@
+import {
+  loadProjectGroupAssignments,
+  loadProjectGroups,
+  saveProjectGroups,
+  updateProjectGroup,
+  type ProjectGroup,
+} from "../../projects/model/projectGroups";
+import { subscribeProjectPathsChanged } from "../../projects/model/recents";
+import { autoLockDue, type AutoLockMinutes } from "./autoLock";
+import {
+  blockedForMs,
+  NO_ATTEMPTS,
+  parseAttemptState,
+  recordFailure,
+  type AttemptState,
+} from "./attemptThrottle";
+import {
+  computeLockSnapshot,
+  initialUnlocked,
+  isProjectLockedIn,
+  lockReducer,
+  visibleProjects as filterVisible,
+  type LockAction,
+  type LockSnapshot,
+  type UnlockedGroups,
+} from "./lockState";
+import {
+  parseGroupLockSettings,
+  parseUnlockedIds,
+  type GroupLockSettings,
+} from "./lockSettings";
+import { createPasswordRecord, verifyPassword } from "./passwordRecord";
+
+/**
+ * The app lock for project groups. One password, many groups.
+ *
+ * What lives where: the password hash and options are in localStorage with the
+ * other settings; each group's `lockable` flag is on its record; which groups
+ * are currently open is held in memory only (and mirrored to other windows
+ * over a BroadcastChannel). This is an access lock for the MonoCode interface.
+ * It does not encrypt anything on disk.
+ */
+const SETTINGS_KEY = "monocode.groupLock";
+const UNLOCKED_KEY = "monocode.groupLock.unlocked";
+const ATTEMPTS_KEY = "monocode.groupLock.attempts";
+const CHANNEL_NAME = "monocode.groupLock";
+const GROUPS_KEY = "monocode.projectGroups";
+const ASSIGNMENTS_KEY = "monocode.projectGroupAssignments";
+const ACTIVITY_BROADCAST_MS = 5_000;
+const AUTO_LOCK_CHECK_MS = 10_000;
+
+export type GroupLockView = {
+  lock: LockSnapshot;
+  hasPassword: boolean;
+  settings: Omit<GroupLockSettings, "record">;
+  groups: readonly ProjectGroup[];
+};
+
+export type VerifyResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: "wrong" | "blocked" | "no-password";
+      /** How long until another attempt is accepted. */
+      retryAfterMs: number;
+    };
+
+function readItem(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeItem(key: string, value: string | null) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // private mode / quota
+  }
+}
+
+let settings: GroupLockSettings = parseGroupLockSettings(
+  readItem(SETTINGS_KEY),
+);
+let unlocked: UnlockedGroups = initialUnlocked(
+  settings.relockOnLaunch,
+  parseUnlockedIds(readItem(UNLOCKED_KEY)),
+);
+let view: GroupLockView | null = null;
+let previousLock: LockSnapshot | null = null;
+const listeners = new Set<() => void>();
+let channel: BroadcastChannel | null = null;
+let lastActivityAt = Date.now();
+
+function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const item of a) if (!b.has(item)) return false;
+  return true;
+}
+
+function currentView(): GroupLockView {
+  if (view) return view;
+  const groups = loadProjectGroups();
+  const hasPassword = settings.record !== null;
+  let lock = computeLockSnapshot({
+    groups,
+    assignments: loadProjectGroupAssignments(groups),
+    hasPassword,
+    unlocked,
+  });
+  // Keep the object when nothing changed so hooks that read only the lock
+  // state do not re-render for unrelated rail edits.
+  if (
+    previousLock &&
+    sameSet(previousLock.lockedGroupIds, lock.lockedGroupIds) &&
+    sameSet(previousLock.lockedProjectKeys, lock.lockedProjectKeys)
+  ) {
+    lock = previousLock;
+  }
+  previousLock = lock;
+  const { record: _record, ...options } = settings;
+  view = { lock, hasPassword, settings: options, groups };
+  return view;
+}
+
+function invalidate() {
+  view = null;
+  for (const listener of [...listeners]) listener();
+}
+
+export function subscribeGroupLock(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function getGroupLockView(): GroupLockView {
+  return currentView();
+}
+
+export function isProjectLocked(path: string): boolean {
+  return isProjectLockedIn(currentView().lock, path);
+}
+
+/** Drops the items that belong to a locked group. */
+export function visibleProjects<T>(
+  items: readonly T[],
+  pathOf: (item: T) => string,
+): T[] {
+  return filterVisible(currentView().lock, items, pathOf);
+}
+
+function persistUnlocked() {
+  writeItem(
+    UNLOCKED_KEY,
+    settings.relockOnLaunch ? null : JSON.stringify([...unlocked]),
+  );
+}
+
+function dispatch(action: LockAction) {
+  unlocked = lockReducer(unlocked, action);
+  persistUnlocked();
+  channel?.postMessage({ type: "state", groupIds: [...unlocked] });
+  invalidate();
+}
+
+function saveSettings(next: GroupLockSettings) {
+  settings = next;
+  writeItem(SETTINGS_KEY, JSON.stringify(next));
+  persistUnlocked();
+  invalidate();
+}
+
+// ---- attempts --------------------------------------------------------------
+
+function readAttempts(): AttemptState {
+  const raw = readItem(ATTEMPTS_KEY);
+  if (!raw) return NO_ATTEMPTS;
+  try {
+    return parseAttemptState(JSON.parse(raw));
+  } catch {
+    return NO_ATTEMPTS;
+  }
+}
+
+function writeAttempts(state: AttemptState) {
+  writeItem(ATTEMPTS_KEY, state.failures === 0 ? null : JSON.stringify(state));
+}
+
+/** Milliseconds until a password is accepted again after too many wrong ones. */
+export function lockCooldownMs(): number {
+  return blockedForMs(readAttempts(), Date.now());
+}
+
+/**
+ * Checks a password against the stored hash, counting wrong guesses. Every
+ * place that asks for the password goes through here, so the cool-down cannot
+ * be sidestepped by switching dialogs.
+ */
+export async function verifyLockPassword(
+  password: string,
+): Promise<VerifyResult> {
+  const record = settings.record;
+  if (!record) return { ok: false, reason: "no-password", retryAfterMs: 0 };
+  const wait = blockedForMs(readAttempts(), Date.now());
+  if (wait > 0) return { ok: false, reason: "blocked", retryAfterMs: wait };
+  let matches = false;
+  try {
+    matches = await verifyPassword(password, record);
+  } catch {
+    matches = false;
+  }
+  if (matches) {
+    writeAttempts(NO_ATTEMPTS);
+    return { ok: true };
+  }
+  const failed = recordFailure(readAttempts(), Date.now());
+  writeAttempts(failed);
+  return {
+    ok: false,
+    reason: "wrong",
+    retryAfterMs: blockedForMs(failed, Date.now()),
+  };
+}
+
+// ---- password --------------------------------------------------------------
+
+export async function setLockPassword(password: string): Promise<void> {
+  const record = await createPasswordRecord(password);
+  writeAttempts(NO_ATTEMPTS);
+  saveSettings({ ...settings, record });
+}
+
+export async function changeLockPassword(
+  current: string,
+  next: string,
+): Promise<VerifyResult> {
+  const result = await verifyLockPassword(current);
+  if (result.ok) await setLockPassword(next);
+  return result;
+}
+
+/** Forgets the password and un-marks every group; their projects stay put. */
+function clearPassword() {
+  saveProjectGroups(
+    loadProjectGroups().map(({ lockable: _lockable, ...group }) => group),
+  );
+  writeAttempts(NO_ATTEMPTS);
+  unlocked = new Set();
+  saveSettings({ ...settings, record: null });
+  channel?.postMessage({ type: "state", groupIds: [] });
+}
+
+export async function removeLockPassword(
+  current: string,
+): Promise<VerifyResult> {
+  const result = await verifyLockPassword(current);
+  if (result.ok) clearPassword();
+  return result;
+}
+
+/**
+ * The "forgot password" reset. Nothing is asked of the user here beyond what
+ * the caller's dialog asks: there is no second factor on this device.
+ */
+export function resetForgottenPassword() {
+  clearPassword();
+}
+
+// ---- groups ----------------------------------------------------------------
+
+/** Marks the group lockable, leaving it open until it is locked. */
+export function makeGroupLockable(groupId: string) {
+  if (!settings.record) return;
+  updateProjectGroup(groupId, (group) => ({ ...group, lockable: true }));
+  dispatch({ type: "unlock", groupIds: [groupId] });
+}
+
+/** Locks a lockable group now and folds it away. */
+export function lockGroup(groupId: string) {
+  dispatch({ type: "lock", groupIds: [groupId] });
+  updateProjectGroup(groupId, (group) => ({ ...group, collapsed: true }));
+}
+
+export function lockAllGroups() {
+  dispatch({ type: "lockAll" });
+}
+
+/** Opens the group when the password is right, and expands it. */
+export async function unlockGroup(
+  groupId: string,
+  password: string,
+): Promise<VerifyResult> {
+  const result = await verifyLockPassword(password);
+  if (!result.ok) return result;
+  const locked = currentView().lock.lockedGroupIds;
+  dispatch({
+    type: "unlock",
+    groupIds: settings.unlockAll ? [...locked, groupId] : [groupId],
+  });
+  updateProjectGroup(groupId, (group) => ({ ...group, collapsed: false }));
+  return result;
+}
+
+/** Takes the lock off one group. Asks for the password even when it is open. */
+export async function removeGroupLock(
+  groupId: string,
+  password: string,
+): Promise<VerifyResult> {
+  const result = await verifyLockPassword(password);
+  if (!result.ok) return result;
+  updateProjectGroup(groupId, ({ lockable: _lockable, ...group }) => group);
+  dispatch({ type: "lock", groupIds: [groupId] });
+  return result;
+}
+
+// ---- options ---------------------------------------------------------------
+
+export function setRelockOnLaunch(value: boolean) {
+  saveSettings({ ...settings, relockOnLaunch: value });
+}
+
+export function setAutoLockMinutes(value: AutoLockMinutes) {
+  saveSettings({ ...settings, autoLockMinutes: value });
+}
+
+export function setUnlockAll(value: boolean) {
+  saveSettings({ ...settings, unlockAll: value });
+}
+
+// ---- sync and inactivity ---------------------------------------------------
+
+function onStorage(event: StorageEvent) {
+  const key = event.key;
+  if (key === null) {
+    // localStorage was cleared.
+    settings = parseGroupLockSettings(readItem(SETTINGS_KEY));
+    invalidate();
+    return;
+  }
+  if (key === SETTINGS_KEY) {
+    settings = parseGroupLockSettings(event.newValue);
+    if (!settings.record) unlocked = new Set();
+    invalidate();
+  } else if (key === UNLOCKED_KEY && !settings.relockOnLaunch) {
+    unlocked = lockReducer(unlocked, {
+      type: "replace",
+      groupIds: parseUnlockedIds(event.newValue),
+    });
+    invalidate();
+  } else if (key === GROUPS_KEY || key === ASSIGNMENTS_KEY) {
+    invalidate();
+  }
+}
+
+function onChannelMessage(event: MessageEvent) {
+  const message = event.data as
+    { type?: string; groupIds?: unknown } | undefined;
+  if (message?.type === "hello") {
+    channel?.postMessage({ type: "state", groupIds: [...unlocked] });
+  } else if (message?.type === "state" && Array.isArray(message.groupIds)) {
+    unlocked = lockReducer(unlocked, {
+      type: "replace",
+      groupIds: message.groupIds.filter(
+        (id): id is string => typeof id === "string",
+      ),
+    });
+    invalidate();
+  } else if (message?.type === "activity") {
+    lastActivityAt = Date.now();
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", onStorage);
+  subscribeProjectPathsChanged(invalidate);
+  if (typeof BroadcastChannel !== "undefined") {
+    channel = new BroadcastChannel(CHANNEL_NAME);
+    channel.onmessage = onChannelMessage;
+    // Node (tests) would otherwise wait on the open channel before exiting.
+    (channel as { unref?: () => void }).unref?.();
+    // A window opened later learns which groups are already open.
+    channel.postMessage({ type: "hello" });
+  }
+}
+
+/**
+ * Locks every group after the configured time without input anywhere in the
+ * app. Activity in one window counts for all of them. Returns the cleanup.
+ */
+export function startGroupLockWatcher(): () => void {
+  lastActivityAt = Date.now();
+  let lastBroadcast = 0;
+  const touch = () => {
+    const now = Date.now();
+    lastActivityAt = now;
+    if (now - lastBroadcast >= ACTIVITY_BROADCAST_MS) {
+      lastBroadcast = now;
+      channel?.postMessage({ type: "activity" });
+    }
+  };
+  const events = ["keydown", "pointerdown", "pointermove", "wheel"] as const;
+  for (const name of events) {
+    window.addEventListener(name, touch, { capture: true, passive: true });
+  }
+  const timer = window.setInterval(() => {
+    if (
+      unlocked.size > 0 &&
+      autoLockDue(lastActivityAt, Date.now(), settings.autoLockMinutes)
+    ) {
+      lockAllGroups();
+    }
+  }, AUTO_LOCK_CHECK_MS);
+  return () => {
+    for (const name of events) {
+      window.removeEventListener(name, touch, { capture: true });
+    }
+    window.clearInterval(timer);
+  };
+}

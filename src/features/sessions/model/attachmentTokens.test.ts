@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   attachmentLegend,
   attachmentTokens,
+  attachmentsDroppedByEdit,
+  deleteTokenAtCaret,
   findTokens,
   insertAtSelection,
   removeAttachmentFromText,
@@ -215,6 +217,76 @@ describe("removeAttachmentFromText", () => {
     expect(removeAttachmentFromText("[image1]", [image()], -1)).toBe(
       "[image1]",
     );
+  });
+});
+
+describe("attachmentsDroppedByEdit", () => {
+  const files = [image(), doc(), image("b.png")];
+
+  it("reports a token the edit deleted", () => {
+    expect(
+      attachmentsDroppedByEdit("a [image1] [file1] b", "a [file1] b", files),
+    ).toEqual([0]);
+  });
+
+  it("reports every token a select-all delete took", () => {
+    expect(
+      attachmentsDroppedByEdit("[image1] [file1] [image2]", "", files).sort(),
+    ).toEqual([0, 1, 2]);
+  });
+
+  it("counts a token broken by typing inside it as removed", () => {
+    expect(attachmentsDroppedByEdit("[image1]", "[imagX1]", files)).toEqual([
+      0,
+    ]);
+  });
+
+  it("keeps an attachment whose token is still there", () => {
+    expect(attachmentsDroppedByEdit("[image1]", "x[image1]", files)).toEqual(
+      [],
+    );
+    expect(
+      attachmentsDroppedByEdit("[image1] a", "[image1] ab", files),
+    ).toEqual([]);
+  });
+
+  it("ignores tokens that were not references before the edit", () => {
+    expect(attachmentsDroppedByEdit("[image9] `[image1]`", "", files)).toEqual(
+      [],
+    );
+    expect(attachmentsDroppedByEdit("text", "", files)).toEqual([]);
+  });
+});
+
+describe("deleteTokenAtCaret", () => {
+  const files = [image(), doc()];
+
+  it("Backspace right after the token takes all of it", () => {
+    expect(deleteTokenAtCaret("a [image1]", 10, "back", files)).toEqual({
+      text: "a ",
+      caret: 2,
+    });
+  });
+
+  it("Delete right before the token takes all of it", () => {
+    expect(deleteTokenAtCaret("[file1]x", 0, "forward", files)).toEqual({
+      text: "x",
+      caret: 0,
+    });
+  });
+
+  it("drops one space when the token sat between two", () => {
+    expect(deleteTokenAtCaret("a [image1] b", 10, "back", files)).toEqual({
+      text: "a b",
+      caret: 2,
+    });
+  });
+
+  it("does nothing away from a token or on the wrong side", () => {
+    expect(deleteTokenAtCaret("[image1]", 8, "forward", files)).toBeNull();
+    expect(deleteTokenAtCaret("[image1]", 0, "back", files)).toBeNull();
+    expect(deleteTokenAtCaret("[image1] x", 9, "back", files)).toBeNull();
+    expect(deleteTokenAtCaret("[image7]", 8, "back", files)).toBeNull();
   });
 });
 

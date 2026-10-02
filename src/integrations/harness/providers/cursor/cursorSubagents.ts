@@ -55,6 +55,7 @@ export function cursorSubagentEvents(
       kind: "agent",
       title: name,
       ...(run.model ? { agentModel: run.model } : {}),
+      ...(run.prompt ? { agentPrompt: run.prompt } : {}),
     },
   ];
   for (const step of run.steps) {
@@ -81,17 +82,14 @@ export function cursorSubagentEvents(
         ? {
             toolKind: kind,
             status: step.status,
-            // A preview's output is not shown on the row, so a failure has to
-            // carry its own text to be readable at all.
-            ...(step.status === "failed" && step.output
-              ? { detail: step.output }
+            // A failure carries its text as `detail` so it opens in red; any
+            // other result is `output`, which the shared layer bounds.
+            ...(step.output
+              ? step.status === "failed"
+                ? { detail: step.output }
+                : { output: step.output }
               : {}),
-            preview: step.output
-              ? {
-                  ...(preview ?? { kind: "read" as const, contentOnly: true }),
-                  output: step.output,
-                }
-              : preview,
+            preview,
           }
         : {}),
     });

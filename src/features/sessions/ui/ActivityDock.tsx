@@ -7,6 +7,7 @@ import {
   ChevronRight,
   ChevronUp,
   CircleAlert,
+  Square,
   X,
 } from "../../../shared/ui/icons";
 import {
@@ -17,8 +18,11 @@ import {
   type ActivityDock as ActivityDockModel,
   type DockAgent,
 } from "../model/activityDock";
+import { canStopAgent, stopAllControl } from "../model/backgroundStop";
 import type { Block } from "../model/session";
+import { AgentClock } from "./AgentClock";
 import { formatElapsed, useElapsedFrom } from "./useElapsedFrom";
+import { STOP_ALL, useStopRequests } from "./useStopRequests";
 
 /** Expanded or not, per session, for as long as the app is open. */
 const expandedBySession = new Map<string, boolean>();
@@ -34,8 +38,17 @@ type Props = {
   visible?: boolean;
   /** The transcript is scrolled to its last line. */
   atEnd: boolean;
-  /** Take the reader to a delegated run's row in the transcript and open it. */
-  onOpenAgent: (blockId: string) => void;
+  /**
+   * A row was clicked: a subagent opens its own panel, a background command
+   * takes the reader to its row in the transcript.
+   */
+  onOpenAgent: (agent: DockAgent) => void;
+  /** The harness can stop one row on its own; otherwise only the whole turn. */
+  perItemStop?: boolean;
+  /** Stops one running subagent or command (`perItemStop` harnesses only). */
+  onStopAgent?: (agent: DockAgent) => Promise<void>;
+  /** Stops all background work, or interrupts the turn when it cannot be split. */
+  onStopAll?: () => Promise<void>;
 };
 
 /**
@@ -53,7 +66,11 @@ export function ActivityDock({
   visible = true,
   atEnd,
   onOpenAgent,
+  perItemStop = false,
+  onStopAgent,
+  onStopAll,
 }: Props) {
+  const stops = useStopRequests();
   const root = useRef<HTMLDivElement>(null);
   const [unseenDone, setUnseenDone] = useState(false);
   const wasBusy = useRef(busy);
@@ -103,22 +120,36 @@ export function ActivityDock({
           dock={dock}
           label={label}
           onOpenAgent={onOpenAgent}
+          stop={{
+            ...stops,
+            perItem: perItemStop && !!onStopAgent,
+            onAgent: onStopAgent,
+            onAll: onStopAll,
+          }}
         />
       )}
     </div>
   );
 }
 
+type DockStop = ReturnType<typeof useStopRequests> & {
+  perItem: boolean;
+  onAgent?: (agent: DockAgent) => Promise<void>;
+  onAll?: () => Promise<void>;
+};
+
 function DockBody({
   sessionId,
   dock,
   label,
   onOpenAgent,
+  stop,
 }: {
   sessionId: string;
   dock: ActivityDockModel;
   label: string;
-  onOpenAgent: (blockId: string) => void;
+  onOpenAgent: (agent: DockAgent) => void;
+  stop: DockStop;
 }) {
   const [expanded, setExpandedState] = useState(
     () => expandedBySession.get(sessionId) ?? false,
@@ -133,6 +164,7 @@ function DockBody({
   const listId = `activity-dock-agents-${sessionId}`;
   const counts = dockCountLabel(dock);
   const clock = dock.state === "working" || dock.state === "waiting";
+  const stopAll = stop.onAll ? stopAllControl(dock, stop.perItem) : null;
 
   return (
     <section
@@ -163,6 +195,24 @@ function DockBody({
         </span>
         {clock ? <DockClock startedAt={dock.startedAt} /> : null}
         <span className="flex-1" />
+        {stopAll ? (
+          <button
+            type="button"
+            title={stopAll.title}
+            disabled={stop.stopping.has(STOP_ALL)}
+            onClick={() => stop.request(STOP_ALL, () => stop.onAll!())}
+            className={`flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] hover:bg-content/8 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:pointer-events-none ${
+              stop.failed.has(STOP_ALL) ? "text-red-400" : "text-content/50"
+            }`}
+          >
+            <Square className="size-3" strokeWidth={1.75} />
+            {stop.stopping.has(STOP_ALL)
+              ? "Stopping…"
+              : stop.failed.has(STOP_ALL)
+                ? "Could not stop. Retry"
+                : stopAll.label}
+          </button>
+        ) : null}
         {hasAgents ? (
           <button
             type="button"
@@ -195,6 +245,7 @@ function DockBody({
               key={agent.blockId}
               agent={agent}
               onOpen={onOpenAgent}
+              stop={stop}
             />
           ))}
         </div>
@@ -247,53 +298,88 @@ function DockMark({ state }: { state: ActivityDockModel["state"] }) {
 function DockAgentRow({
   agent,
   onOpen,
+  stop,
 }: {
   agent: DockAgent;
-  onOpen: (blockId: string) => void;
+  onOpen: (agent: DockAgent) => void;
+  stop: DockStop;
 }) {
-  const status =
-    agent.status === "running"
-      ? "running"
-      : agent.status === "failed"
-        ? "failed"
-        : "done";
-  const summary = [agent.name, agent.model, agent.detail, status]
+  const summary = [agent.name, agent.model, agent.detail, agent.status]
     .filter(Boolean)
     .join(", ");
+  const key = agent.callId ?? agent.blockId;
+  const stoppable = canStopAgent(agent, stop.perItem);
+  const stopping = stop.stopping.has(key);
   return (
-    <button
-      type="button"
-      aria-label={`${agent.kind === "agent" ? "Open" : "Show"} ${summary}`}
-      title={agent.name}
-      data-dock-agent={agent.blockId}
-      onClick={() => onOpen(agent.blockId)}
-      className="group flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-content/8 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-    >
-      <AgentStatusDot status={agent.status} />
-      <span className="min-w-0 flex-1 truncate text-[12px] text-content/75 group-hover:text-content">
-        {agent.name}
-      </span>
-      {agent.model ? (
-        <span className="max-w-[35%] shrink-0 truncate text-[11px] text-content/40">
-          {agent.model}
+    <div className="group flex min-w-0 items-center rounded-md hover:bg-content/8">
+      <button
+        type="button"
+        aria-label={`${agent.kind === "agent" ? "Open" : "Show"} ${summary}`}
+        title={agent.name}
+        data-dock-agent={agent.blockId}
+        onClick={() => onOpen(agent)}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+      >
+        <AgentStatusDot status={agent.status} />
+        <span className="min-w-0 flex-1 truncate text-[12px] text-content/75 group-hover:text-content">
+          {agent.name}
         </span>
+        {agent.model ? (
+          <span className="max-w-[35%] shrink-0 truncate text-[11px] text-content/40">
+            {agent.model}
+          </span>
+        ) : null}
+        {agent.detail ? (
+          <span className="shrink-0 text-[11px] text-content/40">
+            {agent.detail}
+          </span>
+        ) : null}
+        <AgentClock
+          startedAt={agent.startedAt}
+          endedAt={agent.endedAt}
+          live={agent.status === "running"}
+          className="text-[11px] text-content/40"
+        />
+        <ChevronRight
+          className="size-3 shrink-0 text-content/35 group-hover:text-content/60"
+          strokeWidth={1.75}
+        />
+      </button>
+      {stoppable ? (
+        <button
+          type="button"
+          disabled={stopping}
+          aria-label={`${stopping ? "Stopping" : "Stop"} ${agent.name}`}
+          title={
+            stop.failed.has(key)
+              ? "Could not stop it. Try again."
+              : stopping
+                ? "Stopping…"
+                : agent.kind === "agent"
+                  ? "Stop this subagent"
+                  : "Stop this command"
+          }
+          onClick={() => stop.request(key, () => stop.onAgent!(agent))}
+          className={`mr-1 flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] hover:bg-content/10 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:pointer-events-none ${
+            stop.failed.has(key) ? "text-red-400" : "text-content/50"
+          }`}
+        >
+          <Square className="size-3" strokeWidth={1.75} />
+          {stopping ? "Stopping…" : "Stop"}
+        </button>
       ) : null}
-      {agent.detail ? (
-        <span className="shrink-0 text-[11px] text-content/40">
-          {agent.detail}
-        </span>
-      ) : null}
-      <ChevronRight
-        className="size-3 shrink-0 text-content/35 group-hover:text-content/60"
-        strokeWidth={1.75}
-      />
-    </button>
+    </div>
   );
 }
 
 function AgentStatusDot({ status }: { status: DockAgent["status"] }) {
   if (status === "failed") {
     return <X className="size-3 shrink-0 text-red-400" strokeWidth={2} />;
+  }
+  if (status === "stopped") {
+    return (
+      <Square className="size-3 shrink-0 text-amber-400/80" strokeWidth={2} />
+    );
   }
   return (
     <span

@@ -161,7 +161,7 @@ describe("shouldNotify", () => {
 });
 
 describe("notificationText", () => {
-  it("leads with the app, then the session title, then the reply", () => {
+  it("leads with the event and project, then the session title, then the last reply line", () => {
     const session = chat({
       blocks: [
         { id: "u1", role: "user", text: "hello" },
@@ -173,9 +173,9 @@ describe("notificationText", () => {
       ],
     });
     expect(notificationText(session, "finished")).toEqual({
-      title: "MonoCode",
+      title: "Finished · a",
       subtitle: "Fix the sidebar",
-      body: "Done. Sidebar fixed.",
+      body: "Details below.",
     });
   });
 
@@ -190,7 +190,7 @@ describe("notificationText", () => {
       blocks: [{ id: "a1", role: "assistant", text: "x".repeat(400) }],
     });
     const body = notificationText(session, "finished").body;
-    expect(body.length).toBe(240);
+    expect(body.length).toBe(140);
     expect(body.endsWith("…")).toBe(true);
   });
 
@@ -206,8 +206,10 @@ describe("notificationText", () => {
         },
       ],
     });
-    expect(notificationText(session, { kind: "approval", requestId: 1 })).toEqual({
-      title: "MonoCode",
+    expect(
+      notificationText(session, { kind: "approval", requestId: 1 }),
+    ).toEqual({
+      title: "Needs approval · a",
       subtitle: "Fix the sidebar",
       body: "Approve: Run npm test",
     });
@@ -228,8 +230,10 @@ describe("notificationText", () => {
         ],
       },
     });
-    expect(notificationText(session, { kind: "question", requestId: 2 })).toEqual({
-      title: "MonoCode",
+    expect(
+      notificationText(session, { kind: "question", requestId: 2 }),
+    ).toEqual({
+      title: "Has a question · a",
       subtitle: "Fix the sidebar",
       body: "Which database?",
     });

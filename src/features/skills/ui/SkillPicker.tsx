@@ -1,5 +1,6 @@
 import { Plus } from "../../../shared/ui/icons";
 import {
+  Fragment,
   useEffect,
   useRef,
   useState,
@@ -17,6 +18,8 @@ import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 
 type Props = {
   skills: Skill[];
+  /** What a row starts with: `/` for commands, `$` for Codex skills. */
+  prefix?: "/" | "$";
   query: string;
   active: number;
   creating: boolean;
@@ -34,6 +37,7 @@ type Props = {
 
 export function SkillPicker({
   skills,
+  prefix = "/",
   query,
   active,
   creating,
@@ -70,6 +74,7 @@ export function SkillPicker({
         <>
           <SkillList
             skills={skills}
+            prefix={prefix}
             query={query}
             active={active}
             compact={compact}
@@ -95,6 +100,7 @@ export function SkillPicker({
 
 function SkillList({
   skills,
+  prefix,
   query,
   active,
   compact,
@@ -102,6 +108,7 @@ function SkillList({
   onPick,
 }: {
   skills: Skill[];
+  prefix: "/" | "$";
   query: string;
   active: number;
   compact?: boolean;
@@ -158,8 +165,13 @@ function SkillList({
       {skills.map((skill, index) => {
         const highlighted = index === active;
         return (
+          <Fragment key={`${skill.kind}:${skill.source}:${skill.invocation}`}>
+          {skill.kind === "template" && skills[index - 1]?.kind !== "template" ? (
+            <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-content/40">
+              Templates
+            </p>
+          ) : null}
           <button
-            key={`${skill.kind}:${skill.source}:${skill.invocation}`}
             ref={highlighted ? activeRef : undefined}
             type="button"
             role="option"
@@ -175,7 +187,7 @@ function SkillList({
           >
             <span className="flex min-w-0 w-full items-baseline gap-2">
               <span className="truncate text-[13px]">
-                /{skill.invocation}
+                {prefix}{skill.invocation}
               </span>
               <span className="shrink-0 text-[10px] uppercase tracking-wide text-content/40">
                 {scopeLabel(skill)}
@@ -192,6 +204,7 @@ function SkillList({
               </span>
             ) : null}
           </button>
+          </Fragment>
         );
       })}
     </div>
@@ -347,6 +360,7 @@ function scopeLabel(skill: Skill): string {
     return skill.origin ? `${skill.source} · ${skill.origin}` : skill.source;
   }
   if (skill.kind === "builtin") return "monocode";
+  if (skill.kind === "template") return "template";
   if (skill.scope === "user") return "personal";
   if (skill.source !== "agents" && skill.source !== "monocode") return skill.source;
   return "project";

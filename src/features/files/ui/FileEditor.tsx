@@ -33,7 +33,6 @@ import {
   ChevronDown,
   ChevronUp,
   RotateCcw,
-  SplitSquare,
 } from "../../../shared/ui/icons";
 import { formatInteger } from "../../../shared/lib/numbers";
 import { minimalSetup } from "codemirror";
@@ -42,7 +41,6 @@ import {
   useEffect,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import {
   MarkdownViewShell,
@@ -53,18 +51,17 @@ import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { isLightScheme } from "../../settings/model/appearance";
 import {
   loadAutosave,
-  loadDiffLayout,
   loadFormatOnSave,
-  saveDiffLayout,
-  subscribeDiffLayout,
-  type DiffLayout,
 } from "../../settings/model/settings";
 import { formatText } from "../../../shared/lib/format";
 import {
   basename,
+  gitBlame,
+  gitConflicts,
   gitDiffFiles,
   gitFileDiff,
   gitStageContents,
+  gitStageFile,
   notifyGitChanged,
   readTextFile,
   subscribeGitChanged,
@@ -79,7 +76,20 @@ import {
   DiffCommentComposer,
   type DiffCommentComposerTarget,
 } from "../../source-control/ui/DiffCommentComposer";
+import {
+  DiffLayoutToggle,
+  useDiffLayout,
+} from "../../source-control/ui/DiffLayoutToggle";
+import { hasConflictMarkers } from "../../source-control/model/conflictMarkers";
+import { nextConflictedFile } from "../../source-control/model/conflictSection";
+import { requestOpenCommit } from "../../source-control/ui/GitFileInspector";
 import { editorAutocomplete } from "../editor/editorAutocomplete";
+import { editorBlame, refreshBlame } from "../editor/editorBlame";
+import {
+  conflictBlocks,
+  editorConflicts,
+  stepConflict,
+} from "../editor/editorConflicts";
 import { languageForPath, schemeExtensions } from "../editor/editorChrome";
 import {
   detectLineEnding,
@@ -111,6 +121,7 @@ import {
 } from "../editor/editorGit";
 import {
   createSplitDiff,
+  setSplitCanStage,
   setSplitOriginal,
   splitLineStats,
   splitNavigablePositions,
@@ -119,7 +130,14 @@ import {
 import { editorLint } from "../editor/editorLint";
 import { editorSearch } from "../editor/editorSearch";
 import { editorScrollbar } from "../editor/editorScrollbar";
+import { attachSplitOverview, editorOverview } from "../editor/editorOverview";
+import { EditorConflictBar } from "./EditorConflictBar";
 import { FilePreviewSearch } from "./FilePreviewSearch";
+import {
+  InlineBlameToggle,
+  useInlineBlame,
+  useInlineBlameUnavailableReason,
+} from "./InlineBlameToggle";
 
 type EditorNavigationRequest = EditorNavigation & { token: number };
 
@@ -127,6 +145,8 @@ export const FILE_EDITOR_AUTOSAVE_DELAY_MS = 1_000;
 
 const editorScheme = new Compartment();
 const editorGitConfig = new Compartment();
+const editorBlameConfig = new Compartment();
+const inlineBlameExtension = editorBlame({ onOpenCommit: requestOpenCommit });
 
 type Props = {
   path: string;
@@ -435,6 +455,7 @@ export function FileEditor({
   const relativePath = path.startsWith(`${cwd}/`)
     ? path.slice(cwd.length + 1)
     : path;
+  const footerBlameReason = useInlineBlameUnavailableReason(cwd, path);
 
   if (loadState.status === "loading") {
     return (
@@ -505,6 +526,7 @@ export function FileEditor({
               <CodeMirrorEditor
                 key={`${path}:${reloadKey}`}
                 path={path}
+                cwd={cwd}
                 commentPath={relativePath}
                 value={loadState.content}
                 showDiff={showDiff}
@@ -521,6 +543,7 @@ export function FileEditor({
                     : undefined
                 }
                 onDocChange={setDraft}
+                onOpenFile={onOpenFile}
               />
             </div>
           }
@@ -529,6 +552,7 @@ export function FileEditor({
         <CodeMirrorEditor
           key={`${path}:${reloadKey}`}
           path={path}
+          cwd={cwd}
           commentPath={relativePath}
           value={loadState.content}
           showDiff={showDiff}
@@ -542,12 +566,14 @@ export function FileEditor({
           onStageGit={
             showDiff && gitDiff?.kind === "unstaged" ? stageGit : undefined
           }
+          onOpenFile={onOpenFile}
         />
       )}
       <footer className="flex h-6 shrink-0 items-center border-t border-stroke px-2.5 font-mono text-[10.5px] text-content/40">
         <span className="min-w-0 flex-1 truncate" title={path}>
           {relativePath}
         </span>
+        <InlineBlameToggle reason={footerBlameReason} />
         {saveState.status === "saving" ? (
           <span>Saving…</span>
         ) : saveState.status === "saved" ? (
@@ -567,6 +593,7 @@ export function FileEditor({
 
 export function CodeMirrorEditor({
   path,
+  cwd,
   commentPath,
   value,
   showDiff,
@@ -579,9 +606,11 @@ export function CodeMirrorEditor({
   canAutosave,
   onStageGit,
   onDocChange,
+  onOpenFile,
   formatOnSave = true,
 }: {
   path: string;
+  cwd: string;
   commentPath: string;
   value: string;
   showDiff: boolean;
@@ -594,6 +623,8 @@ export function CodeMirrorEditor({
   canAutosave: () => boolean;
   onStageGit?: (contents: string) => Promise<void>;
   onDocChange?: (content: string) => void;
+  /** Lets the conflict bar step to the next conflicted file. */
+  onOpenFile?: (path: string) => void;
   formatOnSave?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -623,13 +654,38 @@ export function CodeMirrorEditor({
   const carryRef = useRef<EditorCarry | null>(null);
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const colorScheme = useColorScheme();
-  const diffLayout = useSyncExternalStore(
-    subscribeDiffLayout,
-    loadDiffLayout,
-    loadDiffLayout,
+  const diffLayout = useDiffLayout();
+  // A file with conflict markers stays in the inline layout, where the
+  // per-block actions live. Sticky for this editor, so resolving the last block
+  // does not rebuild it as a side-by-side pair mid-edit.
+  const [conflictInline, setConflictInline] = useState(() =>
+    hasConflictMarkers(value),
   );
+  useEffect(() => {
+    if (!conflictInline && hasConflictMarkers(value)) setConflictInline(true);
+  }, [conflictInline, value]);
   // Without a "before" there is nothing to put on the left.
-  const splitDiff = showDiff && diffLayout === "split" && gitOriginal !== null;
+  const splitDiff =
+    showDiff && diffLayout === "split" && gitOriginal !== null && !conflictInline;
+  const [conflictCount, setConflictCount] = useState(0);
+  // Set once a block was seen, so "Mark resolved" is only offered after a
+  // resolution here and not on every file that was merged before.
+  const [hadConflicts, setHadConflicts] = useState(false);
+  const [stillUnmerged, setStillUnmerged] = useState(false);
+  const [marking, setMarking] = useState<{ busy: boolean; error: string | null }>({
+    busy: false,
+    error: null,
+  });
+  const blameReason = useInlineBlameUnavailableReason(cwd, path);
+  const gitRelative = blameReason === null ? displayPath(path, cwd) : null;
+  const gitTargetRef = useRef({ cwd, relative: gitRelative });
+  gitTargetRef.current = { cwd, relative: gitRelative };
+  const blameOn = useInlineBlame() && blameReason === null;
+  const blameOnRef = useRef(blameOn);
+  blameOnRef.current = blameOn;
+  const [blameError, setBlameError] = useState<string | null>(null);
+  const scheduleBlameRef = useRef<(() => void) | null>(null);
+  const saveNowRef = useRef<(() => Promise<boolean>) | null>(null);
   const [chunkNav, setChunkNav] = useState<{
     positions: number[];
     index: number;
@@ -752,11 +808,12 @@ export function CodeMirrorEditor({
       setDirty(saved ? !view.state.doc.eq(saved) : false);
     };
 
-    const save = (automatic = false) => {
+    /** Resolves true once the document reached the disk. */
+    const saveDocument = (automatic = false): Promise<boolean> => {
       const retryPendingAutosave = autosaveTimer !== 0 && loadAutosave();
       window.clearTimeout(autosaveTimer);
       const generation = ++saveGeneration;
-      void (async () => {
+      return (async () => {
         const before = view.state.doc.toString();
         if (formatOnSave && loadFormatOnSave()) {
           const result = await formatText(
@@ -764,7 +821,7 @@ export function CodeMirrorEditor({
             before,
             view.state.selection.main.head,
           );
-          if (disposed || generation !== saveGeneration) return;
+          if (disposed || generation !== saveGeneration) return false;
 
           if (
             result &&
@@ -784,7 +841,7 @@ export function CodeMirrorEditor({
         }
 
         const document = view.state.doc;
-        if (automatic && !canAutosaveRef.current()) return;
+        if (automatic && !canAutosaveRef.current()) return false;
         try {
           await onSaveRef.current(document.toString());
         } catch {
@@ -796,14 +853,49 @@ export function CodeMirrorEditor({
           ) {
             scheduleAutosave();
           }
-          return;
+          return false;
         }
-        if (disposed || generation !== saveGeneration) return;
+        if (disposed || generation !== saveGeneration) return true;
         savedDocumentRef.current = document;
         markDirty();
+        scheduleBlame();
+        return true;
       })();
+    };
+    const save = (automatic = false) => {
+      void saveDocument(automatic);
       return true;
     };
+    saveNowRef.current = () => saveDocument();
+
+    // Blame describes what is on disk, so it is fetched when it is switched on,
+    // after a save and when git reports a change. One timer folds those into a
+    // single request.
+    let blameTimer = 0;
+    const loadBlame = async () => {
+      const { cwd: root, relative } = gitTargetRef.current;
+      if (disposed || !blameOnRef.current || !relative) return;
+      try {
+        await refreshBlame(
+          view,
+          savedDocumentRef.current ?? view.state.doc,
+          () => gitBlame(root, relative),
+          () => !disposed && blameOnRef.current,
+        );
+        if (!disposed) setBlameError(null);
+      } catch (error: unknown) {
+        if (disposed || !blameOnRef.current) return;
+        setBlameError(error instanceof Error ? error.message : String(error));
+      }
+    };
+    function scheduleBlame() {
+      window.clearTimeout(blameTimer);
+      blameTimer = window.setTimeout(() => void loadBlame(), 120);
+    }
+    scheduleBlameRef.current = scheduleBlame;
+    const unsubscribeGit = subscribeGitChanged(() => {
+      if (blameOnRef.current && !document.hidden) scheduleBlame();
+    });
 
     function scheduleAutosave() {
       window.clearTimeout(autosaveTimer);
@@ -825,6 +917,9 @@ export function CodeMirrorEditor({
     const extensions: Extension[] = [
       minimalSetup,
       showDiff && !splitDiff ? editorGitConfig.of(editorGit(gitOptions)) : [],
+      // Ahead of the line numbers, so the blame gutter is the leftmost one.
+      editorBlameConfig.of(blameOnRef.current ? inlineBlameExtension : []),
+      editorConflicts,
       lineNumbers(),
       splitDiff ? [] : foldGutter(),
       highlightActiveLine(),
@@ -837,7 +932,7 @@ export function CodeMirrorEditor({
       editorTyping(path),
       editorAutocomplete,
       editorLint(path, (count) => onErrorCountChangeRef.current(count)),
-      splitDiff ? [] : editorScrollbar,
+      splitDiff ? [] : [editorOverview, editorScrollbar],
       editorSearch,
       Prec.high(
         keymap.of([
@@ -882,6 +977,7 @@ export function CodeMirrorEditor({
           setSelectionTarget(null);
         }
         if (!update.docChanged) return;
+        setConflictCount(conflictBlocks(update.state).length);
         onDocChangeRef.current?.(update.state.doc.toString());
         if (update.transactions.some((tr) => tr.annotation(diskReload))) {
           return;
@@ -922,6 +1018,7 @@ export function CodeMirrorEditor({
           language.of([]),
           editorScheme.of(schemeExtensions(isLightScheme() ? "light" : "dark")),
         ],
+        stage: () => onStageGitRef.current,
       });
       view = split.b;
       leftView = split.a;
@@ -930,6 +1027,7 @@ export function CodeMirrorEditor({
       view = new EditorView({ doc: initialDoc, parent: host, extensions });
     }
     splitRef.current = split;
+    const detachSplitOverview = split ? attachSplitOverview(split) : null;
     scrollerRef.current = split ? split.dom : view.scrollDOM;
     if (carry?.saved) {
       savedDocumentRef.current = carry.saved;
@@ -938,6 +1036,8 @@ export function CodeMirrorEditor({
       dirtyRef.current = false;
     }
     viewRef.current = view;
+    setConflictCount(conflictBlocks(view.state).length);
+    if (blameOnRef.current) scheduleBlame();
     lockOverscroll(scrollerRef.current as HTMLDivElement);
     if (carry) {
       view.dispatch({
@@ -972,6 +1072,11 @@ export function CodeMirrorEditor({
     return () => {
       disposed = true;
       window.clearTimeout(autosaveTimer);
+      window.clearTimeout(blameTimer);
+      unsubscribeGit();
+      saveNowRef.current = null;
+      scheduleBlameRef.current = null;
+      setConflictCount(0);
       onErrorCountChangeRef.current(0);
       lockOverscroll(null);
       carryRef.current = {
@@ -987,6 +1092,7 @@ export function CodeMirrorEditor({
       savedDocumentRef.current = null;
       setChunkNav(null);
       setSelectionTarget(null);
+      detachSplitOverview?.();
       if (split) split.destroy();
       else view.destroy();
     };
@@ -1002,11 +1108,93 @@ export function CodeMirrorEditor({
 
   useEffect(() => {
     const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: editorBlameConfig.reconfigure(
+        blameOn ? inlineBlameExtension : [],
+      ),
+    });
+    if (blameOn) scheduleBlameRef.current?.();
+    else setBlameError(null);
+  }, [blameOn]);
+
+  useEffect(() => {
+    if (conflictCount > 0) setHadConflicts(true);
+  }, [conflictCount]);
+
+  // The file stays unmerged in git until it is staged, whatever the buffer says.
+  useEffect(() => {
+    if (conflictCount > 0 || !hadConflicts || !gitRelative) {
+      setStillUnmerged(false);
+      return;
+    }
+    let cancelled = false;
+    const check = () => {
+      gitConflicts(cwd).then(
+        (files) => {
+          if (!cancelled) setStillUnmerged(files.includes(gitRelative));
+        },
+        () => {
+          if (!cancelled) setStillUnmerged(false);
+        },
+      );
+    };
+    check();
+    const unsubscribe = subscribeGitChanged(check);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [conflictCount, cwd, gitRelative, hadConflicts]);
+
+  const [fileNote, setFileNote] = useState<string | null>(null);
+  useEffect(() => setFileNote(null), [path]);
+
+  // The next file git still lists as unmerged, wrapping around.
+  const openNextConflictedFile = useCallback(async () => {
+    if (!onOpenFile) return;
+    try {
+      const next = nextConflictedFile(await gitConflicts(cwd), gitRelative);
+      if (!next) {
+        setFileNote("No other conflicted files");
+        return;
+      }
+      setFileNote(null);
+      onOpenFile(`${cwd.replace(/[\\/]+$/, "")}/${next}`);
+    } catch (error: unknown) {
+      setFileNote(error instanceof Error ? error.message : String(error));
+    }
+  }, [cwd, gitRelative, onOpenFile]);
+
+  const markResolved = useCallback(async () => {
+    if (!gitRelative) return;
+    setMarking({ busy: true, error: null });
+    try {
+      const saved = (await saveNowRef.current?.()) ?? false;
+      if (!saved || dirtyRef.current) throw new Error("Couldn't save the file");
+      await gitStageFile(cwd, gitRelative);
+      notifyGitChanged();
+      setHadConflicts(false);
+      setMarking({ busy: false, error: null });
+    } catch (error: unknown) {
+      setMarking({
+        busy: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, [cwd, gitRelative]);
+
+  useEffect(() => {
+    const view = viewRef.current;
     if (!view || !showDiff || splitDiff) return;
     view.dispatch({
       effects: editorGitConfig.reconfigure(editorGit(gitOptions)),
     });
   }, [canStage, showDiff, splitDiff]);
+
+  useEffect(() => {
+    if (splitRef.current) setSplitCanStage(splitRef.current, canStage);
+  }, [canStage, splitDiff]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -1117,11 +1305,29 @@ export function CodeMirrorEditor({
             deletions={chunkNav?.deletions ?? 0}
             onPrev={() => stepChunkNav(-1)}
             onNext={() => stepChunkNav(1)}
-            layout={diffLayout}
-            onLayoutChange={saveDiffLayout}
           />
         ) : null}
-        <div ref={hostRef} className="min-h-0 flex-1" />
+        <EditorConflictBar
+          count={conflictCount}
+          canMarkResolved={hadConflicts && stillUnmerged}
+          marking={marking.busy}
+          error={marking.error}
+          onPrev={() => viewRef.current && stepConflict(viewRef.current, -1)}
+          onNext={() => viewRef.current && stepConflict(viewRef.current, 1)}
+          onNextFile={onOpenFile && gitRelative ? () => void openNextConflictedFile() : undefined}
+          fileNote={fileNote}
+          onMarkResolved={() => void markResolved()}
+        />
+        {blameOn && blameError ? (
+          <p
+            role="status"
+            className="shrink-0 truncate border-b border-stroke px-3 py-1 text-[11px] text-content/45"
+            title={blameError}
+          >
+            Blame unavailable: {blameError}
+          </p>
+        ) : null}
+        <div ref={hostRef} className="relative min-h-0 flex-1" />
       </div>
       {commentTarget ? (
         <DiffCommentComposer
@@ -1186,8 +1392,6 @@ function DiffChunkNav({
   deletions,
   onPrev,
   onNext,
-  layout,
-  onLayoutChange,
 }: {
   index: number;
   total: number;
@@ -1195,10 +1399,7 @@ function DiffChunkNav({
   deletions: number;
   onPrev: () => void;
   onNext: () => void;
-  layout: DiffLayout;
-  onLayoutChange: (layout: DiffLayout) => void;
 }) {
-  const split = layout === "split";
   return (
     <header
       className="flex h-8 shrink-0 items-center justify-between gap-3 border-b border-stroke px-3 pr-1"
@@ -1207,19 +1408,7 @@ function DiffChunkNav({
     >
       <DiffChunkStat additions={additions} deletions={deletions} />
       <div className="flex items-center gap-0.5">
-        <button
-          type="button"
-          title="Side-by-side view"
-          aria-label="Side-by-side view"
-          aria-pressed={split}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => onLayoutChange(split ? "inline" : "split")}
-          className={`mr-1 grid size-6 place-items-center rounded hover:bg-content/10 hover:text-content ${
-            split ? "bg-content/10 text-content" : "text-content/70"
-          }`}
-        >
-          <SplitSquare className="size-3.5" strokeWidth={1.75} />
-        </button>
+        <DiffLayoutToggle className="mr-1" />
         <button
           type="button"
           title="Previous change"

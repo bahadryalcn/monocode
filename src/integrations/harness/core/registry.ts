@@ -60,6 +60,12 @@ export type HarnessAdapter = {
   rewindLastTurn?(input: RewindLastTurnInput): Promise<RewindLastTurnResult>;
   steerTurn(input: SteerTurnInput): Promise<void>;
   cancelTurn(sessionId: string): Promise<void>;
+  /**
+   * Stop one running subagent or background command (`callId` is its tool
+   * call), or every one of them when omitted, without interrupting the turn.
+   * Only a harness whose protocol can stop a task by id offers it.
+   */
+  stopBackgroundWork?(sessionId: string, callId?: string): Promise<void>;
   respondApproval(
     sessionId: string,
     requestId: number,
@@ -313,6 +319,25 @@ export async function cancelHarnessTurn(
   cancelIdlePark(sessionId);
   await adapter.cancelTurn(sessionId);
   scheduleIdlePark(harness, sessionId);
+}
+
+/** True when a row can be stopped on its own, not only with the whole turn. */
+export function canStopHarnessBackgroundWork(id: HarnessId): boolean {
+  const adapter = adapters.get(id);
+  return adapter?.live === true && adapter.stopBackgroundWork != null;
+}
+
+export async function stopHarnessBackgroundWork(
+  harness: HarnessId,
+  sessionId: string,
+  callId?: string,
+): Promise<void> {
+  const adapter = getHarness(harness);
+  if (!adapter?.live || !adapter.stopBackgroundWork) {
+    throw new Error(`${harness} cannot stop background work on its own`);
+  }
+  // Not a turn: the idle park timer is left alone, as for an approval answer.
+  await adapter.stopBackgroundWork(sessionId, callId);
 }
 
 export function respondHarnessApproval(

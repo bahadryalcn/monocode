@@ -36,7 +36,7 @@ type ChunkRange = {
   toB: number;
 };
 
-type GitStageHandler = (contents: string) => Promise<void> | void;
+export type GitStageHandler = (contents: string) => Promise<void> | void;
 export type GitCommentTarget = { line: UnifiedLine; anchor: DOMRect };
 type GitCommentHandler = (target: GitCommentTarget) => void;
 
@@ -181,9 +181,13 @@ export function editorGit(options?: {
     gitDecorations,
     gitGutter,
     gitHunkActions,
-    gitOverview,
     gitTheme,
   ];
+}
+
+/** The hunks against the diff base; empty while the diff is switched off. */
+export function gitChunks(state: EditorState): readonly Chunk[] {
+  return state.field(chunksField, false) ?? [];
 }
 
 export function diffNavigablePositions(view: EditorView): number[] {
@@ -302,11 +306,25 @@ export function stateWithGitOriginal(
 export function revertChunkAt(view: EditorView, pos: number): boolean {
   const original = view.state.field(originalField);
   if (!original) return false;
+  return revertChunkIn(view, original, pos, actionRange(view));
+}
+
+/**
+ * Put the hunk at `pos` back to `original` in `view`'s document. For editors
+ * that keep the "before" text somewhere other than `originalField`, such as
+ * the left pane of the side-by-side layout.
+ */
+export function revertChunkIn(
+  view: EditorView,
+  original: Text,
+  pos: number,
+  selection?: GitTextRange | null,
+): boolean {
   const changes = revertChunkChanges(
     original,
     view.state.doc,
     pos,
-    actionRange(view),
+    selection,
     view.state.lineBreak,
   );
   if (!changes) return false;
@@ -356,18 +374,41 @@ export async function stageChunkAt(
   const original = view.state.field(originalField);
   const onStage = view.state.facet(gitStageFacet);
   if (!original || !onStage) return false;
-  const contents = stageChunkText(
-    original.toString(),
-    view.state.doc.toString(),
+  const contents = await stageChunkIn(
+    view,
+    original,
     pos,
+    onStage,
     actionRange(view),
   );
   if (contents == null) return false;
-  await onStage(contents);
   if (view.state.field(originalField)?.toString() !== contents) {
     setGitOriginal(view, contents);
   }
   return true;
+}
+
+/**
+ * Stage the hunk at `pos` of `view`'s document against `original` through
+ * `onStage`. Returns the new staged text (LF, like the document; the handler
+ * owns restoring the file's line endings), or null when there is no such hunk.
+ */
+export async function stageChunkIn(
+  view: EditorView,
+  original: Text,
+  pos: number,
+  onStage: GitStageHandler,
+  selection?: GitTextRange | null,
+): Promise<string | null> {
+  const contents = stageChunkText(
+    original.toString(),
+    view.state.doc.toString(),
+    pos,
+    selection,
+  );
+  if (contents == null) return null;
+  await onStage(contents);
+  return contents;
 }
 
 export function findChunk(
@@ -692,7 +733,8 @@ function buildDecorations(state: EditorState): GitDecorations {
   return { lines: lines.finish(), gutter: marks.finish() };
 }
 
-function widgetPos(doc: Text, chunk: Chunk): number {
+/** The document position that identifies a hunk to the stage/revert helpers. */
+export function widgetPos(doc: Text, chunk: Chunk): number {
   if (doc.length === 0) return 0;
   return Math.min(chunk.fromB, doc.length);
 }
@@ -730,91 +772,6 @@ function activeChunkIndex(
   }
   return index;
 }
-
-const gitOverview = ViewPlugin.fromClass(
-  class {
-    readonly dom: HTMLDivElement;
-
-    constructor(readonly view: EditorView) {
-      this.dom = document.createElement("div");
-      this.dom.className = "cm-gitOverview";
-      this.dom.title = "Changes";
-      this.dom.addEventListener("mousedown", (event) => {
-        this.onMouseDown(event);
-      });
-      view.dom.appendChild(this.dom);
-      this.draw();
-    }
-
-    update(update: ViewUpdate) {
-      if (
-        update.docChanged ||
-        update.geometryChanged ||
-        update.state.field(chunksField) !== update.startState.field(chunksField)
-      ) {
-        this.draw();
-      }
-    }
-
-    destroy() {
-      this.dom.remove();
-    }
-
-    onMouseDown(event: MouseEvent) {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      this.jump(event);
-      const move = (next: MouseEvent) => this.jump(next);
-      const stop = () => {
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", stop);
-      };
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", stop);
-    }
-
-    jump(event: MouseEvent) {
-      const rect = this.dom.getBoundingClientRect();
-      if (rect.height <= 0) return;
-      const ratio = Math.min(
-        1,
-        Math.max(0, (event.clientY - rect.top) / rect.height),
-      );
-      const doc = this.view.state.doc;
-      const lineNumber = Math.min(
-        doc.lines,
-        Math.max(1, Math.floor(ratio * doc.lines) + 1),
-      );
-      const pos = doc.line(lineNumber).from;
-      this.view.dispatch({
-        effects: EditorView.scrollIntoView(pos, { y: "center" }),
-      });
-    }
-
-    draw() {
-      const { state } = this.view;
-      const chunks = state.field(chunksField);
-      const original = state.field(originalField);
-      this.dom.replaceChildren();
-      if (chunks.length === 0) {
-        this.dom.hidden = true;
-        return;
-      }
-      this.dom.hidden = false;
-      const height = Math.max(
-        1,
-        this.dom.clientHeight || this.view.dom.clientHeight,
-      );
-      for (const tick of overviewTicks(state.doc, chunks, original)) {
-        const el = document.createElement("div");
-        el.className = `cm-gitOverviewTick cm-gitOverview-${tick.kind}`;
-        el.style.top = `${tick.top * 100}%`;
-        el.style.height = `${Math.max(3, tick.size * height)}px`;
-        this.dom.appendChild(el);
-      }
-    }
-  },
-);
 
 const gitHunkActions = ViewPlugin.fromClass(
   class {
@@ -1102,34 +1059,6 @@ const gitTheme = EditorView.theme({
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
   },
-  ".cm-gitOverview": {
-    position: "absolute",
-    top: "0",
-    right: "0",
-    bottom: "0",
-    zIndex: "13",
-    width: "var(--editor-scrollbar-width, 18px)",
-    pointerEvents: "none",
-  },
-  ".cm-gitOverviewTick": {
-    position: "absolute",
-    left: "3px",
-    right: "2px",
-    boxSizing: "border-box",
-    borderRadius: "1px",
-    pointerEvents: "auto",
-  },
-  ".cm-gitOverview-add": {
-    backgroundColor: "#34d399",
-  },
-  ".cm-gitOverview-del": {
-    backgroundColor: "#f87171",
-  },
-  ".cm-gitOverview-mod": {
-    display: "flex",
-    flexDirection: "row",
-    background: "linear-gradient(to right, #f87171 0 50%, #34d399 50% 100%)",
-  },
   ".cm-gitHunkBar": {
     position: "absolute",
     zIndex: "24",
@@ -1165,10 +1094,10 @@ const gitTheme = EditorView.theme({
   },
 });
 
-const UNDO_SVG =
+export const UNDO_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>';
 
-const PLUS_SVG =
+export const PLUS_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>';
 
 const COMMENT_SVG =

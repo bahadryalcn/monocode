@@ -26,6 +26,16 @@ import { basename } from "../../../platform/tauri/fs";
 import { highlightDiffFile, type SyntaxToken } from "../../files/editor/syntaxTokens";
 import { DiffCommentComposer } from "./DiffCommentComposer";
 import {
+  DiffOverviewContext,
+  DiffOverviewRegistry,
+  DiffOverviewRuler,
+  useDiffOverviewSource,
+} from "./DiffOverviewRuler";
+import { DiffLayoutToggle, useDiffLayout } from "./DiffLayoutToggle";
+import type { DiffLayout } from "../../settings/model/settings";
+import { splitRowMarks, unifiedRowMarks } from "../model/diffOverview";
+import { buildSplitRows, type SplitRow } from "../model/splitRows";
+import {
   expandFold,
   type FoldReveal,
   type UnifiedBlock,
@@ -41,6 +51,7 @@ import {
   windowRows,
   type DiffViewRow,
   type RowWindow,
+  type SizedRow,
 } from "../model/unifiedDiffWindow";
 
 export type UnifiedDiffFileModel = {
@@ -100,6 +111,7 @@ export function UnifiedDiffView({
 }: Props) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const colorScheme = useColorScheme();
+  const diffLayout = useDiffLayout();
   const [open, setOpen] = useState<Set<string>>(() =>
     initiallyOpenFiles(files, initialExpansion),
   );
@@ -108,6 +120,7 @@ export function UnifiedDiffView({
   >({});
   const fileRefs = useRef(new Map<string, HTMLElement>());
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const overview = useMemo(() => new DiffOverviewRegistry(), []);
   const fileKey = useMemo(
     () => files.map((file) => file.id).join("\n"),
     [files],
@@ -230,7 +243,7 @@ export function UnifiedDiffView({
     <div
       className={
         fill
-          ? "flex h-full min-h-0 flex-1 flex-col overflow-hidden"
+          ? "relative flex h-full min-h-0 flex-1 flex-col overflow-hidden"
           : "flex flex-col"
       }
     >
@@ -240,6 +253,7 @@ export function UnifiedDiffView({
         <span className="text-content/70">{fileLabel}</span>
         <DiffCounts additions={additions} deletions={deletions} />
         <span className="ml-auto flex items-center gap-0.5">
+          <DiffLayoutToggle className="mr-0.5" />
           <button
             type="button"
             title="Expand all files"
@@ -287,27 +301,33 @@ export function UnifiedDiffView({
               : "flex flex-col"
           }
         >
-          {files.map((file) => (
-            <FileSection
-              key={file.id}
-              file={file}
-              expanded={open.has(file.id)}
-              focused={resolvedFocusId === file.id}
-              busy={busyId === file.id}
-              reveals={reveals[file.id] ?? EMPTY_REVEALS}
-              fileLayout={fileLayout}
-              colorScheme={colorScheme}
-              scrollerRef={scrollerRef}
-              onToggle={toggleFile}
-              onReveal={revealFold}
-              onStageFile={onStageFile}
-              onDiscardFile={onDiscardFile}
-              onStageHunk={onStageHunk}
-              bindRef={bindFileRef}
-            />
-          ))}
+          <DiffOverviewContext.Provider value={fill ? overview : null}>
+            {files.map((file) => (
+              <FileSection
+                key={file.id}
+                file={file}
+                expanded={open.has(file.id)}
+                focused={resolvedFocusId === file.id}
+                busy={busyId === file.id}
+                reveals={reveals[file.id] ?? EMPTY_REVEALS}
+                fileLayout={fileLayout}
+                diffLayout={diffLayout}
+                colorScheme={colorScheme}
+                scrollerRef={scrollerRef}
+                onToggle={toggleFile}
+                onReveal={revealFold}
+                onStageFile={onStageFile}
+                onDiscardFile={onDiscardFile}
+                onStageHunk={onStageHunk}
+                bindRef={bindFileRef}
+              />
+            ))}
+          </DiffOverviewContext.Provider>
         </div>
       </div>
+      {fill ? (
+        <DiffOverviewRuler scrollerRef={scrollerRef} registry={overview} />
+      ) : null}
     </div>
   );
 }
@@ -319,6 +339,7 @@ type FileSectionProps = {
   busy: boolean;
   reveals: Record<string, FoldReveal>;
   fileLayout: FileLayout;
+  diffLayout: DiffLayout;
   colorScheme: ColorScheme;
   scrollerRef: React.RefObject<HTMLDivElement | null>;
   onToggle: (id: string) => void;
@@ -341,6 +362,7 @@ const FileSection = memo(function FileSection({
   busy,
   reveals,
   fileLayout,
+  diffLayout,
   colorScheme,
   scrollerRef,
   onToggle,
@@ -466,6 +488,7 @@ const FileSection = memo(function FileSection({
           reveals={reveals}
           near={near}
           tokens={tokens}
+          diffLayout={diffLayout}
           scrollerRef={scrollerRef}
           onReveal={(foldId, direction) => {
             const block = file.blocks.find(
@@ -494,6 +517,7 @@ function equalFileSectionProps(
     previous.busy === next.busy &&
     previous.reveals === next.reveals &&
     previous.fileLayout === next.fileLayout &&
+    previous.diffLayout === next.diffLayout &&
     previous.colorScheme === next.colorScheme &&
     previous.scrollerRef === next.scrollerRef &&
     previous.onToggle === next.onToggle &&
@@ -531,6 +555,7 @@ function FileBody({
   reveals,
   near,
   tokens,
+  diffLayout,
   scrollerRef,
   onReveal,
   onStageHunk,
@@ -539,6 +564,7 @@ function FileBody({
   reveals: Record<string, FoldReveal>;
   near: boolean;
   tokens: Map<UnifiedLine, SyntaxToken[]> | null;
+  diffLayout: DiffLayout;
   scrollerRef: React.RefObject<HTMLDivElement | null>;
   onReveal: (foldId: string, direction: "up" | "down" | "all") => void;
   onStageHunk?: (id: string, pos: number) => void;
@@ -556,6 +582,7 @@ function FileBody({
       reveals={reveals}
       near={near}
       tokens={tokens}
+      split={diffLayout === "split"}
       canStageHunk={file.canStageHunk}
       scrollerRef={scrollerRef}
       onReveal={onReveal}
@@ -571,6 +598,7 @@ function VirtualRows({
   reveals,
   near,
   tokens,
+  split,
   canStageHunk,
   scrollerRef,
   onReveal,
@@ -582,6 +610,8 @@ function VirtualRows({
   reveals: Record<string, FoldReveal>;
   near: boolean;
   tokens: Map<UnifiedLine, SyntaxToken[]> | null;
+  /** Before | after columns instead of one. */
+  split: boolean;
   canStageHunk?: boolean;
   scrollerRef: React.RefObject<HTMLDivElement | null>;
   onReveal: (foldId: string, direction: "up" | "down" | "all") => void;
@@ -589,8 +619,10 @@ function VirtualRows({
 }) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const codeRef = useRef<HTMLDivElement | null>(null);
-  const mouseYRef = useRef<number | null>(null);
-  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  // The after column's own scroller, in split layout only.
+  const codeRightRef = useRef<HTMLDivElement | null>(null);
+  const mouseRef = useRef<{ x: number; y: number } | null>(null);
+  const [hover, setHover] = useState<DiffHover | null>(null);
   const [commentTarget, setCommentTarget] = useState<DiffCommentDraft | null>(
     null,
   );
@@ -603,17 +635,43 @@ function VirtualRows({
       ),
     [blocks, canStageHunk, fileId, onStageHunk, reveals],
   );
-  const rowLayout = useMemo(() => layoutRows(rows), [rows]);
+  const splitRows = useMemo(
+    () => (split ? buildSplitRows(rows) : null),
+    [rows, split],
+  );
+  // Either way every row has a fixed height, so one window helper serves both.
+  const sizedRows: readonly SizedRow[] = splitRows ?? rows;
+  const rowLayout = useMemo(() => layoutRows(sizedRows), [sizedRows]);
   const totalHeight = rowLayout.totalHeight;
+  const overviewMarks = useMemo(
+    () =>
+      splitRows
+        ? splitRowMarks(splitRows, rowLayout)
+        : unifiedRowMarks(rows, rowLayout),
+    [rows, rowLayout, splitRows],
+  );
+  useDiffOverviewSource(fileId, overviewMarks, bodyRef);
   const minWidthCh = useMemo(() => {
-    let max = 40;
-    for (const row of rows) {
-      if (row.type === "line") {
-        max = Math.max(max, row.line.text.length);
+    let before = 40;
+    let after = 40;
+    if (splitRows) {
+      for (const row of splitRows) {
+        if (row.type === "hunk") {
+          before = Math.max(before, row.line.text.length);
+        } else if (row.type === "pair") {
+          if (row.left) before = Math.max(before, row.left.text.length);
+          if (row.right) after = Math.max(after, row.right.text.length);
+        }
+      }
+    } else {
+      for (const row of rows) {
+        if (row.type === "line") {
+          before = Math.max(before, row.line.text.length);
+        }
       }
     }
-    return max + 8;
-  }, [rows]);
+    return { before: before + 8, after: after + 8 };
+  }, [rows, splitRows]);
   const [range, setRange] = useState<RowWindow>(() => ({
     start: 0,
     end: 0,
@@ -630,7 +688,7 @@ function VirtualRows({
       : new DOMRect(0, 0, window.innerWidth, window.innerHeight);
     const bodyRect = body.getBoundingClientRect();
     const next = windowRows(
-      rows,
+      sizedRows,
       rootRect.top - bodyRect.top,
       rootRect.bottom - bodyRect.top,
       UNIFIED_OVERSCAN_PX,
@@ -644,33 +702,40 @@ function VirtualRows({
         ? current
         : next,
     );
-  }, [rowLayout, rows, scrollerRef]);
+  }, [rowLayout, scrollerRef, sizedRows]);
 
-  const hoverAtY = useCallback(
-    (clientY: number | null) => {
+  const hoverAt = useCallback(
+    (point: { x: number; y: number } | null) => {
       const body = bodyRef.current;
-      if (clientY == null || !body) {
-        setHoverKey((current) => (current == null ? current : null));
-        return;
-      }
-      let y = clientY - body.getBoundingClientRect().top - range.padTop;
-      if (y < 0) {
-        setHoverKey((current) => (current == null ? current : null));
-        return;
-      }
+      const clear = () => setHover((current) => (current == null ? current : null));
+      if (point == null || !body) return clear();
+      const bounds = body.getBoundingClientRect();
+      let y = point.y - bounds.top - range.padTop;
+      if (y < 0) return clear();
+      // Only the split layout cares which column the pointer is over.
+      const side: DiffSide =
+        splitRows && point.x < bounds.left + bounds.width / 2
+          ? "before"
+          : "after";
       for (let index = range.start; index < range.end; index += 1) {
-        const row = rows[index];
+        const row = sizedRows[index];
         if (!row) break;
         if (y < row.height) {
-          const key = diffRowKey(row, index);
-          setHoverKey((current) => (current === key ? current : key));
+          const key = splitRows
+            ? splitRowKey(splitRows[index], index)
+            : diffRowKey(rows[index], index);
+          setHover((current) =>
+            current?.key === key && current.side === side
+              ? current
+              : { key, side },
+          );
           return;
         }
         y -= row.height;
       }
-      setHoverKey((current) => (current == null ? current : null));
+      clear();
     },
-    [range.end, range.padTop, range.start, rows],
+    [range.end, range.padTop, range.start, rows, sizedRows, splitRows],
   );
 
   useLayoutEffect(() => {
@@ -680,8 +745,8 @@ function VirtualRows({
 
   useLayoutEffect(() => {
     if (!near) return;
-    hoverAtY(mouseYRef.current);
-  }, [hoverAtY, near]);
+    hoverAt(mouseRef.current);
+  }, [hoverAt, near]);
 
   useLayoutEffect(() => {
     if (!near) return;
@@ -708,7 +773,7 @@ function VirtualRows({
       frame = window.requestAnimationFrame(() => {
         frame = 0;
         updateWindow();
-        hoverAtY(mouseYRef.current);
+        hoverAt(mouseRef.current);
       });
     };
     target.addEventListener("scroll", onScroll, { passive: true });
@@ -718,17 +783,20 @@ function VirtualRows({
       window.removeEventListener("resize", onScroll);
       if (frame) window.cancelAnimationFrame(frame);
     };
-  }, [hoverAtY, near, scrollerRef, updateWindow]);
+  }, [hoverAt, near, scrollerRef, updateWindow]);
 
   useEffect(() => {
     if (!near) return;
-    const code = codeRef.current;
-    if (!code) return;
+    const scrollers = [codeRef.current, codeRightRef.current].filter(
+      (node): node is HTMLDivElement => node !== null,
+    );
+    if (scrollers.length === 0) return;
 
-    // WebKit can latch a wheel gesture to this horizontal scroller instead of
+    // WebKit can latch a wheel gesture to a horizontal scroller instead of
     // chaining its vertical delta to the surrounding unified diff.
     const onWheel = (event: WheelEvent) => {
       if (event.deltaY === 0) return;
+      const code = event.currentTarget as HTMLElement;
       const ownScroller = scrollerRef.current;
       const verticalScroller =
         ownScroller && ownScroller.scrollHeight > ownScroller.clientHeight + 1
@@ -751,20 +819,27 @@ function VirtualRows({
       verticalScroller.scrollTop = next;
     };
 
-    code.addEventListener("wheel", onWheel, { passive: false });
-    return () => code.removeEventListener("wheel", onWheel);
-  }, [near, scrollerRef]);
+    for (const node of scrollers) {
+      node.addEventListener("wheel", onWheel, { passive: false });
+    }
+    return () => {
+      for (const node of scrollers) node.removeEventListener("wheel", onWheel);
+    };
+  }, [near, scrollerRef, split]);
 
   if (!near) {
-    return <div style={{ height: totalHeight }} />;
+    return <div ref={bodyRef} style={{ height: totalHeight }} />;
   }
 
-  const visible = rows.slice(range.start, range.end);
   const lanePad = {
     paddingTop: range.padTop,
     paddingBottom: range.padBottom,
   };
+  const stageRow = (pos: number) => () => onStageHunk?.(fileId, pos);
+  const comment = (key: string, line: UnifiedLine) => (anchor: DOMRect) =>
+    setCommentTarget({ key, line, anchor });
 
+  const visible = rows.slice(range.start, range.end);
   const renderLane = (lane: Lane) =>
     visible.map((row, index) => {
       const key = diffRowKey(row, range.start + index);
@@ -773,7 +848,7 @@ function VirtualRows({
           key={`${lane}-${key}`}
           row={row}
           lane={lane}
-          hovered={hoverKey === key}
+          hovered={hover?.key === key}
           commenting={commentTarget?.key === key}
           tokens={row.type === "line" ? tokens?.get(row.line) : undefined}
           onReveal={
@@ -783,12 +858,55 @@ function VirtualRows({
           }
           onStage={
             row.type === "line" && row.stage && row.line.pos != null
-              ? () => onStageHunk?.(fileId, row.line.pos as number)
+              ? stageRow(row.line.pos)
               : undefined
           }
           onComment={
             lane === "gutter" && row.type === "line" && row.line.kind !== "hunk"
-              ? (anchor) => setCommentTarget({ key, line: row.line, anchor })
+              ? comment(key, row.line)
+              : undefined
+          }
+        />
+      );
+    });
+
+  const visibleSplit = splitRows
+    ? splitRows.slice(range.start, range.end)
+    : [];
+  const renderSplitLane = (side: DiffSide, lane: Lane) =>
+    visibleSplit.map((row, index) => {
+      const key = splitRowKey(row, range.start + index);
+      const sideKey = `${key}:${side}`;
+      const line =
+        row.type === "pair" ? (side === "before" ? row.left : row.right) : null;
+      // One stage button per row, on the after side unless that side is empty.
+      const stageHere =
+        row.type === "pair" &&
+        row.stagePos !== undefined &&
+        (side === "after" || row.right === null);
+      return (
+        <SplitLane
+          key={`${side}-${lane}-${key}`}
+          row={row}
+          side={side}
+          lane={lane}
+          hovered={hover?.key === key && hover.side === side}
+          rowHovered={hover?.key === key}
+          commenting={commentTarget?.key === sideKey}
+          tokens={line ? tokens?.get(line) : undefined}
+          onReveal={
+            row.type === "fold"
+              ? (direction) => onReveal(row.id, direction)
+              : undefined
+          }
+          onStage={
+            stageHere && row.type === "pair" && row.stagePos !== undefined
+              ? stageRow(row.stagePos)
+              : undefined
+          }
+          onComment={
+            lane === "gutter" && line && line.kind !== "hunk"
+              ? comment(sideKey, line)
               : undefined
           }
         />
@@ -801,25 +919,76 @@ function VirtualRows({
         ref={bodyRef}
         className="flex"
         onMouseMove={(event) => {
-          mouseYRef.current = event.clientY;
-          hoverAtY(event.clientY);
+          mouseRef.current = { x: event.clientX, y: event.clientY };
+          hoverAt(mouseRef.current);
         }}
         onMouseLeave={() => {
-          mouseYRef.current = null;
-          hoverAtY(null);
+          mouseRef.current = null;
+          hoverAt(null);
         }}
       >
-        <div className="relative z-10 w-12 shrink-0" style={lanePad}>
-          {renderLane("gutter")}
-        </div>
-        <div
-          ref={codeRef}
-          className="min-w-0 flex-1 overflow-x-auto overscroll-x-none"
-        >
-          <div style={{ ...lanePad, minWidth: `max(100%, ${minWidthCh}ch)` }}>
-            {renderLane("code")}
-          </div>
-        </div>
+        {splitRows ? (
+          <>
+            {/* Each column scrolls sideways on its own, as the inline view
+                does; the before gutter sits above the after one so a fold
+                bar spanning both stays clickable. */}
+            <div className="flex min-w-0 flex-1">
+              <div className="relative z-20 w-12 shrink-0" style={lanePad}>
+                {renderSplitLane("before", "gutter")}
+              </div>
+              <div
+                ref={codeRef}
+                className="min-w-0 flex-1 overflow-x-auto overscroll-x-none"
+              >
+                <div
+                  style={{
+                    ...lanePad,
+                    minWidth: `max(100%, ${minWidthCh.before}ch)`,
+                  }}
+                >
+                  {renderSplitLane("before", "code")}
+                </div>
+              </div>
+            </div>
+            <div className="flex min-w-0 flex-1 border-l border-stroke">
+              <div className="relative z-10 w-12 shrink-0" style={lanePad}>
+                {renderSplitLane("after", "gutter")}
+              </div>
+              <div
+                ref={codeRightRef}
+                className="min-w-0 flex-1 overflow-x-auto overscroll-x-none"
+              >
+                <div
+                  style={{
+                    ...lanePad,
+                    minWidth: `max(100%, ${minWidthCh.after}ch)`,
+                  }}
+                >
+                  {renderSplitLane("after", "code")}
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="relative z-10 w-12 shrink-0" style={lanePad}>
+              {renderLane("gutter")}
+            </div>
+            <div
+              ref={codeRef}
+              className="min-w-0 flex-1 overflow-x-auto overscroll-x-none"
+            >
+              <div
+                style={{
+                  ...lanePad,
+                  minWidth: `max(100%, ${minWidthCh.before}ch)`,
+                }}
+              >
+                {renderLane("code")}
+              </div>
+            </div>
+          </>
+        )}
       </div>
       {commentTarget ? (
         <DiffCommentComposer
@@ -833,6 +1002,9 @@ function VirtualRows({
 }
 
 type Lane = "gutter" | "code";
+type DiffSide = "before" | "after";
+
+type DiffHover = { key: string; side: DiffSide };
 
 type DiffCommentDraft = {
   key: string;
@@ -843,6 +1015,87 @@ type DiffCommentDraft = {
 function diffRowKey(row: DiffViewRow, index: number) {
   if (row.type === "fold") return `fold-${row.id}`;
   return `${index}-${row.line.kind}-${row.line.oldNumber ?? "x"}-${row.line.newNumber ?? "x"}`;
+}
+
+function splitRowKey(row: SplitRow, index: number) {
+  if (row.type === "fold") return `fold-${row.id}`;
+  if (row.type === "hunk") return `${index}-hunk`;
+  return `${index}-${row.left?.oldNumber ?? "x"}-${row.right?.newNumber ?? "x"}`;
+}
+
+/** One cell of a split row: a lane of one column. */
+function SplitLane({
+  row,
+  side,
+  lane,
+  hovered,
+  rowHovered,
+  commenting,
+  tokens,
+  onReveal,
+  onStage,
+  onComment,
+}: {
+  row: SplitRow;
+  side: DiffSide;
+  lane: Lane;
+  /** The pointer is over this column of the row. */
+  hovered: boolean;
+  /** The pointer is over the row, in either column. */
+  rowHovered: boolean;
+  commenting: boolean;
+  tokens?: SyntaxToken[];
+  onReveal?: (direction: "up" | "down" | "all") => void;
+  onStage?: () => void;
+  onComment?: (anchor: DOMRect) => void;
+}) {
+  if (row.type === "fold") {
+    // The bar is drawn once, from the before gutter, across both columns.
+    if (side === "before" && lane === "gutter") {
+      return (
+        <div className="relative z-20" style={{ height: UNIFIED_FOLD_PX }}>
+          <div
+            className="absolute inset-y-0 left-0"
+            style={{ width: "var(--unified-body-width, 100%)" }}
+          >
+            <FoldBar hidden={row.hidden} onReveal={onReveal!} />
+          </div>
+        </div>
+      );
+    }
+    return <div style={{ height: UNIFIED_FOLD_PX }} />;
+  }
+  if (row.type === "hunk") {
+    return side === "before" ? (
+      <DiffLineRow
+        line={row.line}
+        lane={lane}
+        hovered={false}
+        commenting={false}
+      />
+    ) : (
+      <div className="bg-content/5" style={{ height: UNIFIED_HUNK_PX }} />
+    );
+  }
+  const line = side === "before" ? row.left : row.right;
+  if (!line) {
+    return (
+      <div className="bg-content/[0.04]" style={{ height: UNIFIED_LINE_PX }} />
+    );
+  }
+  return (
+    <DiffLineRow
+      line={line}
+      lane={lane}
+      numberFrom={side === "before" ? "old" : "new"}
+      hovered={hovered}
+      stageVisible={rowHovered}
+      commenting={commenting}
+      tokens={tokens}
+      onStage={onStage}
+      onComment={onComment}
+    />
+  );
 }
 
 function DiffLane({
@@ -936,7 +1189,9 @@ function FoldBar({
 const DiffLineRow = memo(function DiffLineRow({
   line,
   lane,
+  numberFrom,
   hovered,
+  stageVisible = hovered,
   commenting,
   tokens,
   onStage,
@@ -944,7 +1199,11 @@ const DiffLineRow = memo(function DiffLineRow({
 }: {
   line: UnifiedLine;
   lane: Lane;
+  /** Which of the line's numbers to show. Default: the one its kind implies. */
+  numberFrom?: "old" | "new";
   hovered: boolean;
+  /** Show the stage button. Default: whenever `hovered`. */
+  stageVisible?: boolean;
   commenting: boolean;
   tokens?: SyntaxToken[];
   onStage?: () => void;
@@ -966,7 +1225,10 @@ const DiffLineRow = memo(function DiffLineRow({
   }
   const added = line.kind === "add";
   const deleted = line.kind === "del";
-  const number = deleted ? line.oldNumber : line.newNumber;
+  const number =
+    numberFrom === "old" || (numberFrom === undefined && deleted)
+      ? line.oldNumber
+      : line.newNumber;
   const row = added ? "bg-emerald-500/15" : deleted ? "bg-rose-500/15" : "";
   const gutterTint = added
     ? "bg-emerald-500/25"
@@ -1019,7 +1281,7 @@ const DiffLineRow = memo(function DiffLineRow({
             aria-label="Stage hunk"
             onClick={onStage}
             className={`absolute top-0.5 left-full z-10 ml-0.5 grid size-4 place-items-center rounded-[3px] bg-white text-[11px] font-bold text-black ${
-              hovered ? "opacity-100" : "pointer-events-none opacity-0"
+              stageVisible ? "opacity-100" : "pointer-events-none opacity-0"
             }`}
           >
             +

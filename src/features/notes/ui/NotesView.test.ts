@@ -1,4 +1,7 @@
 // @vitest-environment happy-dom
+import { undo } from "@codemirror/commands";
+import { replaceAll, SearchQuery, setSearchQuery } from "@codemirror/search";
+import { EditorView } from "@codemirror/view";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -175,6 +178,77 @@ it("uses the searchable rail project picker when moving a note", async () => {
   expect(filteredItems.map((item) => item.title)).toEqual(["/work/Active"]);
   await act(async () => filteredItems[0]!.click());
   expect(stored.sourceCwd).toBe("/work/Active");
+});
+
+function editorView() {
+  return EditorView.findFromDOM(
+    container.querySelector<HTMLElement>("[data-note-editor] .cm-editor")!,
+  )!;
+}
+
+function tab(label: string) {
+  return [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
+    (button) => button.textContent === label,
+  )!;
+}
+
+it("replaces regex matches with their groups in the note source", async () => {
+  vi.useFakeTimers();
+  stored = { ...stored, body: "item_1 and item_22\nItem_3" };
+  await render();
+  await act(async () => tab("Source").click());
+  const view = editorView();
+  await act(async () =>
+    view.dispatch({
+      effects: setSearchQuery.of(
+        new SearchQuery({
+          search: "item_(\\d+)",
+          replace: "note_$1",
+          regexp: true,
+          caseSensitive: true,
+        }),
+      ),
+    }),
+  );
+  await act(async () => {
+    replaceAll(view);
+  });
+  expect(view.state.doc.toString()).toBe("note_1 and note_22\nItem_3");
+  await act(async () => vi.advanceTimersByTime(400));
+  expect(stored.body).toBe("note_1 and note_22\nItem_3");
+});
+
+it("formats the selection from the toolbar and undoes it in one step", async () => {
+  stored = { ...stored, body: "make this bold" };
+  await render();
+  await act(async () => tab("Preview").click());
+  expect(container.querySelector('[role="toolbar"]')).toBeNull();
+  await act(async () => tab("Source").click());
+  const view = editorView();
+  // happy-dom reports the selection change synchronously, mid-update.
+  view.focus = () => {};
+  await act(async () => view.dispatch({ selection: { anchor: 5, head: 9 } }));
+  const bold = container.querySelector<HTMLButtonElement>(
+    '[role="toolbar"] button[aria-label^="Bold"]',
+  )!;
+  await act(async () => bold.click());
+  expect(view.state.doc.toString()).toBe("make **this** bold");
+  await act(async () => {
+    undo(view);
+  });
+  expect(view.state.doc.toString()).toBe("make this bold");
+});
+
+it("updates the split preview while the source is edited", async () => {
+  await render();
+  await act(async () => tab("Split").click());
+  const view = editorView();
+  await act(async () =>
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: "# Live title" },
+    }),
+  );
+  expect(container.querySelector("h1")?.textContent).toContain("Live title");
 });
 
 function projectButton() {
@@ -384,16 +458,12 @@ it.each(["title", "body", "tags"] as const)(
         ...container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
       ].find((button) => button.textContent === "Source")!;
       await act(async () => source.click());
-      const input = container.querySelector<HTMLTextAreaElement>(
-        "textarea.markdown-source-field",
-      )!;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(
-          HTMLTextAreaElement.prototype,
-          "value",
-        )!.set!.call(input, value);
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
+      const view = editorView();
+      await act(async () =>
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: value },
+        }),
+      );
     };
 
     await render();
@@ -427,11 +497,7 @@ it.each(["title", "body", "tags"] as const)(
       container.querySelector<HTMLInputElement>('[aria-label="Note title"]')
         ?.value,
     ).toBe(expected.title);
-    expect(
-      container.querySelector<HTMLTextAreaElement>(
-        "textarea.markdown-source-field",
-      )?.value,
-    ).toBe(expected.body);
+    expect(editorView().state.doc.toString()).toBe(expected.body);
     expect(
       [...container.querySelectorAll('[aria-label="Tags"] span')].map(
         (tag) => tag.textContent,

@@ -386,7 +386,7 @@ pub(crate) fn init(app: &AppHandle) {
             let _ = tauri::async_runtime::block_on(crate::notifications::show_notification(
                 app.clone(),
                 identifier,
-                "MonoCode".into(),
+                app.package_info().name.clone(),
                 reminder.title,
                 "Reminder: continue this conversation.".into(),
                 preferences.sound,

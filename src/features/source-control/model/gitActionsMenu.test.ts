@@ -8,7 +8,7 @@ import {
 
 function state(overrides: Partial<GitMenuState> = {}): GitMenuState {
   return {
-    local: true,
+    actions: true,
     busy: false,
     branch: "main",
     hasCommits: true,
@@ -279,15 +279,26 @@ describe("gitActionsMenuItems while busy", () => {
   });
 });
 
-describe("gitActionsMenuItems on a connected machine", () => {
+describe("gitActionsMenuItems on a machine whose host lacks the actions", () => {
+  it("explains why only Pull is offered", () => {
+    const items = gitActionsMenuItems(state({ actions: false, updateNotice: "Update the host" }));
+    expect(items.map((item) => (item.kind === "item" ? item.id : "-"))).toEqual(["pull", "-", "host-update"]);
+    expect(items[2]).toMatchObject({ disabled: true, description: "Update the host" });
+    expect(
+      gitActionsMenuItems(state({ actions: false, updateNotice: "x", busy: true })).every(
+        (item) => item.kind === "sep" || item.disabled,
+      ),
+    ).toBe(true);
+  });
+
   it("offers Pull alone", () => {
-    const items = gitActionsMenuItems(state({ local: false }));
+    const items = gitActionsMenuItems(state({ actions: false }));
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ id: "pull", disabled: false });
-    expect(gitActionsMenuItems(state({ local: false, hasUpstream: false }))[0]).toMatchObject({
+    expect(gitActionsMenuItems(state({ actions: false, hasUpstream: false }))[0]).toMatchObject({
       disabled: true,
     });
-    expect(gitActionsMenuItems(state({ local: false, busy: true }))[0]).toMatchObject({
+    expect(gitActionsMenuItems(state({ actions: false, busy: true }))[0]).toMatchObject({
       disabled: true,
     });
   });

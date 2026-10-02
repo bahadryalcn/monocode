@@ -30,6 +30,7 @@ import {
   HARNESS_TITLE,
   type HarnessId,
   type RuntimeMode,
+  unavailableRuntimeModes,
 } from "../../sessions/model/session";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 import {
@@ -433,6 +434,7 @@ export function QuickModelSelector({
             <QuickPermissions
               embedded
               value={runtimeMode}
+              unavailable={unavailableRuntimeModes(model.harness)}
               onChange={onRuntimeModeChange}
               onClose={onClose}
             />

@@ -5,12 +5,18 @@
 //! the per-request token counts newer than a cutoff, and folds them into
 //! 15-minute buckets per model and working directory. Pricing and calendar-day
 //! grouping happen in the webview, which knows the user's time zone.
+//!
+//! Parsing a transcript is the expensive part, so each file's requests are
+//! kept in an on-disk cache keyed by path, size and modification time. A scan
+//! only reparses files that are new or have changed; everything else is read
+//! back from the cache, and the cutoff is applied afterwards.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
@@ -45,6 +51,8 @@ pub struct UsageReport {
     /// False when the account has no log directory yet.
     pub found: bool,
     pub files_scanned: usize,
+    /// How many of those had to be parsed; the rest came from the cache.
+    pub files_parsed: usize,
 }
 
 #[tauri::command]
@@ -55,10 +63,26 @@ pub async fn provider_usage_report(
     since_ms: i64,
 ) -> Result<UsageReport, String> {
     let config_dir = account_config_dir(&app, &provider, account_id.as_deref())?;
+    // One cache file per account directory, so concurrent accounts never share one.
+    let cache = app.path().app_cache_dir().ok().map(|dir| {
+        dir.join(format!(
+            "usage-scan-{provider}-{:016x}.json",
+            fnv1a(&config_dir.to_string_lossy())
+        ))
+    });
     tauri::async_runtime::spawn_blocking(move || {
+        // Two views asking at once would both parse the same cold logs; the
+        // second waits and then reads what the first cached.
+        static SCAN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _scan = SCAN_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let since = since_ms.div_euclid(1000);
         Ok(match provider.as_str() {
-            "claude" => scan(&[config_dir.join("projects")], since, parse_claude_file),
+            "claude" => scan(
+                &[config_dir.join("projects")],
+                since,
+                Provider::Claude,
+                cache.as_deref(),
+            ),
             // Codex moves sessions the user archives out of `sessions`.
             _ => scan(
                 &[
@@ -66,7 +90,8 @@ pub async fn provider_usage_report(
                     config_dir.join("archived_sessions"),
                 ],
                 since,
-                parse_codex_file,
+                Provider::Codex,
+                cache.as_deref(),
             ),
         })
     })
@@ -75,7 +100,7 @@ pub async fn provider_usage_report(
 }
 
 /// The directory a provider CLI uses for this account, without creating it.
-fn account_config_dir(
+pub(crate) fn account_config_dir(
     app: &AppHandle,
     provider: &str,
     account_id: Option<&str>,
@@ -99,19 +124,217 @@ fn account_config_dir(
     }
 }
 
-type FileParser = fn(&Path, i64, &mut Totals, &mut Requests);
+/// Which transcript format, and how a request seen twice is reconciled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provider {
+    Claude,
+    Codex,
+}
+
+impl Provider {
+    fn parse(self, path: &Path, requests: &mut Requests) {
+        match self {
+            Provider::Claude => parse_claude_file(path, requests),
+            Provider::Codex => parse_codex_file(path, requests),
+        }
+    }
+
+    /// Claude repeats a request with growing counts; Codex repeats it verbatim.
+    fn merge(self, requests: &mut Requests, key: u64, request: Request) {
+        match requests.get_mut(&key) {
+            Some(kept) if self == Provider::Claude => kept.usage.keep_largest(&request.usage),
+            Some(_) => {}
+            None => {
+                requests.insert(key, request);
+            }
+        }
+    }
+}
+
 type Totals = HashMap<(i64, String, String), UsageRow>;
 
-/// A request seen in the logs, keyed by its ids, before it is bucketed.
+/// A request seen in the logs, keyed by a hash of its ids, before it is bucketed.
 struct Request {
     timestamp: i64,
     model: String,
     project: String,
     usage: UsageRow,
 }
-type Requests = HashMap<String, Request>;
+type Requests = HashMap<u64, Request>;
 
-fn scan(roots: &[PathBuf], since: i64, parse: FileParser) -> UsageReport {
+impl UsageRow {
+    fn keep_largest(&mut self, other: &UsageRow) {
+        self.input = self.input.max(other.input);
+        self.cache_read = self.cache_read.max(other.cache_read);
+        self.cache_write_5m = self.cache_write_5m.max(other.cache_write_5m);
+        self.cache_write_1h = self.cache_write_1h.max(other.cache_write_1h);
+        self.output = self.output.max(other.output);
+    }
+}
+
+/// FNV-1a, so request keys hash the same in every run and toolchain; the
+/// standard hasher makes no such promise and the cache outlives a run.
+fn fnv1a(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// Bumped whenever the parsers or this layout change what a file yields.
+const CACHE_VERSION: u32 = 1;
+
+/// One request in the cache: key, time, model and project (indexes into the
+/// file's strings), then the five token counts.
+#[derive(Serialize, Deserialize)]
+struct CachedRequest(u64, i64, u32, u32, u64, u64, u64, u64, u64);
+
+#[derive(Serialize, Deserialize)]
+struct CachedFile {
+    size: u64,
+    modified_ms: i64,
+    strings: Vec<String>,
+    requests: Vec<CachedRequest>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct ScanCache {
+    version: u32,
+    files: HashMap<String, CachedFile>,
+}
+
+impl CachedFile {
+    fn new(size: u64, modified_ms: i64, requests: Requests) -> Self {
+        let mut strings: Vec<String> = Vec::new();
+        let mut index: HashMap<String, u32> = HashMap::new();
+        let mut intern = |text: &str| -> u32 {
+            *index.entry(text.to_string()).or_insert_with(|| {
+                strings.push(text.to_string());
+                strings.len() as u32 - 1
+            })
+        };
+        let requests = requests
+            .into_iter()
+            .map(|(key, request)| {
+                let usage = &request.usage;
+                CachedRequest(
+                    key,
+                    request.timestamp,
+                    intern(&request.model),
+                    intern(&request.project),
+                    usage.input,
+                    usage.cache_read,
+                    usage.cache_write_5m,
+                    usage.cache_write_1h,
+                    usage.output,
+                )
+            })
+            .collect();
+        CachedFile {
+            size,
+            modified_ms,
+            strings,
+            requests,
+        }
+    }
+
+    fn decode(&self, cached: &CachedRequest) -> Option<(u64, Request)> {
+        let CachedRequest(key, timestamp, model, project, input, cache_read, w5, w1, output) =
+            cached;
+        Some((
+            *key,
+            Request {
+                timestamp: *timestamp,
+                model: self.strings.get(*model as usize)?.clone(),
+                project: self.strings.get(*project as usize)?.clone(),
+                usage: UsageRow {
+                    input: *input,
+                    cache_read: *cache_read,
+                    cache_write_5m: *w5,
+                    cache_write_1h: *w1,
+                    output: *output,
+                    ..UsageRow::default()
+                },
+            },
+        ))
+    }
+}
+
+fn load_cache(path: &Path) -> ScanCache {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ScanCache>(&bytes).ok())
+        .filter(|cache| cache.version == CACHE_VERSION)
+        .unwrap_or_default()
+}
+
+/// Written beside the target and renamed into place, so a crash mid-write
+/// leaves the previous cache intact. Failure only costs the next scan time.
+fn save_cache(path: &Path, cache: &ScanCache) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(bytes) = serde_json::to_vec(cache) else {
+        return;
+    };
+    let temp = path.with_extension("tmp");
+    if std::fs::write(&temp, bytes).is_ok() && std::fs::rename(&temp, path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
+/// Size and modification time in milliseconds: what says a file is unchanged.
+fn file_stamp(path: &Path) -> Option<(u64, i64)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    Some((metadata.len(), modified))
+}
+
+/// A transcript to (re)parse: cache key, path, size and modification time.
+type StaleFile = (String, PathBuf, u64, i64);
+
+/// Parses every changed file, spread across the available cores.
+fn parse_files(provider: Provider, stale: &[StaleFile]) -> Vec<CachedFile> {
+    let next = AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(stale.len().max(1));
+    let mut parsed: Vec<(usize, CachedFile)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((_, path, size, modified)) = stale.get(index) else {
+                            return out;
+                        };
+                        let mut requests = Requests::new();
+                        provider.parse(path, &mut requests);
+                        out.push((index, CachedFile::new(*size, *modified, requests)));
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
+    parsed.sort_by_key(|(index, _)| *index);
+    parsed.into_iter().map(|(_, file)| file).collect()
+}
+
+fn scan(
+    roots: &[PathBuf],
+    since: i64,
+    provider: Provider,
+    cache_path: Option<&Path>,
+) -> UsageReport {
     let roots: Vec<&PathBuf> = roots.iter().filter(|root| root.is_dir()).collect();
     if roots.is_empty() {
         return UsageReport::default();
@@ -133,12 +356,65 @@ fn scan(roots: &[PathBuf], since: i64, parse: FileParser) -> UsageReport {
     // once, under the transcript that first recorded it.
     files.sort_by_key(|(modified, _)| *modified);
 
-    let mut totals = Totals::new();
+    let mut cache = cache_path.map(load_cache).unwrap_or_default();
+    cache.version = CACHE_VERSION;
+    let mut dirty = false;
+    let mut stale = Vec::new();
+    let mut seen = HashSet::new();
+    for (_, path) in &files {
+        let Some((size, modified)) = file_stamp(path) else {
+            continue;
+        };
+        let key = path.to_string_lossy().into_owned();
+        let fresh = cache
+            .files
+            .get(&key)
+            .is_some_and(|entry| entry.size == size && entry.modified_ms == modified);
+        if !fresh {
+            stale.push((key.clone(), path.clone(), size, modified));
+        }
+        seen.insert(key);
+    }
+    let files_parsed = stale.len();
+    if !stale.is_empty() {
+        dirty = true;
+        let parsed = parse_files(provider, &stale);
+        for ((key, ..), file) in stale.into_iter().zip(parsed) {
+            cache.files.insert(key, file);
+        }
+    }
+
+    // In file order (the sort above), so the first transcript to record a
+    // request owns it.
     let mut requests = Requests::new();
     for (_, path) in &files {
-        parse(path, since, &mut totals, &mut requests);
+        let key = path.to_string_lossy();
+        if let Some(entry) = cache.files.get(key.as_ref()) {
+            for cached in &entry.requests {
+                if let Some((id, request)) = entry.decode(cached) {
+                    provider.merge(&mut requests, id, request);
+                }
+            }
+        }
     }
+    // Drop entries for transcripts that no longer exist; keep older ones the
+    // cutoff skipped, since a longer range will want them.
+    let before = cache.files.len();
+    cache
+        .files
+        .retain(|key, _| seen.contains(key) || Path::new(key).exists());
+    dirty |= cache.files.len() != before;
+    if dirty {
+        if let Some(path) = cache_path {
+            save_cache(path, &cache);
+        }
+    }
+
+    let mut totals = Totals::new();
     for request in requests.into_values() {
+        if request.timestamp < since {
+            continue;
+        }
         add(
             &mut totals,
             request.timestamp,
@@ -153,10 +429,11 @@ fn scan(roots: &[PathBuf], since: i64, parse: FileParser) -> UsageReport {
         rows,
         found: true,
         files_scanned: files.len(),
+        files_parsed,
     }
 }
 
-fn collect_jsonl(dir: &Path, since: i64, depth: usize, out: &mut Vec<(i64, PathBuf)>) {
+pub(crate) fn collect_jsonl(dir: &Path, since: i64, depth: usize, out: &mut Vec<(i64, PathBuf)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -189,7 +466,7 @@ fn collect_jsonl(dir: &Path, since: i64, depth: usize, out: &mut Vec<(i64, PathB
 }
 
 /// A JSONL transcript, plain or zstd-compressed as Codex can store them.
-fn is_log(path: &Path) -> bool {
+pub(crate) fn is_log(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(".jsonl.zst"))
@@ -223,18 +500,23 @@ fn add(totals: &mut Totals, timestamp: i64, model: &str, project: &str, usage: &
 /// Lines of a transcript, decompressed on the fly for `.zst` files. Reading
 /// stops at the first damaged line or frame.
 fn lines(path: &Path) -> Box<dyn Iterator<Item = String>> {
-    let Ok(file) = std::fs::File::open(path) else {
-        return Box::new(std::iter::empty());
-    };
-    let file = BufReader::new(file);
+    match open_log(path) {
+        Some(reader) => Box::new(reader.lines().map_while(Result::ok)),
+        None => Box::new(std::iter::empty()),
+    }
+}
+
+/// A transcript opened for reading, decompressed on the fly for `.zst` files.
+pub(crate) fn open_log(path: &Path) -> Option<Box<dyn BufRead>> {
+    let file = BufReader::new(std::fs::File::open(path).ok()?);
     if path.extension().and_then(|ext| ext.to_str()) == Some("zst") {
         let frames = ZstdFrames {
             source: Some(file),
             decoder: None,
         };
-        return Box::new(BufReader::new(frames).lines().map_while(Result::ok));
+        return Some(Box::new(BufReader::new(frames)));
     }
-    Box::new(file.lines().map_while(Result::ok))
+    Some(Box::new(file))
 }
 
 /// Streams every frame of a zstd file in turn, since a file appended to over
@@ -277,7 +559,7 @@ fn count(value: &Value, key: &str) -> u64 {
 /// repeating the message's usage, so requests are keyed by message and request
 /// id and counted once. An early line can carry a partial snapshot (output
 /// still streaming), so each count keeps the largest value logged for it.
-fn parse_claude_file(path: &Path, since: i64, _totals: &mut Totals, requests: &mut Requests) {
+fn parse_claude_file(path: &Path, requests: &mut Requests) {
     for line in lines(path) {
         if !line.contains("\"usage\"") || !line.contains("\"assistant\"") {
             continue;
@@ -286,30 +568,16 @@ fn parse_claude_file(path: &Path, since: i64, _totals: &mut Totals, requests: &m
             continue;
         };
         if let Some((timestamp, model, project, usage, key)) = claude_usage(&entry) {
-            if timestamp < since {
-                continue;
-            }
-            match requests.get_mut(&key) {
-                Some(request) => {
-                    let kept = &mut request.usage;
-                    kept.input = kept.input.max(usage.input);
-                    kept.cache_read = kept.cache_read.max(usage.cache_read);
-                    kept.cache_write_5m = kept.cache_write_5m.max(usage.cache_write_5m);
-                    kept.cache_write_1h = kept.cache_write_1h.max(usage.cache_write_1h);
-                    kept.output = kept.output.max(usage.output);
-                }
-                None => {
-                    requests.insert(
-                        key,
-                        Request {
-                            timestamp,
-                            model,
-                            project,
-                            usage,
-                        },
-                    );
-                }
-            }
+            Provider::Claude.merge(
+                requests,
+                fnv1a(&key),
+                Request {
+                    timestamp,
+                    model,
+                    project,
+                    usage,
+                },
+            );
         }
     }
 }
@@ -370,7 +638,7 @@ fn claude_usage(entry: &Value) -> Option<(i64, String, String, UsageRow, String)
 /// is that response alone; a repeated total means the same response was
 /// reported twice. A resumed or forked session replays earlier lines into a
 /// new rollout, so responses are also keyed across files and counted once.
-fn parse_codex_file(path: &Path, since: i64, _totals: &mut Totals, requests: &mut Requests) {
+fn parse_codex_file(path: &Path, requests: &mut Requests) {
     let mut model = String::new();
     let mut project = String::new();
     let mut last_total: Option<u64> = None;
@@ -419,9 +687,6 @@ fn parse_codex_file(path: &Path, since: i64, _totals: &mut Totals, requests: &mu
                 else {
                     continue;
                 };
-                if timestamp < since {
-                    continue;
-                }
                 let input = count(usage, "input_tokens");
                 let cached = count(usage, "cached_input_tokens").min(input);
                 let row = UsageRow {
@@ -437,12 +702,16 @@ fn parse_codex_file(path: &Path, since: i64, _totals: &mut Totals, requests: &mu
                     info.get("total_token_usage").unwrap_or(&Value::Null),
                     usage,
                 );
-                requests.entry(key).or_insert_with(|| Request {
-                    timestamp,
-                    model: name.to_string(),
-                    project: project.clone(),
-                    usage: row,
-                });
+                Provider::Codex.merge(
+                    requests,
+                    fnv1a(&key),
+                    Request {
+                        timestamp,
+                        model: name.to_string(),
+                        project: project.clone(),
+                        usage: row,
+                    },
+                );
             }
             _ => {}
         }
@@ -450,7 +719,7 @@ fn parse_codex_file(path: &Path, since: i64, _totals: &mut Totals, requests: &mu
 }
 
 /// Parses `YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM)` into Unix seconds.
-fn parse_timestamp(text: &str) -> Option<i64> {
+pub(crate) fn parse_timestamp(text: &str) -> Option<i64> {
     let bytes = text.as_bytes();
     if bytes.len() < 19
         || bytes[4] != b'-'
@@ -690,7 +959,8 @@ mod tests {
         let report = scan(
             std::slice::from_ref(&dir),
             parse_timestamp("2026-09-01T00:00:00Z").unwrap(),
-            parse_claude_file,
+            Provider::Claude,
+            None,
         );
         assert!(report.found);
         assert_eq!(report.files_scanned, 2);
@@ -732,7 +1002,7 @@ mod tests {
             ],
         );
 
-        let report = scan(std::slice::from_ref(&dir), 0, parse_codex_file);
+        let report = scan(std::slice::from_ref(&dir), 0, Provider::Codex, None);
         let rows: Vec<(i64, u64, u64, u64)> = report
             .rows
             .iter()
@@ -763,7 +1033,7 @@ mod tests {
                 &line("2026-09-29T06:01:09Z", 420),
             ],
         );
-        let report = scan(std::slice::from_ref(&dir), 0, parse_claude_file);
+        let report = scan(std::slice::from_ref(&dir), 0, Provider::Claude, None);
         let rows: Vec<(u64, u64, u64)> = report
             .rows
             .iter()
@@ -820,7 +1090,7 @@ mod tests {
             &[&session("gpt-moved", 4)],
         );
 
-        let report = scan(&[sessions, archived], 0, parse_codex_file);
+        let report = scan(&[sessions, archived], 0, Provider::Codex, None);
         let mut models: Vec<(&str, u64)> = report
             .rows
             .iter()
@@ -857,7 +1127,7 @@ mod tests {
             "2026/09/29/rollout-b.jsonl",
             &[meta, &first, &response("2026-09-29T06:05:00Z", 220)],
         );
-        let report = scan(std::slice::from_ref(&dir), 0, parse_codex_file);
+        let report = scan(std::slice::from_ref(&dir), 0, Provider::Codex, None);
         let input: u64 = report.rows.iter().map(|row| row.input).sum();
         assert_eq!(input, 200);
         std::fs::remove_dir_all(dir).ok();
@@ -885,7 +1155,8 @@ mod tests {
         let report = scan(
             &[PathBuf::from("/definitely/not/here")],
             0,
-            parse_codex_file,
+            Provider::Codex,
+            None,
         );
         assert!(!report.found);
         assert!(report.rows.is_empty());
@@ -968,5 +1239,214 @@ mod tests {
             "openai/fresh"
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn claude_line(ts: &str, project: &str, request: &str, output: u64) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"{ts}","cwd":"{project}","requestId":"{request}","message":{{"id":"m_{request}","model":"claude-opus-5-5","usage":{{"input_tokens":1,"output_tokens":{output}}}}}}}"#
+        )
+    }
+
+    fn total_output(report: &UsageReport) -> u64 {
+        report.rows.iter().map(|row| row.output).sum()
+    }
+
+    #[test]
+    fn fnv_hash_is_stable_across_runs() {
+        assert_eq!(fnv1a(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a("a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn cached_scan_matches_an_uncached_one_and_skips_unchanged_files() {
+        let dir = temp_dir("cache-hit");
+        let cache = dir.join("cache/usage.json");
+        let logs = dir.join("logs");
+        let first = claude_line("2026-09-29T06:01:00Z", "/work/app", "r1", 10);
+        let second = claude_line("2026-09-29T07:01:00Z", "/work/site", "r2", 20);
+        write(&logs, "p/a.jsonl", &[&first, &second]);
+        // A resumed transcript repeats r1; it still counts once.
+        write(&logs, "p/b.jsonl", &[&first]);
+
+        let roots = [logs.clone()];
+        let plain = scan(&roots, 0, Provider::Claude, None);
+        let cold = scan(&roots, 0, Provider::Claude, Some(&cache));
+        let warm = scan(&roots, 0, Provider::Claude, Some(&cache));
+        assert_eq!((plain.files_parsed, cold.files_parsed), (2, 2));
+        assert_eq!(warm.files_parsed, 0);
+        assert_eq!(total_output(&plain), 30);
+        assert_eq!(plain.rows, cold.rows);
+        assert_eq!(plain.rows, warm.rows);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_changed_file_is_reparsed_and_others_are_not() {
+        let dir = temp_dir("cache-change");
+        let cache = dir.join("usage.json");
+        let logs = dir.join("logs");
+        let one = claude_line("2026-09-29T06:01:00Z", "/work/app", "r1", 10);
+        let path = write(&logs, "p/a.jsonl", &[&one]);
+        write(
+            &logs,
+            "p/b.jsonl",
+            &[&claude_line("2026-09-29T06:05:00Z", "/work/app", "r2", 5)],
+        );
+        let roots = [logs.clone()];
+        scan(&roots, 0, Provider::Claude, Some(&cache));
+
+        // The session keeps running: the file grows.
+        let more = claude_line("2026-09-29T06:09:00Z", "/work/app", "r3", 7);
+        std::fs::write(&path, format!("{one}\n{more}")).unwrap();
+        let report = scan(&roots, 0, Provider::Claude, Some(&cache));
+        assert_eq!(report.files_parsed, 1);
+        assert_eq!(total_output(&report), 22);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_longer_range_reuses_the_cache_and_keeps_older_files() {
+        let dir = temp_dir("cache-range");
+        let cache = dir.join("usage.json");
+        let logs = dir.join("logs");
+        let old = write(
+            &logs,
+            "p/old.jsonl",
+            &[&claude_line("2026-01-01T00:00:00Z", "/work/app", "old", 3)],
+        );
+        write(
+            &logs,
+            "p/new.jsonl",
+            &[&claude_line("2026-09-29T06:00:00Z", "/work/app", "new", 4)],
+        );
+        // Make the old transcript look old on disk so a short range skips it.
+        let long_ago = std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_767_225_600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+
+        let roots = [logs.clone()];
+        let since = parse_timestamp("2026-09-01T00:00:00Z").unwrap();
+        let short = scan(&roots, since, Provider::Claude, Some(&cache));
+        assert_eq!((short.files_scanned, total_output(&short)), (1, 4));
+        let all = scan(&roots, 0, Provider::Claude, Some(&cache));
+        // Only the older file is new to the cache.
+        assert_eq!(all.files_parsed, 1);
+        assert_eq!((all.files_scanned, total_output(&all)), (2, 7));
+        let again = scan(&roots, since, Provider::Claude, Some(&cache));
+        assert_eq!((again.files_parsed, total_output(&again)), (0, 4));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_damaged_or_outdated_cache_is_rebuilt() {
+        let dir = temp_dir("cache-bad");
+        let cache = dir.join("usage.json");
+        let logs = dir.join("logs");
+        write(
+            &logs,
+            "p/a.jsonl",
+            &[&claude_line("2026-09-29T06:00:00Z", "/work/app", "r1", 4)],
+        );
+        let roots = [logs.clone()];
+        std::fs::write(&cache, b"{not json").unwrap();
+        assert_eq!(
+            scan(&roots, 0, Provider::Claude, Some(&cache)).files_parsed,
+            1
+        );
+        let outdated =
+            std::fs::read_to_string(&cache)
+                .unwrap()
+                .replacen("\"version\":1", "\"version\":0", 1);
+        std::fs::write(&cache, outdated).unwrap();
+        let rebuilt = scan(&roots, 0, Provider::Claude, Some(&cache));
+        assert_eq!((rebuilt.files_parsed, total_output(&rebuilt)), (1, 4));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn codex_cache_keeps_cross_file_dedupe() {
+        let dir = temp_dir("cache-codex");
+        let cache = dir.join("usage.json");
+        let sessions = dir.join("sessions");
+        let meta = r#"{"type":"session_meta","timestamp":"2026-09-29T06:00:00Z","payload":{"cwd":"/work/app"}}"#;
+        let turn = r#"{"type":"turn_context","timestamp":"2026-09-29T06:00:01Z","payload":{"model":"gpt-5.5"}}"#;
+        let count = r#"{"type":"event_msg","timestamp":"2026-09-29T06:00:02Z","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":150},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":50}}}}"#;
+        write(&sessions, "2026/09/29/a.jsonl", &[meta, turn, count]);
+        write(&sessions, "2026/09/29/b.jsonl", &[meta, turn, count]);
+        let roots = [sessions.clone()];
+        let cold = scan(&roots, 0, Provider::Codex, Some(&cache));
+        let warm = scan(&roots, 0, Provider::Codex, Some(&cache));
+        assert_eq!(warm.files_parsed, 0);
+        assert_eq!(cold.rows, warm.rows);
+        assert_eq!(total_output(&warm), 50);
+        assert_eq!(warm.rows[0].project, "/work/app");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Dry run on this machine's real logs. Reads the transcripts, prints only
+    /// aggregate numbers, and keeps its cache in a temp directory.
+    /// `cargo test -p monocode --lib -- --ignored --nocapture real_logs_dry_run`
+    #[test]
+    #[ignore = "reads the real ~/.claude and ~/.codex logs"]
+    fn real_logs_dry_run() {
+        let Some(home) = crate::dirs_home().map(PathBuf::from) else {
+            return;
+        };
+        let cache_dir = temp_dir("dry-run");
+        let runs: [(&str, Provider, Vec<PathBuf>); 2] = [
+            (
+                "claude",
+                Provider::Claude,
+                vec![home.join(".claude/projects")],
+            ),
+            (
+                "codex",
+                Provider::Codex,
+                vec![
+                    home.join(".codex/sessions"),
+                    home.join(".codex/archived_sessions"),
+                ],
+            ),
+        ];
+        for (name, provider, roots) in runs {
+            let cache = cache_dir.join(format!("{name}.json"));
+            let started = std::time::Instant::now();
+            let cold = scan(&roots, 0, provider, Some(&cache));
+            let cold_time = started.elapsed();
+            let started = std::time::Instant::now();
+            let warm = scan(&roots, 0, provider, Some(&cache));
+            let warm_time = started.elapsed();
+            let days: HashSet<i64> = warm
+                .rows
+                .iter()
+                .map(|r| r.slot.div_euclid(86_400))
+                .collect();
+            let projects: HashSet<&str> = warm.rows.iter().map(|r| r.project.as_str()).collect();
+            let tokens: u64 = warm
+                .rows
+                .iter()
+                .map(|r| r.input + r.cache_read + r.cache_write_5m + r.cache_write_1h + r.output)
+                .sum();
+            let size = std::fs::metadata(&cache).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "{name}: files={} parsed_cold={} parsed_warm={} rows={} days={} projects={} tokens={} cold={:.2}s warm={:.2}s cache={:.1}MB same={}",
+                warm.files_scanned,
+                cold.files_parsed,
+                warm.files_parsed,
+                warm.rows.len(),
+                days.len(),
+                projects.len(),
+                tokens,
+                cold_time.as_secs_f64(),
+                warm_time.as_secs_f64(),
+                size as f64 / 1e6,
+                cold.rows == warm.rows,
+            );
+        }
+        std::fs::remove_dir_all(cache_dir).ok();
     }
 }

@@ -11,6 +11,14 @@ import {
   type SessionSyncResponse,
 } from "./protocol";
 import { remoteProjectFor } from "./remoteProjects";
+import { blocksSending } from "./remoteConnection";
+import {
+  notifyRemoteRecovered,
+  readRemoteConnection,
+  recordRemoteConnection,
+  resetRemoteConnection,
+} from "./remoteHealth";
+import { loadRemoteAutoReconnect } from "../../settings/model/settings";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
 
 const CHANGE = "monocode:remote-machines";
@@ -24,6 +32,90 @@ export const OPEN_CONNECTIONS_EVENT = "monocode:open-connections";
 export const OPEN_REMOTE_PROJECT_EVENT = "monocode:open-remote-project";
 export const refreshRemoteMachines = () =>
   window.dispatchEvent(new Event(CHANGE));
+const RECONNECT = "monocode:reconnect-machine";
+let reconnectRequest: string | undefined;
+
+/** Opens Connections settings and starts reconnecting this machine there, where
+ * the SSH password and host-key prompts are answered. */
+export function requestMachineReconnect(machineId: string) {
+  reconnectRequest = machineId;
+  window.dispatchEvent(new Event(RECONNECT));
+  window.dispatchEvent(new Event(OPEN_CONNECTIONS_EVENT));
+}
+
+/** The machine a view asked to reconnect, once, if it is one of `machines`. */
+export function takeReconnectRequest(machines: RemoteMachine[]): RemoteMachine | undefined {
+  const machine = machines.find((entry) => entry.id === reconnectRequest);
+  if (machine) reconnectRequest = undefined;
+  return machine;
+}
+
+export function subscribeReconnectRequests(listener: () => void): () => void {
+  window.addEventListener(RECONNECT, listener);
+  return () => window.removeEventListener(RECONNECT, listener);
+}
+
+const EDIT = "monocode:edit-machine";
+let editRequest: string | undefined;
+
+/** Opens Connections settings with this machine's definition ready to edit. */
+export function requestMachineEdit(machineId: string) {
+  editRequest = machineId;
+  window.dispatchEvent(new Event(EDIT));
+  window.dispatchEvent(new Event(OPEN_CONNECTIONS_EVENT));
+}
+
+/** The machine a view asked to edit, once, if it is one of `machines`. */
+export function takeEditRequest(machines: RemoteMachine[]): RemoteMachine | undefined {
+  const machine = machines.find((entry) => entry.id === editRequest);
+  if (machine) editRequest = undefined;
+  return machine;
+}
+
+export function subscribeEditRequests(listener: () => void): () => void {
+  window.addEventListener(EDIT, listener);
+  return () => window.removeEventListener(EDIT, listener);
+}
+
+const capabilitiesByEnvironment = new Map<string, string[]>();
+const capabilityListeners = new Set<() => void>();
+const capabilityLookups = new Map<string, Promise<string[] | undefined>>();
+
+/** What a machine's host last advertised in `environment.describe`. */
+export function cachedRemoteCapabilities(environmentId: string): string[] | undefined {
+  return capabilitiesByEnvironment.get(environmentId);
+}
+
+export function subscribeRemoteCapabilities(listener: () => void): () => void {
+  capabilityListeners.add(listener);
+  return () => capabilityListeners.delete(listener);
+}
+
+export function recordRemoteCapabilities(environmentId: string, advertised: unknown) {
+  const next = Array.isArray(advertised)
+    ? advertised.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  const previous = capabilitiesByEnvironment.get(environmentId);
+  if (previous?.length === next.length && previous.every((entry, i) => entry === next[i]))
+    return;
+  capabilitiesByEnvironment.set(environmentId, next);
+  capabilityListeners.forEach((listener) => listener());
+}
+
+/** Asks a machine for its capabilities, to learn whether its host is new enough. */
+export function loadRemoteCapabilities(environmentId: string): Promise<string[] | undefined> {
+  const pending = capabilityLookups.get(environmentId);
+  if (pending) return pending;
+  const lookup = (async () => {
+    const machine = await remoteMachineFor(environmentId);
+    if (!machine) return undefined;
+    const host = await remoteRequest<{ capabilities?: unknown }>(machine.id, "environment.describe");
+    recordRemoteCapabilities(environmentId, host.capabilities);
+    return cachedRemoteCapabilities(environmentId);
+  })().finally(() => capabilityLookups.delete(environmentId));
+  capabilityLookups.set(environmentId, lookup);
+  return lookup;
+}
 const TAB_KEY = "monocode.remote-tabs.v2";
 const WORKTREE_KEY = "monocode.remote-pending-worktrees.v1";
 
@@ -150,12 +242,39 @@ export const clearPendingRemoteCommand = (
 ) =>
   localStorage.removeItem(`${pendingPrefix(project, environment)}${commandId}`);
 
+/** Whether a request may start a missing SSH tunnel. Always, unless the user
+ * turned automatic reconnecting off: then only what the user did (`fresh`, or
+ * `userInitiated`) may reconnect a machine already known to be down, and
+ * background polls fail fast instead. A machine not known to be down (nothing
+ * has failed yet, such as at startup) is still connected on first use. */
+export function mayStartTunnel(
+  machineId: string,
+  fresh: boolean,
+  userInitiated: boolean,
+): boolean {
+  if (fresh || userInitiated || loadRemoteAutoReconnect()) return true;
+  const environmentId = cachedMachines.find((entry) => entry.id === machineId)?.environmentId;
+  return !environmentId || !blocksSending(readRemoteConnection(environmentId).status);
+}
+
+/** `fresh` makes a dropped SSH tunnel be restarted now instead of answering
+ * with the error of an attempt that failed moments ago; for a reconnect the
+ * user asked for. `userInitiated` marks a request that exists because the user
+ * acted (sending, opening a project), as opposed to a background poll. */
 export function remoteRequest<T>(
   machineId: string,
   method: string,
   params: unknown = {},
+  fresh = false,
+  userInitiated = false,
 ): Promise<T> {
-  return invoke<T>("remote_request", { machineId, method, params });
+  return invoke<T>("remote_request", {
+    machineId,
+    method,
+    params,
+    ...(fresh ? { fresh } : {}),
+    ...(mayStartTunnel(machineId, fresh, userInitiated) ? {} : { allowConnect: false }),
+  });
 }
 
 /** Reads one sync, assembling it from bounded pieces when the host chunks it. */
@@ -244,6 +363,29 @@ export async function connectMachine(
   return machine;
 }
 
+/** Saves a machine's new name or SSH address. Its id and environment id stay,
+ * so every project on it keeps working. When the way in changed, the desktop
+ * closes the old tunnel and the machine's connection status starts over. */
+export async function updateMachine(
+  machine: RemoteMachine,
+  edit: { name: string; target: string; port: number | null },
+  reconnect: boolean,
+): Promise<RemoteMachine> {
+  const saved = await invoke<RemoteMachine>("remote_machine_update", {
+    machineId: machine.id,
+    name: edit.name,
+    target: edit.target,
+    port: edit.port,
+  });
+  cachedMachines = cachedMachines.map((entry) => (entry.id === saved.id ? saved : entry));
+  if (reconnect) {
+    machineOnline.delete(saved.id);
+    resetRemoteConnection(saved.environmentId);
+  }
+  window.dispatchEvent(new Event(CHANGE));
+  return saved;
+}
+
 export async function disconnectMachine(machineId: string): Promise<void> {
   await invoke("remote_disconnect", { machineId });
   cachedMachines = cachedMachines.filter((entry) => entry.id !== machineId);
@@ -297,11 +439,17 @@ const statusWatchers = new Map<
 >();
 
 /** Records whether a machine answered its latest request, for every view
- * that shows its connection state. */
-export function reportRemoteMachineStatus(machineId: string, online: boolean) {
+ * that shows its connection state. `error` is why it did not. */
+export function reportRemoteMachineStatus(machineId: string, online: boolean, error?: unknown) {
+  const environmentId = cachedMachines.find((entry) => entry.id === machineId)?.environmentId;
+  if (environmentId)
+    recordRemoteConnection(environmentId, online ? undefined : (error ?? "Machine is unreachable"));
+  const wasOffline = machineOnline.get(machineId) === false;
   if (machineOnline.get(machineId) === online) return;
   machineOnline.set(machineId, online);
   window.dispatchEvent(new Event(STATUS));
+  // Views that gave up on this machine reload as soon as it answers again.
+  if (online && wasOffline) notifyRemoteRecovered(environmentId);
 }
 
 function watchMachineStatus(machineId: string): () => void {
@@ -315,12 +463,16 @@ function watchMachineStatus(machineId: string): () => void {
     let failures = 0;
     const poll = async () => {
       try {
-        await remoteRequest(machineId, "environment.describe");
+        const host = await remoteRequest<{ environmentId?: string; capabilities?: unknown }>(
+          machineId,
+          "environment.describe",
+        );
+        if (host?.environmentId) recordRemoteCapabilities(host.environmentId, host.capabilities);
         failures = 0;
         reportRemoteMachineStatus(machineId, true);
-      } catch {
+      } catch (reason) {
         failures = Math.min(4, failures + 1);
-        reportRemoteMachineStatus(machineId, false);
+        reportRemoteMachineStatus(machineId, false, reason);
       }
       if (statusWatchers.get(machineId) === watcher)
         watcher.timer = setTimeout(

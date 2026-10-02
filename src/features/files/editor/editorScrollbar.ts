@@ -5,6 +5,7 @@ import {
 } from "@codemirror/lint";
 import type { EditorState, Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { revealOverviewTick } from "./editorOverview";
 
 const RAIL_WIDTH = 18;
 const MIN_THUMB_HEIGHT = 32;
@@ -187,7 +188,8 @@ class EditorScrollbar {
   /**
    * The diff overview overlay and the diagnostic ticks are the only things
    * still inside the rail strip that are not the scroller, and neither is a
-   * scrollable ancestor of the wheel. Everything else in the strip - the
+   * scrollable ancestor of the wheel. (The overview now paints on a see-through
+   * canvas, so only the diagnostic ticks and test doubles reach this.) Everything else in the strip - the
    * search panel, a hunk bar - is left to the browser, so a wheel over a
    * nested scroller there is not hijacked.
    */
@@ -297,6 +299,12 @@ class EditorScrollbar {
     // A finger pans the see-through strip natively. Claiming it here too would
     // leave two writers on scrollTop.
     if (event.pointerType === "touch") return;
+    // A change tick drawn on the rail is a target: land on it, centred.
+    if (revealOverviewTick(this.view, event.clientY)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     // Suppresses the compatibility mousedown, so the caret stays put.
     event.preventDefault();
     event.stopPropagation();

@@ -39,7 +39,6 @@ import {
   saveRecentModelChoice,
 } from "../../sessions/model/models";
 import {
-  DEFAULT_RUNTIME_MODE,
   HARNESS_TITLE,
   type HarnessId,
   type RuntimeMode,
@@ -79,6 +78,8 @@ import {
   initialQuickChoice,
   initialQuickProject,
   loadQuickProjects,
+  quickLaunchRefusal,
+  quickRuntimeMode,
   QUICK_COMPOSER_CATALOG_EVENT,
   QUICK_COMPOSER_CATALOG_REQUEST_EVENT,
   QUICK_COMPOSER_SHOWN_EVENT,
@@ -137,8 +138,11 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
     getModelSnapshot,
   );
   const [modelSettings, setModelSettings] = useState(loadLastModelSettings);
-  const [runtimeMode, setRuntimeMode] =
-    useState<RuntimeMode>(DEFAULT_RUNTIME_MODE);
+  // Only what the user picked is stored. Until then the mode follows the
+  // selected harness's default for a new session, so it tracks the limits a
+  // workspace window reports after the panel opened.
+  const [pickedRuntimeMode, setPickedRuntimeMode] =
+    useState<RuntimeMode | null>(null);
   const [prompt, setPrompt] = useState("");
   const leadingMode = leadingModeCommand(prompt, MODE_NAMES);
   const [slash, setSlash] = useState<SlashToken | null>(null);
@@ -294,6 +298,7 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
     name: "Loading model…",
   };
   const settings = mergeModelSettings(model, modelSettings);
+  const runtimeMode = quickRuntimeMode(model.harness, pickedRuntimeMode);
   const optionCount =
     picker === "commands" ? commandOptions.length : projectOptions.length;
   const openPicker = (kind: "project" | "model" | "attachments") => {
@@ -393,6 +398,13 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
       (attachments.files.length > 0 && !attachmentsSupported)
     )
       return;
+    const intent =
+      launchMode.mode === PLAN_COMMAND.name ? ("plan" as const) : undefined;
+    const refusal = quickLaunchRefusal(model.harness, runtimeMode, intent);
+    if (refusal) {
+      setError(refusal);
+      return;
+    }
     setBusy(true);
     setError(null);
     const picked = { harness: model.harness, model: model.id };
@@ -818,7 +830,7 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
               model={model}
               values={settings}
               runtimeMode={runtimeMode}
-              onRuntimeModeChange={setRuntimeMode}
+              onRuntimeModeChange={setPickedRuntimeMode}
               availableHarnesses={availableHarnesses}
               onChange={(selected) => {
                 setChoice({ harness: selected.harness, model: selected.id });

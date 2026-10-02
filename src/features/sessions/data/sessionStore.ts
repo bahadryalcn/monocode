@@ -5,9 +5,25 @@ import {
 } from "../../../integrations/harness/core/preview";
 import { codexCommandPresentation } from "../../../integrations/harness/providers/codex/codexProtocol";
 import { recoverCursorSubagents } from "../../../integrations/harness/providers/cursor/cursorSubagents";
+import { pathKey } from "../../../shared/lib/paths";
 import { persistableAttachment } from "../model/attachments";
+import { clearComposerDraft } from "../model/draftCache";
+import {
+  markMissingAttachments,
+  persistableQueue,
+  restoreQueuedMessages,
+} from "../model/queuePersistence";
+import {
+  budgetStepOutputs,
+  capHeadTail,
+  capStepOutput,
+  PERSISTED_AGENT_OUTPUT_RUN_CHARS,
+  PERSISTED_AGENT_OUTPUT_STEP_CHARS,
+  PERSISTED_AGENT_PROMPT_CHARS,
+} from "../model/agentOutput";
 import type { ContextUsage } from "../model/contextUsage";
 import { isRemoteProjectPath, normalizeProjectPath } from "../../projects/model/recents";
+import { removeSessionAdditionalDirs } from "../../projects/model/additionalDirs";
 import {
   claudeShellCommands,
   ompActiveAssistantTexts,
@@ -34,6 +50,7 @@ import type {
   Session,
   TaskListMeta,
   PlanBlockMeta,
+  QueuedMessage,
   TurnModel,
   TurnMetrics,
 } from "../model/session";
@@ -264,6 +281,30 @@ export async function upsertSession(
 }
 
 /**
+ * Store a conversation brought in from a provider's own history, keeping its
+ * original timestamps so it sorts where it happened. Resolves to `null` when
+ * the conversation is already stored: an import never replaces a session.
+ */
+export async function importSessionRecord(
+  session: Session,
+  times: { createdAt: number; updatedAt: number },
+): Promise<SessionSummary | null> {
+  if (!shouldPersistSession(session)) {
+    throw new Error("The conversation has no messages to import");
+  }
+  if (!isPersistableId(session.id)) throw new Error("Invalid session id");
+  const summary = await invoke<SessionSummary | null>("session_import", {
+    session: { ...sanitizeSessionForPersist(session), ...times },
+  });
+  return summary ? normalizeSummary(summary) : null;
+}
+
+/** `harness:providerSessionId` of every stored session bound to a provider conversation, plus the ids earlier imports created. */
+export function importedSessionKeys(): Promise<string[]> {
+  return invoke<string[]>("session_import_keys");
+}
+
+/**
  * Blocks are replaced, never mutated in place, so identity stands in for
  * content. Serializing the session here instead meant a full deep copy and a
  * `JSON.stringify` of the whole transcript — megabytes on a long chat — on the
@@ -312,6 +353,14 @@ export async function listLinkedSessions(): Promise<SessionSummary[]> {
   return rows.map(normalizeSummary);
 }
 
+/** Newest sessions across every project, plus all pinned ones. No transcripts. */
+export async function listRecentSessions(
+  limit: number,
+): Promise<SessionSummary[]> {
+  const rows = await invoke<SessionSummary[]>("session_list_recent", { limit });
+  return rows.map(normalizeSummary);
+}
+
 export type SessionSearchHit = {
   kind: "conversation" | "message";
   sessionId: string;
@@ -357,7 +406,121 @@ export function cancelSessionSearch(searchOwner: string): Promise<void> {
   return invoke<void>("cancel_session_search", { searchOwner });
 }
 
+export type SessionContentHit = {
+  blockId: string;
+  role: string;
+  /** Message excerpt around the match. */
+  snippet: string;
+  /** UTF-16 `[start, end)` offsets of the matched words inside `snippet`. */
+  ranges: [number, number][];
+};
+
+export type SessionContentSession = {
+  sessionId: string;
+  cwd: string;
+  harness: string;
+  title: string;
+  titleRanges: [number, number][];
+  createdAt: number;
+  updatedAt: number;
+  archived: boolean;
+  /** Messages that matched; `hits` carries the first few. */
+  hitCount: number;
+  hits: SessionContentHit[];
+};
+
+export type SessionContentResult = {
+  sessions: SessionContentSession[];
+  /** More sessions matched than are listed. */
+  truncated: boolean;
+  /** Sessions whose text is not indexed yet; searching again later finds more. */
+  pending: number;
+};
+
+/** Full-text search over the messages of every stored session. */
+export async function searchSessionContent(options: {
+  query: string;
+  searchOwner: string;
+  cwds?: string[];
+  harness?: string;
+  includeArchived?: boolean;
+  since?: number;
+  until?: number;
+}): Promise<SessionContentResult> {
+  const query = options.query.trim();
+  if (!query) return { sessions: [], truncated: false, pending: 0 };
+  const result = await invoke<SessionContentResult>("session_search_content", {
+    options: {
+      query,
+      searchOwner: options.searchOwner,
+      ...(options.cwds?.length
+        ? { cwds: options.cwds.map(normalizeProjectPath) }
+        : {}),
+      ...(options.harness ? { harness: options.harness } : {}),
+      ...(options.includeArchived ? { includeArchived: true } : {}),
+      ...(options.since != null ? { since: options.since } : {}),
+      ...(options.until != null ? { until: options.until } : {}),
+    },
+  });
+  return {
+    sessions: Array.isArray(result?.sessions) ? result.sessions : [],
+    truncated: !!result?.truncated,
+    pending: typeof result?.pending === "number" ? result.pending : 0,
+  };
+}
+
 export async function getSession(sessionId: string): Promise<Session | null> {
+  const session = await loadStoredSession(sessionId);
+  return session ? withStoredQueue(session) : null;
+}
+
+/** Which of `paths` still exist on disk. */
+export async function existingPaths(paths: string[]): Promise<Set<string>> {
+  const infos = await invoke<{ path: string }[]>("inspect_paths", { paths });
+  // `inspect_paths` expands `~` and normalizes separators, so match on what
+  // came back rather than on what was sent.
+  const present = new Set(infos.map((info) => pathKey(info.path)));
+  return new Set(paths.filter((path) => present.has(pathKey(path))));
+}
+
+/**
+ * Queued follow-ups saved with the session. They come back as "restored": the
+ * session is idle after a restart, so the queue waits for the user instead of
+ * sending into a chat nobody has looked at yet.
+ */
+async function withStoredQueue(session: Session): Promise<Session> {
+  try {
+    const queue = await loadStoredQueue(session.id);
+    if (queue.length === 0) return session;
+    return { ...session, queuedMessages: queue, queueStatus: "restored" };
+  } catch {
+    // A queue that cannot be read must not cost the reader the session.
+    return session;
+  }
+}
+
+/** The saved queue for a session id, with attachments whose file is gone flagged. */
+export async function loadStoredQueue(
+  sessionId: string,
+): Promise<QueuedMessage[]> {
+  const raw = await invoke<unknown>("session_get_queue", { sessionId });
+  return markMissingAttachments(restoreQueuedMessages(raw), existingPaths);
+}
+
+/** Write the session's queue through to disk; an empty queue removes it. */
+export async function setSessionQueue(
+  sessionId: string,
+  queue: QueuedMessage[] | undefined,
+): Promise<void> {
+  if (!isPersistableId(sessionId) || deletedSessionIds.has(sessionId)) return;
+  const payload = persistableQueue(queue);
+  await enqueueSessionWrite(sessionId, async () => {
+    if (deletedSessionIds.has(sessionId)) return;
+    await invoke<void>("session_set_queue", { sessionId, queue: payload });
+  });
+}
+
+async function loadStoredSession(sessionId: string): Promise<Session | null> {
   const record = await invoke<SessionRecord | null>("session_get", {
     sessionId,
   });
@@ -514,6 +677,9 @@ export async function deleteSession(
     await enqueueSessionWrite(sessionId, () =>
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
+    removeSessionAdditionalDirs(sessionId);
+    // The cache's change listener deletes the saved draft row.
+    clearComposerDraft(sessionId);
     const tombstone = setTimeout(() => deletedSessionIds.delete(sessionId), 60_000);
     if (typeof tombstone === "object") tombstone.unref();
   } catch (error) {
@@ -1021,10 +1187,15 @@ function sanitizeAgentRun(value: unknown): AgentRunMeta | null {
         ...(row.preview && typeof row.preview === "object"
           ? { preview: row.preview as AgentStep["preview"] }
           : {}),
+        ...persistedOutput(row),
       },
     ];
   });
   const name = typeof record.name === "string" ? record.name.trim() : "";
+  const prompt =
+    typeof record.prompt === "string" && record.prompt.trim()
+      ? capHeadTail(record.prompt.trim(), PERSISTED_AGENT_PROMPT_CHARS).text
+      : "";
   if (!name && steps.length === 0) return null;
   return {
     name: name || "Subagent",
@@ -1034,8 +1205,36 @@ function sanitizeAgentRun(value: unknown): AgentRunMeta | null {
     ...(typeof record.agentType === "string" && record.agentType.trim()
       ? { agentType: record.agentType.trim() }
       : {}),
-    steps: steps.slice(-PERSISTED_AGENT_STEPS),
+    ...(prompt ? { prompt } : {}),
+    steps: budgetStepOutputs(
+      steps.slice(-PERSISTED_AGENT_STEPS),
+      PERSISTED_AGENT_OUTPUT_RUN_CHARS,
+    ),
+    ...(isEpochMs(record.startedAt) ? { startedAt: record.startedAt } : {}),
+    ...(isEpochMs(record.endedAt) ? { endedAt: record.endedAt } : {}),
   };
+}
+
+/**
+ * A saved session keeps a short form of each tool result: enough to see what a
+ * call returned, not a replay of it. Live runs hold far more (agentOutput.ts).
+ */
+function persistedOutput(
+  row: Record<string, unknown>,
+): Pick<AgentStep, "output" | "outputTruncated"> {
+  const capped =
+    typeof row.output === "string"
+      ? capStepOutput(row.output, PERSISTED_AGENT_OUTPUT_STEP_CHARS)
+      : undefined;
+  const truncated = capped?.truncated || row.outputTruncated === true;
+  return {
+    ...(capped ? { output: capped.output } : {}),
+    ...(truncated ? { outputTruncated: true } : {}),
+  };
+}
+
+function isEpochMs(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function sanitizeTaskList(value: unknown): TaskListMeta | null {

@@ -17,6 +17,9 @@ import {
   nestedScrollAbsorbsWheel,
   proseSummary,
   resolveToolCallDisplay,
+  isStoppedBlock,
+  subagentStatusLine,
+  toolCallState,
   isSubagentBlock,
   subagentBrief,
   subagentFailureSummary,
@@ -1531,5 +1534,36 @@ describe("subagent model labels", () => {
     expect(subagentModelName(row("custom-model-v2"))).toBe("custom-model-v2");
     for (const model of [undefined, "", "auto", "inherit", "default"])
       expect(subagentModelName(row(model))).toBeUndefined();
+  });
+});
+
+describe("a call the user stopped", () => {
+  const stopped = (steps: number): Block => ({
+    id: "a",
+    role: "tool",
+    text: "Agent: Review",
+    tool: { callId: "a", kind: "agent", status: "stopped" },
+    agentRun: {
+      name: "Review",
+      steps: Array.from({ length: steps }, (_, i) => ({
+        id: `s${i}`,
+        kind: "tool" as const,
+        text: "Read",
+      })),
+    },
+  });
+
+  it("is settled and not red: neither failed nor still running", () => {
+    expect(isStoppedBlock(stopped(0))).toBe(true);
+    expect(toolCallState(stopped(0))).toBe("accepted");
+    expect(hasRunningSubagent([stopped(0)])).toBe(false);
+  });
+
+  it("says who stopped it, beside the work it got through", () => {
+    expect(subagentStatusLine(stopped(0), [])).toBe("stopped by you");
+    const block = stopped(3);
+    expect(subagentStatusLine(block, block.agentRun!.steps)).toBe(
+      "3 steps, stopped by you",
+    );
   });
 });

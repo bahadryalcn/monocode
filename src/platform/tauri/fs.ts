@@ -192,6 +192,18 @@ export function listSkills(
   });
 }
 
+export type ClaudeCommandEntry = {
+  name: string;
+  description: string;
+  argumentHint: string;
+  scope: "project" | "user" | "plugin";
+};
+
+/** Claude Code custom slash commands on disk (name, description, hint only). */
+export function listClaudeCommands(cwd: string): Promise<ClaudeCommandEntry[]> {
+  return invoke<ClaudeCommandEntry[]>("list_claude_commands", { cwd });
+}
+
 export function listProjectFiles(cwd: string): Promise<ProjectFile[]> {
   return invoke<ProjectFile[]>("list_project_files", { cwd });
 }
@@ -229,7 +241,47 @@ export type GitDiffIndex = {
   behind: number;
   aheadOfDefault: number;
   headPushed: boolean;
+  /** Unmerged files, kept out of `files` and the line counts. Absent from a
+   * host that predates conflict info. */
+  conflicts?: GitConflictFile[];
+  /** The operation git is stopped in the middle of; absent like `conflicts`. */
+  operation?: GitOperation | null;
 };
+
+/** What git recorded for an unmerged path (`git status`: UU, AA, DU, UD, AU, UA,
+ * DD). "Current" is the checked-out branch (stage 2), "incoming" the other. */
+export type GitConflictKind =
+  | "both-modified"
+  | "both-added"
+  | "deleted-by-us"
+  | "deleted-by-them"
+  | "added-by-us"
+  | "added-by-them"
+  | "both-deleted";
+
+export type GitConflictFile = {
+  path: string;
+  relative: string;
+  kind: GitConflictKind;
+};
+
+/** The three versions of a conflicted file. A null version is a missing stage
+ * (normal for add and delete conflicts); binary or oversized files come back
+ * with empty text. */
+export type GitConflictStages = {
+  path: string;
+  relative: string;
+  kind: GitConflictKind;
+  base: string | null;
+  ours: string | null;
+  theirs: string | null;
+  binary: boolean;
+  tooLarge: boolean;
+};
+
+export function gitConflictStages(cwd: string, relative: string): Promise<GitConflictStages> {
+  return invoke<GitConflictStages>("git_conflict_stages", { cwd, relative });
+}
 
 export function gitDiffIndex(cwd: string): Promise<GitDiffIndex> {
   return invoke<GitDiffIndex>("git_diff_index", { cwd });
@@ -473,7 +525,7 @@ export function gitStashClear(cwd: string): Promise<void> {
   return invoke<void>("git_stash_clear", { cwd });
 }
 
-/** Check out a commit without moving any branch. Local projects only. */
+/** Check out a commit without moving any branch. */
 export function gitCheckoutCommit(cwd: string, sha: string): Promise<void> {
   return invoke<void>("git_checkout_commit", { cwd, sha });
 }
@@ -597,6 +649,23 @@ export function gitStashAction(
 /** Repo-relative paths with unresolved merge conflicts. */
 export function gitConflicts(cwd: string): Promise<string[]> {
   return invoke<string[]>("git_conflicts", { cwd });
+}
+
+/** `gitOperationState` and `gitConflicts` together, for the banner that polls
+ * both: a project on another machine answers in one request. */
+export async function gitOperationStatus(
+  cwd: string,
+): Promise<{ operation: GitOperation | null; conflicts: string[] }> {
+  if (isRemotePath(cwd))
+    return invoke<{ operation: GitOperation | null; conflicts: string[] }>(
+      "git_operation_status",
+      { cwd },
+    );
+  const [operation, conflicts] = await Promise.all([
+    gitOperationState(cwd).catch(() => null),
+    gitConflicts(cwd).catch(() => []),
+  ]);
+  return { operation, conflicts };
 }
 
 /** Take one whole side of a conflicted file and stage it. */

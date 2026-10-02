@@ -14,6 +14,7 @@ import {
   loadBootWorkspace,
   reportQuitPoll,
 } from "./app/model/appLifecycle";
+import { hydrateComposerDrafts } from "./features/sessions/data/composerDraftStore";
 import { homeDir } from "./platform/tauri/fs";
 import { setHomeDir } from "./shared/lib/paths";
 import { consumeInstalledUpdate } from "./app/model/updateNotice";
@@ -91,12 +92,15 @@ void Promise.all([
   homeDirPrimed,
   providerBinaryPathsPrimed,
   loadBootWorkspace(),
+  // Saved drafts are in the cache before the first composer mounts.
+  hydrateComposerDrafts(),
   appLoaded,
 ]).then(
   ([
     ,
     ,
     { windowTransfer, resumed, history, historyCwd },
+    ,
     { default: App },
   ]) => {
     performance.mark("monocode:workspace-ready");

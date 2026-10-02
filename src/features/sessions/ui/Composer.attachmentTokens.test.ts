@@ -78,6 +78,25 @@ function type(field: HTMLTextAreaElement, value: string) {
   });
 }
 
+/** A user edit: the browser fires `beforeinput` ahead of the text change. */
+function userType(
+  field: HTMLTextAreaElement,
+  value: string,
+  inputType = "insertText",
+) {
+  act(() => {
+    const before = new Event("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.assign(before, { inputType });
+    if (field.dispatchEvent(before)) {
+      field.value = value;
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+}
+
 function click(selector: string) {
   act(() => {
     container.querySelector<HTMLButtonElement>(selector)!.click();
@@ -152,6 +171,51 @@ it("keeps the chip when its token is deleted by hand", async () => {
 
   expect(chipCount()).toBe(1);
   expect(chipLabels()).toEqual(["image1"]);
+});
+
+it("removes the attachment when the user deletes its token and renumbers the rest", async () => {
+  const field = render("");
+  await pasteFiles(field, "/p/a.png", "/p/b.png");
+  expect(field.value).toBe("[image1] [image2]");
+
+  userType(field, " [image2]", "deleteByCut");
+
+  expect(field.value).toBe(" [image1]");
+  expect(chipLabels()).toEqual(["image1"]);
+  expect(container.querySelector('[aria-label="Remove b.png"]')).not.toBeNull();
+});
+
+it("removes every attachment on select-all delete", async () => {
+  const field = render("");
+  await pasteFiles(field, "/p/a.png", "/p/notes.md");
+  field.setSelectionRange(0, field.value.length);
+
+  userType(field, "", "deleteContentBackward");
+
+  expect(chipCount()).toBe(0);
+});
+
+it("Backspace after a token removes the whole token and its attachment", async () => {
+  const field = render("hi ");
+  await pasteFiles(field, "/p/a.png");
+  field.focus();
+  field.setSelectionRange(field.value.length, field.value.length);
+  expect(field.value).toBe("hi [image1]");
+
+  userType(field, "hi [image1", "deleteContentBackward");
+
+  expect(field.value).toBe("hi ");
+  expect(chipCount()).toBe(0);
+});
+
+it("keeps the attachment when text changes elsewhere or programmatically", async () => {
+  const field = render("");
+  await pasteFiles(field, "/p/a.png");
+
+  userType(field, "x[image1] more");
+  expect(chipCount()).toBe(1);
+  type(field, "replaced by recall");
+  expect(chipCount()).toBe(1);
 });
 
 it("inserts the token again when its label is clicked", async () => {

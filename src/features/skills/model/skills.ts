@@ -13,6 +13,7 @@ import { isMarkdownBlockquotePosition } from "../../sessions/model/quoteDraft";
 import type { HarnessId } from "../../sessions/model/session";
 import { getHarness } from "../../../integrations/harness/core/registry";
 import type { NativeCommand } from "../../../integrations/harness/core/nativeCommands";
+import { isCliCommandText } from "./cliCommands";
 import {
   CREATE_SKILL_BODY,
   CREATE_SKILL_DESCRIPTION,
@@ -20,6 +21,7 @@ import {
 } from "./createSkill";
 
 export {
+  dollarTokenAt,
   rankSkills,
   replaceSlashToken,
   slashTokenAt,
@@ -99,7 +101,16 @@ export type NativeSkill = NativeCommand & {
   kind: "native";
 };
 
-export type Skill = FileSkill | BuiltinSkill | NativeSkill;
+/** A saved prompt snippet from Settings; picking it inserts `body` instead of `/name`. */
+export type TemplateSkill = SkillCommon & {
+  kind: "template";
+  scope: "template";
+  source: "monocode";
+  templateId: string;
+  body: string;
+};
+
+export type Skill = FileSkill | BuiltinSkill | NativeSkill | TemplateSkill;
 
 export const BUILTIN_CREATE_SKILL: BuiltinSkill = {
   kind: "builtin",
@@ -152,8 +163,9 @@ export function isNativeCommandPrompt(
   harness: HarnessId,
 ): boolean {
   return (
-    getHarness(harness)?.commands?.rawSlashCommands === true &&
-    /^\s*\/[^\s/\\]+(?=\s|$)/.test(text)
+    (getHarness(harness)?.commands?.rawSlashCommands === true &&
+      /^\s*\/[^\s/\\]+(?=\s|$)/.test(text)) ||
+    isCliCommandText(text, harness)
   );
 }
 

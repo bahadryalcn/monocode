@@ -52,6 +52,7 @@ import {
   saveTabAnimationsEnabled,
 } from "./settings";
 import { IS_MAC, MOD, SHIFT } from "../../../platform/tauri/platform";
+import { NOTES_PANEL_COMMAND } from "../../notes/notesPanel";
 
 const KEY = "monocode.composerRunner";
 const MODEL_CONTROLS_KEY = "monocode.modelControls";
@@ -453,6 +454,51 @@ describe("workspace navigation keybindings", () => {
       ),
     ).toBe(true);
   });
+  it("documents the notes panel toggle on a chord nothing else owns", () => {
+    expect(
+      KEYBINDINGS.find((row) => row.command === NOTES_PANEL_COMMAND),
+    ).toEqual({
+      command: NOTES_PANEL_COMMAND,
+      keys: `${MOD}N`,
+      when: "sessionFocus && !overlay",
+    });
+    expect(KEYBINDINGS.filter((row) => row.keys === `${MOD}N`)).toHaveLength(1);
+  });
+  describe("notes panel rebinding", () => {
+    beforeEach(mockLocalStorage);
+    afterEach(() => localStorage.removeItem(KEYBINDING_OVERRIDES_KEY));
+
+    const ctrlN = {
+      code: "KeyN",
+      metaKey: IS_MAC,
+      ctrlKey: !IS_MAC,
+      altKey: false,
+      shiftKey: false,
+    };
+
+    it("fires on the default chord and honours a rebind or disable", () => {
+      expect(keybindingPressed(NOTES_PANEL_COMMAND, ctrlN, true)).toBe(true);
+      saveKeybindingOverride(NOTES_PANEL_COMMAND, { shortcut: "Option+KeyM" });
+      expect(keybindingPressed(NOTES_PANEL_COMMAND, ctrlN, true)).toBe(false);
+      saveKeybindingOverride(NOTES_PANEL_COMMAND, { disabled: true });
+      expect(keybindingPressed(NOTES_PANEL_COMMAND, ctrlN, true)).toBe(false);
+    });
+
+    it("refuses to give the notes chord to another command", () => {
+      expect(() =>
+        saveKeybindingOverride("Tab: New", {
+          shortcut: IS_MAC ? "Command+KeyN" : "Control+KeyN",
+        }),
+      ).toThrow(`Already used by ${NOTES_PANEL_COMMAND}`);
+    });
+
+    it("lets a command already moved onto the chord by the user keep it", () => {
+      saveKeybindingOverride("Tab: New", { shortcut: "Option+KeyN" });
+      expect(loadKeybindingOverrides()["Tab: New"]).toEqual({
+        shortcut: "Option+KeyN",
+      });
+    });
+  });
   it("documents same-tab session switching", () => {
     expect(
       KEYBINDINGS.filter((row) => row.command.includes("in Current Tab")),
@@ -642,6 +688,7 @@ describe("settings navigation", () => {
       "inbox",
       "archive",
       "worktrees",
+      "groupLock",
     ]);
   });
 

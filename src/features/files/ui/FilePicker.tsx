@@ -19,6 +19,7 @@ import {
 import { LAYER } from "../../../shared/lib/layers";
 import { fuzzyMatch, type FuzzyHit } from "../../../shared/lib/fuzzy";
 import {
+  isRemoteProjectPath,
   looksLikeProject,
 } from "../../projects/model/recents";
 import type { OpenFileFn } from "../../search/model/search";
@@ -26,6 +27,11 @@ import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { FileTypeIcon } from "./FileTypeIcon";
 import { MatchText } from "../../../shared/ui/MatchText";
 import { MOD, SHIFT } from "../../../platform/tauri/platform";
+import {
+  keybindingShortcutLabel,
+  loadNotesEnabled,
+} from "../../settings/model/settings";
+import { NOTES_PANEL_COMMAND } from "../../notes/notesPanel";
 type Action = {
   id: string;
   label: string;
@@ -37,15 +43,42 @@ export function reloadActionHint(mod = MOD, shift = SHIFT) {
   return `${mod}${shift}R`;
 }
 
-const ACTIONS: Action[] = [
-  { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
-];
+function paletteActions(cwd: string, stopBackgroundWork: boolean): Action[] {
+  const notes = loadNotesEnabled()
+    ? [
+        {
+          id: "toggle-notes",
+          label: "Toggle Notes Panel",
+          hint:
+            keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`) ??
+            undefined,
+        },
+      ]
+    : [];
+  return [
+    { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
+    ...(stopBackgroundWork
+      ? [
+          {
+            id: "stop-background",
+            label: "Stop Background Work in This Session",
+          },
+        ]
+      : []),
+    ...(isRemoteProjectPath(cwd)
+      ? [{ id: "reconnect-remote", label: "Reconnect Remote Machine" }]
+      : []),
+    ...notes,
+  ];
+}
 
 type Props = {
   open: boolean;
   cwd: string;
   openPaths?: string[];
   initialQuery?: string;
+  /** The open session has subagents or commands that can be stopped one by one. */
+  stopBackgroundWork?: boolean;
   onOpenFile: OpenFileFn;
   onRunAction: (id: string) => void;
   onClose: () => void;
@@ -56,6 +89,7 @@ export function FilePicker({
   cwd,
   openPaths = [],
   initialQuery = "",
+  stopBackgroundWork = false,
   onOpenFile,
   onRunAction,
   onClose,
@@ -89,18 +123,21 @@ export function FilePicker({
   );
   const actionResults = useMemo((): RankedAction[] => {
     if (!paletteMode) return [];
+    const actions = paletteActions(cwd, stopBackgroundWork);
     if (!actionQuery) {
-      return ACTIONS.map((action) => ({
+      return actions.map((action) => ({
         ...action,
         score: 0,
         positions: [],
       }));
     }
-    return ACTIONS.flatMap((action) => {
-      const hit = fuzzyMatch(actionQuery, action.label);
-      return hit ? [{ ...action, ...hit }] : [];
-    }).sort((a, b) => b.score - a.score);
-  }, [actionQuery, paletteMode]);
+    return actions
+      .flatMap((action) => {
+        const hit = fuzzyMatch(actionQuery, action.label);
+        return hit ? [{ ...action, ...hit }] : [];
+      })
+      .sort((a, b) => b.score - a.score);
+  }, [actionQuery, paletteMode, cwd, stopBackgroundWork]);
   const optionCount = paletteMode ? actionResults.length : results.length;
 
   useEffect(() => {

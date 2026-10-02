@@ -1,10 +1,12 @@
-import { setRemoteCommandRunner } from "../../../platform/tauri/fs";
+import { notifyGitChanged, setRemoteCommandRunner } from "../../../platform/tauri/fs";
+import { notifyDirsChanged } from "../../files/model/fileTree";
 import { remoteMachineFor, remoteRequest } from "./connections";
+import { subscribeRemoteRecovered } from "./remoteHealth";
 import { parseRemotePath, remotePath } from "./remoteProjects";
 
 /** File commands a connected machine answers exactly as this computer does
  * (see host/workspace-commands.ts). */
-const HOST_COMMANDS = new Set([
+export const HOST_COMMANDS = new Set([
   "list_dir",
   "list_project_files",
   "read_text_file",
@@ -43,7 +45,40 @@ const HOST_COMMANDS = new Set([
   "git_branches",
   "git_checkout",
   "git_create_branch",
+  // The `git.actions` set (host/git-actions.ts). Their results carry no host
+  // paths: `git_conflicts` and the file arguments are repo-relative.
   "git_stash",
+  "git_stash_list",
+  "git_stash_action",
+  "git_stash_clear",
+  "git_checkout_commit",
+  "git_create_branch_at",
+  "git_create_branch_from",
+  "git_create_tag",
+  "git_tags",
+  "git_delete_tag",
+  "git_cherry_pick",
+  "git_revert",
+  "git_reset",
+  "git_undo_last_commit",
+  "git_operation_state",
+  "git_operation_abort",
+  "git_operation_continue",
+  "git_operation_status",
+  "git_delete_branch",
+  "git_rename_branch",
+  "git_delete_remote_branch",
+  "git_merge",
+  "git_rebase",
+  "git_fetch",
+  "git_remotes",
+  "git_remote_add",
+  "git_remote_remove",
+  "git_conflicts",
+  "git_resolve_conflict",
+  "git_conflict_stages",
+  "git_file_history",
+  "git_blame",
   "git_worktrees",
   "search_project",
 ]);
@@ -104,7 +139,7 @@ export async function runRemoteCommand(
       args: hostArgs,
     });
   } catch (reason) {
-    if (/Unsupported (host method|remote operation)/i.test(String(reason)))
+    if (/Unsupported (host method|remote operation|workspace command)/i.test(String(reason)))
       throw new Error(OUTDATED);
     throw reason;
   }
@@ -117,17 +152,20 @@ export async function runRemoteCommand(
       path: fromHost(entry.path),
     }));
   if ((command === "git_diff_index" || command === "git_diff_files") && result && typeof result === "object") {
-    const index = result as { files: { path: string }[] };
+    const index = result as { files: { path: string }[]; conflicts?: { path: string }[] };
     const root = String(hostArgs.cwd).replace(/[\\/]+$/, "");
+    const withHostPath = (file: { path: string }) => ({
+      ...file,
+      path: fromHost(`${root}/${file.path}`),
+    });
     return {
       ...index,
-      files: index.files.map((file) => ({
-        ...file,
-        path: fromHost(`${root}/${file.path}`),
-      })),
+      files: index.files.map(withHostPath),
+      // Absent from a host that predates conflict info.
+      ...(index.conflicts ? { conflicts: index.conflicts.map(withHostPath) } : {}),
     };
   }
-  if (command === "git_file_diff" && result && typeof result === "object") {
+  if ((command === "git_file_diff" || command === "git_conflict_stages") && result && typeof result === "object") {
     const diff = result as { path: string };
     const root = String(hostArgs.cwd).replace(/[\\/]+$/, "");
     return { ...diff, path: fromHost(`${root}/${diff.path}`) };
@@ -163,3 +201,8 @@ export async function runRemoteCommand(
 }
 
 setRemoteCommandRunner(runRemoteCommand);
+// When a machine comes back, every view of it reloads at once.
+subscribeRemoteRecovered(() => {
+  notifyGitChanged();
+  notifyDirsChanged();
+});

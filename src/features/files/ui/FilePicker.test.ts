@@ -44,6 +44,7 @@ vi.mock("../model/fileIndex", () => ({
 
 vi.mock("../../projects/model/recents", () => ({
   looksLikeProject: (path: string) => path !== "~",
+  isRemoteProjectPath: (path: string) => path.startsWith("remote://"),
 }));
 
 import { FilePicker, reloadActionHint } from "./FilePicker";

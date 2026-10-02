@@ -231,6 +231,53 @@ describe("Composer question focus", () => {
     expect(textarea.value).toBe("");
   });
 
+  it("recalls earlier messages with Up and Down in an empty composer", async () => {
+    await act(async () =>
+      root.render(
+        createElement(Composer, {
+          focused: true,
+          harness: "claude",
+          model: "claude-sonnet",
+          runtimeMode: "supervised",
+          executionCwd: "/repo",
+          hideProjectPicker: true,
+          hideBranchPicker: true,
+          promptHistory: () => ["second", "first"],
+          onFocus: () => {},
+          onCwdChange: () => {},
+          onModelChange: () => {},
+          onRuntimeModeChange: () => {},
+          onSubmit: () => {},
+        }),
+      ),
+    );
+    const textarea = container.querySelector("textarea")!;
+    const press = async (key: string) => {
+      const event = new KeyboardEvent("keydown", {
+        key,
+        bubbles: true,
+        cancelable: true,
+      });
+      await act(async () => textarea.dispatchEvent(event));
+      return event;
+    };
+
+    expect((await press("ArrowUp")).defaultPrevented).toBe(true);
+    expect(textarea.value).toBe("second");
+    expect(textarea.selectionStart).toBe(6);
+    await press("ArrowUp");
+    expect(textarea.value).toBe("first");
+    await press("ArrowDown");
+    expect(textarea.value).toBe("second");
+    await press("ArrowDown");
+    expect(textarea.value).toBe("");
+
+    await press("ArrowUp");
+    await typeInto(textarea, "second!");
+    expect((await press("ArrowUp")).defaultPrevented).toBe(false);
+    expect(textarea.value).toBe("second!");
+  });
+
   it("leaves a typed `/btw ` alone when BTW is unavailable", async () => {
     const onBtwCommand = vi.fn(() => false);
     await renderComposer(undefined, vi.fn(), false, 0, undefined, onBtwCommand);

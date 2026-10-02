@@ -1,4 +1,4 @@
-import { ChevronDown, GripVertical, X } from "../../../shared/ui/icons";
+import { ChevronDown, File, GripVertical, X } from "../../../shared/ui/icons";
 import {
   memo,
   useCallback,
@@ -22,6 +22,8 @@ import { SessionReview } from "./SessionReview";
 import { PromptOutline } from "./PromptOutline";
 import {
   canCompactHarnessContext,
+  canStopHarnessBackgroundWork,
+  stopHarnessBackgroundWork,
   type ApprovalDecision,
   type UserQuestionReply,
 } from "../../../integrations/harness";
@@ -47,8 +49,12 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { ActivityDock } from "./ActivityDock";
-import { isBackgroundOnly } from "../model/activityDock";
-import { requestOpenSubagent } from "./subagentFocus";
+import { InterruptedNotice } from "./InterruptedNotice";
+import { isAutoContinueDue } from "../model/autoContinue";
+import { CONTINUE_PROMPT, canAutoContinue } from "../model/inFlight";
+import { SubagentSheet, useSubagentSheet } from "./SubagentSheet";
+import { isBackgroundOnly, type DockAgent } from "../model/activityDock";
+import { requestOpenSubagent, requestViewSubagent } from "./subagentFocus";
 import { AgentTranscript } from "./AgentTranscript";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
@@ -68,6 +74,14 @@ import {
 } from "../model/quoteDraft";
 import { createNote, noteTitle } from "../../notes";
 import {
+  getNotesPanelOpen,
+  NOTES_PANEL_COMMAND,
+  subscribeNotesPanel,
+  toggleNotesPanel,
+} from "../../notes/notesPanel";
+import { SessionNotesPanel } from "../../notes/ui/SessionNotesPanel";
+import {
+  keybindingShortcutLabel,
   loadNotesEnabled,
   subscribeNotesEnabled,
 } from "../../settings/model/settings";
@@ -78,6 +92,7 @@ import { isOpus55Model } from "../model/opusWelcome";
 import { AstraWelcome } from "./AstraWelcome";
 import { OpusWelcome } from "./OpusWelcome";
 import { projectKey } from "../../../shared/lib/paths";
+import { userPromptHistory } from "../model/composerHistory";
 import { canEditLastTurn, lastTurnRecall } from "../model/editLastTurn";
 import {
   loadProjectChatBackgroundSettings,
@@ -153,8 +168,10 @@ export type SessionPaneProps = {
     sessionId: string,
     messageId: string,
     text: string,
+    attachments: Attachment[],
   ) => void;
   onQueuedMessageEditingChange: (sessionId: string, messageId?: string) => void;
+  onReorderQueuedMessages?: (sessionId: string, messageIds: string[]) => void;
   onSteerQueuedMessage: (sessionId: string, messageId: string) => void;
   onResumeQueue: (sessionId: string) => void;
   onUsageLimitResume: (sessionId: string) => void;
@@ -228,6 +245,10 @@ type Props = SessionPaneProps & {
   /** An opened host conversation whose transcript has not arrived yet. */
   remoteSessionLoading?: boolean;
   remoteSessionStarted?: boolean;
+  /** A host chat whose last turn the host lost: shows Continue, as a quit turn does locally. */
+  interruptedTurn?: boolean;
+  /** Why a message to the host cannot be delivered now; Send still tries to reconnect. */
+  sendBlockedReason?: string;
   allowedModelHarnesses?: readonly HarnessId[];
 };
 
@@ -254,6 +275,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   remoteFeatures,
   remoteSessionLoading = false,
   remoteSessionStarted = false,
+  interruptedTurn,
+  sendBlockedReason,
   allowedModelHarnesses,
   session,
   reviewUndoLocked = false,
@@ -286,6 +309,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onDeleteQueuedMessage,
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
+  onReorderQueuedMessages,
   onSteerQueuedMessage,
   onResumeQueue,
   onUsageLimitResume,
@@ -477,12 +501,29 @@ const LocalSessionPane = memo(function LocalSessionPane({
     [],
   );
   // The dock's rows: bring the run into view, and open it once it is there.
-  const openDockAgent = useCallback(
+  const showAgentInTranscript = useCallback(
     (blockId: string) => {
       requestOpenSubagent(blockId);
       navigateBlock(blockId);
     },
     [navigateBlock],
+  );
+  const subagentSheet = useSubagentSheet(session.blocks, visible);
+  const closeSubagentSheet = subagentSheet.close;
+  // Claude can end one task on its own; the others only end the whole turn.
+  const perItemStop = canStopHarnessBackgroundWork(session.harness);
+  const stopBackground = (callId?: string) =>
+    stopHarnessBackgroundWork(session.harness, session.id, callId);
+  // Only one sheet over the pane at a time: a side question takes over.
+  useEffect(() => {
+    if (btw.open) closeSubagentSheet();
+  }, [btw.open, closeSubagentSheet]);
+  const openDockAgent = useCallback(
+    (agent: DockAgent) => {
+      if (agent.kind === "agent") requestViewSubagent(agent.blockId);
+      else showAgentInTranscript(agent.blockId);
+    },
+    [showAgentInTranscript],
   );
   const jumpRequest = useSyncExternalStore(
     subscribeTranscriptJump,
@@ -513,6 +554,24 @@ const LocalSessionPane = memo(function LocalSessionPane({
     loadNotesEnabled,
     () => true,
   );
+  const notesPanelOpen = useSyncExternalStore(
+    subscribeNotesPanel,
+    getNotesPanelOpen,
+    () => false,
+  );
+  // One panel, docked beside the focused pane, so a split never shows two.
+  const showNotesPanel = notesEnabled && notesPanelOpen && visible && focused;
+  const paneRef = useRef<HTMLDivElement>(null);
+  const notesPanelWasShown = useRef(false);
+  useEffect(() => {
+    // Closing the panel from the keyboard hands focus back to the composer.
+    if (notesPanelWasShown.current && !showNotesPanel && visible && focused) {
+      paneRef.current
+        ?.querySelector<HTMLTextAreaElement>("[data-composer-box] textarea")
+        ?.focus();
+    }
+    notesPanelWasShown.current = showNotesPanel;
+  }, [showNotesPanel, visible, focused]);
   const saveNote = useCallback(
     async (text: string) => {
       const sessionTitle = sessionDisplayTitle(session.title, session.harness);
@@ -561,6 +620,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
     <Composer
       key={session.id}
       remoteSession={remoteSession}
+      sendBlockedReason={sendBlockedReason}
       remoteFeatures={remoteFeatures}
       allowedModelHarnesses={allowedModelHarnesses}
       enabled={visible}
@@ -676,11 +736,15 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onDeleteQueuedMessage={(messageId) =>
         onDeleteQueuedMessage(session.id, messageId)
       }
-      onEditQueuedMessage={(messageId, text) =>
-        onEditQueuedMessage(session.id, messageId, text)
+      onEditQueuedMessage={(messageId, text, attachments) =>
+        onEditQueuedMessage(session.id, messageId, text, attachments)
       }
       onQueuedMessageEditingChange={(messageId) =>
         onQueuedMessageEditingChange(session.id, messageId)
+      }
+      onReorderQueuedMessages={
+        onReorderQueuedMessages &&
+        ((messageIds) => onReorderQueuedMessages(session.id, messageIds))
       }
       onSteerQueuedMessage={(messageId) =>
         onSteerQueuedMessage(session.id, messageId)
@@ -701,6 +765,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       )}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
+      promptHistory={() => userPromptHistory(session)}
       onRecallLastTurnReady={(recall) => {
         recallLastTurnRef.current = recall;
       }}
@@ -717,12 +782,31 @@ const LocalSessionPane = memo(function LocalSessionPane({
         visible={visible}
         atEnd={!showJumpToBottom}
         onOpenAgent={openDockAgent}
+        perItemStop={perItemStop}
+        onStopAgent={(agent) =>
+          agent.callId
+            ? stopBackground(agent.callId)
+            : Promise.reject(new Error("No call to stop"))
+        }
+        onStopAll={() =>
+          perItemStop ? stopBackground() : Promise.resolve(onStop(session.id))
+        }
       />
+      {(interruptedTurn ?? canAutoContinue(session)) &&
+      !isAutoContinueDue(session.id) ? (
+        <InterruptedNotice
+          message={
+            remote ? "The host stopped this turn before it finished." : undefined
+          }
+          onContinue={() => onSubmit(session.id, CONTINUE_PROMPT, [])}
+        />
+      ) : null}
     </Composer>
   );
 
-  return (
+  const pane = (
     <div
+      ref={paneRef}
       data-session-drop={session.id}
       data-session-empty={isEmpty}
       data-project-chat-background={!!projectBackground}
@@ -954,6 +1038,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
               </PooledTranscript>
               {!session.inboxAsk ? (
                 <TranscriptFind
+                  sessionId={session.id}
                   blocks={session.blocks}
                   visible={visible}
                   focused={focused}
@@ -1013,7 +1098,47 @@ const LocalSessionPane = memo(function LocalSessionPane({
           onOpenFile={onOpenFile}
           onOpenDiff={onOpenDiff}
         />
+        {subagentSheet.block ? (
+          <SubagentSheet
+            block={subagentSheet.block}
+            busy={!!session.busy}
+            visible={visible}
+            cwd={workCwd}
+            onClose={closeSubagentSheet}
+            onStop={
+              perItemStop && subagentSheet.block.tool?.callId
+                ? () => stopBackground(subagentSheet.block?.tool?.callId)
+                : undefined
+            }
+            onShowInTranscript={(blockId) => {
+              closeSubagentSheet();
+              showAgentInTranscript(blockId);
+            }}
+            onOpenFile={onOpenFile}
+            onOpenDiff={onOpenDiff}
+          />
+        ) : null}
       </div>
+    </div>
+  );
+  const notesShortcut = keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`);
+
+  return (
+    <div className="relative flex h-full min-h-0 min-w-0 flex-1">
+      {pane}
+      {showNotesPanel ? (
+        <SessionNotesPanel sessionId={session.id} cwd={session.cwd} />
+      ) : notesEnabled && visible && focused ? (
+        <button
+          type="button"
+          title={`Notes${notesShortcut ? ` (${notesShortcut})` : ""}`}
+          aria-label="Open notes panel"
+          onClick={toggleNotesPanel}
+          className="absolute right-3 top-1.5 z-10 grid size-6 place-items-center rounded-md text-content/35 hover:bg-content/10 hover:text-content"
+        >
+          <File className="size-3.5" strokeWidth={1.75} />
+        </button>
+      ) : null}
     </div>
   );
 });

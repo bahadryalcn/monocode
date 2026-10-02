@@ -2,27 +2,39 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AppWindow,
   Archive,
+  ArrowDownCircle,
+  ArrowUp,
   BellOff,
+  ChevronDown,
+  ExternalLink,
   FolderOpen,
   FolderPlus,
   FolderTree,
   ImagePlus,
+  Lock,
+  LockOpen,
+  Pencil,
   Pin,
   PinOff,
+  RefreshCw,
   Settings,
+  Ungroup,
   Trash2,
 } from "../../shared/ui/icons";
 import {
   basename,
   listExternalEditors,
   openInExternalEditor,
+  openPathWithDefaultApp,
   revealPath,
   type ExternalEditor,
 } from "../../platform/tauri/fs";
 import { IS_MAC, IS_WIN } from "../../platform/tauri/platform";
 import { projectKey, projectName } from "../../shared/lib/paths";
 import {
+  collectRailProjects,
   loadPinnedProjects,
+  loadRecents,
   sameProjectPath,
   subscribeProjectPathsChanged,
   toggleProjectPin,
@@ -48,18 +60,23 @@ import {
   deleteProjectGroup,
   loadProjectGroupAssignments,
   loadProjectGroups,
+  moveProjectGroup,
   projectGroupColor,
   projectGroupIdForPath,
   saveProjectGroups,
   setProjectGroupAssignment,
+  unlinkProjectGroup,
   updateProjectGroup,
   type ProjectGroup,
 } from "../../features/projects/model/projectGroups";
+import { REFRESH_LINKED_GROUP_EVENT } from "../../features/projects/hooks/useLinkedWorkspaceGroups";
+import { GroupFetchPopover } from "../../features/projects/ui/GroupFetchPopover";
+import { setLinkedGroupStatus } from "../../features/projects/model/linkedWorkspace";
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { RemoveProjectDialog } from "../../features/projects/ui/RemoveProjectDialog";
 import { AdditionalDirsDialog } from "../../features/projects/ui/AdditionalDirsDialog";
-import { isLocalProject } from "../../features/projects/model/recents";
+import { isLocalProject, isRemoteProjectPath } from "../../features/projects/model/recents";
 import {
   TabGroupMenu,
   type TabGroupMenuExtraItem,
@@ -76,9 +93,22 @@ import {
   notificationMuteStatus,
 } from "../../features/notifications/ui/notificationMuteActions";
 import { useProjectNotificationPreferences } from "../../features/notifications/hooks/useProjectNotificationPreferences";
+import { reconnectRemoteMachine } from "../../features/connections/model/remoteReconnect";
+import { remoteProjectFor } from "../../features/connections/model/remoteProjects";
+import { knownRemoteMachine, requestMachineEdit } from "../../features/connections/model/connections";
 import { useNotificationProjects } from "../../features/notifications/hooks/useNotificationProjects";
 import { updateNotificationPreferences } from "../../features/notifications/model/notificationPreferences";
 import type { ExplorerMenuItem } from "../../features/files/ui/ExplorerMenu";
+import { useGroupLock } from "../../features/group-lock/hooks/useGroupLock";
+import {
+  getGroupLockView,
+  lockGroup,
+  makeGroupLockable,
+  removeGroupLock,
+} from "../../features/group-lock/model/groupLock";
+import { PasswordPromptDialog } from "../../features/group-lock/ui/PasswordPromptDialog";
+import { SetLockPasswordDialog } from "../../features/group-lock/ui/SetLockPasswordDialog";
+import { UnlockGroupDialog } from "../../features/group-lock/ui/UnlockGroupDialog";
 
 const REVEAL_LABEL = IS_MAC
   ? "Reveal in Finder"
@@ -94,8 +124,12 @@ function projectMenuExtraItems(
   externalEditors: ExternalEditor[] | null,
   projectGroups: ProjectGroup[],
   canAddDirs: boolean,
+  canReconnect: boolean,
   currentProjectGroupId?: string,
 ): TabGroupMenuExtraItem[] {
+  // A locked group is not offered as a destination.
+  const lockedGroups = getGroupLockView().lock.lockedGroupIds;
+  projectGroups = projectGroups.filter((group) => !lockedGroups.has(group.id));
   const groupSubmenu: ExplorerMenuItem[] = [
     { kind: "item", id: "project-group:new", label: "New group…" },
     ...(projectGroups.length > 0 ? [{ kind: "sep" } as const] : []),
@@ -127,6 +161,12 @@ function projectMenuExtraItems(
     },
     ...(canAddDirs
       ? [{ id: "additional-dirs", label: "Additional folders…", icon: FolderPlus }]
+      : []),
+    ...(canReconnect
+      ? [
+          { id: "reconnect-machine", label: "Reconnect machine", icon: RefreshCw },
+          { id: "edit-machine", label: "Edit machine…", icon: Pencil },
+        ]
       : []),
     pinned
       ? { id: "unpin", label: "Unpin project", icon: PinOff }
@@ -192,6 +232,8 @@ type Point = { x: number; y: number };
 type Options = {
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onOpenNotificationSettings?: (projectPath?: string) => void;
+  /** Offers "Add project to group…" in the group menu. */
+  onAddProjectToGroup?: (groupId: string) => void;
   /** Called when a project or group menu opens, so hosts can close sibling menus. */
   onOpen?: () => void;
 };
@@ -205,6 +247,7 @@ type Options = {
 export function useProjectMenu({
   onRemoveProject,
   onOpenNotificationSettings,
+  onAddProjectToGroup,
   onOpen,
 }: Options) {
   const [projectMenu, setProjectMenu] = useState<
@@ -213,6 +256,9 @@ export function useProjectMenu({
   const [groupMenu, setGroupMenu] = useState<(Point & { id: string }) | null>(
     null,
   );
+  const [fetchAll, setFetchAll] = useState<
+    (Point & { id: string; paths: string[] }) | null
+  >(null);
   const [notificationMenu, setNotificationMenu] = useState<
     (Point & { path: string; project: NotificationProject }) | null
   >(null);
@@ -228,6 +274,11 @@ export function useProjectMenu({
     path: string;
     name: string;
   } | null>(null);
+  const [lockDialog, setLockDialog] = useState<
+    | { kind: "unlock" | "remove-lock"; groupId: string; name: string }
+    | { kind: "set"; groupId: string; lockNow: boolean }
+    | null
+  >(null);
   const [menuError, setMenuError] = useState<string | null>(null);
   const [externalEditors, setExternalEditors] = useState<
     ExternalEditor[] | null
@@ -243,6 +294,8 @@ export function useProjectMenu({
     [],
   );
   const groupLogos = useTabGroupLogos();
+  // Group menus and the lock dialogs follow lock changes, not just storage.
+  useGroupLock();
   const notificationPreferences = useProjectNotificationPreferences();
   const menuPath = projectMenu?.path;
   useNotificationProjects(menuPath ? [menuPath] : []);
@@ -307,6 +360,7 @@ export function useProjectMenu({
     onOpen?.();
     setProjectMenu(null);
     setNotificationMenu(null);
+    setFetchAll(null);
     setGroupMenu({ x, y, id });
   };
 
@@ -327,8 +381,38 @@ export function useProjectMenu({
 
   const dismiss = () => {
     close();
+    setFetchAll(null);
     setRemoving(null);
     setBackgroundProject(null);
+    setLockDialog(null);
+  };
+
+  const groupNamed = (groupId: string) =>
+    loadProjectGroups().find((group) => group.id === groupId)?.name ?? "group";
+
+  const requestUnlock = (groupId: string) => {
+    captureTrigger();
+    setLockDialog({ kind: "unlock", groupId, name: groupNamed(groupId) });
+  };
+
+  /** Marks the group lockable, asking for a first password when there is none. */
+  const makeLockable = (groupId: string, lockNow: boolean) => {
+    if (!getGroupLockView().hasPassword) {
+      captureTrigger();
+      setLockDialog({ kind: "set", groupId, lockNow });
+      return;
+    }
+    makeGroupLockable(groupId);
+    if (lockNow) lockGroup(groupId);
+  };
+
+  /** The padlock on a group header: lock an open group, ask to open a locked one. */
+  const toggleGroupLock = (groupId: string) => {
+    if (getGroupLockView().lock.lockedGroupIds.has(groupId)) {
+      requestUnlock(groupId);
+    } else {
+      makeLockable(groupId, true);
+    }
   };
 
   const groupLabels = projectMenu ? loadTabGroupLabels() : {};
@@ -381,6 +465,13 @@ export function useProjectMenu({
       return false;
     } else if (action === "notifications-settings") {
       onOpenNotificationSettings?.(path);
+    } else if (action === "reconnect-machine") {
+      const remote = remoteProjectFor(path);
+      if (remote) void reconnectRemoteMachine(remote.environmentId, { signIn: true });
+    } else if (action === "edit-machine") {
+      const remote = remoteProjectFor(path);
+      const machine = remote ? knownRemoteMachine(remote.environmentId) : undefined;
+      if (machine?.ssh) requestMachineEdit(machine.id);
     } else if (action === "pin" || action === "unpin") {
       toggleProjectPin(path);
     } else if (action === "background") {
@@ -462,6 +553,7 @@ export function useProjectMenu({
           externalEditors,
           loadProjectGroups(),
           isLocalProject(projectMenu.path),
+          Boolean(remoteProjectFor(projectMenu.path)),
           projectGroupIdForPath(
             projectMenu.path,
             loadProjectGroupAssignments(),
@@ -483,6 +575,103 @@ export function useProjectMenu({
     if (!groupMenu) return null;
     const group = loadProjectGroups().find((item) => item.id === groupMenu.id);
     if (!group) return null;
+    const locked = getGroupLockView().lock.lockedGroupIds.has(group.id);
+    const lockItems: TabGroupMenuExtraItem[] = locked
+      ? [
+          { id: "unlock-group", label: "Unlock…", icon: LockOpen },
+          { id: "remove-group-lock", label: "Remove lock…", icon: Lock },
+        ]
+      : group.lockable
+        ? [
+            { id: "lock-group", label: "Lock group", icon: Lock },
+            { id: "remove-group-lock", label: "Remove lock…", icon: Lock },
+          ]
+        : [
+            { id: "lock-group", label: "Lock group", icon: Lock },
+            {
+              id: "make-lockable",
+              label: "Make lockable",
+              description: "Ask for the password once it is locked",
+              icon: Lock,
+            },
+          ];
+    // Reordering reveals nothing, so a locked group can still be moved.
+    const groupIds = loadProjectGroups().map((item) => item.id);
+    const groupIndex = groupIds.indexOf(group.id);
+    const moveItems: TabGroupMenuExtraItem[] = [
+      {
+        id: "move-group-up",
+        label: "Move up",
+        icon: ArrowUp,
+        disabled: groupIndex <= 0,
+      },
+      {
+        id: "move-group-down",
+        label: "Move down",
+        icon: ChevronDown,
+        disabled: groupIndex >= groupIds.length - 1,
+      },
+      {
+        id: "move-group-top",
+        label: "Move to top",
+        icon: ArrowUp,
+        disabled: groupIndex <= 0,
+      },
+    ];
+    // A locked group offers nothing that would touch or reveal its projects.
+    const groupItems: TabGroupMenuExtraItem[] = locked
+      ? []
+      : [
+          ...(onAddProjectToGroup
+            ? [
+                {
+                  id: "add-project-to-group",
+                  label: "Add project to group…",
+                  icon: FolderPlus,
+                },
+              ]
+            : []),
+          ...(group.workspaceFile
+            ? [
+                {
+                  id: "workspace-refresh",
+                  label: "Refresh from workspace file",
+                  description: group.workspaceFile,
+                  icon: RefreshCw,
+                },
+                {
+                  id: "workspace-open",
+                  label: "Open workspace file",
+                  icon: ExternalLink,
+                },
+                {
+                  id: "workspace-reveal",
+                  label: REVEAL_LABEL,
+                  icon: FolderOpen,
+                },
+                {
+                  id: "workspace-unlink",
+                  label: "Unlink from workspace file",
+                  description: "Projects stay in the group",
+                  icon: Ungroup,
+                },
+              ]
+            : []),
+          {
+            id: "fetch-all",
+            label: "Fetch all",
+            description: "Run git fetch in each project",
+            icon: ArrowDownCircle,
+            sepBefore: true,
+          },
+          {
+            id: "delete-project-group",
+            label: "Delete group",
+            description: "Projects will become ungrouped",
+            icon: Trash2,
+            danger: true,
+          },
+        ];
     return (
       <TabGroupMenu
         x={groupMenu.x}
@@ -530,19 +719,81 @@ export function useProjectMenu({
         showActions={false}
         ariaLabel="Project group actions"
         extraItems={[
-          {
-            id: "delete-project-group",
-            label: "Delete group",
-            description: "Projects will become ungrouped",
-            icon: Trash2,
-            danger: true,
-          },
+          ...moveItems,
+          ...lockItems.map((item, index) =>
+            index === 0 ? { ...item, sepBefore: true } : item,
+          ),
+          ...groupItems,
         ]}
-        onExtraPick={(action) =>
-          action === "delete-project-group"
-            ? deleteProjectGroup(group.id)
-            : undefined
-        }
+        onExtraPick={(action) => {
+          const file = group.workspaceFile;
+          if (action.startsWith("move-group-")) {
+            moveProjectGroup(
+              group.id,
+              action === "move-group-up"
+                ? "up"
+                : action === "move-group-down"
+                  ? "down"
+                  : "top",
+            );
+            return;
+          }
+          if (action === "unlock-group") {
+            requestUnlock(group.id);
+            return;
+          }
+          if (action === "lock-group") {
+            toggleGroupLock(group.id);
+            return;
+          }
+          if (action === "make-lockable") {
+            makeLockable(group.id, false);
+            return;
+          }
+          if (action === "remove-group-lock") {
+            captureTrigger();
+            setLockDialog({
+              kind: "remove-lock",
+              groupId: group.id,
+              name: group.name,
+            });
+            return;
+          }
+          if (locked) return;
+          if (action === "delete-project-group") {
+            return deleteProjectGroup(group.id);
+          }
+          if (action === "add-project-to-group") {
+            onAddProjectToGroup?.(group.id);
+            return;
+          }
+          if (action === "fetch-all") {
+            const assignments = loadProjectGroupAssignments();
+            setFetchAll({
+              x: groupMenu.x,
+              y: groupMenu.y,
+              id: group.id,
+              paths: [...collectRailProjects(loadRecents(), "").values()]
+                .map((project) => project.path)
+                .filter(
+                  (path) =>
+                    (isLocalProject(path) || isRemoteProjectPath(path)) &&
+                    projectGroupIdForPath(path, assignments) === group.id,
+                ),
+            });
+          } else if (action === "workspace-refresh") {
+            window.dispatchEvent(
+              new CustomEvent(REFRESH_LINKED_GROUP_EVENT, { detail: group.id }),
+            );
+          } else if (action === "workspace-open" && file) {
+            void openPathWithDefaultApp(file).catch(() => undefined);
+          } else if (action === "workspace-reveal" && file) {
+            void revealPath(file).catch(() => undefined);
+          } else if (action === "workspace-unlink") {
+            unlinkProjectGroup(group.id);
+            setLinkedGroupStatus(group.id, null);
+          }
+        }}
       />
     );
   };
@@ -551,6 +802,22 @@ export function useProjectMenu({
     <>
       {renderProjectMenu()}
       {renderGroupMenu()}
+      {fetchAll ? (
+        <GroupFetchPopover
+          key={fetchAll.id}
+          x={fetchAll.x}
+          y={fetchAll.y}
+          name={
+            loadProjectGroups().find((item) => item.id === fetchAll.id)?.name ??
+            "group"
+          }
+          paths={fetchAll.paths}
+          onClose={() => {
+            setFetchAll(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
       {notificationMenu ? (
         <Popover
           key={notificationMenu.path}
@@ -591,6 +858,46 @@ export function useProjectMenu({
           }}
         />
       ) : null}
+      {lockDialog?.kind === "unlock" ? (
+        <UnlockGroupDialog
+          groupId={lockDialog.groupId}
+          name={lockDialog.name}
+          onClose={() => {
+            setLockDialog(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
+      {lockDialog?.kind === "remove-lock" ? (
+        <PasswordPromptDialog
+          title={`Remove lock from ${lockDialog.name}`}
+          description="The group stays; it just stops asking for the password."
+          submitLabel="Remove lock"
+          danger
+          verify={(password) => removeGroupLock(lockDialog.groupId, password)}
+          onDone={() => {
+            setLockDialog(null);
+            restoreFocus();
+          }}
+          onClose={() => {
+            setLockDialog(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
+      {lockDialog?.kind === "set" ? (
+        <SetLockPasswordDialog
+          mode="set"
+          onDone={() => {
+            makeGroupLockable(lockDialog.groupId);
+            if (lockDialog.lockNow) lockGroup(lockDialog.groupId);
+          }}
+          onClose={() => {
+            setLockDialog(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
       {additionalDirsProject ? (
         <AdditionalDirsDialog
           project={additionalDirsProject.path}
@@ -618,6 +925,8 @@ export function useProjectMenu({
     open,
     openGroupMenu,
     createGroup,
+    toggleGroupLock,
+    requestUnlock,
     close,
     dismiss,
     isOpen: projectMenu != null,
@@ -625,10 +934,12 @@ export function useProjectMenu({
     isActive:
       projectMenu != null ||
       groupMenu != null ||
+      fetchAll != null ||
       notificationMenu != null ||
       additionalDirsProject != null ||
       removing != null ||
-      backgroundProject != null,
+      backgroundProject != null ||
+      lockDialog != null,
     element,
   };
 }

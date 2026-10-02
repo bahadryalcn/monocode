@@ -1278,6 +1278,49 @@ input,
   user-select: text;
 }
 
+/* Per-hunk controls in the gutter between the side-by-side editor panes. */
+.cm-mergeView .cm-merge-revert .cm-split-hunk {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  height: 1.35rem;
+}
+
+.cm-mergeView .cm-merge-revert .cm-split-hunk button {
+  position: static;
+  display: grid;
+  place-items: center;
+  width: 1.2rem;
+  height: 100%;
+  padding: 0;
+  color: color-mix(in srgb, var(--color-content) 55%, transparent);
+  border-radius: 4px;
+}
+
+.cm-mergeView .cm-merge-revert .cm-split-hunk button:hover {
+  color: var(--color-content);
+  background: color-mix(in srgb, var(--color-content) 12%, transparent);
+}
+
+.cm-mergeView .cm-merge-revert .cm-split-hunk button:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.cm-mergeView .cm-merge-revert .cm-split-hunk button.cm-split-hunk-stage {
+  display: none;
+}
+
+.cm-split-can-stage.cm-mergeView .cm-merge-revert {
+  width: 2.8rem;
+}
+
+.cm-split-can-stage.cm-mergeView .cm-merge-revert .cm-split-hunk button.cm-split-hunk-stage {
+  display: grid;
+}
+
 .markdown-view-actions {
   top: 0.5rem;
 }
@@ -3291,4 +3334,83 @@ html.theme-light .btw-burst {
   .git-graph-date {
     display: block;
   }
+}
+
+/* Subagent panel: a right-hand sheet over the session pane, as the side
+   conversation sheet is a bottom one. */
+.subagent-sheet-glass {
+  border-left: 1px solid
+    color-mix(in srgb, var(--color-content) 10%, transparent);
+  border-radius: var(--radius-lg, 0.5rem) 0 0 var(--radius-lg, 0.5rem);
+  box-shadow:
+    0 20px 25px -5px rgb(0 0 0 / 0.1),
+    0 8px 10px -6px rgb(0 0 0 / 0.1);
+}
+
+.subagent-sheet {
+  animation: subagent-sheet-in 220ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+@keyframes subagent-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subagent-sheet {
+    animation: none;
+  }
+}
+
+/* Hover card for the editor's blame gutter. It sits on <body>, outside the
+   editor's own theme scope, because the gutter clips its children. */
+.cm-blameCard {
+  position: fixed;
+  z-index: 60;
+  max-width: 320px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-content) 12%, transparent);
+  border-radius: 6px;
+  background: var(--color-background-base);
+  color: var(--color-content);
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.12),
+    0 4px 6px -4px rgb(0 0 0 / 0.12);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.cm-blameCardSha {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: color-mix(in srgb, var(--color-content) 50%, transparent);
+}
+
+.cm-blameCardAuthor {
+  font-weight: 600;
+}
+
+.cm-blameCardDate {
+  color: color-mix(in srgb, var(--color-content) 55%, transparent);
+}
+
+.cm-blameCardSubject {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+/* Rail sections and groups move as blocks: keep their controls out of the way. */
+.rail-reorder-block[data-reordering] [data-no-drag] {
+  visibility: hidden;
+}
+
+.rail-reorder-block[data-dragging] {
+  background: color-mix(in srgb, var(--color-content) 8%, transparent);
 }

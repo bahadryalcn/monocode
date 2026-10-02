@@ -57,6 +57,7 @@ import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, message } from "@tauri-apps/plugin-dialog";
+import { appName } from "../shared/lib/appName";
 import {
   startTransition,
   Suspense,
@@ -85,6 +86,15 @@ import { ProviderSignInDialog } from "../features/sessions/ui/ProviderSignInDial
 import { TitleBar, type Tab as TitleTab } from "./shell/TitleBar";
 import { MenuBar } from "./shell/MenuBar";
 import { FilePicker } from "../features/files/ui/FilePicker";
+import { useLockSnapshot } from "../features/group-lock/hooks/useGroupLock";
+import {
+  getGroupLockView,
+  startGroupLockWatcher,
+} from "../features/group-lock/model/groupLock";
+import {
+  isProjectLockedIn,
+  visibleProjects,
+} from "../features/group-lock/model/lockState";
 import {
   DeleteSessionDialog,
   type SessionDeleteChoice,
@@ -151,9 +161,14 @@ import {
   OPEN_CODE_WORKSPACE_EVENT,
   parseCodeWorkspace,
 } from "../features/projects/model/codeWorkspace";
-import { assignProjectsToNamedGroup } from "../features/projects/model/projectGroups";
+import {
+  assignProjectsToNamedGroup,
+  linkProjectGroup,
+} from "../features/projects/model/projectGroups";
+import { useLinkedWorkspaceGroups } from "../features/projects/hooks/useLinkedWorkspaceGroups";
+import { OPEN_PROJECT_CHANGES_EVENT } from "../features/projects/model/groupGit";
 import { GitFileInspector } from "../features/source-control/ui/GitFileInspector";
-import { loadAdditionalDirs } from "../features/projects/model/additionalDirs";
+import { additionalDirsForSession } from "../features/projects/model/additionalDirs";
 import { setAdditionalDirsResolver } from "../integrations/harness/core/additionalDirs";
 import {
   invalidateProjectFiles,
@@ -253,6 +268,8 @@ import {
   appendSteerUser,
   bindHarnessSession,
   cancelHarnessTurn,
+  canStopHarnessBackgroundWork,
+  stopHarnessBackgroundWork,
   canCompactHarnessContext,
   canRewindHarnessLastTurn,
   canSteerHarness,
@@ -444,7 +461,17 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   queuedMessageForSubmit,
+  reorderSessionQueue,
+  resolveFollowUpRoute,
+  sentQueuedMessage,
 } from "../features/sessions/model/messageQueue";
+import {
+  claimAutoContinue,
+  isAutoContinueDue,
+} from "../features/sessions/model/autoContinue";
+import { applyQueuedEdit } from "../features/sessions/model/queuedMessageEdit";
+import { useQueuePersistence } from "../features/sessions/hooks/useQueuePersistence";
+import { isBackgroundOnly } from "../features/sessions/model/activityDock";
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   usageLimitResumeDue,
@@ -480,6 +507,10 @@ import {
 } from "../features/sessions/ui/TranscriptPool";
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
 import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
+import {
+  liveSessionInfos,
+  sameLiveSessionInfos,
+} from "../features/sessions/model/recentSessions";
 import { useKeepAwake } from "../features/settings/model/keepAwake";
 import { hiddenApprovalNotices } from "../features/notifications/model/approvalToast";
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
@@ -493,7 +524,12 @@ import {
   setWindowFocused,
 } from "../features/notifications/model/notifications";
 import { useInputNotifications } from "../features/notifications/hooks/useInputNotifications";
+import { useAttentionNotifications } from "../features/notifications/hooks/useAttentionNotifications";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
+import {
+  shouldToggleNotesPanel,
+  toggleNotesPanel,
+} from "../features/notes/notesPanel";
 import {
   adjacentItemId,
   deferUnhandledEscape,
@@ -580,8 +616,11 @@ import {
 import { buildRemotePlan, remoteSessionActions } from "../features/connections/model/remoteSessionActions";
 import { remoteSessionState } from "../features/connections/model/remoteSessionState";
 import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
+import { sessionHasBackgroundWork } from "../features/sessions/model/backgroundStop";
+import { reconnectRemoteMachine } from "../features/connections/model/remoteReconnect";
 import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
+import { SessionImportHost } from "../features/sessions/ui/SessionImportHost";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
 import { inboxAskKey, inboxAskPrompt } from "../features/inbox/model/inboxAsk";
@@ -883,7 +922,7 @@ function filesInWorkspaceTabs(tabs: readonly WorkspaceTab[]): FilePaneTab[] {
 
 /** Native sheet. `window.confirm` is swallowed when a macOS menu accelerator fires. */
 function confirmDiscardUnsaved(message: string): Promise<boolean> {
-  return ask(message, { title: "MonoCode", kind: "warning" });
+  return ask(message, { title: appName(), kind: "warning" });
 }
 
 function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
@@ -951,6 +990,14 @@ function Workspace({
       ? rememberProject(resumed.projectCwd)
       : loadRecents(),
   );
+  // What is not behind a locked group. The rail itself gets the full list, so
+  // it can keep the saved order and pins of projects that are hidden.
+  const lockSnapshot = useLockSnapshot();
+  const visibleRecents = useMemo(
+    () => visibleProjects(lockSnapshot, recents, (project) => project.path),
+    [lockSnapshot, recents],
+  );
+  useEffect(() => startGroupLockWatcher(), []);
   const [seed] = useState(() => {
     const cwd = lastProjectPath() ?? "~";
     const session = newDefaultSession(cwd);
@@ -1155,7 +1202,7 @@ function Workspace({
     setAdditionalDirsResolver((sessionId) => {
       const session = sessionsRef.current.find((item) => item.id === sessionId);
       return session && isLocalProject(session.cwd)
-        ? loadAdditionalDirs(session.cwd)
+        ? additionalDirsForSession(sessionId, session.cwd)
         : [];
     });
     return () => setAdditionalDirsResolver(() => []);
@@ -1726,6 +1773,7 @@ function Workspace({
   activeSessionIdRef.current = activeSessionId;
 
   useInputNotifications(sessions, activeSessionId);
+  useAttentionNotifications(sessions, activeSessionId);
 
   // Cache the OS decision so a turn ending later can skip a denied banner.
   useEffect(() => {
@@ -1752,9 +1800,11 @@ function Workspace({
   const liveAgents = useMemo(
     () =>
       liveAgentsEnabled
-        ? liveAgentsFromSessions(sessions, unseenFinishedIds)
+        ? liveAgentsFromSessions(sessions, unseenFinishedIds).filter(
+            (agent) => !isProjectLockedIn(lockSnapshot, agent.cwd),
+          )
         : [],
-    [liveAgentsEnabled, sessions, unseenFinishedIds],
+    [liveAgentsEnabled, lockSnapshot, sessions, unseenFinishedIds],
   );
 
   const hiddenApprovalToasts = useMemo(
@@ -2319,7 +2369,7 @@ function Workspace({
     if (!document) {
       void message(
         "Release notes for this version are not available in this build.",
-        { title: "MonoCode" },
+        { title: appName() },
       );
       return;
     }
@@ -4734,7 +4784,7 @@ function Workspace({
           } catch (error) {
             void message(
               `The session was deleted. Its worktree was kept.\n\n${String(error)}\n\nYou can manage it in Settings → Worktrees.`,
-              { title: "MonoCode", kind: "warning" },
+              { title: appName(), kind: "warning" },
             );
           }
         }
@@ -4742,7 +4792,7 @@ function Workspace({
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         void message(`Could not ${mode} this conversation.\n\n${detail}`, {
-          title: "MonoCode",
+          title: appName(),
           kind: "error",
         });
         return false;
@@ -4778,7 +4828,7 @@ function Workspace({
         void message(
           `Could not unarchive this conversation.\n\n${String(error)}`,
           {
-            title: "MonoCode",
+            title: appName(),
             kind: "error",
           },
         );
@@ -4814,6 +4864,37 @@ function Workspace({
     },
     [onArchiveHistorySession],
   );
+
+  const onToggleNotesPanel = useCallback((event: KeyboardEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (
+      !shouldToggleNotesPanel({
+        enabled: loadNotesEnabled(),
+        activeTabId: activeTabIdRef.current,
+        tabs: tabsRef.current,
+        sessions: sessionsRef.current,
+        projectTerminalFocused: projectTerminalFocusedRef.current,
+        surfaceOpen: Boolean(
+          searchViewOpenRef.current ||
+          inboxViewOpenRef.current ||
+          notesViewOpenRef.current ||
+          automationsViewOpenRef.current ||
+          settingsOpenRef.current ||
+          filePickerOpenRef.current ||
+          whatsNewVersionRef.current,
+        ),
+        inSessionArea:
+          !target ||
+          target === document.body ||
+          (!target.closest(".cm-editor, .monocode-terminal") &&
+            Boolean(target.closest("[data-session-drop], [data-notes-panel]"))),
+      })
+    )
+      return;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleNotesPanel();
+  }, []);
 
   const onPinHistorySession = useCallback(
     async (sessionId: string, pinned: boolean) => {
@@ -4907,7 +4988,7 @@ function Workspace({
           void refreshHistory(sidebarCwd);
           void message(
             `Could not update this conversation's GitHub link.\n\n${String(error)}`,
-            { title: "MonoCode", kind: "error" },
+            { title: appName(), kind: "error" },
           );
         },
       );
@@ -5359,6 +5440,37 @@ function Workspace({
     [openProjects],
   );
 
+  // A locked project is never on screen. This catches a lock taken while the
+  // project was open, a restored tab, and a notification click alike. Nothing
+  // is closed: the project's tabs and running agents stay as they are, out of
+  // sight, and come back when the group is unlocked.
+  const activeProjectLocked = isProjectLockedIn(lockSnapshot, sidebarCwd);
+  useLayoutEffect(() => {
+    if (!activeProjectLocked) return;
+    const next = visibleRecents.find((project) =>
+      looksLikeProject(project.path),
+    );
+    if (next) {
+      openProjects([next.path]);
+      return;
+    }
+    // Nothing unlocked to go to: a blank session with no project.
+    const session = newDefaultSession("~", sessionDefaults?.runtimeMode);
+    const tab = newTab(session.id);
+    setSessions((prev) => [...prev, session]);
+    appendTab(tab, "~");
+    setActiveTabId(tab.id);
+    setProjectCwd("~");
+  }, [
+    activeProjectLocked,
+    activeTabId,
+    appendTab,
+    openProjects,
+    sessionDefaults?.runtimeMode,
+    sidebarCwd,
+    visibleRecents,
+  ]);
+
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
     // the last one selected ends up focused.
@@ -5398,7 +5510,10 @@ function Workspace({
         return;
       }
       openProjects(found);
-      assignProjectsToNamedGroup(workspace.name, found);
+      const group = assignProjectsToNamedGroup(workspace.name, found);
+      // Folders skipped above are not listed, so they join the group later if
+      // they appear on disk and are still in the file.
+      if (group) linkProjectGroup(group.id, file, found);
       if (skipped.length > 0) {
         await message(
           `These folders could not be opened and were skipped:\n\n${skipped.join("\n")}`,
@@ -5418,6 +5533,24 @@ function Workspace({
     window.addEventListener(OPEN_CODE_WORKSPACE_EVENT, open);
     return () => window.removeEventListener(OPEN_CODE_WORKSPACE_EVENT, open);
   }, [openCodeWorkspace]);
+
+  // Groups linked to a workspace file follow it; new folders land on the rail
+  // without moving focus.
+  useLinkedWorkspaceGroups(
+    useCallback(() => setRecents(loadRecents()), []),
+  );
+
+  // A group's git overview opens a project's Changes tab.
+  useEffect(() => {
+    const open = (event: Event) => {
+      const path = (event as CustomEvent<string>).detail;
+      if (typeof path !== "string" || !path) return;
+      setSidebarTab("changes", path);
+      onSelectProject(path);
+    };
+    window.addEventListener(OPEN_PROJECT_CHANGES_EVENT, open);
+    return () => window.removeEventListener(OPEN_PROJECT_CHANGES_EVENT, open);
+  }, [onSelectProject, setSidebarTab]);
 
   const [resumePickerFor, setResumePickerFor] =
     useState<ClaudeImportTarget | null>(null);
@@ -6294,19 +6427,23 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
-        const followUpBehavior =
-          current.worktreePreparing ||
-          intent === "plan" ||
-          intent === "orchestrate" ||
-          operatorCommand.matched
-            ? "queue"
-            : // The agent has yielded and only background work is left, which
-              // may never end (a dev server). Queuing would park the message
-              // behind it, so hand it to the agent now.
-              current.backgroundTasks?.length
-              ? "steer"
-              : (options?.followUpBehavior ?? loadFollowUpBehavior());
-        if (followUpBehavior === "queue") {
+        // Background work with the agent yielded may never end (a dev
+        // server), so there the message is steered instead of parked behind it.
+        const followUpRoute = resolveFollowUpRoute({
+          busy: true,
+          worktreePreparing: current.worktreePreparing,
+          intent,
+          operatorCommand: operatorCommand.matched,
+          backgroundTaskCount: current.backgroundTasks?.length ?? 0,
+          backgroundOnly: isBackgroundOnly(
+            !!current.busy,
+            current.backgroundTasks,
+            current.backgroundAgents,
+          ),
+          requested: options?.followUpBehavior,
+          setting: loadFollowUpBehavior(),
+        });
+        if (followUpRoute === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId
@@ -6360,7 +6497,7 @@ function Workspace({
             handoffCard: rawCommand ? s.handoffCard : undefined,
           };
           if (options?.queuedMessageId) {
-            next = dequeueQueuedMessage(next, options.queuedMessageId);
+            next = sentQueuedMessage(next, options.queuedMessageId);
           }
           return appendSteerUser(next, submittedText, visible, cards);
         });
@@ -6579,7 +6716,7 @@ function Workspace({
               };
             }
             if (options?.queuedMessageId) {
-              next = dequeueQueuedMessage(next, options.queuedMessageId);
+              next = sentQueuedMessage(next, options.queuedMessageId);
             }
             if (!live) {
               return {
@@ -7686,6 +7823,8 @@ function Workspace({
     };
   }, [onSubmit, sessions]);
 
+  useQueuePersistence(sessions);
+
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {
       setSessions((prev) =>
@@ -7712,15 +7851,35 @@ function Workspace({
     [],
   );
 
+  const onReorderQueuedMessages = useCallback(
+    (sessionId: string, messageIds: string[]) => {
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === sessionId
+            ? reorderSessionQueue(session, messageIds)
+            : session,
+        ),
+      );
+    },
+    [],
+  );
+
   const onEditQueuedMessage = useCallback(
-    (sessionId: string, messageId: string, text: string) => {
+    (
+      sessionId: string,
+      messageId: string,
+      text: string,
+      attachments: Attachment[],
+    ) => {
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
             ? {
                 ...session,
                 queuedMessages: session.queuedMessages?.map((message) =>
-                  message.id === messageId ? { ...message, text } : message,
+                  message.id === messageId
+                    ? applyQueuedEdit(message, { text, attachments })
+                    : message,
                 ),
                 editingQueuedMessageId: undefined,
               }
@@ -8597,7 +8756,10 @@ function Workspace({
 
   const autoContinueKey = sessions
     .filter(
-      (session) => canAutoContinue(session) && isLiveHarness(session.harness),
+      (session) =>
+        canAutoContinue(session) &&
+        isLiveHarness(session.harness) &&
+        isAutoContinueDue(session.id),
     )
     .map((session) => session.id)
     .join("\n");
@@ -8613,7 +8775,8 @@ function Workspace({
         if (
           !session ||
           !canAutoContinue(session) ||
-          !isLiveHarness(session.harness)
+          !isLiveHarness(session.harness) ||
+          !claimAutoContinue(id)
         ) {
           continue;
         }
@@ -9661,6 +9824,26 @@ function Workspace({
     [onOpenApprovalSession],
   );
 
+  // Sessions for the rail's "Last sessions". Kept referentially stable so the
+  // rail only refetches when a title or status really changed.
+  const liveSessionInfoRef = useRef<ReturnType<typeof liveSessionInfos>>([]);
+  const railLiveSessions = useMemo(() => {
+    const next = liveSessionInfos(sessions, unseenFinishedIds);
+    if (sameLiveSessionInfos(liveSessionInfoRef.current, next)) {
+      return liveSessionInfoRef.current;
+    }
+    liveSessionInfoRef.current = next;
+    return next;
+  }, [sessions, unseenFinishedIds]);
+  const recentSessions = useMemo(
+    () => ({
+      history,
+      live: railLiveSessions,
+      onPin: onPinHistorySession,
+    }),
+    [history, railLiveSessions, onPinHistorySession],
+  );
+
   const nextTitleTabs: TitleTab[] = deckProjectTabs.map((tab) =>
     toTitleTab(tab, sessions, dirtyFiles, unseenFinishedIds),
   );
@@ -9702,7 +9885,7 @@ function Workspace({
     unseen: inboxUnseen,
     linkedSessionUpdateIds,
     linkedSessionUpdates,
-  } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
+  } = useInboxActivity(visibleRecents, sidebarCwd, sidebarHistory, {
     onActivity: onInboxActivity,
   });
   linkedSessionUpdatesRef.current = linkedSessionUpdates;
@@ -10035,6 +10218,11 @@ function Workspace({
     return () =>
       window.removeEventListener(OPEN_CONNECTIONS_EVENT, openConnections);
   }, [openSettings]);
+  // Imported sessions add projects to the rail and rows to the open project.
+  const onSessionsImported = useCallback(() => {
+    setRecents(loadRecents());
+    void refreshHistory(sidebarCwdRef.current);
+  }, [refreshHistory]);
   const [remoteProjectDialogOpen, setRemoteProjectDialogOpen] = useState(false);
   useEffect(() => {
     const open = () => setRemoteProjectDialogOpen(true);
@@ -10235,9 +10423,10 @@ function Workspace({
   const onNavigateProjectList = useCallback(
     (delta: number) => {
       const current = normalizeProjectPath(projectCwdRef.current);
-      const ids = projectRailItems(loadRecents(), current).map(
-        (project) => project.path,
-      );
+      const ids = projectRailItems(
+        visibleProjects(getGroupLockView().lock, loadRecents(), (project) => project.path),
+        current,
+      ).map((project) => project.path);
       const next = adjacentItemId(ids, current, delta);
       if (!next || sameProjectPath(next, current)) return;
       onSelectProject(next);
@@ -10248,6 +10437,7 @@ function Workspace({
   const actions = useRef({
     onNew,
     onArchiveFocusedSession,
+    onToggleNotesPanel,
     onCloseOtherTabs,
     onCloseAllTabs,
     onClosePane,
@@ -10279,6 +10469,7 @@ function Workspace({
   actions.current = {
     onNew,
     onArchiveFocusedSession,
+    onToggleNotesPanel,
     onCloseOtherTabs,
     onCloseAllTabs,
     onClosePane,
@@ -10365,6 +10556,11 @@ function Workspace({
         if (cmd === "archive-session") {
           if (e.repeat) return;
           actions.current.onArchiveFocusedSession(e);
+          return;
+        }
+        if (cmd === "toggle-notes") {
+          if (e.repeat) return;
+          actions.current.onToggleNotesPanel(e);
           return;
         }
         const target = e.target instanceof Element ? e.target : null;
@@ -10489,6 +10685,15 @@ function Workspace({
           e.target.closest(".monocode-terminal") &&
           e.ctrlKey &&
           !e.metaKey
+        ) {
+          return;
+        }
+        // In the note editor the same chord makes the selection bold.
+        if (
+          shortcut === "App: Toggle Sidebar" &&
+          e.key.toLowerCase() === "b" &&
+          e.target instanceof Element &&
+          e.target.closest("[data-note-editor] .cm-content")
         ) {
           return;
         }
@@ -10689,7 +10894,7 @@ function Workspace({
   );
 
   const sessionPaneProps = {
-    recents,
+    recents: visibleRecents,
     hideProjectPicker: true,
     onFocus: onFocusPane,
     onClose: onClosePane,
@@ -10713,6 +10918,7 @@ function Workspace({
     onDeleteQueuedMessage,
     onEditQueuedMessage,
     onQueuedMessageEditingChange,
+    onReorderQueuedMessages,
     onSteerQueuedMessage,
     onResumeQueue,
     onUsageLimitResume,
@@ -10779,7 +10985,7 @@ function Workspace({
       onPlaceOnPane={onPlaceTabOnPane}
       onGoToFile={onGoToFile}
       onPinFile={onPinFile}
-      recents={recents}
+      recents={visibleRecents}
       onSelectProject={onSelectProject}
     />
   );
@@ -10862,6 +11068,7 @@ function Workspace({
               )}
               liveAgents={liveAgents}
               onSelectAgent={onSelectLiveAgent}
+              recentSessions={recentSessions}
               onSelectProject={onSelectProject}
               onOpenProject={pickProject}
               onRemoveProject={onRemoveProject}
@@ -11077,7 +11284,7 @@ function Workspace({
                       key={panel.sessionId}
                       target={panel.item}
                       cwd={panel.cwd}
-                      recents={recents}
+                      recents={visibleRecents}
                       visible={
                         !searchViewOpen &&
                         !settingsOpen &&
@@ -11095,9 +11302,13 @@ function Workspace({
                 <SearchView
                   open
                   cwd={gitCwd}
-                  recents={recents}
+                  recents={visibleRecents}
                   history={projectHistory}
-                  sessions={sessions.filter((session) => !session.inboxAsk)}
+                  sessions={sessions.filter(
+                    (session) =>
+                      !session.inboxAsk &&
+                      !isProjectLockedIn(lockSnapshot, session.cwd),
+                  )}
                   focusToken={searchViewFocusToken}
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
@@ -11139,7 +11350,7 @@ function Workspace({
               {inboxViewOpen ? (
                 <InboxView
                   cwd={sidebarCwd}
-                  recents={recents}
+                  recents={visibleRecents}
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
                   onClose={onLeaveInbox}
@@ -11160,7 +11371,7 @@ function Workspace({
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
                   cwd={projectCwd}
-                  recents={recents}
+                  recents={visibleRecents}
                   onClose={onLeaveNotes}
                   onToggleSidebar={onToggleSidebar}
                 />
@@ -11170,7 +11381,7 @@ function Workspace({
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
                   cwd={projectCwd}
-                  recents={recents}
+                  recents={visibleRecents}
                   onClose={onLeaveAutomations}
                   onToggleSidebar={onToggleSidebar}
                   onLaunch={(automation, run) =>
@@ -11185,7 +11396,7 @@ function Workspace({
                   anchor={settingsAnchor}
                   notificationProjectPath={notificationProjectPath}
                   notificationSettingsRequest={notificationSettingsRequest}
-                  recents={recents}
+                  recents={visibleRecents}
                   cwd={sidebarCwd}
                   sessions={sidebarHistory}
                   liveSessions={sessions}
@@ -11247,9 +11458,25 @@ function Workspace({
               cwd={filesCwd}
               openPaths={openFilePaths}
               initialQuery={filePickerInitialQuery}
+              stopBackgroundWork={
+                !!active &&
+                canStopHarnessBackgroundWork(active.harness) &&
+                sessionHasBackgroundWork(active)
+              }
               onOpenFile={onOpenFile}
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
+                else if (id === "stop-background" && active) {
+                  void stopHarnessBackgroundWork(
+                    active.harness,
+                    active.id,
+                  ).catch(console.error);
+                }
+                else if (id === "reconnect-remote") {
+                  const remote = remoteProjectFor(filesCwd);
+                  if (remote) void reconnectRemoteMachine(remote.environmentId, { signIn: true });
+                } else if (id === "toggle-notes" && loadNotesEnabled())
+                  toggleNotesPanel();
               }}
               onClose={() => setFilePickerOpen(false)}
             />
@@ -11309,6 +11536,7 @@ function Workspace({
             />
           ) : null}
           <GitFileInspector onOpenCommit={onOpenCommit} />
+          <SessionImportHost onImported={onSessionsImported} />
           {remoteProjectDialogOpen ? (
             <AddRemoteProjectDialog
               onCancel={() => setRemoteProjectDialogOpen(false)}

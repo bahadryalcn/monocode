@@ -1,3 +1,4 @@
+import { foldSearchText } from "../../../shared/lib/searchFold";
 import type { Block } from "./session";
 
 export function transcriptBlockText(block: Block): string {
@@ -14,9 +15,15 @@ export function transcriptBlockText(block: Block): string {
   return parts.join("\n");
 }
 
+/**
+ * Blocks containing the query, case- and Turkish-insensitively: the whole
+ * phrase, or every word of it anywhere in the block (what the cross-session
+ * search matches, so a result opened from there is found here too).
+ */
 export function findTranscriptBlocks(blocks: Block[], query: string): string[] {
-  const needle = query.trim().toLowerCase();
+  const needle = foldSearchText(query.trim());
   if (!needle) return [];
+  const words = needle.split(/\s+/);
   return blocks
     .filter(
       (block) =>
@@ -26,7 +33,11 @@ export function findTranscriptBlocks(blocks: Block[], query: string): string[] {
           block.role === "tasks" ||
           block.role === "plan" ||
           block.role === "image") &&
-        transcriptBlockText(block).toLowerCase().includes(needle),
+        blockMatches(foldSearchText(transcriptBlockText(block)), needle, words),
     )
     .map((block) => block.id);
+}
+
+function blockMatches(text: string, phrase: string, words: string[]): boolean {
+  return text.includes(phrase) || words.every((word) => text.includes(word));
 }

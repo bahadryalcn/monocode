@@ -129,6 +129,7 @@ export function AgentTabView({
           managed
         />
         <TranscriptFind
+          sessionId={session.id}
           blocks={session.blocks}
           visible={visible}
           focused={focused}

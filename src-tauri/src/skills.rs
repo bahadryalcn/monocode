@@ -151,6 +151,9 @@ pub(crate) fn list_skills_from(
     if let Some(home) = home {
         add_root(home.join(".pi/agent/skills"), "user", "pi");
         add_root(home.join(".omp/agent/skills"), "user", "omp");
+        // Codex ships its own skills (imagegen, ...) in a dot folder that the
+        // generic scan skips, so name it directly.
+        add_root(home.join(".codex/skills/.system"), "user", "codex");
         // New-provider roots come after every pre-existing root so an
         // identically named skill can never shadow an established provider.
         let root = home.join(".gemini/antigravity/skills");
@@ -197,7 +200,10 @@ fn add_namespaced_root(
     }
 }
 
-fn claude_plugin_skill_roots(home: &Path, project: &Path) -> Vec<(PathBuf, &'static str, String)> {
+pub(crate) fn claude_plugin_skill_roots(
+    home: &Path,
+    project: &Path,
+) -> Vec<(PathBuf, &'static str, String)> {
     let registry = home.join(".claude/plugins/installed_plugins.json");
     let Ok(raw) = std::fs::read_to_string(registry) else {
         return Vec::new();
@@ -418,7 +424,7 @@ fn skill_md_path(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn read_prefix(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_prefix(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
     let mut buf = Vec::with_capacity(max.min(4096));
@@ -480,7 +486,7 @@ fn parse_frontmatter(text: &str, fallback: &str) -> (String, String) {
     (name, description.trim().to_string())
 }
 
-fn yaml_value(line: &str, key: &str) -> Option<String> {
+pub(crate) fn yaml_value(line: &str, key: &str) -> Option<String> {
     let line = line.trim_start();
     let prefix = format!("{key}:");
     line.strip_prefix(&prefix)
@@ -495,7 +501,7 @@ fn is_yaml_indent(line: &str) -> bool {
     line.starts_with(' ') || line.starts_with('\t')
 }
 
-fn unquote(value: &str) -> String {
+pub(crate) fn unquote(value: &str) -> String {
     let value = value.trim();
     let bytes = value.as_bytes();
     if bytes.len() >= 2 {
@@ -1118,6 +1124,30 @@ mod tests {
         assert!(
             slash_skill.is_some(),
             "distinct backslash path on Unix must not be disabled by colliding slash path"
+        );
+    }
+
+    #[test]
+    fn lists_codex_system_skills_from_the_hidden_folder() {
+        let project = tmp("codex-proj");
+        let home = tmp("codex-home");
+        write_skill(
+            &home.0.join(".codex/skills/.system"),
+            "imagegen",
+            "---
+name: imagegen
+description: Make images
+---
+",
+        );
+        let skills = list_skills_from(&project.0, Some(&home.0), None);
+        let imagegen = skills
+            .iter()
+            .find(|skill| skill.name == "imagegen")
+            .unwrap();
+        assert_eq!(
+            (imagegen.source.as_str(), imagegen.scope.as_str()),
+            ("codex", "user")
         );
     }
 }

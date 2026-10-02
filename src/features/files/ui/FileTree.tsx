@@ -47,6 +47,9 @@ import {
 } from "../model/fileTree";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
+import { GIT_ACTIONS, useRemoteSupports } from "../../connections/model/remoteCapabilities";
+import { remotePollDue, useRemoteLoadFailure } from "../../connections/model/remoteHealth";
+import { RemoteLoadError } from "../../connections/ui/RemoteLoadError";
 import { dragPointToClient } from "../../../shared/lib/dragPoint";
 import {
   basename,
@@ -292,6 +295,9 @@ export const FileTree = memo(function FileTree({
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const name = rootLabel?.trim() || basename(cwd);
   const rootOpen = expanded.has(cwd);
+  // File History and Blame need this computer or a host with `git.actions`.
+  const canInspectGit = useRemoteSupports(cwd, GIT_ACTIONS) === true;
+  const connectionFailure = useRemoteLoadFailure(cwd, "files");
 
   const toggle = (path: string) => {
     setExpanded((prev) => {
@@ -842,7 +848,7 @@ export const FileTree = memo(function FileTree({
   useEffect(() => {
     if (!cwd.startsWith(REMOTE_PATH_PREFIX)) return;
     const timer = window.setInterval(() => {
-      if (!document.hidden) notifyDirsChanged();
+      if (!document.hidden && remotePollDue(cwd)) notifyDirsChanged();
     }, 5000);
     return () => window.clearInterval(timer);
   }, [cwd]);
@@ -978,14 +984,25 @@ export const FileTree = memo(function FileTree({
               {opError}
             </p>
           ) : null}
+          {connectionFailure ? (
+            <RemoteLoadError
+              cwd={cwd}
+              failure={connectionFailure}
+              stale={!!children?.length}
+            />
+          ) : null}
           {rootOpen ? (
-            <div role="tree" aria-label={`${name} files`}>
+            <div
+              role="tree"
+              aria-label={`${name} files`}
+              className={connectionFailure ? "opacity-60" : undefined}
+            >
               <TreeChildren
                 parent={cwd}
                 depth={0}
                 entries={children}
-                loading={children === null && !error}
-                error={error}
+                loading={children === null && !error && !connectionFailure}
+                error={connectionFailure ? null : error}
               />
             </div>
           ) : null}
@@ -999,7 +1016,7 @@ export const FileTree = memo(function FileTree({
             menu.target,
             clip,
             !!onOpenTerminal,
-            !cwd.startsWith(REMOTE_PATH_PREFIX),
+            canInspectGit,
           )}
           onPick={(id) => {
             const target = menu.target;

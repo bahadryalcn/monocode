@@ -5,11 +5,13 @@ mod automations;
 mod azure_devops;
 mod chat_background;
 mod checkpoint;
+mod claude_commands;
 mod control;
 pub mod control_cli;
 mod cursor_store;
 mod external_editor;
 mod fs;
+mod git_conflicts;
 mod gitlab;
 mod harness;
 mod harness_updates;
@@ -38,11 +40,14 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod search;
+mod session_import;
 mod session_store;
 mod skills;
 pub mod ssh_askpass;
 #[cfg(target_os = "windows")]
 mod tray;
+mod turn_probe;
+mod turn_steps;
 mod window;
 mod window_transfer;
 #[cfg(windows)]
@@ -233,6 +238,8 @@ pub fn run() {
         .manage(window_transfer::WindowTransferState::new())
         .setup(|app| {
             harness::reap_orphaned_harness_processes();
+            app.state::<remote::RemoteConnections>()
+                .emit_tunnel_exits(app.handle().clone());
             session_store::init(app.handle())?;
             control::init(app.handle())?;
             reminders::init(app.handle());
@@ -267,6 +274,7 @@ pub fn run() {
             remote::remote_request,
             remote::remote_ssh_begin,
             remote::remote_ssh_reconnect,
+            remote::remote_machine_update,
             remote::remote_ssh_poll,
             remote::remote_ssh_answer,
             remote::remote_ssh_cancel,
@@ -288,6 +296,7 @@ pub fn run() {
             notifications::request_notification_permission,
             notifications::show_notification,
             notifications::open_notification_settings,
+            notifications::set_taskbar_attention,
             reminders::reminder_list,
             reminders::reminder_set,
             reminders::reminder_clear,
@@ -413,6 +422,7 @@ pub fn run() {
             fs::git_stash_action,
             fs::git_conflicts,
             fs::git_resolve_conflict,
+            git_conflicts::git_conflict_stages,
             fs::git_file_history,
             fs::git_blame,
             worktrees::git_worktrees,
@@ -447,6 +457,7 @@ pub fn run() {
             fs::claude_shell_commands,
             fs::write_text_file,
             skills::list_skills,
+            claude_commands::list_claude_commands,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
@@ -494,17 +505,31 @@ pub fn run() {
             pty::pty_status,
             pty::pty_kill,
             pty::pty_kill_all,
+            session_import::import_discover,
+            session_import::import_read_claude,
+            session_import::import_read_codex,
+            session_import::import_placeholder_dir,
             session_store::session_upsert,
+            session_store::session_import,
+            session_store::session_import_keys,
             session_store::session_list_by_project,
             session_store::session_rebase_project,
             session_store::session_list_linked,
+            session_store::session_list_recent,
             session_store::session_search,
+            session_store::session_search_content,
             session_store::cancel_session_search,
             session_store::session_get,
             session_store::session_delete,
             session_store::session_set_archived,
             session_store::session_set_pinned,
             session_store::session_set_linked_work_item,
+            session_store::session_set_queue,
+            turn_probe::probe_turn_tail,
+            turn_steps::read_turn_steps,
+            session_store::session_get_queue,
+            session_store::session_set_draft,
+            session_store::session_list_drafts,
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,
             session_store::session_take_in_flight,

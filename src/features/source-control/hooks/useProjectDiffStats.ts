@@ -116,22 +116,24 @@ function stop(entry: Entry) {
   entry.unsubscribeGit = null;
 }
 
+function subscribeEntry(cwd: string, listener: () => void): () => void {
+  const entry = entryFor(cwd);
+  entry.listeners.add(listener);
+  if (entry.listeners.size === 1) start(entry);
+  return () => {
+    entry.listeners.delete(listener);
+    if (entry.listeners.size === 0) stop(entry);
+  };
+}
+
 export function useProjectDiffStats(
   cwd: string,
   enabled: boolean,
 ): GitDiffStats | null {
   const active = enabled && Boolean(cwd) && cwd !== "~";
   const subscribe = useCallback(
-    (listener: () => void) => {
-      if (!active) return () => undefined;
-      const entry = entryFor(cwd);
-      entry.listeners.add(listener);
-      if (entry.listeners.size === 1) start(entry);
-      return () => {
-        entry.listeners.delete(listener);
-        if (entry.listeners.size === 0) stop(entry);
-      };
-    },
+    (listener: () => void) =>
+      active ? subscribeEntry(cwd, listener) : () => undefined,
     [active, cwd],
   );
   const getSnapshot = useCallback(() => {
@@ -139,4 +141,42 @@ export function useProjectDiffStats(
   }, [active, cwd]);
 
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+}
+
+/**
+ * The same per-project stats as `useProjectDiffStats`, for several projects at
+ * once. It shares each project's entry, so a project already shown in the rail
+ * costs no extra git call; only projects not yet watched start loading.
+ */
+export function useProjectsDiffStats(
+  cwds: readonly string[],
+  enabled: boolean,
+): (GitDiffStats | null)[] {
+  const paths = cwds.filter((cwd) => enabled && Boolean(cwd) && cwd !== "~");
+  const key = JSON.stringify(paths);
+  const subscribe = useCallback(
+    (listener: () => void) => {
+      const unsubscribers = paths.map((cwd) => subscribeEntry(cwd, listener));
+      return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+    },
+    // `key` stands in for `paths`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [key],
+  );
+  // Callers read the changed-file count, so that alone drives re-renders.
+  const getSnapshot = useCallback(
+    () =>
+      paths
+        .map((cwd) => {
+          const stats = entryFor(cwd).stats;
+          return stats ? `${stats.files}` : "-";
+        })
+        .join(","),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [key],
+  );
+  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  return cwds.map((cwd) =>
+    enabled && Boolean(cwd) && cwd !== "~" ? entryFor(cwd).stats : null,
+  );
 }

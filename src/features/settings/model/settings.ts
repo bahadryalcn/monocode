@@ -28,6 +28,7 @@ export type SettingsSectionId =
   | "skills"
   | "inbox"
   | "worktrees"
+  | "groupLock"
   | "archive";
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -88,7 +89,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "How transcripts read, what the composer does with a follow-up, how files save, and how diffs open.",
     keywords:
-      "transcript composer prompt message diff review layout format save editor",
+      "transcript composer prompt message diff review layout format save editor template snippet trigger queue",
   },
   {
     id: "providers",
@@ -137,6 +138,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: "Manage additional worktrees for each project.",
     keywords: "git branch worktree working copy project create delete",
   },
+  {
+    id: "groupLock",
+    group: "workspace",
+    label: "Group lock",
+    description:
+      "Protect project groups in the rail with one password. An access lock for the interface, not encryption.",
+    keywords: "password privacy hide private protect secure passcode",
+  },
 ];
 
 export function settingsSectionsByGroup(): {
@@ -162,7 +171,31 @@ export type SettingsEntry = {
 };
 
 export const SETTINGS_INDEX: SettingsEntry[] = [
+  {
+    id: "group-lock-password",
+    section: "groupLock",
+    label: "Lock password",
+    keywords: "set change remove forgot reset passcode group rail protect",
+  },
+  {
+    id: "group-lock-options",
+    section: "groupLock",
+    label: "Lock groups again when MonoCode starts",
+    keywords: "auto lock inactivity timeout minutes launch startup unlock all",
+  },
+  {
+    id: "group-lock-groups",
+    section: "groupLock",
+    label: "Lockable groups",
+    keywords: "group rail project password lock now",
+  },
   { id: "remote-machines", section: "connections", label: "Your machines", keywords: "ssh remote connect host server environment" },
+  {
+    id: "remote-auto-reconnect",
+    section: "connections",
+    label: "Automatically reconnect to remote machines",
+    keywords: "ssh remote retry reconnect drop tunnel offline background",
+  },
   {
     id: "mcp-servers",
     section: "mcp",
@@ -180,6 +213,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "general",
     label: "Version",
     keywords: "update upgrade release what's new build changelog",
+  },
+  {
+    id: "import-history",
+    section: "general",
+    label: "Import Claude Code and Codex sessions",
+    keywords: "history conversations terminal resume migrate existing",
   },
   {
     id: "sounds",
@@ -351,6 +390,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "chat",
     label: "Resume at reset",
     keywords: "usage limit rate limit continue automatically wait",
+  },
+  {
+    id: "auto-continue-interrupted",
+    section: "chat",
+    label: "Automatically continue interrupted turns",
+    keywords: "restart quit resume continue where you left off cut off crash",
   },
   {
     id: "model-controls",
@@ -929,6 +974,39 @@ export function saveKeepAwakeHoldAfter(value: KeepAwakeHoldAfter): void {
     );
 }
 
+const REMOTE_AUTO_RECONNECT_KEY = "monocode.remoteAutoReconnect";
+export const REMOTE_AUTO_RECONNECT_DEFAULT = true;
+export const REMOTE_AUTO_RECONNECT_CHANGE_EVENT =
+  "monocode:remote-auto-reconnect-change";
+
+/** Whether dropped remote machines are retried in the background. */
+export function loadRemoteAutoReconnect(): boolean {
+  return readFlag(REMOTE_AUTO_RECONNECT_KEY) ?? REMOTE_AUTO_RECONNECT_DEFAULT;
+}
+
+export function saveRemoteAutoReconnect(value: boolean): void {
+  writeFlag(REMOTE_AUTO_RECONNECT_KEY, value);
+  if (typeof window !== "undefined")
+    window.dispatchEvent(
+      new CustomEvent<boolean>(REMOTE_AUTO_RECONNECT_CHANGE_EVENT, {
+        detail: value,
+      }),
+    );
+}
+
+export function subscribeRemoteAutoReconnect(onChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === REMOTE_AUTO_RECONNECT_KEY || event.key === null) onChange();
+  };
+  window.addEventListener(REMOTE_AUTO_RECONNECT_CHANGE_EVENT, onChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(REMOTE_AUTO_RECONNECT_CHANGE_EVENT, onChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
 const KEEP_AWAKE_SCREEN_KEY = "monocode.keepAwakeScreen";
 export const KEEP_AWAKE_SCREEN_DEFAULT = false;
 export const KEEP_AWAKE_SCREEN_CHANGE_EVENT =
@@ -1211,6 +1289,11 @@ export const KEYBINDINGS: KeybindingRow[] = [
     keys: `${MOD}${SHIFT}G`,
     when: "Draft session composer",
   },
+  {
+    command: "Composer: Queue Message",
+    keys: `${SHIFT}Tab`,
+    when: "textFocus && turnRunning && !popup",
+  },
   { command: "View: Reload", keys: `${MOD}${SHIFT}R`, when: "Always" },
   { command: "View: Zoom In", keys: `${MOD}+`, when: "Always" },
   { command: "View: Zoom Out", keys: `${MOD}-`, when: "Always" },
@@ -1233,6 +1316,11 @@ export const KEYBINDINGS: KeybindingRow[] = [
   {
     command: "Session: Archive",
     keys: `${MOD}${SHIFT}A`,
+    when: "sessionFocus && !overlay",
+  },
+  {
+    command: "Session: Toggle Notes Panel",
+    keys: `${MOD}N`,
     when: "sessionFocus && !overlay",
   },
   {
@@ -1574,4 +1662,49 @@ export function filterKeybindings(
       row.keys.toLowerCase().includes(needle) ||
       row.when.toLowerCase().includes(needle),
   );
+}
+
+const INLINE_BLAME_KEY = "monocode.inlineBlame";
+
+export const INLINE_BLAME_DEFAULT = false;
+
+/** Fired on `window` when the editor's inline blame gutter is switched. */
+export const INLINE_BLAME_CHANGE_EVENT = "monocode:inline-blame-change";
+
+/** Whether editors show the per-line blame gutter. */
+export function loadInlineBlame(): boolean {
+  return readFlag(INLINE_BLAME_KEY) ?? INLINE_BLAME_DEFAULT;
+}
+
+export function saveInlineBlame(value: boolean) {
+  writeFlag(INLINE_BLAME_KEY, value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(INLINE_BLAME_CHANGE_EVENT, { detail: value }),
+  );
+}
+
+export function subscribeInlineBlame(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(INLINE_BLAME_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(INLINE_BLAME_CHANGE_EVENT, onStoreChange);
+}
+
+const AUTO_CONTINUE_INTERRUPTED_KEY = "monocode.autoContinueInterrupted";
+
+export const AUTO_CONTINUE_INTERRUPTED_DEFAULT = true;
+
+/**
+ * Whether a turn that was cut off when MonoCode quit is continued on its own at
+ * the next launch. Off leaves an "Interrupted - Continue" action on the chat.
+ */
+export function loadAutoContinueInterrupted(): boolean {
+  return (
+    readFlag(AUTO_CONTINUE_INTERRUPTED_KEY) ?? AUTO_CONTINUE_INTERRUPTED_DEFAULT
+  );
+}
+
+export function saveAutoContinueInterrupted(value: boolean) {
+  writeFlag(AUTO_CONTINUE_INTERRUPTED_KEY, value);
 }

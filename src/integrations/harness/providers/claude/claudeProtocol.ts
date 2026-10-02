@@ -27,6 +27,7 @@ import {
   isAgentToolName,
   titleFromToolInput,
 } from "../../core/preview";
+import type { ReportedCommand } from "../../core/reportedCommands";
 import { streamTextDelta } from "../../core/streamText";
 import type { ApprovalDecision, HarnessEvent } from "../../core/types";
 
@@ -168,6 +169,8 @@ export function applyClaudePromptEffortPrefix(
   effort: string | null | undefined,
 ): string {
   if (effort !== "ultrathink") return text;
+  // Claude Code only runs a slash command that is the very start of the message.
+  if (/^\s*\/[^\s/\\]+(?=\s|$)/.test(text)) return text;
   if (!text) return "Ultrathink:";
   return `Ultrathink:\n${text}`;
 }
@@ -366,6 +369,21 @@ export function listModelsFromControlResponse(
   if (!parsed || parsed.requestId !== requestId) return null;
   if (!parsed.ok) return [];
   return Array.isArray(parsed.payload?.models) ? parsed.payload.models : [];
+}
+
+/** Commands and skills the `init` message lists for this session (names only). */
+export function claudeInitCommands(
+  rec: Record<string, unknown>,
+): ReportedCommand[] {
+  const names = (value: unknown) =>
+    Array.isArray(value)
+      ? value.filter((name): name is string => typeof name === "string")
+      : [];
+  const skills = new Set(names(rec.skills));
+  return [...new Set([...names(rec.slash_commands), ...skills])].map((name) => ({
+    name,
+    kind: skills.has(name) ? "skill" : "command",
+  }));
 }
 
 export function isClaudeInitMessage(rec: Record<string, unknown>): boolean {

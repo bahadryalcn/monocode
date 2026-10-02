@@ -12,7 +12,9 @@ const { remoteRequest, remoteMachineFor, invokeLocal } = vi.hoisted(() => ({
 vi.mock("./connections", () => ({ remoteRequest, remoteMachineFor }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeLocal }));
 
-import { runRemoteCommand } from "./remoteCommands";
+import { WORKSPACE_COMMANDS } from "../../../../host/workspace-commands";
+import { GIT_ACTION_COMMANDS } from "../../../../host/git-actions";
+import { HOST_COMMANDS, runRemoteCommand } from "./remoteCommands";
 import { parseRemotePath, remotePath } from "./remoteProjects";
 import { listDir, readBinaryFile, readTextFile, statFiles, writeTextFile } from "../../../platform/tauri/fs";
 
@@ -107,6 +109,49 @@ it("adds remote paths to Git index entries", async () => {
   expect(index.files[0].path).toBe("remote://env/home/me/repo/src/app.ts");
 });
 
+it("maps the conflict entries of an index, and leaves a host without them alone", async () => {
+  remoteRequest.mockResolvedValueOnce({
+    branch: "main",
+    files: [],
+    conflicts: [{ path: "a.txt", relative: "a.txt", kind: "both-modified" }],
+    operation: "merge",
+  });
+  expect(
+    await runRemoteCommand("git_diff_index", { cwd: "remote://env/home/me/repo" }),
+  ).toMatchObject({
+    conflicts: [{ path: "remote://env/home/me/repo/a.txt", relative: "a.txt", kind: "both-modified" }],
+    operation: "merge",
+  });
+  remoteRequest.mockResolvedValueOnce({ branch: "main", files: [] });
+  const older = (await runRemoteCommand("git_diff_files", {
+    cwd: "remote://env/home/me/repo",
+  })) as Record<string, unknown>;
+  expect("conflicts" in older).toBe(false);
+});
+
+it("reads the three versions of a conflicted file through the host", async () => {
+  remoteRequest.mockResolvedValueOnce({
+    path: "a.txt",
+    relative: "a.txt",
+    kind: "both-modified",
+    base: "a\n",
+    ours: "b\n",
+    theirs: "c\n",
+    binary: false,
+    tooLarge: false,
+  });
+  expect(
+    await runRemoteCommand("git_conflict_stages", {
+      cwd: "remote://env/home/me/repo",
+      relative: "a.txt",
+    }),
+  ).toMatchObject({ path: "remote://env/home/me/repo/a.txt", ours: "b\n" });
+  expect(remoteRequest).toHaveBeenCalledWith("machine", "workspace.run", {
+    command: "git_conflict_stages",
+    args: { cwd: "/home/me/repo", relative: "a.txt" },
+  });
+});
+
 it("routes project search through the host and maps match paths", async () => {
   remoteRequest.mockResolvedValueOnce({
     matches: [{ path: "/home/me/repo/src/app.ts", relative: "src/app.ts", line: 4 }],
@@ -121,6 +166,35 @@ it("routes project search through the host and maps match paths", async () => {
     command: "search_project",
     args: { options: { cwd: "/home/me/repo", query: "hello" } },
   });
+});
+
+it("forwards exactly the commands the host answers", () => {
+  expect([...HOST_COMMANDS].sort()).toEqual([...WORKSPACE_COMMANDS].sort());
+  for (const command of GIT_ACTION_COMMANDS) expect(HOST_COMMANDS.has(command)).toBe(true);
+});
+
+it("sends git actions with the project translated and files left relative", async () => {
+  remoteRequest.mockResolvedValueOnce([{ line: 1, sha: "a" }]);
+  await runRemoteCommand("git_blame", {
+    cwd: "remote://env/home/me/repo",
+    relative: "src/app.ts",
+  });
+  expect(remoteRequest).toHaveBeenLastCalledWith("machine", "workspace.run", {
+    command: "git_blame",
+    args: { cwd: "/home/me/repo", relative: "src/app.ts" },
+  });
+  // Conflicts and operation state are repo-relative already.
+  remoteRequest.mockResolvedValueOnce({ operation: "merge", conflicts: ["src/app.ts"] });
+  expect(
+    await runRemoteCommand("git_operation_status", { cwd: "remote://env/home/me/repo" }),
+  ).toEqual({ operation: "merge", conflicts: ["src/app.ts"] });
+});
+
+it("reports a host that predates a command as outdated", async () => {
+  remoteRequest.mockRejectedValueOnce("Host rejected request: Unsupported workspace command");
+  await expect(
+    runRemoteCommand("git_tags", { cwd: "remote://env/home/me/repo" }),
+  ).rejects.toThrow("Update MonoCode Host");
 });
 
 it("refuses what the host cannot do and explains outdated hosts", async () => {

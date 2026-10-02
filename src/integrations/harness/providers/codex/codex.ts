@@ -14,11 +14,13 @@ import {
   watchChild,
 } from "../../core/child";
 import { additionalDirsFor } from "../../core/additionalDirs";
+import { reportSessionCommands } from "../../core/reportedCommands";
 import {
   asRecord,
   buildThreadStartParams,
   buildTurnStartParams,
   buildTurnSteerParams,
+  codexSkillsFromList,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
   codexSubagentStates,
@@ -106,6 +108,8 @@ type Live = {
   rateLimits: Map<string, Record<string, unknown>>;
   /** The active turn failed on a spent usage limit. */
   usageLimited: boolean;
+  /** Skill name to SKILL.md path, so a `$name` can be sent as a skill input. */
+  skills: Map<string, string>;
 };
 
 function trackNotificationQueue(
@@ -263,6 +267,7 @@ export async function steerCodexTurn(input: SteerTurnInput): Promise<void> {
     expectedTurnId: turnId,
     prompt: input.text.trim() || undefined,
     attachments: input.attachments,
+    skills: live.skills,
   });
   if (
     !params.input ||
@@ -623,6 +628,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       openAgentRows: new Map(),
       rateLimits: new Map(),
       usageLimited: false,
+      skills: new Map(),
     };
     liveRef.current = live;
     liveByThread.set(input.sessionId, live);
@@ -636,11 +642,28 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       providerSessionId: threadId,
     });
     live.onEvent({ type: "session.started" });
+    void loadCodexSkills(live, input.sessionId);
     return live;
   } catch (error) {
     rpc.close(error instanceof Error ? error : new Error(String(error)));
     await stopCodexSession(input.sessionId);
     throw error;
+  }
+}
+
+/** Ask Codex which skills it sees for this thread; the `$` menu lists them. */
+async function loadCodexSkills(live: Live, sessionId: string): Promise<void> {
+  try {
+    const skills = codexSkillsFromList(
+      await live.rpc.request("skills/list", { cwds: [live.cwd] }),
+    );
+    live.skills = new Map(skills.map((skill) => [skill.name, skill.path]));
+    reportSessionCommands(
+      sessionId,
+      skills.map((skill) => ({ ...skill, kind: "skill" as const })),
+    );
+  } catch {
+    // The menu falls back to skills found on disk.
   }
 }
 
@@ -655,6 +678,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     controlsAgents: input.controlsAgents,
     prompt: input.text.trim() || undefined,
     attachments: input.attachments,
+    skills: live.skills,
     model,
     effort,
     serviceTier,

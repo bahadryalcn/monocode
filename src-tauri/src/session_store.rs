@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod content_search;
+pub use content_search::{ContentSearchOptions, ContentSearchResult};
+
 const MIGRATION_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -31,6 +34,9 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 pub struct SessionStore {
     conn: Mutex<Connection>,
     read_conn: Mutex<Option<Connection>>,
+    /// One search-index builder at a time: the startup pass and a search both
+    /// run `content_search::sync_index`, and indexing a session twice is waste.
+    search_index_lock: Mutex<()>,
 }
 
 impl SessionStore {
@@ -50,6 +56,7 @@ impl SessionStore {
         Ok(Self {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(Some(read_conn)),
+            search_index_lock: Mutex::new(()),
         })
     }
 
@@ -62,6 +69,7 @@ impl SessionStore {
         Ok(Self {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(None),
+            search_index_lock: Mutex::new(()),
         })
     }
 
@@ -79,7 +87,9 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
         |store| {
             app.manage(store);
         },
-    )
+    )?;
+    start_search_indexing(app);
+    Ok(())
 }
 
 // Keep the complete startup path here so the transcript-read test covers it.
@@ -91,6 +101,25 @@ fn init_with(
     let store = open(data_dir()?.join("monocode.db"))?;
     manage(store);
     Ok(())
+}
+
+/// Builds the message-content search index for sessions it does not cover yet
+/// (a fresh migration, a bulk import) off the startup path.
+fn start_search_indexing(app: &AppHandle) {
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("session-search-index".into())
+        .spawn(move || {
+            // Let startup finish first; this is catch-up work, not on the
+            // critical path, and a search indexes what it needs by itself.
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if let Some(store) = app.try_state::<SessionStore>() {
+                content_search::index_in_background(&store);
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("session search index thread: {error}");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +152,14 @@ pub struct SessionUpsert {
     pub linked_work_item: Option<Value>,
     #[serde(default)]
     pub automation_id: Option<String>,
+    /// Original timestamps of an imported conversation. Used only when the row
+    /// is first created, so imported history sorts where it happened rather
+    /// than at the moment of the import; every later write moves `updated_at`
+    /// as usual.
+    #[serde(default)]
+    pub created_at: Option<i64>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +241,13 @@ pub fn session_upsert(
     store: State<'_, SessionStore>,
     session: SessionUpsert,
 ) -> Result<SessionSummary, String> {
+    validate_upsert(&session)?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
+    Ok(summary)
+}
+
+fn validate_upsert(session: &SessionUpsert) -> Result<(), String> {
     validate_id(&session.id, "session")?;
     if session.cwd.trim().is_empty() {
         return Err("cwd is required".into());
@@ -229,10 +273,63 @@ pub fn session_upsert(
     if !session.blocks.is_array() {
         return Err("blocks must be an array".into());
     }
+    Ok(())
+}
 
+/// Adds a conversation brought in from a provider's own history. Never
+/// replaces anything: when the id, or the provider conversation it carries, is
+/// already stored, the call does nothing and returns `None`, so importing the
+/// same transcript twice cannot overwrite a chat that was continued since.
+#[tauri::command(async)]
+pub fn session_import(
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+) -> Result<Option<SessionSummary>, String> {
+    validate_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
-    Ok(summary)
+    if import_already_stored(&conn, &session).map_err(|e| e.to_string())? {
+        return Ok(None);
+    }
+    upsert_session(&conn, &session)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+fn import_already_stored(conn: &Connection, session: &SessionUpsert) -> rusqlite::Result<bool> {
+    let provider_session_id = session
+        .provider_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM sessions
+           WHERE id = ?1
+              OR (?3 IS NOT NULL AND harness = ?2 AND provider_session_id = ?3))",
+        params![session.id, session.harness, provider_session_id],
+        |row| row.get(0),
+    )
+}
+
+/// What the import dialog needs to mark conversations as already imported:
+/// `harness:providerSessionId` for every stored session bound to a provider
+/// conversation, plus the id of every session an earlier import created (a
+/// read-only import has no provider binding to match on).
+#[tauri::command(async)]
+pub fn session_import_keys(store: State<'_, SessionStore>) -> Result<Vec<String>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    import_keys(&conn).map_err(|e| e.to_string())
+}
+
+fn import_keys(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT harness || ':' || provider_session_id FROM sessions
+           WHERE provider_session_id IS NOT NULL AND provider_session_id != ''
+         UNION
+         SELECT id FROM sessions WHERE id LIKE 'imp-%'",
+    )?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
 }
 
 fn generated_image_paths(blocks: &Value) -> Vec<String> {
@@ -288,6 +385,15 @@ fn rebase_project(conn: &Connection, from_cwd: &str, to_cwd: &str) -> rusqlite::
 pub fn session_list_linked(store: State<'_, SessionStore>) -> Result<Vec<SessionSummary>, String> {
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     list_linked(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
+pub fn session_list_recent(
+    store: State<'_, SessionStore>,
+    limit: i64,
+) -> Result<Vec<SessionSummary>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_recent(&conn, limit).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -478,6 +584,16 @@ fn search_store(
     }
 }
 
+/// Full-text search over message content, grouped by session. Cancel with
+/// `cancel_session_search` under the same `searchOwner`.
+#[tauri::command(async)]
+pub fn session_search_content(
+    store: State<'_, SessionStore>,
+    options: ContentSearchOptions,
+) -> Result<ContentSearchResult, String> {
+    content_search::search_content(&store, &options)
+}
+
 #[tauri::command(async)]
 pub fn cancel_session_search(search_owner: String) {
     cancel_owned_session_search(&search_owner);
@@ -540,6 +656,155 @@ pub fn session_set_linked_work_item(
     validate_id(&session_id, "session")?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     set_linked_work_item(&conn, &session_id, linked_work_item.as_ref()).map_err(|e| e.to_string())
+}
+
+const SESSION_QUEUE_MAX_BYTES: usize = 8_000_000;
+
+/// Write-through for a session's queued follow-ups. Kept in its own table so a
+/// queue edit never rewrites the transcript, and a transcript save never
+/// touches the queue. An empty queue (`None`) deletes the row.
+#[tauri::command(async)]
+pub fn session_set_queue(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    queue: Option<Value>,
+) -> Result<(), String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    set_session_queue(&conn, &session_id, queue.as_ref())
+}
+
+#[tauri::command(async)]
+pub fn session_get_queue(
+    store: State<'_, SessionStore>,
+    session_id: String,
+) -> Result<Option<Value>, String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    get_session_queue(&conn, &session_id).map_err(|e| e.to_string())
+}
+
+fn set_session_queue(
+    conn: &Connection,
+    session_id: &str,
+    queue: Option<&Value>,
+) -> Result<(), String> {
+    let Some(queue) = queue else {
+        conn.execute(
+            "DELETE FROM session_queues WHERE session_id = ?1",
+            [session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+    if !queue.is_array() {
+        return Err("queue must be an array".into());
+    }
+    let json = serde_json::to_string(queue).map_err(|e| e.to_string())?;
+    if json.len() > SESSION_QUEUE_MAX_BYTES {
+        return Err("queue is too large".into());
+    }
+    conn.execute(
+        "INSERT INTO session_queues (session_id, queue_json, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(session_id) DO UPDATE SET
+           queue_json = excluded.queue_json,
+           updated_at = excluded.updated_at",
+        params![session_id, json, now_millis()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn get_session_queue(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<Value>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT queue_json FROM session_queues WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // A row that no longer parses is dropped rather than failing the load.
+    Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
+}
+
+const COMPOSER_DRAFT_MAX_BYTES: usize = 8_000_000;
+/// A draft nobody touched for this long is not coming back; listing drops it.
+const COMPOSER_DRAFT_MAX_AGE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Write-through for the unsent text in a session's composer. Keyed by the
+/// session id even when that session has no transcript row yet (a blank new
+/// chat), so it has its own table and no foreign key. `None` deletes the row.
+#[tauri::command(async)]
+pub fn session_set_draft(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    draft: Option<Value>,
+) -> Result<(), String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    set_composer_draft(&conn, &session_id, draft.as_ref())
+}
+
+/// Every saved draft, read once at launch so each composer can start from its own.
+#[tauri::command(async)]
+pub fn session_list_drafts(store: State<'_, SessionStore>) -> Result<Vec<Value>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_composer_drafts(&conn).map_err(|e| e.to_string())
+}
+
+fn set_composer_draft(
+    conn: &Connection,
+    session_id: &str,
+    draft: Option<&Value>,
+) -> Result<(), String> {
+    let Some(draft) = draft else {
+        conn.execute(
+            "DELETE FROM composer_drafts WHERE session_id = ?1",
+            [session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+    if !draft.is_object() {
+        return Err("draft must be an object".into());
+    }
+    let json = serde_json::to_string(draft).map_err(|e| e.to_string())?;
+    if json.len() > COMPOSER_DRAFT_MAX_BYTES {
+        return Err("draft is too large".into());
+    }
+    conn.execute(
+        "INSERT INTO composer_drafts (session_id, draft_json, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(session_id) DO UPDATE SET
+           draft_json = excluded.draft_json,
+           updated_at = excluded.updated_at",
+        params![session_id, json, now_millis()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Rows as `{ sessionId, draft }`, oldest-expired ones deleted first. A row
+/// that no longer parses is skipped rather than failing the whole list.
+fn list_composer_drafts(conn: &Connection) -> rusqlite::Result<Vec<Value>> {
+    conn.execute(
+        "DELETE FROM composer_drafts WHERE updated_at < ?1",
+        [now_millis() - COMPOSER_DRAFT_MAX_AGE_MS],
+    )?;
+    let mut statement = conn
+        .prepare("SELECT session_id, draft_json FROM composer_drafts ORDER BY updated_at DESC")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut drafts = Vec::new();
+    for row in rows {
+        let (session_id, raw) = row?;
+        if let Ok(draft) = serde_json::from_str::<Value>(&raw) {
+            drafts.push(json!({ "sessionId": session_id, "draft": draft }));
+        }
+    }
+    Ok(drafts)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -909,6 +1174,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
+    // Message-content search index: derived tables, created empty like the ones
+    // around it (so no version row, and instant however many sessions exist).
+    // Sessions are indexed lazily; see `content_search`.
+    content_search::ensure_schema(conn)?;
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -927,6 +1196,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS worktree_removals (
            path TEXT PRIMARY KEY,
            sessions_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS session_queues (
+           session_id TEXT PRIMARY KEY,
+           queue_json TEXT NOT NULL,
+           updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS composer_drafts (
+           session_id TEXT PRIMARY KEY,
+           draft_json TEXT NOT NULL,
+           updated_at INTEGER NOT NULL
          );",
     )?;
     // Compatibility only: earlier Inbox Ask builds saved temporary chats here.
@@ -1142,12 +1421,13 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
     let created_at = existing
         .as_ref()
         .map(|(value, _, _, _, _)| *value)
-        .unwrap_or(now);
+        .unwrap_or_else(|| session.created_at.unwrap_or(now));
     let updated_at = match &existing {
         Some((_, prev_updated, prev_blocks, _, _)) if json_eq(prev_blocks, &session.blocks) => {
             *prev_updated
         }
-        _ => now,
+        Some(_) => now,
+        None => session.updated_at.unwrap_or(now),
     };
     let archived = existing
         .as_ref()
@@ -1658,6 +1938,75 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
     rows.collect()
 }
 
+/// Newest live sessions across every project, plus every pinned one however
+/// old. Read-only and branch-light: it never shells out to git per project.
+fn list_recent(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<SessionSummary>> {
+    let mut rows = recent_rows(conn, true, -1)?;
+    rows.extend(recent_rows(conn, false, limit.clamp(1, 200))?);
+    rows.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(rows)
+}
+
+fn recent_rows(
+    conn: &Connection,
+    pinned: bool,
+    limit: i64,
+) -> rusqlite::Result<Vec<SessionSummary>> {
+    // The covering index answers the whole filter without reading transcripts;
+    // the unscoped search pins it for the same reason.
+    let mut statement = conn.prepare(
+        "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
+                created_at, updated_at, branch, archived, pinned,
+                linked_work_item_json, worktree_cwd, worktree_removed, is_draft,
+                automation_id
+         FROM sessions INDEXED BY sessions_cwd_cover_idx
+         WHERE has_user_message = 1
+           AND archived = 0
+           AND pinned = ?1
+           AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
+           AND id NOT IN (SELECT session_id FROM orchestration_workers)
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![pinned as i64, limit], |row| {
+        let worktree_removed = row.get::<_, i64>(14)? != 0;
+        let branch: Option<String> = row.get(9)?;
+        Ok(SessionSummary {
+            id: row.get(0)?,
+            orchestration_lead_id: None,
+            orchestration: None,
+            cwd: row.get(1)?,
+            harness: row.get(2)?,
+            model: row.get(3)?,
+            runtime_mode: row.get(4)?,
+            title: row.get(5)?,
+            provider_session_id: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            branch: if worktree_removed {
+                None
+            } else {
+                nonempty(branch)
+            },
+            worktree_cwd: row.get(13)?,
+            worktree_removed,
+            repo: None,
+            additions: 0,
+            deletions: 0,
+            archived: row.get::<_, i64>(10)? != 0,
+            pinned: row.get::<_, i64>(11)? != 0,
+            draft: row.get::<_, i64>(15)? != 0,
+            linked_work_item: optional_json(row.get(12)?),
+            automation_id: nonempty(row.get(16)?),
+        })
+    })?;
+    rows.collect()
+}
+
 /// Mirrors the sidebar's notion of a listable session: a transcript that the
 /// user has actually said something in.
 fn has_user_block(blocks: &Value) -> bool {
@@ -1797,6 +2146,11 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
     }
     tx.execute(
         "DELETE FROM orchestration_workers WHERE session_id = ?1 OR lead_id = ?1",
+        [session_id],
+    )?;
+    content_search::forget_session(&tx, session_id)?;
+    tx.execute(
+        "DELETE FROM session_queues WHERE session_id = ?1",
         [session_id],
     )?;
     tx.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
@@ -2061,7 +2415,52 @@ mod tests {
             worktree_removed: false,
             linked_work_item: None,
             automation_id: None,
+            created_at: None,
+            updated_at: None,
         }
+    }
+
+    #[test]
+    fn imported_sessions_keep_their_timestamps_and_are_never_replaced() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut import = sample("imp-cursor-acp-session-1", "/tmp/project", "Imported");
+        import.created_at = Some(1_000);
+        import.updated_at = Some(2_000);
+        assert!(!import_already_stored(&conn, &import).unwrap());
+        let summary = upsert_session(&conn, &import).unwrap();
+        assert_eq!((summary.created_at, summary.updated_at), (1_000, 2_000));
+
+        // Same id, or a different id carrying the same provider conversation.
+        assert!(import_already_stored(&conn, &import).unwrap());
+        let mut renamed = sample("other-id", "/tmp/project", "Imported");
+        assert!(import_already_stored(&conn, &renamed).unwrap());
+        renamed.harness = "claude".into();
+        assert!(!import_already_stored(&conn, &renamed).unwrap());
+        renamed.provider_session_id = None;
+        assert!(!import_already_stored(&conn, &renamed).unwrap());
+
+        // Continuing the chat afterwards moves `updated_at` like any session.
+        let mut continued = import.clone();
+        continued.blocks = json!([{ "id": "b2", "role": "user", "text": "more" }]);
+        let summary = upsert_session(&conn, &continued).unwrap();
+        assert_eq!(summary.created_at, 1_000);
+        assert!(summary.updated_at > 2_000);
+
+        // A read-only import has no provider binding; its id is the key.
+        let mut readonly = sample("imp-codex-abc", "/tmp/project", "Read only");
+        readonly.provider_session_id = None;
+        upsert_session(&conn, &readonly).unwrap();
+        let mut keys = import_keys(&conn).unwrap();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "cursor:acp-session-1",
+                "imp-codex-abc",
+                "imp-cursor-acp-session-1"
+            ]
+        );
     }
 
     #[test]
@@ -2415,6 +2814,48 @@ mod tests {
         assert!(rows.iter().any(|row| row.id == "s1"));
         assert!(rows.iter().any(|row| row.id == "s2"));
         assert!(rows.iter().all(|row| row.linked_work_item.is_some()));
+    }
+
+    #[test]
+    fn list_recent_spans_projects_and_keeps_pinned_and_hides_the_rest() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        for (id, cwd, updated) in [
+            ("old-pinned", "/tmp/a", 1_000),
+            ("oldest", "/tmp/a", 1_500),
+            ("a-new", "/tmp/a", 5_000),
+            ("b-mid", "/tmp/b", 4_000),
+            ("archived", "/tmp/b", 6_000),
+            ("worker", "/tmp/b", 6_500),
+            ("empty", "/tmp/b", 7_000),
+        ] {
+            let mut session = sample(id, cwd, id);
+            session.updated_at = Some(updated);
+            if id == "empty" {
+                session.blocks = json!([]);
+            }
+            upsert_session(&conn, &session).unwrap();
+        }
+        set_pinned(&conn, "old-pinned", true).unwrap();
+        set_archived(&conn, "archived", true).unwrap();
+        save_orchestration(
+            &conn,
+            "a-new",
+            &json!({"status":"active","tasks":[{"id":"t","sessionId":"worker"}]}),
+        )
+        .unwrap();
+
+        let ids = |limit| {
+            list_recent(&conn, limit)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        };
+        // Newest first across projects; the pinned one is always present.
+        assert_eq!(ids(2), ["a-new", "b-mid", "old-pinned"]);
+        assert_eq!(ids(10), ["a-new", "b-mid", "oldest", "old-pinned"]);
+        assert!(list_recent(&conn, 10).unwrap().iter().any(|row| row.pinned));
     }
 
     #[test]
@@ -2897,6 +3338,117 @@ mod tests {
             )
             .unwrap();
         assert_eq!(table, 1);
+    }
+
+    #[test]
+    fn session_queue_round_trips_replaces_and_clears() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), None);
+
+        let first = json!([{ "id": "q1", "text": "one", "attachments": [] }]);
+        set_session_queue(&conn, "s1", Some(&first)).unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), Some(first));
+
+        let second = json!([
+            { "id": "q2", "text": "two", "attachments": [] },
+            { "id": "q1", "text": "one", "attachments": [] }
+        ]);
+        set_session_queue(&conn, "s1", Some(&second)).unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), Some(second));
+        assert_eq!(get_session_queue(&conn, "s2").unwrap(), None);
+
+        set_session_queue(&conn, "s1", None).unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), None);
+    }
+
+    #[test]
+    fn session_queue_rejects_non_arrays_and_survives_transcript_saves() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert!(set_session_queue(&conn, "s1", Some(&json!({"id": "q1"}))).is_err());
+
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat")).unwrap();
+        let queue = json!([{ "id": "q1", "text": "later", "attachments": [] }]);
+        set_session_queue(&conn, "s1", Some(&queue)).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat renamed")).unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), Some(queue));
+    }
+
+    #[test]
+    fn deleting_a_session_drops_its_queue() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat")).unwrap();
+        set_session_queue(&conn, "s1", Some(&json!([{ "id": "q1" }]))).unwrap();
+        delete_session(&conn, "s1").unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), None);
+    }
+
+    #[test]
+    fn composer_draft_round_trips_replaces_and_clears() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert!(list_composer_drafts(&conn).unwrap().is_empty());
+
+        // No transcript row is needed: a blank new chat has a draft too.
+        let first = json!({ "text": "half a thought", "attachments": [] });
+        set_composer_draft(&conn, "blank-1", Some(&first)).unwrap();
+        set_composer_draft(&conn, "s2", Some(&json!({ "text": "other" }))).unwrap();
+        let second = json!({ "text": "half a thought, longer", "attachments": [] });
+        set_composer_draft(&conn, "blank-1", Some(&second)).unwrap();
+
+        let listed = list_composer_drafts(&conn).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.contains(&json!({ "sessionId": "blank-1", "draft": second })));
+
+        set_composer_draft(&conn, "blank-1", None).unwrap();
+        let listed = list_composer_drafts(&conn).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["sessionId"], "s2");
+    }
+
+    #[test]
+    fn composer_draft_rejects_non_objects_and_survives_transcript_saves() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert!(set_composer_draft(&conn, "s1", Some(&json!("text"))).is_err());
+
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat")).unwrap();
+        let draft = json!({ "text": "later" });
+        set_composer_draft(&conn, "s1", Some(&draft)).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat renamed")).unwrap();
+        assert_eq!(
+            list_composer_drafts(&conn).unwrap(),
+            vec![json!({ "sessionId": "s1", "draft": draft })]
+        );
+    }
+
+    #[test]
+    fn composer_draft_listing_drops_expired_and_unparseable_rows() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        set_composer_draft(&conn, "fresh", Some(&json!({ "text": "keep" }))).unwrap();
+        set_composer_draft(&conn, "old", Some(&json!({ "text": "stale" }))).unwrap();
+        conn.execute(
+            "UPDATE composer_drafts SET updated_at = ?1 WHERE session_id = 'old'",
+            [now_millis() - COMPOSER_DRAFT_MAX_AGE_MS - 1],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO composer_drafts (session_id, draft_json, updated_at)
+             VALUES ('broken', 'not json', ?1)",
+            [now_millis()],
+        )
+        .unwrap();
+
+        let listed = list_composer_drafts(&conn).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["sessionId"], "fresh");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM composer_drafts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 2, "only the expired row is deleted");
     }
 
     #[test]

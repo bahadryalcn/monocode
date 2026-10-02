@@ -68,6 +68,8 @@ export function AddRemoteProjectDialog({
         machine.id,
         "projects.browse",
         { path: next },
+        false,
+        true,
       );
       if (!alive.current || version !== requestVersion.current) return;
       setDirectory(value);
@@ -96,6 +98,8 @@ export function AddRemoteProjectDialog({
         machine.id,
         "projects.open",
         { cwd: path.trim() },
+        false,
+        true,
       );
       if (alive.current && version === requestVersion.current)
         onOpen(rememberRemoteProject(machine.environmentId, project).key);

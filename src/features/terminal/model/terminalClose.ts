@@ -2,6 +2,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import type { FilePaneTab } from "../../workspace/model/layout";
 import { getPtyStatus } from "../../../platform/tauri/pty";
 import { terminalTabLabel } from "./terminalTab";
+import { appName } from "../../../shared/lib/appName";
 
 type RunningTerminal = {
   file: FilePaneTab;
@@ -31,7 +32,7 @@ export async function confirmCloseTerminal(file: FilePaneTab): Promise<boolean> 
   const label = terminalTabLabel(file);
   return ask(
     `"${process}" is still running in ${label}. Close this terminal anyway?`,
-    { title: "MonoCode", kind: "warning" },
+    { title: appName(), kind: "warning" },
   );
 }
 
@@ -43,7 +44,7 @@ export async function confirmCloseTerminals(files: FilePaneTab[]): Promise<boole
     const { file, process } = running[0];
     return ask(
       `"${process}" is still running in ${terminalTabLabel(file)}. Close this terminal anyway?`,
-      { title: "MonoCode", kind: "warning" },
+      { title: appName(), kind: "warning" },
     );
   }
   const lines = running
@@ -51,6 +52,6 @@ export async function confirmCloseTerminals(files: FilePaneTab[]): Promise<boole
     .join("\n");
   return ask(
     `These terminals are still running:\n${lines}\n\nClose them anyway?`,
-    { title: "MonoCode", kind: "warning" },
+    { title: appName(), kind: "warning" },
   );
 }

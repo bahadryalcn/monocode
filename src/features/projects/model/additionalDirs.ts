@@ -90,3 +90,122 @@ export function additionalDirCandidates(project: string): string[] {
         projectGroupIdForPath(path, assignments) === groupId,
     );
 }
+
+const SESSION_KEY = "monocode.sessionAdditionalDirs";
+const SESSION_CHANGE_EVENT = "monocode:session-additional-dirs-change";
+
+type SessionOverrides = Record<string, string[]>;
+
+let overridesStorage: Storage | null = null;
+let overridesRaw: string | null | undefined;
+let overridesValue: SessionOverrides = {};
+
+function loadSessionOverrides(): SessionOverrides {
+  try {
+    const storage = localStorage;
+    const raw = storage.getItem(SESSION_KEY);
+    if (overridesStorage === storage && overridesRaw === raw) return overridesValue;
+    const parsed: unknown = JSON.parse(raw ?? "{}");
+    const next: SessionOverrides = {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [id, dirs] of Object.entries(parsed)) {
+        if (Array.isArray(dirs)) {
+          next[id] = dirs.filter((dir): dir is string => typeof dir === "string" && !!dir);
+        }
+      }
+    }
+    overridesStorage = storage;
+    overridesRaw = raw;
+    overridesValue = next;
+    return next;
+  } catch {
+    return {};
+  }
+}
+
+function saveSessionOverrides(all: SessionOverrides): void {
+  try {
+    if (Object.keys(all).length > 0) localStorage.setItem(SESSION_KEY, JSON.stringify(all));
+    else localStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(SESSION_CHANGE_EVENT));
+  }
+}
+
+/** The folders this session picked for itself, or undefined to follow its project. */
+export function loadSessionAdditionalDirs(sessionId: string): string[] | undefined {
+  const override = loadSessionOverrides()[sessionId];
+  return override ? [...override] : undefined;
+}
+
+/**
+ * Folders a session may use: the project's own when it has no override, else
+ * its override limited to what the project could still offer (its own folders
+ * or the rail group's), so a folder that left the group is not kept alive by an
+ * old choice. An empty override means "no extra folders" for this session.
+ */
+export function additionalDirsForSession(sessionId: string, project: string): string[] {
+  const own = pathKey(normalizeProjectPath(project));
+  const projectDirs = loadAdditionalDirs(project);
+  const override = loadSessionOverrides()[sessionId];
+  if (!override) return projectDirs;
+  const allowed = new Set(
+    [...projectDirs, ...additionalDirCandidates(project)].map((dir) => pathKey(dir)),
+  );
+  const seen = new Set<string>([own]);
+  return override.map(normalizeProjectPath).filter((dir) => {
+    const key = pathKey(dir);
+    if (seen.has(key) || !allowed.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Pass `null`, or the project's own list, to go back to following the project. */
+export function saveSessionAdditionalDirs(
+  sessionId: string,
+  project: string,
+  dirs: readonly string[] | null,
+): void {
+  const all = { ...loadSessionOverrides() };
+  const own = pathKey(normalizeProjectPath(project));
+  const seen = new Set<string>([own]);
+  const next = (dirs ?? []).map(normalizeProjectPath).filter((dir) => {
+    const key = pathKey(dir);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const defaults = loadAdditionalDirs(project).map((dir) => pathKey(dir));
+  const sameAsProject =
+    next.length === defaults.length &&
+    next.every((dir) => defaults.includes(pathKey(dir)));
+  if (dirs === null || sameAsProject) delete all[sessionId];
+  else all[sessionId] = next;
+  saveSessionOverrides(all);
+}
+
+/** Called when a session is deleted for good. */
+export function removeSessionAdditionalDirs(sessionId: string): void {
+  const all = loadSessionOverrides();
+  if (!(sessionId in all)) return;
+  const next = { ...all };
+  delete next[sessionId];
+  saveSessionOverrides(next);
+}
+
+export function subscribeSessionAdditionalDirs(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === SESSION_KEY) onStoreChange();
+  };
+  window.addEventListener(SESSION_CHANGE_EVENT, onStoreChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(SESSION_CHANGE_EVENT, onStoreChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}

@@ -14,6 +14,29 @@ export function moveItem<T>(items: T[], from: number, to: number): T[] {
   return next;
 }
 
+export type MoveStep = "up" | "down" | "top";
+
+/**
+ * Moves `id` one place up or down, or to the front. Ids outside `movable` are
+ * stepped over, so a hidden neighbour never swallows a step. Returns the same
+ * array when nothing can move.
+ */
+export function moveIdByStep(
+  ids: string[],
+  id: string,
+  step: MoveStep,
+  movable?: ReadonlySet<string>,
+): string[] {
+  const from = ids.indexOf(id);
+  if (from < 0) return ids;
+  if (step === "top") return moveItem(ids, from, 0);
+  const direction = step === "up" ? -1 : 1;
+  for (let to = from + direction; to >= 0 && to < ids.length; to += direction) {
+    if (!movable || movable.has(ids[to])) return moveItem(ids, from, to);
+  }
+  return ids;
+}
+
 export function orderByIds<T extends { id: string }>(
   items: T[],
   ids: string[],

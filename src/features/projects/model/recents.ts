@@ -7,7 +7,9 @@ const RAIL_PINNED_KEY = "monocode.projectRailPinned";
 const ARCHIVED_KEY = "monocode.archivedProjects";
 const ARCHIVED_CHANGED = "monocode:archived-projects-changed";
 const PROJECT_PATHS_CHANGED = "monocode:project-paths-changed";
-const MAX = 20;
+// The rail lists every remembered project, so this also bounds how many a
+// bulk import (history from another tool) can bring in.
+const MAX = 200;
 
 export type RecentProject = {
   path: string;
@@ -71,6 +73,46 @@ export function rememberProject(path: string): RecentProject[] {
     0,
     MAX,
   );
+  save(next);
+  return next;
+}
+
+/** Paths in `after` that were not among the project paths in `before`. */
+export function newProjectPaths(
+  before: Iterable<string>,
+  after: readonly string[],
+): string[] {
+  const known = new Set<string>();
+  for (const path of before) known.add(pathKey(path));
+  return after.filter((path) => !known.has(pathKey(path)));
+}
+
+/**
+ * Adds projects to the rail without disturbing it: they go after the current
+ * ones, newest activity first, stamped with when they were last used rather
+ * than now, so a bulk import does not push the projects being worked on down
+ * the list. Archived projects stay archived and known ones are left as they are.
+ */
+export function rememberImportedProjects(
+  entries: readonly { path: string; lastUsedAt: number }[],
+): RecentProject[] {
+  const current = loadRecents();
+  const archived = loadArchivedProjects();
+  const added: RecentProject[] = [];
+  for (const entry of [...entries].sort((a, b) => b.lastUsedAt - a.lastUsedAt)) {
+    const path = normalize(entry.path);
+    if (
+      path === "~" ||
+      current.some((item) => sameProjectPath(item.path, path)) ||
+      added.some((item) => sameProjectPath(item.path, path)) ||
+      archived.some((item) => sameProjectPath(item.path, path))
+    ) {
+      continue;
+    }
+    added.push({ path, openedAt: Math.max(0, entry.lastUsedAt) });
+  }
+  if (added.length === 0) return current;
+  const next = [...current, ...added].slice(0, MAX);
   save(next);
   return next;
 }

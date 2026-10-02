@@ -1,0 +1,257 @@
+import { indentWithTab, redo } from "@codemirror/commands";
+import { markdown } from "@codemirror/lang-markdown";
+import { openSearchPanel } from "@codemirror/search";
+import { Annotation, Compartment, Prec } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers, placeholder } from "@codemirror/view";
+import { minimalSetup } from "codemirror";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import { MOD } from "../../../platform/tauri/platform";
+import { useColorScheme } from "../../../shared/hooks/useColorScheme";
+import {
+  BlockQuote,
+  Bold,
+  CheckList,
+  CodeBlock,
+  Heading,
+  Italic,
+  Link,
+  ListBullet,
+  ListNumbered,
+  Search,
+  type IconComponent,
+} from "../../../shared/ui/icons";
+import { schemeExtensions } from "../../files/editor/editorChrome";
+import {
+  editorSearch,
+  openReplacePanel,
+} from "../../files/editor/editorSearch";
+import { markdownEdit, type MarkdownCommand } from "../markdownCommands";
+
+export type NoteEditorViewRef = { current: EditorView | null };
+
+// Marks a change that came from the note itself rather than from typing.
+const externalChange = Annotation.define<boolean>();
+
+function normalizeLineBreaks(value: string) {
+  return value.replace(/\r\n?/g, "\n");
+}
+
+export function runMarkdownCommand(view: EditorView, command: MarkdownCommand) {
+  const { from, to } = view.state.selection.main;
+  const edit = markdownEdit(command, view.state.doc.toString(), from, to);
+  view.dispatch({
+    changes: { from: edit.from, to: edit.to, insert: edit.insert },
+    selection: { anchor: edit.anchor, head: edit.head },
+    scrollIntoView: true,
+    userEvent: "input",
+  });
+  view.focus();
+  return true;
+}
+
+// The note page scrolls as a whole, so the editor grows with its text.
+const noteEditorTheme = EditorView.theme({
+  "&.cm-editor": {
+    height: "auto",
+  },
+  "&.cm-editor .cm-scroller": {
+    overflow: "visible",
+    lineHeight: "20px",
+  },
+  "&.cm-editor .cm-content": {
+    minHeight: "448px",
+    paddingTop: "0",
+  },
+  "&.cm-editor .cm-panels.cm-panels-top": {
+    backgroundColor: "var(--color-background-base)",
+    marginBottom: "8px",
+  },
+});
+
+export function NoteMarkdownEditor({
+  value,
+  onChange,
+  onSave,
+  viewRef,
+  autoFocus = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onSave: () => void;
+  viewRef: NoteEditorViewRef;
+  autoFocus?: boolean;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const scheme = useColorScheme();
+  const schemeConfig = useRef(new Compartment());
+  const initial = useRef({ scheme, autoFocus });
+  const valueRef = useRef(value);
+  const onChangeRef = useRef(onChange);
+  const onSaveRef = useRef(onSave);
+  valueRef.current = value;
+  onChangeRef.current = onChange;
+  onSaveRef.current = onSave;
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const view = new EditorView({
+      doc: normalizeLineBreaks(valueRef.current),
+      parent: host,
+      extensions: [
+        minimalSetup,
+        lineNumbers(),
+        EditorView.lineWrapping,
+        markdown(),
+        placeholder("Write markdown…"),
+        schemeConfig.current.of(schemeExtensions(initial.current.scheme)),
+        noteEditorTheme,
+        editorSearch,
+        // Keep a match clear of the find panel pinned to the top of the page.
+        EditorView.scrollMargins.of((view) => ({
+          top:
+            view.dom.querySelector<HTMLElement>(".cm-panels-top")
+              ?.offsetHeight ?? 0,
+        })),
+        Prec.high(
+          keymap.of([
+            { key: "Mod-b", run: (view) => runMarkdownCommand(view, "bold") },
+            { key: "Mod-i", run: (view) => runMarkdownCommand(view, "italic") },
+            { key: "Mod-Shift-z", run: redo, preventDefault: true },
+            {
+              key: "Mod-h",
+              run: openReplacePanel,
+              scope: "editor search-panel",
+              preventDefault: true,
+            },
+            {
+              key: "Mod-s",
+              run: () => {
+                onSaveRef.current();
+                return true;
+              },
+              scope: "editor search-panel",
+              preventDefault: true,
+            },
+            indentWithTab,
+          ]),
+        ),
+        EditorView.updateListener.of((update) => {
+          if (!update.docChanged) return;
+          if (update.transactions.every((tr) => tr.annotation(externalChange))) {
+            return;
+          }
+          onChangeRef.current(update.state.doc.toString());
+        }),
+      ],
+    });
+    viewRef.current = view;
+    if (initial.current.autoFocus) view.focus();
+    return () => {
+      viewRef.current = null;
+      view.destroy();
+    };
+  }, [viewRef]);
+
+  // A layout effect, so no keystroke can land between the render and the sync
+  // and be overwritten by the older text.
+  useLayoutEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const next = normalizeLineBreaks(value);
+    const current = view.state.doc.toString();
+    if (next === current) return;
+    // Replace only what differs so the caret and undo history stay useful.
+    const limit = Math.min(next.length, current.length);
+    let start = 0;
+    while (start < limit && next[start] === current[start]) start += 1;
+    let currentEnd = current.length;
+    let nextEnd = next.length;
+    while (
+      currentEnd > start &&
+      nextEnd > start &&
+      current[currentEnd - 1] === next[nextEnd - 1]
+    ) {
+      currentEnd -= 1;
+      nextEnd -= 1;
+    }
+    view.dispatch({
+      changes: {
+        from: start,
+        to: currentEnd,
+        insert: next.slice(start, nextEnd),
+      },
+      annotations: externalChange.of(true),
+    });
+  }, [value, viewRef]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: schemeConfig.current.reconfigure(schemeExtensions(scheme)),
+    });
+  }, [scheme, viewRef]);
+
+  return <div ref={hostRef} data-note-editor className="min-w-0" />;
+}
+
+const TOOLBAR: {
+  command: MarkdownCommand;
+  label: string;
+  icon: IconComponent;
+}[] = [
+  { command: "bold", label: `Bold (${MOD}B)`, icon: Bold },
+  { command: "italic", label: `Italic (${MOD}I)`, icon: Italic },
+  { command: "heading", label: "Heading", icon: Heading },
+  { command: "bullet", label: "Bullet list", icon: ListBullet },
+  { command: "numbered", label: "Numbered list", icon: ListNumbered },
+  { command: "checklist", label: "Checklist", icon: CheckList },
+  { command: "quote", label: "Quote", icon: BlockQuote },
+  { command: "code", label: "Code block", icon: CodeBlock },
+  { command: "link", label: "Link", icon: Link },
+];
+
+const TOOLBAR_BUTTON =
+  "grid size-6 shrink-0 place-items-center rounded-md text-content/55 hover:bg-content/10 hover:text-content";
+
+export function NoteMarkdownToolbar({
+  viewRef,
+}: {
+  viewRef: NoteEditorViewRef;
+}) {
+  const run = (action: (view: EditorView) => void) => {
+    const view = viewRef.current;
+    if (view) action(view);
+  };
+  return (
+    <div
+      role="toolbar"
+      aria-label="Markdown formatting"
+      className="ml-auto flex min-w-0 items-center gap-0.5"
+      // Keep the selection in the editor while a button is pressed.
+      onMouseDown={(event) => event.preventDefault()}
+    >
+      {TOOLBAR.map(({ command, label, icon: Icon }) => (
+        <button
+          key={command}
+          type="button"
+          title={label}
+          aria-label={label}
+          onClick={() => run((view) => runMarkdownCommand(view, command))}
+          className={TOOLBAR_BUTTON}
+        >
+          <Icon className="size-3.5" />
+        </button>
+      ))}
+      <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-content/10" />
+      <button
+        type="button"
+        title={`Find (${MOD}F) · Replace (${MOD}H)`}
+        aria-label="Find and replace"
+        onClick={() => run(openSearchPanel)}
+        className={TOOLBAR_BUTTON}
+      >
+        <Search className="size-3.5" />
+      </button>
+    </div>
+  );
+}

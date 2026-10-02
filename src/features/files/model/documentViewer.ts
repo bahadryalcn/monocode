@@ -1,0 +1,116 @@
+import { basename } from "../../../platform/tauri/fs";
+
+export type DocumentKind = "pdf" | "docx" | "doc" | "spreadsheet";
+
+const KIND_BY_EXTENSION: Record<string, DocumentKind> = {
+  ".pdf": "pdf",
+  ".docx": "docx",
+  ".doc": "doc",
+  ".xlsx": "spreadsheet",
+  ".xlsm": "spreadsheet",
+  ".xls": "spreadsheet",
+};
+
+/**
+ * Same ceiling the Rust `read_binary_file` command enforces locally. A
+ * connected machine's host is stricter (10 MB); its refusal arrives as the
+ * load error, so the viewer only re-checks what a local read lets through.
+ */
+export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+
+/** Rows and columns a sheet shows; `sheetRows` stops SheetJS parsing past it. */
+export const MAX_SHEET_ROWS = 100_000;
+export const MAX_SHEET_COLUMNS = 200;
+
+/**
+ * Which read-only document viewer owns a path, decided before anything is read.
+ * `.csv` is absent on purpose: it is text and keeps opening in the editor.
+ */
+export function documentKind(path: string): DocumentKind | null {
+  const name = basename(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return null;
+  return KIND_BY_EXTENSION[name.slice(dot)] ?? null;
+}
+
+/** A readable reason the bytes can't be opened, or null when they can. */
+export function documentSizeProblem(size: number): string | null {
+  if (size <= MAX_DOCUMENT_BYTES) return null;
+  return `File is too large to preview (maximum ${MAX_DOCUMENT_BYTES / 1024 / 1024} MB).`;
+}
+
+/** Turn a library failure into text that says what to do about it. */
+export function documentErrorMessage(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  if (
+    /password|encrypt/i.test(message) ||
+    /PasswordException/.test(String(cause))
+  ) {
+    return "This file is password-protected. Open it in the default app instead.";
+  }
+  return message || "The file could not be read; it may be corrupt.";
+}
+
+/** Spreadsheet column label for a zero-based index: 0 → A, 26 → AA. */
+export function columnLabel(index: number): string {
+  let label = "";
+  let n = index + 1;
+  while (n > 0) {
+    const rest = (n - 1) % 26;
+    label = String.fromCharCode(65 + rest) + label;
+    n = Math.floor((n - 1) / 26);
+  }
+  return label;
+}
+
+export type SheetGrid = {
+  columns: string[];
+  rows: string[][];
+  totalRows: number;
+  totalColumns: number;
+  truncated: boolean;
+};
+
+/**
+ * Cap a sheet's formatted cell text to the rows and columns the grid shows.
+ * Rows are padded to the visible column count so the grid stays rectangular.
+ */
+export function buildSheetGrid(
+  cells: readonly (readonly unknown[])[],
+  totalRows = cells.length,
+  totalColumns = cells.reduce((max, row) => Math.max(max, row.length), 0),
+  maxRows = MAX_SHEET_ROWS,
+  maxColumns = MAX_SHEET_COLUMNS,
+): SheetGrid {
+  const columnCount = Math.min(totalColumns, maxColumns);
+  const rows = cells.slice(0, maxRows).map((row) => {
+    const out: string[] = [];
+    for (let column = 0; column < columnCount; column += 1) {
+      const value = row[column];
+      out.push(value == null ? "" : String(value));
+    }
+    return out;
+  });
+  return {
+    columns: Array.from({ length: columnCount }, (_, index) =>
+      columnLabel(index),
+    ),
+    rows,
+    totalRows,
+    totalColumns,
+    truncated: totalRows > rows.length || totalColumns > columnCount,
+  };
+}
+
+/**
+ * Whether bytes carry an Excel container signature (ZIP for .xlsx, OLE2 for
+ * .xls and encrypted workbooks). SheetJS happily parses anything else as CSV
+ * text, which would show a corrupt file as one cell of garbage.
+ */
+export function looksLikeSpreadsheet(bytes: Uint8Array): boolean {
+  const zip = [0x50, 0x4b, 0x03, 0x04];
+  const ole = [0xd0, 0xcf, 0x11, 0xe0];
+  return [zip, ole].some((magic) =>
+    magic.every((byte, index) => bytes[index] === byte),
+  );
+}

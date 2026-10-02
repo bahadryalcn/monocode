@@ -29,12 +29,17 @@ import {
 } from "../../../platform/tauri/fs";
 import { ExplorerMenu } from "../../files/ui/ExplorerMenu";
 import { isRemoteProjectPath } from "../../projects/model/recents";
+import { GIT_ACTIONS, useRemoteSupports } from "../../connections/model/remoteCapabilities";
+import type { RemoteFailure } from "../../connections/model/remoteFailure";
+import { reportRemoteLoad, useRemoteLoadFailure } from "../../connections/model/remoteHealth";
+import { RemoteLoadError } from "../../connections/ui/RemoteLoadError";
 import { commitMenuItems, filterHistory } from "../model/commitActions";
 import { layoutGitGraph } from "../model/gitGraph";
 import { GitGraphDialog } from "./GitGraphDialog";
 import { GitGraphList, type GraphListItem } from "./GitGraphList";
 import { GraphSearchInput } from "./GitGraphParts";
 import { RefNameDialog } from "./RefNameDialog";
+import { appName } from "../../../shared/lib/appName";
 
 type Props = {
   cwd: string;
@@ -68,13 +73,13 @@ export function GitHistoryGraph({
   onToggleExpanded,
   onOpenCommit,
 }: Props) {
-  // Commit actions and the wider scope are not implemented for connected machines.
-  const local = !isRemoteProjectPath(cwd);
+  // Commit actions and the wider scope need this computer or a host with `git.actions`.
+  const actions = useRemoteSupports(cwd, GIT_ACTIONS) === true;
   const [showAll, setShowAll] = useState(graphShowAll);
   const [limit, setLimit] = useState(HISTORY_PAGE);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const { commits } = useGitHistory(cwd, enabled && expanded, local && showAll, limit);
+  const { commits, failure } = useGitHistory(cwd, enabled && expanded, actions && showAll, limit);
   const rows = useMemo(() => layoutGitGraph(commits), [commits]);
   const rowBySha = useMemo(
     () => new Map(commits.map((commit, index) => [commit.sha, rows[index]])),
@@ -110,7 +115,7 @@ export function GitHistoryGraph({
     try {
       await action();
     } catch (error) {
-      await message(errorText(error), { title: "MonoCode", kind: "error" });
+      await message(errorText(error), { title: appName(), kind: "error" });
     } finally {
       // Also after a failure: a conflict leaves the tree and index changed.
       notifyGitChanged();
@@ -138,7 +143,7 @@ export function GitHistoryGraph({
       case "reset-hard": {
         const confirmed = await ask(
           `Reset the current branch to ${commit.shortSha} and discard all uncommitted changes? This cannot be undone.`,
-          { title: "MonoCode", kind: "warning", okLabel: "Reset" },
+          { title: appName(), kind: "warning", okLabel: "Reset" },
         );
         if (confirmed) await run(() => gitReset(cwd, sha, "hard"));
         return;
@@ -169,7 +174,7 @@ export function GitHistoryGraph({
   };
 
   const showAllButton =
-    local ? (
+    actions ? (
       <button
         type="button"
         title={showAll ? "Showing all branches" : "Show all branches"}
@@ -195,13 +200,15 @@ export function GitHistoryGraph({
       !cwd || cwd === "~" ? (
         <p className="px-3 py-2 text-[12px] text-content/45">No project folder</p>
       ) : commits.length === 0 ? (
-        <p className="px-3 py-2 text-[12px] text-content/45">No commits yet</p>
+        failure ? undefined : (
+          <p className="px-3 py-2 text-[12px] text-content/45">No commits yet</p>
+        )
       ) : items.length === 0 ? (
         <p className="px-3 py-2 text-[12px] text-content/45">
           No matching commits in the {commits.length} loaded
         </p>
       ) : undefined;
-    return (
+    const graph = (
       <GitGraphList
         variant={variant}
         items={items}
@@ -215,8 +222,16 @@ export function GitHistoryGraph({
           if (variant === "wide") closeFull();
           onOpenCommit(commit, pin);
         }}
-        onMenu={local ? (x, y, commit) => setMenu({ x, y, commit }) : undefined}
+        onMenu={actions ? (x, y, commit) => setMenu({ x, y, commit }) : undefined}
       />
+    );
+    return failure ? (
+      <>
+        <RemoteLoadError cwd={cwd} failure={failure} stale={commits.length > 0} onRetry={notifyGitChanged} />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col opacity-60">{graph}</div>
+      </>
+    ) : (
+      graph
     );
   };
 
@@ -345,7 +360,9 @@ function useGitHistory(
   enabled: boolean,
   all: boolean,
   limit: number,
-): { commits: GitHistoryCommit[] } {
+): { commits: GitHistoryCommit[]; failure: RemoteFailure | undefined } {
+  const failure = useRemoteLoadFailure(cwd, "graph");
+  const remote = isRemoteProjectPath(cwd);
   const cacheKey = all ? `${cwd}\nall` : cwd;
   const [commits, setCommits] = useState<GitHistoryCommit[]>(
     () => historyByCwd.get(cacheKey) ?? [],
@@ -357,18 +374,21 @@ function useGitHistory(
     if (!enabled || !cwd || cwd === "~") return;
     void gitHistory(cwd, limit, all)
       .then((next) => {
+        if (remote) reportRemoteLoad(cwd, "graph");
         const prev = commitsRef.current;
         if (sameHistory(prev, next.commits)) return;
         historyByCwd.set(cacheKey, next.commits);
         commitsRef.current = next.commits;
         setCommits(next.commits);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        // On a remote project, keep the last commits and say why they are stale.
+        if (remote) return reportRemoteLoad(cwd, "graph", error);
         historyByCwd.delete(cacheKey);
         commitsRef.current = [];
         setCommits([]);
       });
-  }, [all, cacheKey, cwd, enabled, limit]);
+  }, [all, cacheKey, cwd, enabled, limit, remote]);
 
   useEffect(() => {
     if (!enabled || !cwd || cwd === "~") {
@@ -393,7 +413,7 @@ function useGitHistory(
     };
   }, [cacheKey, cwd, enabled, load]);
 
-  return { commits };
+  return { commits, failure };
 }
 
 function sameHistory(

@@ -1,5 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { gitBranches, subscribeGitChanged, type GitBranches } from "../../../platform/tauri/fs";
+import { reportRemoteLoad } from "../../connections/model/remoteHealth";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 
 export type ProjectBranchesState = {
   branches: GitBranches | null;
@@ -77,8 +79,13 @@ async function load(entry: Entry, force = false) {
   entry.inFlight = true;
   try {
     publish(entry, await gitBranches(entry.cwd));
-  } catch {
-    publish(entry, null);
+    if (isRemoteProjectPath(entry.cwd)) reportRemoteLoad(entry.cwd, "branches");
+  } catch (error) {
+    if (!isRemoteProjectPath(entry.cwd)) return publish(entry, null);
+    // A remote project keeps the branches it last had; the lookup still counts
+    // as settled so callers stop waiting.
+    reportRemoteLoad(entry.cwd, "branches", error);
+    if (!entry.state.settled) publish(entry, null);
   } finally {
     entry.inFlight = false;
   }

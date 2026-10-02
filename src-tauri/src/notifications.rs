@@ -76,6 +76,135 @@ pub fn open_notification_settings(app: AppHandle) -> Result<(), String> {
     platform::open_settings(&app)
 }
 
+/// How loudly to ask for the taskbar button's attention.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Flash {
+    None,
+    /// A few flashes, then the button stays highlighted.
+    Info,
+    /// Flashes until the window is brought forward.
+    Critical,
+}
+
+/// Windows taskbar signal: an overlay badge with the number of sessions that
+/// need the user, plus an optional flash. Tauri's `set_badge_count` is not
+/// supported on Windows, so the badge is drawn here and handed to
+/// `set_overlay_icon`. Other platforms use the Dock badge command instead.
+/// A flash is skipped by the windowing layer while the window is active.
+#[tauri::command]
+pub fn set_taskbar_attention(
+    #[allow(unused_variables)] window: tauri::WebviewWindow,
+    #[allow(unused_variables)] count: u32,
+    #[allow(unused_variables)] flash: Flash,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::image::Image;
+        use tauri::UserAttentionType;
+        let icon = (count > 0).then(|| Image::new_owned(badge_rgba(count), BADGE_SIZE, BADGE_SIZE));
+        window
+            .set_overlay_icon(icon)
+            .map_err(|err| err.to_string())?;
+        let attention = match flash {
+            Flash::None => return Ok(()),
+            Flash::Info => UserAttentionType::Informational,
+            Flash::Critical => UserAttentionType::Critical,
+        };
+        window
+            .request_user_attention(Some(attention))
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", test))]
+const BADGE_SIZE: u32 = 32;
+
+/// 3x5 glyphs for `0`-`9` and `+`, one row per entry, MSB-first in 3 bits.
+#[cfg(any(target_os = "windows", test))]
+const GLYPHS: [[u8; 5]; 11] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b010, 0b010, 0b010],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+    [0b000, 0b010, 0b111, 0b010, 0b000],
+];
+
+/// Red disc with the count in white (`9+` above nine), as RGBA pixels.
+#[cfg(any(target_os = "windows", test))]
+fn badge_rgba(count: u32) -> Vec<u8> {
+    let size = BADGE_SIZE as i32;
+    let glyphs: Vec<usize> = if count > 9 {
+        vec![9, 10]
+    } else {
+        vec![count as usize]
+    };
+    let scale = if glyphs.len() == 1 { 5 } else { 4 };
+    let width = glyphs.len() as i32 * 3 * scale + (glyphs.len() as i32 - 1) * scale;
+    let (left, top) = ((size - width) / 2, (size - 5 * scale) / 2);
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    let radius = size as f32 / 2.0;
+    for y in 0..size {
+        for x in 0..size {
+            let (dx, dy) = (x as f32 + 0.5 - radius, y as f32 + 0.5 - radius);
+            if dx * dx + dy * dy > radius * radius {
+                continue;
+            }
+            let (gx, gy) = (x - left, y - top);
+            let lit = gx >= 0 && gy >= 0 && gy < 5 * scale && gx < width && {
+                let slot = gx / (4 * scale);
+                let col = (gx % (4 * scale)) / scale;
+                col < 3
+                    && GLYPHS[glyphs[slot as usize]][(gy / scale) as usize] >> (2 - col) & 1 == 1
+            };
+            let rgba: [u8; 4] = if lit {
+                [255, 255, 255, 255]
+            } else {
+                [215, 38, 61, 255]
+            };
+            let at = ((y * size + x) * 4) as usize;
+            pixels[at..at + 4].copy_from_slice(&rgba);
+        }
+    }
+    pixels
+}
+
+#[cfg(test)]
+mod badge_tests {
+    use super::{badge_rgba, BADGE_SIZE};
+
+    fn white(pixels: &[u8]) -> usize {
+        pixels
+            .chunks(4)
+            .filter(|p| p == &[255, 255, 255, 255])
+            .count()
+    }
+
+    #[test]
+    fn badge_is_a_square_rgba_buffer_with_transparent_corners() {
+        let pixels = badge_rgba(3);
+        assert_eq!(pixels.len(), (BADGE_SIZE * BADGE_SIZE * 4) as usize);
+        assert_eq!(&pixels[..4], &[0, 0, 0, 0]);
+        // The glyph for `1` lights 8 cells, each 5x5 pixels.
+        assert_eq!(white(&badge_rgba(1)), 8 * 25);
+    }
+
+    #[test]
+    fn digits_draw_different_glyphs_and_overflow_collapses_to_nine_plus() {
+        assert_ne!(badge_rgba(1), badge_rgba(2));
+        assert_eq!(badge_rgba(10), badge_rgba(99));
+        assert_ne!(badge_rgba(10), badge_rgba(9));
+        assert!(white(&badge_rgba(10)) > 0);
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use std::cell::RefCell;

@@ -4,6 +4,7 @@ import {
   ChevronRight,
   CircleDashed,
   Copy,
+  ExternalLink,
   FilePlusCorner,
   Minus,
   Pencil,
@@ -84,13 +85,18 @@ import {
 import { HarnessIcon } from "./HarnessIcon";
 import { formatElapsed, useElapsedFrom } from "./useElapsedFrom";
 import { isBackgroundOnly } from "../model/activityDock";
-import { consumeOpenSubagent, OPEN_SUBAGENT_EVENT } from "./subagentFocus";
+import {
+  consumeOpenSubagent,
+  OPEN_SUBAGENT_EVENT,
+  requestViewSubagent,
+} from "./subagentFocus";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { useTranscriptLayout } from "../hooks/useTranscriptLayout";
 import { useTranscriptAnchor } from "../hooks/useTranscriptAnchor";
 import { useTranscriptSelection } from "../hooks/useTranscriptSelection";
 import type { TranscriptLayout } from "../../settings/model/appearance";
 import { AgentMarkdown } from "./AgentMarkdown";
+import { AgentClock } from "./AgentClock";
 import { TranscriptSelectionMenu } from "./TranscriptSelectionMenu";
 import { parseUserMessageLink } from "../model/linkPreview";
 import { UserLinkPreview } from "./UserLinkPreview";
@@ -2070,7 +2076,7 @@ type ActivityPhasesProps = {
   onOpenDiff?: (path: string) => void;
 };
 
-const ActivityPhases = memo(function ActivityPhases({
+export const ActivityPhases = memo(function ActivityPhases({
   blocks,
   cwd,
   done,
@@ -2639,7 +2645,7 @@ function SubagentPanel({
           {name}
         </span>
       )}
-      {model || status ? (
+      {model || status || block.agentRun?.startedAt !== undefined ? (
         <span className="flex min-w-0 max-w-[55%] shrink-0 items-baseline gap-2 font-sans text-[12px] text-content/40">
           {model ? (
             <span className="truncate" title={`Model: ${model}`}>
@@ -2647,6 +2653,11 @@ function SubagentPanel({
             </span>
           ) : null}
           {status ? <span className="shrink-0">{status}</span> : null}
+          <AgentClock
+            startedAt={block.agentRun?.startedAt}
+            endedAt={block.agentRun?.endedAt}
+            live={active}
+          />
         </span>
       ) : null}
     </span>
@@ -2670,27 +2681,38 @@ function SubagentPanel({
 
   return (
     <div className="flex min-w-0 flex-col">
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
-        title={brief}
-        onClick={onToggle}
-        // An open row keeps the wash it lit up under the cursor, so the panel
-        // below reads as hanging off it rather than off the transcript.
-        className={`group -mx-1.5 flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors duration-200 hover:bg-content/8 ${
-          open ? "bg-content/8" : ""
-        }`}
-      >
-        <SubagentMascot name={name} state={state} active={active} />
-        {label}
-        <ChevronRight
-          className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${
-            open ? "rotate-90" : ""
+      <div className="-mx-1.5 flex min-w-0 items-center gap-0.5">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
+          title={brief}
+          onClick={onToggle}
+          // An open row keeps the wash it lit up under the cursor, so the panel
+          // below reads as hanging off it rather than off the transcript.
+          className={`group flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors duration-200 hover:bg-content/8 ${
+            open ? "bg-content/8" : ""
           }`}
-          strokeWidth={1.75}
-        />
-      </button>
+        >
+          <SubagentMascot name={name} state={state} active={active} />
+          {label}
+          <ChevronRight
+            className={`size-3.5 shrink-0 text-content/35 transition-transform duration-200 group-hover:text-content/60 ${
+              open ? "rotate-90" : ""
+            }`}
+            strokeWidth={1.75}
+          />
+        </button>
+        <button
+          type="button"
+          aria-label={`Open ${name} in its own panel`}
+          title="Open in panel"
+          onClick={() => requestViewSubagent(block.id)}
+          className="grid size-6 shrink-0 place-items-center rounded-md text-content/35 transition-colors hover:bg-content/8 hover:text-content/70 focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          <ExternalLink className="size-3" strokeWidth={1.75} />
+        </button>
+      </div>
       <div className="zen-phase-body" data-open={open}>
         {open ? (
           /*
@@ -2763,7 +2785,7 @@ function SubagentMascot({
  * A mirrored step as the transcript block it stands for, so a subagent's trail
  * goes through the same rows — labels, file chips, diffs — as the main agent's.
  */
-function agentStepBlock(step: AgentStep): Block {
+export function agentStepBlock(step: AgentStep): Block {
   if (step.kind !== "tool") {
     return {
       id: step.id,
@@ -2782,6 +2804,8 @@ function agentStepBlock(step: AgentStep): Block {
       ...(step.status ? { status: step.status } : {}),
       ...(step.detail ? { detail: step.detail } : {}),
       ...(step.preview ? { preview: step.preview } : {}),
+      ...(step.output ? { output: step.output } : {}),
+      ...(step.outputTruncated ? { outputTruncated: true } : {}),
     },
   };
 }
@@ -2818,7 +2842,7 @@ function ActivityPhaseIcon({
  * a paragraph. In a phase the rail draws the bullet, so the row drops its own
  * leading icon and leans on the rail instead.
  */
-function ActivityRow({
+export function ActivityRow({
   block,
   cwd,
   live = false,
@@ -3140,6 +3164,21 @@ function ActivityToolRow({
   const pending = needsApproval(block);
   const errorDetail =
     !pending && state === "rejected" ? block.tool?.detail?.trim() : undefined;
+  // A subagent step also keeps what a successful call returned. It opens the
+  // same way a failure does, in a neutral tone. Real transcript blocks carry no
+  // `output`, so their rows are unchanged.
+  const output = block.tool?.output?.trim();
+  const outputTruncated = !!block.tool?.outputTruncated;
+  const resultText =
+    errorDetail ??
+    (pending
+      ? undefined
+      : (output ??
+        (outputTruncated
+          ? "Output left out to keep this run small."
+          : undefined)));
+  const hasResult = !!resultText;
+  const resultInput = hasResult && label.length > 80 ? label : undefined;
   const summary = (
     <ToolCallSummary
       label={label}
@@ -3155,9 +3194,9 @@ function ActivityToolRow({
 
   return (
     <div className="flex min-w-0 flex-col">
-      {errorDetail ? (
+      {hasResult ? (
         <div
-          aria-label={`Failed tool call: ${label}`}
+          aria-label={`${errorDetail ? "Failed tool call" : "Tool call"}: ${label}`}
           className="group flex min-w-0 items-center gap-1.5 py-1"
         >
           {bare ? null : <ActivityToolIcon state={state} live={live} />}
@@ -3171,12 +3210,14 @@ function ActivityToolRow({
           <button
             type="button"
             aria-expanded={errorOpen}
-            aria-label={`${errorOpen ? "Hide" : "Show"} error details for ${label}`}
+            aria-label={`${errorOpen ? "Hide" : "Show"} ${errorDetail ? "error details" : "output"} for ${label}`}
             onClick={() => setErrorOpen((value) => !value)}
             className="-m-1 shrink-0 rounded p-1"
           >
             <ChevronRight
-              className={`size-3.5 text-red-400/60 transition-transform ${errorOpen ? "rotate-90" : ""}`}
+              className={`size-3.5 transition-transform ${
+                errorDetail ? "text-red-400/60" : "text-content/35"
+              } ${errorOpen ? "rotate-90" : ""}`}
               strokeWidth={1.75}
             />
           </button>
@@ -3194,12 +3235,28 @@ function ActivityToolRow({
       {pending ? (
         <ApprovalControls block={block} onApproval={onApproval} />
       ) : null}
-      {errorOpen && errorDetail ? (
-        <pre
-          className={`min-w-0 whitespace-pre-wrap break-words py-1 font-mono text-[12px] leading-5 text-red-400/80 ${bare ? "" : "pl-5"}`}
-        >
-          {errorDetail}
-        </pre>
+      {errorOpen && resultText ? (
+        <div className={`min-w-0 py-1 ${bare ? "" : "pl-5"}`}>
+          {resultInput ? (
+            <pre className="mb-1 max-h-24 min-w-0 overflow-auto whitespace-pre-wrap break-words font-mono text-[12px] leading-5 text-content/45">
+              {resultInput}
+            </pre>
+          ) : null}
+          <pre
+            className={`min-w-0 whitespace-pre-wrap break-words font-mono text-[12px] leading-5 ${
+              errorDetail
+                ? "text-red-400/80"
+                : "max-h-72 overflow-auto text-content/65"
+            }`}
+          >
+            {resultText}
+          </pre>
+          {outputTruncated && output ? (
+            <p className="pt-1 font-sans text-[11px] text-content/40">
+              Output shortened to keep this run small.
+            </p>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

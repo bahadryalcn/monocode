@@ -3,6 +3,7 @@ export const NOTIFICATION_CATEGORIES = [
   { id: "issues", label: "Issues and Linear tasks" },
   { id: "agentFinished", label: "Agent finished" },
   { id: "agentInput", label: "Agent approvals and questions" },
+  { id: "agentFailed", label: "Agent failures and usage limits" },
   { id: "reminders", label: "Reminders" },
 ] as const;
 

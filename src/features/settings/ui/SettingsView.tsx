@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
+import { TemplatesSettings } from "./TemplatesSettings";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownCircle,
@@ -55,9 +56,13 @@ import {
 } from "../../../shared/ui/ColorPickerPopover";
 import { Popover } from "../../../shared/ui/Popover";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import { OPEN_SESSION_IMPORT_EVENT } from "../../sessions/import/importModel";
 import { JiraSettings } from "./JiraSettings";
 import { GradientBlurBackground } from "./GradientBlurBackground";
 import { McpSettings } from "./McpSettings";
+import { GroupLockSettings } from "../../group-lock/ui/GroupLockSettings";
+import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
+import { isProjectLockedIn } from "../../group-lock/model/lockState";
 import { InboxProviderMark } from "../../inbox/ui/InboxProviderMark";
 import { RemoveProjectDialog } from "../../projects/ui/RemoveProjectDialog";
 import { WindowControls } from "../../../app/shell/WindowControls";
@@ -336,6 +341,7 @@ import {
   loadDiffViewer,
   loadFileTabMode,
   loadFollowUpBehavior,
+  loadAutoContinueInterrupted,
   loadResumeAtReset,
   loadFormatOnSave,
   loadGridArcadeEnabled,
@@ -345,6 +351,7 @@ import {
   loadKeepAwakeEnabled,
   loadKeepAwakeHoldAfter,
   loadKeepAwakeScreen,
+  loadRemoteAutoReconnect,
   loadLiveAgentsEnabled,
   loadModelControls,
   loadNotesEnabled,
@@ -359,12 +366,14 @@ import {
   saveDiffViewer,
   saveFileTabMode,
   saveFollowUpBehavior,
+  saveAutoContinueInterrupted,
   saveResumeAtReset,
   saveFormatOnSave,
   saveGridArcadeEnabled,
   saveKeepAwakeEnabled,
   saveKeepAwakeHoldAfter,
   saveKeepAwakeScreen,
+  saveRemoteAutoReconnect,
   saveLiveAgentsEnabled,
   saveModelControls,
   saveNotesEnabled,
@@ -375,6 +384,7 @@ import {
   subscribeKeepAwakeEnabled,
   subscribeKeepAwakeHoldAfter,
   subscribeKeepAwakeScreen,
+  subscribeRemoteAutoReconnect,
   subscribeKeybindings,
   type KeybindingOverride,
   saveTabAnimationsEnabled,
@@ -409,7 +419,13 @@ import {
   type NotificationPermission,
 } from "../../notifications/model/notifications";
 import {
+  NOTIFICATION_EVENT_SETTINGS,
+  loadNotificationEvents,
+  saveNotificationEvent,
+} from "../../notifications/model/notificationEvents";
+import {
   installPendingUpdate,
+  isUpdaterEnabled,
   readAppVersion,
   runUpdateFlow,
   type UpdaterSnapshot,
@@ -417,6 +433,7 @@ import {
 
 import { SkillsPage } from "../../skills/ui/SkillsPage";
 import { ProjectNotificationSettings } from "../../notifications/ui/ProjectNotificationSettings";
+import { UsageOverview } from "../../usage/ui/UsageOverview";
 import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
 import {
   removeWorktree,
@@ -600,11 +617,17 @@ export function SettingsView({
               {section === "general" ? (
                 <GeneralPage onOpenWhatsNew={onOpenWhatsNew} />
               ) : null}
-              {section === "connections" ? <ConnectionsSettings /> : null}
+              {section === "connections" ? (
+                <>
+                  <ConnectionsSettings />
+                  <RemoteReconnectGroup />
+                </>
+              ) : null}
               {section === "appearance" ? (
                 <AppearancePage appearance={appearance} />
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
+              {section === "chat" ? <TemplatesSettings /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
@@ -621,6 +644,9 @@ export function SettingsView({
                   onCheckRemove={onCheckWorktreeRemoval}
                   onDeleteSessions={onDeleteWorktreeSessions}
                 />
+              ) : null}
+              {section === "groupLock" ? (
+                <GroupLockSettings controls={{ Group, Row, Toggle, Select }} />
               ) : null}
               {section === "inbox" ? (
                 <InboxPage
@@ -780,6 +806,9 @@ function GeneralPage({
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     loadNotificationsEnabled,
   );
+  const [notificationEvents, setNotificationEvents] = useState(
+    loadNotificationEvents,
+  );
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermission>(cachedNotificationPermission);
   const [notesEnabled, setNotesEnabled] = useState(loadNotesEnabled);
@@ -921,6 +950,24 @@ function GeneralPage({
             onChange={onNotificationsEnabled}
           />
         </Row>
+        {notificationsEnabled
+          ? NOTIFICATION_EVENT_SETTINGS.map((event) => (
+              <Row
+                key={event.id}
+                label={event.label}
+                description={event.description}
+              >
+                <Toggle
+                  label={event.label}
+                  on={notificationEvents[event.id]}
+                  onChange={(on) => {
+                    saveNotificationEvent(event.id, on);
+                    setNotificationEvents(loadNotificationEvents());
+                  }}
+                />
+              </Row>
+            ))
+          : null}
       </Group>
 
       <Group
@@ -1047,6 +1094,25 @@ function GeneralPage({
         </Row>
       </Group>
 
+      <Group
+        id="import-history"
+        title="Import history"
+        description="Bring conversations you had in the Claude Code and Codex terminals into MonoCode."
+      >
+        <Row
+          label="Claude Code and Codex sessions"
+          description="Lists what is on this computer by folder. Nothing is imported until you choose it, and the originals are never changed."
+        >
+          <SecondaryButton
+            onClick={() =>
+              window.dispatchEvent(new Event(OPEN_SESSION_IMPORT_EVENT))
+            }
+          >
+            Import…
+          </SecondaryButton>
+        </Row>
+      </Group>
+
       <Group title="About">
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
       </Group>
@@ -1062,6 +1128,7 @@ function ChatPage() {
   const [followUpBehavior, setFollowUpBehavior] =
     useState<FollowUpBehavior>(loadFollowUpBehavior);
   const [resumeAtReset, setResumeAtReset] = useState(loadResumeAtReset);
+  const [autoContinue, setAutoContinue] = useState(loadAutoContinueInterrupted);
   const [modelControls, setModelControls] =
     useState<ModelControls>(loadModelControls);
   const [diffViewer, setDiffViewer] = useState<DiffViewer>(loadDiffViewer);
@@ -1099,6 +1166,11 @@ function ChatPage() {
   const onResumeAtReset = (next: boolean) => {
     saveResumeAtReset(next);
     setResumeAtReset(next);
+  };
+
+  const onAutoContinue = (next: boolean) => {
+    saveAutoContinueInterrupted(next);
+    setAutoContinue(next);
   };
 
   const onModelControls = (next: ModelControls) => {
@@ -1188,6 +1260,17 @@ function ChatPage() {
             label="Resume at reset"
             on={resumeAtReset}
             onChange={onResumeAtReset}
+          />
+        </Row>
+        <Row
+          id="auto-continue-interrupted"
+          label="Automatically continue interrupted turns"
+          description="When MonoCode quit in the middle of a turn and the transcript shows it was cut off, send Continue at the next launch. Turns that finished or are still running are never continued, and nothing is sent when you have queued messages. When off, the chat shows an Interrupted - Continue action instead."
+        >
+          <Toggle
+            label="Automatically continue interrupted turns"
+            on={autoContinue}
+            onChange={onAutoContinue}
           />
         </Row>
         <Row
@@ -1859,11 +1942,17 @@ function UpdateRow({
     currentVersion: "…",
   });
 
+  // Unknown until the identifier resolves; only the official build updates.
+  const [updatesEnabled, setUpdatesEnabled] = useState<boolean | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     void readAppVersion().then((currentVersion) => {
       if (cancelled) return;
       setSnapshot((current) => ({ ...current, currentVersion }));
+    });
+    void isUpdaterEnabled().then((enabled) => {
+      if (!cancelled) setUpdatesEnabled(enabled);
     });
     return () => {
       cancelled = true;
@@ -1884,7 +1973,9 @@ function UpdateRow({
   };
 
   const status =
-    snapshot.phase === "available"
+    updatesEnabled === false
+      ? "Automatic updates are disabled in this build."
+      : snapshot.phase === "available"
       ? `Version ${snapshot.availableVersion} is available.`
       : snapshot.phase === "downloading"
         ? `Downloading${snapshot.progress != null ? ` ${snapshot.progress}%` : "…"}`
@@ -1916,16 +2007,18 @@ function UpdateRow({
         >
           What's new
         </SecondaryButton>
-        <SecondaryButton onClick={() => void onClick()} disabled={busy}>
-          {busy ? (
-            <Loader className="size-3.5 animate-spin" aria-hidden />
-          ) : hasUpdate ? (
-            <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />
-          ) : (
-            <RefreshCw className="size-3.5" strokeWidth={1.75} aria-hidden />
-          )}
-          {hasUpdate ? "Download" : "Check for updates"}
-        </SecondaryButton>
+        {updatesEnabled === false ? null : (
+          <SecondaryButton onClick={() => void onClick()} disabled={busy}>
+            {busy ? (
+              <Loader className="size-3.5 animate-spin" aria-hidden />
+            ) : hasUpdate ? (
+              <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />
+            ) : (
+              <RefreshCw className="size-3.5" strokeWidth={1.75} aria-hidden />
+            )}
+            {hasUpdate ? "Download" : "Check for updates"}
+          </SecondaryButton>
+        )}
       </div>
     </Row>
   );
@@ -3370,6 +3463,7 @@ function ProvidersPage({
     <>
       <ProviderAccountsSettings />
       <ProviderUsageSettings />
+      <UsageOverview />
 
       <Group
         id="agent-clis"
@@ -4487,11 +4581,16 @@ function ProviderRow({
 
 function useArchivedProjects(): ArchivedProject[] {
   const [items, setItems] = useState(loadArchivedProjects);
+  const lock = useLockSnapshot();
   useEffect(
     () => subscribeArchivedProjects(() => setItems(loadArchivedProjects())),
     [],
   );
-  return items;
+  // An archived project can still sit in a locked group.
+  return useMemo(
+    () => items.filter((item) => !isProjectLockedIn(lock, item.path)),
+    [items, lock],
+  );
 }
 
 function archivedProjectLabel(path: string): string {
@@ -4942,6 +5041,31 @@ function NotificationsBlocked() {
         </button>
       ) : null}
     </span>
+  );
+}
+
+function RemoteReconnectGroup() {
+  const on = useSyncExternalStore(
+    subscribeRemoteAutoReconnect,
+    loadRemoteAutoReconnect,
+    () => true,
+  );
+  return (
+    <div className="pt-8">
+      <Group title="Connection recovery">
+        <Row
+          id="remote-auto-reconnect"
+          label="Automatically reconnect to remote machines"
+          description="Retry a machine that stopped answering, in the background and when this window regains focus or the network returns. Turn it off to reconnect only with Reconnect, when you send a message, or when you open a remote project."
+        >
+          <Toggle
+            label="Automatically reconnect to remote machines"
+            on={on}
+            onChange={saveRemoteAutoReconnect}
+          />
+        </Row>
+      </Group>
+    </div>
   );
 }
 

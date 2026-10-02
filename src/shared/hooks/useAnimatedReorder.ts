@@ -18,12 +18,19 @@ export type ReorderExternalDrop<T extends string> = {
   onEnd?: (id: T) => void;
 };
 
-/** Direct manipulation for a row or column of equal-sized items. */
+/**
+ * Direct manipulation for a row or column of equal-sized items.
+ *
+ * `foldOnDrag` is for blocks that differ in size (a header with a body): once
+ * a drag starts, `draggingId` is rendered synchronously, so the caller can fold
+ * every block to one size, and the items are measured again before they move.
+ */
 export function useAnimatedReorder<T extends string>(
   ids: T[],
   onReorder: (ids: T[], movedId: T) => void,
   axis: "x" | "y" = "x",
   externalDrop?: ReorderExternalDrop<T>,
+  { foldOnDrag = false }: { foldOnDrag?: boolean } = {},
 ) {
   const nodes = useRef(new Map<T, HTMLElement>());
   const [draggingId, setDraggingId] = useState<T | null>(null);
@@ -57,12 +64,14 @@ export function useAnimatedReorder<T extends string>(
       if (elements.some((element) => !element)) return;
       const tabs = elements as HTMLElement[];
       // Measure once: animated positions must not affect the drop calculation.
-      const rects = tabs.map((element) => {
-        const rect = element.getBoundingClientRect();
-        const start = axis === "x" ? rect.left : rect.top;
-        const size = axis === "x" ? rect.width : rect.height;
-        return { start, size, end: start + size };
-      });
+      const measure = () =>
+        tabs.map((element) => {
+          const rect = element.getBoundingClientRect();
+          const start = axis === "x" ? rect.left : rect.top;
+          const size = axis === "x" ? rect.width : rect.height;
+          return { start, size, end: start + size };
+        });
+      let rects = measure();
       const transform = (offset: number) =>
         axis === "x"
           ? `translate3d(${offset}px, 0, 0)`
@@ -79,7 +88,7 @@ export function useAnimatedReorder<T extends string>(
         scrollParents.push({ element, start: element[scrollProperty] });
       }
       const pointerId = event.pointerId;
-      const startPosition = event[coordinate];
+      let startPosition = event[coordinate];
       const reducedMotion = window.matchMedia(
         "(prefers-reduced-motion: reduce)",
       ).matches;
@@ -185,7 +194,17 @@ export function useAnimatedReorder<T extends string>(
         if (!active) {
           if (Math.abs(pointerPosition - startPosition) < 5) return;
           active = true;
-          setDraggingId(id);
+          if (foldOnDrag) {
+            // Folding moves the blocks: measure again, and keep the grabbed
+            // point under the pointer.
+            const grab = startPosition - rects[from].start;
+            flushSync(() => setDraggingId(id));
+            rects = measure();
+            startPosition = rects[from].start + grab;
+            for (const parent of scrollParents) {
+              parent.start = parent.element[scrollProperty];
+            }
+          } else setDraggingId(id);
           handle.setPointerCapture(pointerId);
           restoreSelection = suppressTextSelection();
           setGrabbing(true);
@@ -272,7 +291,7 @@ export function useAnimatedReorder<T extends string>(
       window.addEventListener("blur", onCancel);
       window.addEventListener("scroll", onScroll, true);
     },
-    [axis],
+    [axis, foldOnDrag],
   );
 
   const consumeClick = useCallback(

@@ -32,7 +32,7 @@ import {
   type GitStashEntry,
   type GitStashMode,
 } from "../../../platform/tauri/fs";
-import { isRemoteProjectPath } from "../../projects/model/recents";
+import { GIT_ACTIONS, HOST_UPDATE_NOTICE, useRemoteSupports } from "../../connections/model/remoteCapabilities";
 import { useProjectBranchesState } from "../hooks/useProjectBranches";
 import { deleteLocalBranch } from "../model/deleteBranch";
 import { operationLabel } from "../model/commitActions";
@@ -45,6 +45,7 @@ import { BranchManagerDialog } from "./BranchManagerDialog";
 import { GitPickDialog, type PickItem } from "./GitPickDialog";
 import { stashCommit } from "./GitStashSection";
 import { RefNameDialog } from "./RefNameDialog";
+import { appName } from "../../../shared/lib/appName";
 
 /** The `busy` key the menu's own actions hold while they run. */
 export const GIT_MENU_BUSY = "git-menu";
@@ -122,7 +123,7 @@ async function orElse<T>(work: () => Promise<T>, fallback: T): Promise<T> {
 }
 
 function confirm(text: string, okLabel: string): Promise<boolean> {
-  return ask(text, { title: "MonoCode", kind: "warning", okLabel });
+  return ask(text, { title: appName(), kind: "warning", okLabel });
 }
 
 /** The header "…" button and the source-control menu it opens. */
@@ -138,16 +139,17 @@ export function GitActionsMenu({
   onMutated,
   onOpenCommit,
 }: Props) {
-  // Everything beyond Pull is not implemented for connected machines.
-  const local = !isRemoteProjectPath(cwd);
-  const { branches } = useProjectBranchesState(cwd, local);
+  // Everything beyond Pull needs this computer or a host with `git.actions`.
+  const supported = useRemoteSupports(cwd, GIT_ACTIONS);
+  const actions = supported === true;
+  const { branches } = useProjectBranchesState(cwd, actions);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [data, setData] = useState<MenuData>(NO_DATA);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const open = anchor !== null;
 
   useEffect(() => {
-    if (!open || !local) return;
+    if (!open || !actions) return;
     let cancelled = false;
     void (async () => {
       const [operation, stashes, tags, remotes] = await Promise.all([
@@ -167,14 +169,15 @@ export function GitActionsMenu({
     return () => {
       cancelled = true;
     };
-  }, [open, local, cwd]);
+  }, [open, actions, cwd]);
 
   const branch = index?.branch ?? null;
   const items = useMemo(() => {
     const files = index?.files ?? [];
     const others = (branches?.branches ?? []).filter((item) => !item.current);
     return gitActionsMenuItems({
-      local,
+      actions,
+      updateNotice: supported === false ? HOST_UPDATE_NOTICE : null,
       busy: busy !== null,
       branch,
       hasCommits: Boolean(index?.head),
@@ -189,7 +192,7 @@ export function GitActionsMenu({
       autoFetch,
       ...data,
     });
-  }, [autoFetch, branch, branches, busy, data, index, local]);
+  }, [actions, autoFetch, branch, branches, busy, data, index, supported]);
 
   const run = async (work: () => Promise<unknown>, status?: string) => {
     setBusy(GIT_MENU_BUSY);
@@ -197,7 +200,7 @@ export function GitActionsMenu({
       await work();
       if (status) onStatus(status);
     } catch (error) {
-      await message(errorText(error), { title: "MonoCode", kind: "error" });
+      await message(errorText(error), { title: appName(), kind: "error" });
     } finally {
       setBusy(null);
       onMutated();
@@ -212,7 +215,7 @@ export function GitActionsMenu({
     try {
       setDialog({ kind: "pick", items: await load(), ...dialog });
     } catch (error) {
-      await message(errorText(error), { title: "MonoCode", kind: "error" });
+      await message(errorText(error), { title: appName(), kind: "error" });
     }
   };
 

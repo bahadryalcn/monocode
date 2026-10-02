@@ -4,6 +4,9 @@ import { createPortal } from "react-dom";
 import { allowsProjectNotification } from "../../notifications/model/notificationPreferences";
 import { knownNotificationProject } from "../../notifications/model/notificationProjects";
 import { useProjectNotificationPreferences } from "../../notifications/hooks/useProjectNotificationPreferences";
+import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
+import { isProjectLockedIn } from "../../group-lock/model/lockState";
+import { LOCKED_NOTIFICATION_TEXT } from "../../notifications/model/attention";
 import type { ApprovalDecision } from "../../../integrations/harness";
 import type { PendingApprovalNotice } from "../../notifications/model/approvalToast";
 import { LAYER } from "../../../shared/lib/layers";
@@ -34,7 +37,14 @@ export function ApprovalToasts({
   topOffset = 12,
 }: Props) {
   useProjectNotificationPreferences();
+  const lock = useLockSnapshot();
   if (notices.length === 0) return null;
+  // A request from a locked group shows no names, command or buttons, and is
+  // one card however many there are.
+  const open = notices.filter(
+    (notice) => !isProjectLockedIn(lock, notice.session.cwd),
+  );
+  const hasLocked = open.length < notices.length;
 
   return createPortal(
     <div
@@ -42,7 +52,7 @@ export function ApprovalToasts({
       style={{ zIndex: LAYER.toast, top: topOffset }}
       className="pointer-events-none fixed right-3 flex w-[min(360px,calc(100vw-24px))] flex-col gap-2"
     >
-      {notices.map((notice) => (
+      {open.map((notice) => (
         <ProjectApprovalToast
           key={`${notice.sessionId}:${notice.kind}:${notice.requestId}`}
           notice={notice}
@@ -50,6 +60,20 @@ export function ApprovalToasts({
           onApproval={onApproval}
         />
       ))}
+      {hasLocked ? (
+        <article
+          className="approval-toast pointer-events-auto flex items-center gap-2 rounded-xl border border-content/20 border-dashed bg-content/10 px-3.5 py-3 shadow-xl backdrop-blur-xl"
+          role="status"
+        >
+          <CircleAlert
+            className="size-3.5 shrink-0 text-amber-400"
+            strokeWidth={1.75}
+          />
+          <span className="text-[13px] text-content">
+            {LOCKED_NOTIFICATION_TEXT}
+          </span>
+        </article>
+      ) : null}
     </div>,
     document.body,
   );

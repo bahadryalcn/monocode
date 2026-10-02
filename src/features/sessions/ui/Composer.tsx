@@ -40,6 +40,8 @@ import {
 } from "../model/attachments";
 import {
   attachmentTokens,
+  attachmentsDroppedByEdit,
+  deleteTokenAtCaret,
   insertAtSelection,
   removeAttachmentFromText,
   tokensForIncoming,
@@ -79,6 +81,7 @@ import {
 } from "../../inbox/model/githubTasks";
 import type { HandoffComposerCard } from "../model/handoff";
 import {
+  isLocalProject,
   looksLikeProject,
   type RecentProject,
 } from "../../projects/model/recents";
@@ -92,11 +95,20 @@ import type {
   WorkspaceMode,
   ComposerTurnOptions,
 } from "../model/session";
-import { HARNESS_TITLE, harnessSupportsAttachments } from "../model/session";
+import {
+  HARNESS_TITLE,
+  harnessSupportsAttachments,
+  planUnavailableReason,
+  unavailableRuntimeModes,
+} from "../model/session";
+import { hasMissingAttachment } from "../model/queuePersistence";
+import { moveQueuedMessage } from "../model/messageQueue";
+import { useAnimatedReorder } from "../../../shared/hooks/useAnimatedReorder";
 import type {
   UserQuestionPrompt,
   UserQuestionReply,
 } from "../model/userQuestion";
+import { historyKey, type HistoryBrowse } from "../model/composerHistory";
 import { isImeComposition } from "../../../shared/lib/keyboard";
 import {
   captureDraft,
@@ -105,6 +117,7 @@ import {
 } from "../../../shared/lib/draftRestore";
 import {
   createBlankSkill,
+  dollarTokenAt,
   rankSkills,
   hasNativeCommands,
   isNativeCommandPrompt,
@@ -118,6 +131,7 @@ import { AccessPicker } from "./AccessPicker";
 import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
 import { AttachmentChip } from "./AttachmentChip";
+import { QueuedMessageEditDialog } from "./QueuedMessageEditDialog";
 import { BranchPicker } from "../../source-control/ui/BranchPicker";
 import { WorktreePicker } from "../../source-control/ui/WorktreePicker";
 import {
@@ -142,6 +156,8 @@ import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
 import { useProjectBranchesState } from "../../source-control/hooks/useProjectBranches";
 import {
   COMPOSER_RUNNER_CHANGE_EVENT,
+  keybindingPressed,
+  keybindingShortcutLabel,
   loadComposerRunner,
   loadModelControls,
   loadNotesEnabled,
@@ -158,6 +174,7 @@ import {
   type NoteComposerCard,
 } from "../../notes";
 import { resolveTabGroupLogo } from "../../workspace/model/tabGroups";
+import { useCliCommands } from "./useCliCommands";
 import { useComposerSkills } from "./useComposerSkills";
 import { Popover } from "../../../shared/ui/Popover";
 import { UsageLimitNotice } from "./UsageLimitNotice";
@@ -206,7 +223,13 @@ import {
   taggedMcpServers,
   type McpTag,
 } from "../model/mcpPicker";
-import { getComposerMcpTags, setComposerMcpTags } from "../model/draftCache";
+import {
+  getComposerAttachments,
+  getComposerMcpTags,
+  setComposerAttachments,
+  setComposerMcpTags,
+  takeComposerNotice,
+} from "../model/draftCache";
 import { type McpConnection } from "../../settings/model/mcp";
 import {
   getCachedMcpSettings,
@@ -215,6 +238,20 @@ import {
   type McpSettingsSnapshot,
 } from "../../settings/model/mcpSettingsCache";
 import type { LastTurnRecall } from "../model/editLastTurn";
+import {
+  isDefaultQueueChord,
+  QUEUE_MESSAGE_COMMAND,
+  queueShortcutApplies,
+} from "../model/composerQueue";
+import {
+  insertTemplateBody,
+  loadPromptTemplates,
+  subscribePromptTemplates,
+  templateSkill,
+  templateTriggerAt,
+} from "../model/promptTemplates";
+import { SessionDirsPicker, sessionDirCandidates } from "./SessionDirsPicker";
+import { IS_MAC } from "../../../platform/tauri/platform";
 
 type Props = {
   enabled?: boolean;
@@ -242,6 +279,8 @@ type Props = {
   /** Keeps local file mentions, skills, and app modes off for host sessions. */
   remoteSession?: boolean;
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
+  /** Why Send cannot reach its destination right now; Send stays usable and tries again. */
+  sendBlockedReason?: string;
   context?: ContextUsage;
   sessionUsage?: SessionUsage;
   compactSupported?: boolean;
@@ -259,6 +298,8 @@ type Props = {
   allowBusySubmit?: boolean;
   editLastTurnSupported?: boolean;
   lastTurnRecall?: LastTurnRecall | null;
+  /** The session's own messages, newest first, for Up/Down in an empty composer. */
+  promptHistory?: () => string[];
   queuedMessages?: QueuedMessage[];
   queueStatus?: MessageQueueStatus;
   usageLimit?: UsageLimit;
@@ -302,8 +343,14 @@ type Props = {
   /** Open the picker of conversations Claude Code stored for this project. */
   onResumeProviderSession?: () => void;
   onDeleteQueuedMessage?: (messageId: string) => void;
-  onEditQueuedMessage?: (messageId: string, text: string) => void;
+  onEditQueuedMessage?: (
+    messageId: string,
+    text: string,
+    attachments: Attachment[],
+  ) => void;
   onQueuedMessageEditingChange?: (messageId?: string) => void;
+  /** The queue in its new order, as ids; resolved against the live queue by the owner. */
+  onReorderQueuedMessages?: (messageIds: string[]) => void;
   onSteerQueuedMessage?: (messageId: string) => void;
   onResumeQueue?: () => void;
   onUsageLimitResume?: () => void;
@@ -351,21 +398,59 @@ function MessageQueue({
   messages,
   status,
   onDelete,
+  canAttach,
+  remote = false,
   onEdit,
   onEditingChange,
+  onReorder,
   onSteer,
   onResume,
 }: {
   messages: QueuedMessage[];
   status?: MessageQueueStatus;
+  canAttach: boolean;
+  /** The turn runs on another machine: it cannot be steered, and the queue is this app's. */
+  remote?: boolean;
   onDelete?: (messageId: string) => void;
-  onEdit?: (messageId: string, text: string) => void;
+  onEdit?: (
+    messageId: string,
+    text: string,
+    attachments: Attachment[],
+  ) => void;
   onEditingChange?: (messageId?: string) => void;
+  onReorder?: (messageIds: string[]) => void;
   onSteer?: (messageId: string) => void;
   onResume?: () => void;
 }) {
+  const sortable = useAnimatedReorder(
+    messages.map((message) => message.id),
+    (ids) => onReorder?.(ids),
+    "y",
+  );
+  const card = useRef<HTMLDivElement>(null);
+  const refocus = useRef<string | undefined>(undefined);
+  // Moving a focused row in the DOM drops its focus; give it back after a keyboard move.
+  useLayoutEffect(() => {
+    if (!refocus.current) return;
+    card.current
+      ?.querySelector<HTMLElement>(`[data-queue-handle="${refocus.current}"]`)
+      ?.focus();
+    refocus.current = undefined;
+  }, [messages]);
+  const moveByKey = (event: KeyboardEvent, id: string, index: number) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown"))
+      return;
+    event.preventDefault();
+    const next = moveQueuedMessage(
+      messages,
+      id,
+      index + (event.key === "ArrowUp" ? -1 : 1),
+    );
+    if (next === messages) return;
+    refocus.current = id;
+    onReorder?.(next.map((message) => message.id));
+  };
   const [editingId, setEditingId] = useState<string>();
-  const [editDraft, setEditDraft] = useState("");
   const onEditingChangeRef = useRef(onEditingChange);
   onEditingChangeRef.current = onEditingChange;
   const editingIdRef = useRef(editingId);
@@ -375,24 +460,25 @@ function MessageQueue({
       if (editingIdRef.current) onEditingChangeRef.current?.();
     };
   }, []);
+  const editingMessage = messages.find((message) => message.id === editingId);
+  // The row was sent or removed while its dialog was open: close, never resurrect it.
+  useEffect(() => {
+    if (editingId && !editingMessage) {
+      setEditingId(undefined);
+      onEditingChangeRef.current?.();
+    }
+  }, [editingId, editingMessage]);
   if (messages.length === 0) return null;
   const paused = status === "paused";
+  const restored = status === "restored";
 
   const startEdit = (message: QueuedMessage) => {
     setEditingId(message.id);
-    setEditDraft(message.text);
     onEditingChange?.(message.id);
   };
   const cancelEdit = () => {
     setEditingId(undefined);
-    setEditDraft("");
     onEditingChange?.();
-  };
-  const saveEdit = (message: QueuedMessage) => {
-    if (!editDraft.trim() && message.attachments.length === 0) return;
-    onEdit?.(message.id, editDraft);
-    setEditingId(undefined);
-    setEditDraft("");
   };
 
   return (
@@ -400,6 +486,7 @@ function MessageQueue({
       <div
         className="relative z-0 rounded-t-[10px] border border-b-0 border-content/10 bg-content/3 px-2 py-1"
         data-message-queue-card
+        ref={card}
       >
         {paused ? (
           <div className="flex h-7 items-center gap-2 border-b border-stroke text-[12px]">
@@ -417,98 +504,118 @@ function MessageQueue({
             </button>
           </div>
         ) : null}
+        {restored ? (
+          <div className="flex h-7 items-center gap-2 border-b border-stroke text-[12px]">
+            <Pause className="size-3.5" />
+            <span className="min-w-0 flex-1 truncate">
+              {messages.length === 1
+                ? "1 queued message restored"
+                : `${messages.length} queued messages restored`}
+            </span>
+            <button
+              type="button"
+              disabled={hasMissingAttachment(messages[0])}
+              onClick={() => onSteer?.(messages[0].id)}
+              className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content disabled:opacity-30"
+            >
+              <Play className="size-3.5" />
+              Send next
+            </button>
+          </div>
+        ) : null}
         {messages.map((message, index) => {
-          const editing = editingId === message.id;
+          const attachmentGone = hasMissingAttachment(message);
           const label =
             message.text.trim() ||
             `${message.attachments.length} attachment${message.attachments.length === 1 ? "" : "s"}`;
           return (
             <div
               key={message.id}
-              className={`flex min-h-7 items-center gap-2 text-[12px] ${
+              ref={(node) => sortable.setItemRef(message.id, node)}
+              className={`reorder-item flex min-h-7 items-center gap-2 text-[12px] data-[dragging]:rounded-md data-[dragging]:bg-background-base data-[dragging]:shadow-lg ${
                 index > 0 ? "border-t border-stroke" : ""
               }`}
             >
-              <ListEnd className="size-3.5 shrink-0" />
-              {editing ? (
-                <>
-                  <textarea
-                    autoFocus
-                    aria-label="Edit queued message"
-                    value={editDraft}
-                    rows={1}
-                    onChange={(event) => setEditDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (isImeComposition(event.nativeEvent)) return;
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        cancelEdit();
-                      } else if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        saveEdit(message);
-                      }
-                    }}
-                    className="min-h-6 min-w-0 flex-1 resize-none rounded-md border border-content/15 bg-content/5 px-1.5 py-0.5 text-[12px] text-content outline-none focus:border-content/30"
-                  />
-                  <button
-                    type="button"
-                    title="Save queued message"
-                    aria-label="Save queued message"
-                    disabled={
-                      !editDraft.trim() && message.attachments.length === 0
-                    }
-                    onClick={() => saveEdit(message)}
-                    className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content disabled:opacity-30"
-                  >
-                    <Check className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    title="Cancel queued message edit"
-                    aria-label="Cancel queued message edit"
-                    onClick={cancelEdit}
-                    className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                </>
+              {messages.length > 1 ? (
+                <button
+                  type="button"
+                  data-queue-handle={message.id}
+                  title="Drag to reorder"
+                  aria-label="Reorder queued message"
+                  aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                  onPointerDown={(event) =>
+                    sortable.onItemPointerDown(message.id, event)
+                  }
+                  onKeyDown={(event) => moveByKey(event, message.id, index)}
+                  className="grid size-6 shrink-0 cursor-grab touch-none place-items-center rounded-md hover:bg-content/10 hover:text-content active:cursor-grabbing"
+                >
+                  <ListEnd className="size-3.5" />
+                </button>
               ) : (
-                <>
-                  <span className="min-w-0 flex-1 truncate text-content/80">
-                    {label}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => onSteer?.(message.id)}
-                    className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content"
-                  >
-                    <CornerDownRight className="size-3.5" />
-                    Steer
-                  </button>
-                  <button
-                    type="button"
-                    title="Edit queued message"
-                    aria-label="Edit queued message"
-                    onClick={() => startEdit(message)}
-                    className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
-                  >
-                    <Pencil className="size-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    title="Remove queued message"
-                    aria-label="Remove queued message"
-                    onClick={() => onDelete?.(message.id)}
-                    className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                </>
+                <ListEnd className="size-3.5 shrink-0" />
               )}
+              <span className="min-w-0 flex-1 truncate text-content/80">
+                {label}
+              </span>
+              {attachmentGone ? (
+                <span
+                  className="shrink-0 text-amber-400"
+                  title="An attached file is gone. Edit this message to drop it, or remove the message."
+                >
+                  Attachment missing
+                </span>
+              ) : null}
+              {remote ? null : (
+                <button
+                  type="button"
+                  disabled={attachmentGone}
+                  onClick={() => onSteer?.(message.id)}
+                  className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content disabled:opacity-30"
+                >
+                  <CornerDownRight className="size-3.5" />
+                  Steer
+                </button>
+              )}
+              <button
+                type="button"
+                title="Edit queued message"
+                aria-label="Edit queued message"
+                onClick={() => startEdit(message)}
+                className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
+              >
+                <Pencil className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                title="Remove queued message"
+                aria-label="Remove queued message"
+                onClick={() => onDelete?.(message.id)}
+                className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
+              >
+                <Trash2 className="size-3.5" />
+              </button>
             </div>
           );
         })}
+        {remote ? (
+          <div className="border-t border-stroke py-1 text-[11px] text-content/40">
+            Sent one at a time when the host finishes this turn, while MonoCode is open.
+          </div>
+        ) : null}
       </div>
+      {editingMessage ? (
+        <QueuedMessageEditDialog
+          key={editingMessage.id}
+          message={editingMessage}
+          canAttach={canAttach}
+          onSave={(text, attachments) => {
+            onEdit?.(editingMessage.id, text, attachments);
+            setEditingId(undefined);
+          }}
+          onRemove={() => onDelete?.(editingMessage.id)}
+          onCancel={cancelEdit}
+        />
+      ) : null}
     </div>
   );
 }
@@ -537,6 +644,7 @@ export function Composer({
   hideBranchPicker = false,
   hideTopBar = false,
   remoteSession = false,
+  sendBlockedReason,
   remoteFeatures,
   context,
   sessionUsage,
@@ -553,6 +661,7 @@ export function Composer({
   allowBusySubmit = true,
   editLastTurnSupported = false,
   lastTurnRecall = null,
+  promptHistory,
   queuedMessages = [],
   queueStatus,
   usageLimit,
@@ -588,6 +697,7 @@ export function Composer({
   onDeleteQueuedMessage,
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
+  onReorderQueuedMessages,
   onSteerQueuedMessage,
   onResumeQueue,
   onUsageLimitResume,
@@ -603,11 +713,15 @@ export function Composer({
   const boxRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
-  const attachmentsRef = useRef<Attachment[]>([]);
+  // A remount (or a restart) starts from the attachments the draft was saved with.
+  const attachmentsRef = useRef<Attachment[]>(
+    sessionId ? getComposerAttachments(sessionId) : [],
+  );
   const borrowedAttachmentIdsRef = useRef(new Set<string>());
   const attachmentLifecycleRef = useRef(0);
   const consumedQuoteId = useRef<number | null>(null);
   const draftRevisionRef = useRef(0);
+  const userEditBeforeRef = useRef<string | null>(null);
   const draftResetTokenRef = useRef(draftResetToken);
   /** Bumped when the draft is cleared, so a late paste cannot land on the next one. */
   const pasteGenerationRef = useRef(0);
@@ -617,6 +731,8 @@ export function Composer({
   const positionedInitialDraft = useRef(false);
   const slashRef = useRef<SlashToken | null>(null);
   const mentionRef = useRef<MentionToken | null>(null);
+  /** Set while the text is an unedited entry recalled with Up/Down. */
+  const historyRef = useRef<HistoryBrowse | null>(null);
   const [draft, setDraft] = useState(initialDraft ?? "");
   const { branches: draftBranches } = useProjectBranchesState(
     executionCwd,
@@ -645,12 +761,18 @@ export function Composer({
   const [hasValue, setHasValue] = useState(
     () =>
       (initialDraft ?? "").trim().length > 0 ||
+      attachmentsRef.current.length > 0 ||
       !!inboxCard ||
       !!noteCard ||
       !!handoffCard,
   );
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [pasteError, setPasteError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>(
+    () => attachmentsRef.current,
+  );
+  // Says so when a restored draft lost an attachment whose file is gone.
+  const [pasteError, setPasteError] = useState<string | null>(
+    () => (sessionId ? takeComposerNotice(sessionId) : undefined) ?? null,
+  );
   const [fileDrag, setFileDrag] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [planSelected, setPlanSelected] = useState(false);
@@ -691,6 +813,11 @@ export function Composer({
     () => "menu" as const,
   );
   const controlsBeside = modelControls === "beside";
+  const promptTemplates = useSyncExternalStore(
+    subscribePromptTemplates,
+    loadPromptTemplates,
+    () => [],
+  );
   const [notes, setNotes] = useState<Note[]>(() => peekNotes() ?? []);
   const [mention, setMention] = useState<MentionToken | null>(null);
   const [mentionActive, setMentionActive] = useState(0);
@@ -725,9 +852,43 @@ export function Composer({
     pickerOpen: pickerOpen && !remote,
   });
   const skills = skillCatalog.skills;
-  const slashItems = useMemo(
+  const templateItems = useMemo(
+    () => promptTemplates.map(templateSkill),
+    [promptTemplates],
+  );
+  // The CLI's own commands never replace a MonoCode command or a skill that
+  // MonoCode already lists under the same name.
+  const takenNames = useMemo(
     () =>
-      remote
+      new Set([
+        ...[
+          PLAN_COMMAND,
+          COMPACT_COMMAND,
+          SESSION_FOLDER_COMMAND,
+          MCP_COMMAND,
+          OPERATOR_COMMAND,
+          ORCHESTRATOR_COMMAND,
+          DRAFT_COMMAND,
+          BTW_COMMAND,
+          RESUME_COMMAND,
+        ].map((command) => command.name),
+        "mono",
+        "monocode",
+        ...skills.map((skill) => skill.name),
+      ]),
+    [skills],
+  );
+  const cliCommands = useCliCommands({
+    harness,
+    localCwd,
+    sessionId,
+    menuOpen: pickerOpen && !remote,
+    taken: takenNames,
+    files: skills,
+  });
+  const slashItems = useMemo(
+    () => [
+      ...(remote
         ? [...(remoteFeatures?.plan ? [PLAN_COMMAND] : []), COMPACT_COMMAND]
         : [
             SESSION_FOLDER_COMMAND,
@@ -759,10 +920,15 @@ export function Composer({
                     skill.name !== RESUME_COMMAND.name &&
                     skill.name !== BTW_COMMAND.name)),
             ),
-          ],
+            ...cliCommands.slashCommands,
+          ]),
+      ...templateItems,
+    ],
     [
       harness,
+      templateItems,
       skills,
+      cliCommands.slashCommands,
       remote,
       remoteFeatures?.plan,
       hideTopBar,
@@ -774,12 +940,29 @@ export function Composer({
   const skillLimit = hasNativeCommands(harness)
     ? Number.POSITIVE_INFINITY
     : undefined;
-  const rankedSkills = rankSkills(slashItems, slash?.query ?? "", skillLimit);
+  const rankedSkills = rankSkills(
+    slash?.trigger === "$" ? cliCommands.dollarSkills : slashItems,
+    slash?.query ?? "",
+    slash?.trigger === "$" ? undefined : skillLimit,
+  );
+  const sessionDirsHarness =
+    harness === "claude" || harness === "codex" || harness === "antigravity";
+  const showSessionDirs =
+    !remote &&
+    !compact &&
+    sessionDirsHarness &&
+    isLocalProject(cwd ?? executionCwd) &&
+    sessionDirCandidates(cwd ?? executionCwd).length > 0;
   const attachmentsSupported =
     (!remote || !!remoteFeatures?.attachments) &&
     harnessSupportsAttachments(harness);
   const skillNames = useMemo(
-    () => new Set(slashItems.map((skill) => skill.invocation)),
+    () =>
+      new Set(
+        slashItems
+          .filter((skill) => skill.kind !== "template")
+          .map((skill) => skill.invocation),
+      ),
     [slashItems],
   );
   const leadingMode = leadingModeCommand(draft, skillNames);
@@ -888,6 +1071,16 @@ export function Composer({
   }, [sessionId, selectedMcp]);
 
   useEffect(() => {
+    // Object URLs die with this pane, so the saved copy keeps none.
+    if (sessionId) {
+      setComposerAttachments(
+        sessionId,
+        attachments.map(({ previewUrl: _preview, ...file }) => file),
+      );
+    }
+  }, [sessionId, attachments]);
+
+  useEffect(() => {
     syncHasValue(ref.current?.value ?? "", attachmentsRef.current);
   }, [inboxCard, noteCard, handoffCard, syncHasValue]);
 
@@ -953,7 +1146,12 @@ export function Composer({
           previous.findIndex((file) => file.id === id),
         );
         if (text !== el.value) {
-          const caret = Math.min(el.selectionStart ?? text.length, text.length);
+          // Renumbering ahead of the caret shifts it by the same amount.
+          const caret = removeAttachmentFromText(
+            el.value.slice(0, el.selectionStart ?? el.value.length),
+            previous,
+            previous.findIndex((file) => file.id === id),
+          ).length;
           applyTextareaEdit(el, text, caret);
         }
       }
@@ -962,6 +1160,36 @@ export function Composer({
     },
     [syncHasValue],
   );
+  // The text as it was just before a user edit. Only a native `beforeinput`
+  // sets it, so programmatic text changes never count as the user deleting a
+  // token. Backspace/Delete against a token takes the whole token.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onBeforeInput = (event: InputEvent) => {
+      userEditBeforeRef.current = el.value;
+      const back = event.inputType === "deleteContentBackward";
+      if (
+        event.isComposing ||
+        (!back && event.inputType !== "deleteContentForward") ||
+        el.selectionStart !== el.selectionEnd
+      ) {
+        return;
+      }
+      const edit = deleteTokenAtCaret(
+        el.value,
+        el.selectionStart,
+        back ? "back" : "forward",
+        attachmentsRef.current,
+      );
+      if (!edit) return;
+      event.preventDefault();
+      applyTextareaEdit(el, edit.text, edit.caret);
+    };
+    el.addEventListener("beforeinput", onBeforeInput);
+    return () => el.removeEventListener("beforeinput", onBeforeInput);
+  }, []);
+
   useEffect(() => {
     const lifecycle = ++attachmentLifecycleRef.current;
     return () => {
@@ -1146,9 +1374,19 @@ export function Composer({
 
   const syncTokensFromTextarea = (el: HTMLTextAreaElement) => {
     if (creatingSkill) return;
+    // A recalled "/plan" must not pop the menu over the next Up press.
+    if (historyRef.current?.text === el.value) return;
     const cursor = el.selectionStart ?? 0;
     const token = slashTokenAt(el.value, cursor, hasNativeCommands(harness));
-    setSlash(token);
+    // `$name` opens only while some Codex skill matches, so `$HOME` stays text.
+    const dollar = token ? null : dollarTokenAt(el.value, cursor);
+    setSlash(
+      token ??
+        (dollar &&
+        rankSkills(cliCommands.dollarSkills, dollar.query, 1).length > 0
+          ? dollar
+          : null),
+    );
     setMention(token ? null : mentionTokenAt(el.value, cursor));
   };
 
@@ -1274,6 +1512,21 @@ export function Composer({
         setSlash(null);
         setCreatingSkill(false);
         onResumeProviderSession();
+        return;
+      }
+      if (skill.kind === "template") {
+        // Goes through the same input path as typing, so the draft, the
+        // attachment tokens and the highlight all follow.
+        const edit = insertTemplateBody(
+          el.value,
+          token.start,
+          token.end,
+          skill.body,
+        );
+        applyTextareaEdit(el, edit.text, edit.caret);
+        setSlash(null);
+        setCreatingSkill(false);
+        el.focus();
         return;
       }
       const next = replaceSlashToken(el.value, token, skill.invocation);
@@ -1577,6 +1830,10 @@ export function Composer({
   }, [sessionId, onEditingLastTurnChange]);
 
   useEffect(() => {
+    historyRef.current = null;
+  }, [sessionId]);
+
+  useEffect(() => {
     if (editLastTurnSupported) return;
     setResendEdited(false);
     onEditingLastTurnChange?.(false);
@@ -1599,14 +1856,14 @@ export function Composer({
       if (pasteFlightRef.current === joined) pasteFlightRef.current = null;
     });
   };
-  const submit = (value: string) => {
+  const submit = (value: string, queue = false) => {
     if (disabled || worktreeRemoved || submitLockRef.current) return;
     submitLockRef.current = true;
-    void completeSubmit(value).finally(() => {
+    void completeSubmit(value, queue).finally(() => {
       submitLockRef.current = false;
     });
   };
-  const completeSubmit = async (submittedValue: string) => {
+  const completeSubmit = async (submittedValue: string, queue = false) => {
     let pending = pasteFlightRef.current;
     const generation = pasteGenerationRef.current;
     while (pending) {
@@ -1712,6 +1969,13 @@ export function Composer({
         ? folderCommand.text
         : value,
     );
+    // A typed /plan must behave like the disabled Plan button: say why, and
+    // keep the draft instead of starting a turn the transport would refuse.
+    const planBlocked = planUnavailableReason(harness);
+    if ((planSelected || command.planning) && planBlocked) {
+      setPasteError(`Plan mode is unavailable: ${planBlocked}`);
+      return;
+    }
     const orchestratorCommand =
       !remote && !hideTopBar && !command.planning
         ? consumeOrchestratorCommand(command.text)
@@ -1742,12 +2006,27 @@ export function Composer({
       ),
       files,
       {
+        ...(queue ? { followUpBehavior: "queue" as const } : {}),
         intent:
           planSelected || command.planning
             ? "plan"
             : orchestrationSelected || orchestratorCommand.matched
               ? "orchestrate"
               : "default",
+        // A host session may take the message only after a reconnect, and
+        // gives it back here if that fails.
+        ...(remote
+          ? {
+              onSendRejected: () => {
+                // Only into an empty composer: never over what was typed since.
+                if (!ref.current || ref.current.value || attachmentsRef.current.length)
+                  return false;
+                restoreDraft(text, files, resendBorrowedAttachmentIds);
+                setSelectedMcp(resendSelectedMcp);
+                return true;
+              },
+            }
+          : {}),
         ...(resendEdited
           ? {
               resendEdited: true,
@@ -1770,6 +2049,7 @@ export function Composer({
       return;
     }
     pasteGenerationRef.current += 1;
+    historyRef.current = null;
     if (ref.current) {
       ref.current.value = "";
       ref.current.style.height = "auto";
@@ -1823,6 +2103,29 @@ export function Composer({
       e.preventDefault();
       openSessionFolderPicker();
       return;
+    }
+
+    if (
+      e.key === " " &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      promptTemplates.length > 0 &&
+      e.currentTarget.selectionStart === e.currentTarget.selectionEnd
+    ) {
+      const el = e.currentTarget;
+      const hit = templateTriggerAt(el.value, el.selectionStart, promptTemplates);
+      if (hit) {
+        e.preventDefault();
+        const edit = insertTemplateBody(
+          el.value,
+          hit.start,
+          hit.end,
+          hit.template.body,
+        );
+        applyTextareaEdit(el, edit.text, edit.caret);
+        return;
+      }
     }
 
     if (mentionOpen) {
@@ -1915,6 +2218,31 @@ export function Composer({
       }
     }
 
+    // Shift+Tab (rebindable) queues the message behind the running turn.
+    // With nothing to queue it does nothing: the key stays in the composer
+    // either way, so a press between turns never throws focus onto the toolbar.
+    if (
+      keybindingPressed(QUEUE_MESSAGE_COMMAND, e, isDefaultQueueChord(e)) &&
+      !(slash || mentionOpen || pickerOpen)
+    ) {
+      e.preventDefault();
+      if (
+        queueShortcutApplies({
+          busy,
+          backgroundOnly,
+          allowBusySubmit,
+          disabled: disabled || worktreeRemoved,
+          popupOpen: false,
+          draftMode: draftActive,
+          text: e.currentTarget.value,
+          attachmentCount: attachmentsRef.current.length,
+        })
+      ) {
+        submit(e.currentTarget.value, true);
+      }
+      return;
+    }
+
     if (
       e.key === "ArrowUp" &&
       editLastTurnSupported &&
@@ -1925,6 +2253,30 @@ export function Composer({
       e.preventDefault();
       recallLastTurn();
       return;
+    }
+
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      const el = e.currentTarget;
+      const result = historyKey({
+        key: e.key,
+        shiftKey: e.shiftKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+        metaKey: e.metaKey,
+        text: el.value,
+        selectionStart: el.selectionStart,
+        selectionEnd: el.selectionEnd,
+        composerEmpty: navigationEmpty,
+        menuOpen: !!slash || mentionOpen || pickerOpen,
+        entries: promptHistory?.() ?? [],
+        browse: historyRef.current,
+      });
+      historyRef.current = result.browse;
+      if (result.text !== undefined) {
+        e.preventDefault();
+        applyTextareaEdit(el, result.text, result.text.length);
+        return;
+      }
     }
 
     if (e.key === "Enter" && !e.shiftKey) {
@@ -2068,9 +2420,12 @@ export function Composer({
       <MessageQueue
         messages={queuedMessages}
         status={queueStatus}
+        canAttach={attachmentsSupported}
+        remote={remote}
         onDelete={onDeleteQueuedMessage}
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}
+        onReorder={onReorderQueuedMessages}
         onSteer={onSteerQueuedMessage}
         onResume={onResumeQueue}
       />
@@ -2165,6 +2520,8 @@ export function Composer({
           <div className="absolute inset-x-0 bottom-full z-30 mb-1">
             <SkillPicker
               skills={rankedSkills}
+              prefix={slash?.trigger ?? "/"}
+              showCreate={slash?.trigger !== "$"}
               query={slash?.query ?? ""}
               active={skillActive}
               creating={creatingSkill}
@@ -2423,6 +2780,20 @@ export function Composer({
               onSelect={(e) => syncTokensFromTextarea(e.currentTarget)}
               onInput={(e) => {
                 const el = e.currentTarget;
+                // A user edit that took a token out of the text takes its
+                // attachment with it; the rest renumber like a chip removal.
+                const before = userEditBeforeRef.current;
+                userEditBeforeRef.current = null;
+                if (before !== null) {
+                  const files = attachmentsRef.current;
+                  for (const index of attachmentsDroppedByEdit(
+                    before,
+                    el.value,
+                    files,
+                  )) {
+                    removeAttachment(files[index].id);
+                  }
+                }
                 if (enterBtwFromPrefix(el)) return;
                 resizeComposer(el);
                 draftRevisionRef.current += 1;
@@ -2442,7 +2813,7 @@ export function Composer({
                 ) {
                   setSessionFolderSelected(false);
                 }
-                syncHasValue(el.value, attachments);
+                syncHasValue(el.value, attachmentsRef.current);
                 syncTokensFromTextarea(el);
               }}
             />
@@ -2499,6 +2870,8 @@ export function Composer({
                     <button
                       type="button"
                       aria-pressed={planActive}
+                      disabled={!!planUnavailableReason(harness)}
+                      title={planUnavailableReason(harness)}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
                         setPlanSelected(!planActive);
@@ -2509,13 +2882,15 @@ export function Composer({
                         setPlusOpen(false);
                         ref.current?.focus();
                       }}
-                      className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
+                      className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       <AiIdea className="mt-0.5 size-4 shrink-0 text-yellow-300/80" />
                       <span className="min-w-0 flex-1">
                         <span className="block text-[13px]">Plan mode</span>
                         <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                          Review a plan before building
+                          {planUnavailableReason(harness)
+                            ? `Unavailable: ${planUnavailableReason(harness)}`
+                            : "Review a plan before building"}
                         </span>
                       </span>
                       {planActive ? (
@@ -2705,7 +3080,15 @@ export function Composer({
                   <AccessPicker
                     value={runtimeMode}
                     busy={busy}
+                    unavailable={unavailableRuntimeModes(harness)}
                     onChange={onRuntimeModeChange}
+                    onClose={() => ref.current?.focus()}
+                  />
+                ) : null}
+                {showSessionDirs && sessionId ? (
+                  <SessionDirsPicker
+                    sessionId={sessionId}
+                    project={cwd ?? executionCwd}
                     onClose={() => ref.current?.focus()}
                   />
                 ) : null}
@@ -2732,7 +3115,26 @@ export function Composer({
                 hasValue={hasValue && !worktreeRemoved}
                 allowBusySubmit={allowBusySubmit}
                 label={draftActive ? "Save draft" : "Send"}
+                blockedReason={sendBlockedReason}
                 onSend={() => submit(ref.current?.value ?? "")}
+                onQueue={
+                  queueShortcutApplies({
+                    busy,
+                    backgroundOnly,
+                    allowBusySubmit,
+                    disabled: disabled || worktreeRemoved,
+                    popupOpen: false,
+                    draftMode: draftActive,
+                    text: draft,
+                    attachmentCount: attachments.length,
+                  })
+                    ? () => submit(ref.current?.value ?? "", true)
+                    : undefined
+                }
+                queueShortcut={keybindingShortcutLabel(
+                  QUEUE_MESSAGE_COMMAND,
+                  IS_MAC ? "⇧Tab" : "Shift+Tab",
+                )}
                 onStop={() => onStop?.()}
               />
             </div>
@@ -2866,7 +3268,10 @@ export function ComposerAction({
   hasValue,
   allowBusySubmit = true,
   label = "Send",
+  blockedReason,
   onSend,
+  onQueue,
+  queueShortcut,
   onStop,
 }: {
   busy: boolean;
@@ -2874,7 +3279,12 @@ export function ComposerAction({
   hasValue: boolean;
   allowBusySubmit?: boolean;
   label?: string;
+  /** Shown instead of the label while Send cannot reach its destination. */
+  blockedReason?: string;
   onSend: () => void;
+  /** Queue the message behind the running turn; only offered while one runs. */
+  onQueue?: () => void;
+  queueShortcut?: string | null;
   onStop: () => void;
 }) {
   if (disabled) {
@@ -2892,15 +3302,36 @@ export function ComposerAction({
   }
   if (busy) {
     return hasValue && allowBusySubmit ? (
-      <button
-        type="button"
-        title={label}
-        aria-label={label}
-        onClick={onSend}
-        className="composer-send primary-action grid size-6.5 place-items-center rounded-md"
-      >
-        <ArrowUp className="size-3.5" strokeWidth={2.25} />
-      </button>
+      <>
+        {onQueue ? (
+          <button
+            type="button"
+            title={
+              queueShortcut
+                ? `Queue message for when this turn finishes (${queueShortcut})`
+                : "Queue message for when this turn finishes"
+            }
+            aria-label="Queue message"
+            onClick={onQueue}
+            className="grid size-6.5 place-items-center rounded-md bg-selection text-content hover:bg-selection-hover"
+          >
+            <ListEnd className="size-3.5" strokeWidth={1.75} />
+          </button>
+        ) : null}
+        <button
+          type="button"
+          title={
+            onQueue && queueShortcut
+              ? `${label} (${queueShortcut} queues instead)`
+              : label
+          }
+          aria-label={label}
+          onClick={onSend}
+          className="composer-send primary-action grid size-6.5 place-items-center rounded-md"
+        >
+          <ArrowUp className="size-3.5" strokeWidth={2.25} />
+        </button>
+      </>
     ) : (
       <button
         type="button"
@@ -2917,11 +3348,13 @@ export function ComposerAction({
   return (
     <button
       type="button"
-      title={label}
-      aria-label={label}
+      title={blockedReason ?? label}
+      aria-label={blockedReason ? `${label}. ${blockedReason}` : label}
       disabled={!hasValue}
       onClick={onSend}
-      className="composer-send primary-action grid size-6.5 place-items-center rounded-md disabled:cursor-default"
+      className={`composer-send primary-action grid size-6.5 place-items-center rounded-md disabled:cursor-default ${
+        blockedReason ? "opacity-50" : ""
+      }`}
     >
       <ArrowUp className="size-3.5" strokeWidth={2.25} />
     </button>

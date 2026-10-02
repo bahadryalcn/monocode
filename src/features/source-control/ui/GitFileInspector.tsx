@@ -22,6 +22,13 @@ export function requestGitFileInspect(request: GitFileInspectRequest): void {
   window.dispatchEvent(new CustomEvent(GIT_FILE_INSPECT_EVENT, { detail: request }));
 }
 
+/** Asks the host to show a commit's diff, from places with no handler of their own (the editor's blame gutter). */
+export const GIT_COMMIT_OPEN_EVENT = "monocode:git-commit-open";
+
+export function requestOpenCommit(commit: GitHistoryCommit): void {
+  window.dispatchEvent(new CustomEvent(GIT_COMMIT_OPEN_EVENT, { detail: commit }));
+}
+
 type Props = {
   onOpenCommit: (commit: GitHistoryCommit, pin?: boolean) => void;
 };
@@ -47,6 +54,13 @@ export function GitFileInspector({ onOpenCommit }: Props) {
     window.addEventListener(GIT_FILE_INSPECT_EVENT, open);
     return () => window.removeEventListener(GIT_FILE_INSPECT_EVENT, open);
   }, []);
+
+  useEffect(() => {
+    const open = (event: Event) =>
+      onOpenCommit((event as CustomEvent<GitHistoryCommit>).detail, true);
+    window.addEventListener(GIT_COMMIT_OPEN_EVENT, open);
+    return () => window.removeEventListener(GIT_COMMIT_OPEN_EVENT, open);
+  }, [onOpenCommit]);
 
   if (!request) return null;
   const close = () => setRequest(null);

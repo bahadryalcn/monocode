@@ -40,9 +40,12 @@ export function QuickPermissions({
   value,
   onChange,
   onClose,
+  unavailable,
   embedded = false,
 }: {
   value: RuntimeMode;
+  /** Modes the harness's transport cannot honour, with the reason to show. */
+  unavailable?: Partial<Record<RuntimeMode, string>>;
   onChange: (mode: RuntimeMode) => void;
   onClose: () => void;
   embedded?: boolean;
@@ -54,6 +57,7 @@ export function QuickPermissions({
     if (!embedded) root.current?.focus({ preventScroll: true });
   }, [embedded]);
   const pick = (mode: RuntimeMode) => {
+    if (unavailable?.[mode]) return;
     onChange(mode);
     if (!embedded) onClose();
   };
@@ -74,46 +78,59 @@ export function QuickPermissions({
         } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
           event.preventDefault();
           const step = event.key === "ArrowDown" ? 1 : -1;
-          setActive(
-            (index) =>
-              (index + step + RUNTIME_MODES.length) % RUNTIME_MODES.length,
-          );
+          // Arrow keys skip modes that cannot be picked.
+          setActive((index) => {
+            let next = index;
+            for (let tried = 0; tried < RUNTIME_MODES.length; tried += 1) {
+              next =
+                (next + step + RUNTIME_MODES.length) % RUNTIME_MODES.length;
+              if (!unavailable?.[RUNTIME_MODES[next]]) return next;
+            }
+            return index;
+          });
         } else if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           pick(RUNTIME_MODES[active]);
         }
       }}
     >
-      {RUNTIME_MODES.map((mode, index) => (
-        <button
-          key={mode}
-          id={`${id}-${index}`}
-          type="button"
-          role="option"
-          tabIndex={-1}
-          aria-selected={value === mode}
-          onMouseDown={(event) => {
-            event.preventDefault();
-            root.current?.focus({ preventScroll: true });
-          }}
-          onMouseEnter={() => setActive(index)}
-          onClick={() => pick(mode)}
-          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left ${(embedded ? value === mode : active === index) ? "bg-selection-emphasis text-content" : "text-content/75 hover:bg-selection-hover"}`}
-        >
-          <QuickPermissionIcon mode={mode} className="size-4 shrink-0" />
-          <span className="min-w-0 flex-1">
-            <span className="block text-[13px] font-medium">
-              {RUNTIME_MODE_LABEL[mode]}
+      {RUNTIME_MODES.map((mode, index) => {
+        const reason = unavailable?.[mode];
+        return (
+          <button
+            key={mode}
+            id={`${id}-${index}`}
+            type="button"
+            role="option"
+            tabIndex={-1}
+            aria-selected={value === mode}
+            aria-disabled={reason ? true : undefined}
+            title={reason}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              root.current?.focus({ preventScroll: true });
+            }}
+            onMouseEnter={() => {
+              if (!reason) setActive(index);
+            }}
+            onClick={() => pick(mode)}
+            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left ${reason ? "cursor-not-allowed text-content/40" : (embedded ? value === mode : active === index) ? "bg-selection-emphasis text-content" : "text-content/75 hover:bg-selection-hover"}`}
+          >
+            <QuickPermissionIcon mode={mode} className="size-4 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-[13px] font-medium">
+                {RUNTIME_MODE_LABEL[mode]}
+              </span>
+              <span className="mt-0.5 block text-[11px] text-content/45">
+                {reason ? `Unavailable: ${reason}` : RUNTIME_MODE_HINT[mode]}
+              </span>
             </span>
-            <span className="mt-0.5 block text-[11px] text-content/45">
-              {RUNTIME_MODE_HINT[mode]}
-            </span>
-          </span>
-          {value === mode ? (
-            <Check className="size-3.5 shrink-0 text-accent" />
-          ) : null}
-        </button>
-      ))}
+            {value === mode ? (
+              <Check className="size-3.5 shrink-0 text-accent" />
+            ) : null}
+          </button>
+        );
+      })}
     </div>
   );
 }

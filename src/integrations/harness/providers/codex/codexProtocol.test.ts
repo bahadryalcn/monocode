@@ -4,6 +4,8 @@ import {
   buildTurnStartParams,
   buildTurnSteerParams,
   codexCommandText,
+  codexSkillMentions,
+  codexSkillsFromList,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
   mapCodexNotification,
@@ -12,6 +14,65 @@ import {
   toCodexApprovalDecision,
 } from "./codexProtocol";
 import { parseCodexModelList } from "./codexCatalog";
+
+describe("Codex skill mentions", () => {
+  const skills = new Map([
+    ["imagegen", "/home/u/.codex/skills/.system/imagegen/SKILL.md"],
+  ]);
+
+  it("sends a known $skill as a skill input and keeps the text as typed", () => {
+    const params = buildTurnStartParams({
+      threadId: "t",
+      runtimeMode: "auto",
+      prompt: "$imagegen a red fox",
+      skills,
+    });
+    expect(params.input).toEqual([
+      { type: "text", text: "$imagegen a red fox" },
+      {
+        type: "skill",
+        name: "imagegen",
+        path: "/home/u/.codex/skills/.system/imagegen/SKILL.md",
+      },
+    ]);
+  });
+
+  it("ignores unknown names, prices and words that merely contain a $", () => {
+    expect(codexSkillMentions("costs $5 or $HOME a$imagegen", skills)).toEqual(
+      [],
+    );
+    expect(codexSkillMentions("$imagegen then $imagegen", skills)).toEqual([
+      "imagegen",
+    ]);
+    expect(codexSkillMentions("$imagegen", undefined)).toEqual([]);
+  });
+
+  it("reads enabled skills from a skills/list response", () => {
+    expect(
+      codexSkillsFromList({
+        data: [
+          {
+            cwd: "/p",
+            skills: [
+              {
+                name: "imagegen",
+                description: "Long",
+                path: "/a",
+                enabled: true,
+                interface: { shortDescription: "Make images" },
+              },
+              { name: "off", description: "x", path: "/b", enabled: false },
+              { name: "imagegen", description: "dup", path: "/c", enabled: true },
+              { name: "nopath", description: "x" },
+            ],
+            errors: [],
+          },
+        ],
+      }),
+    ).toEqual([{ name: "imagegen", description: "Make images", path: "/a" }]);
+    expect(codexSkillsFromList(null)).toEqual([]);
+  });
+});
 
 describe("runtimeModeToCodexConfig", () => {
   it("maps supervised to untrusted read-only", () => {
@@ -1027,8 +1088,9 @@ describe("mapCodexSubagentSteps", () => {
     ]);
   });
 
-  it("leaves a settled child's result off its step", () => {
+  it("carries a settled child's result as output, not as failure detail", () => {
     const steps = subagentBash("completed", "12 passed");
     expect(steps[0]).not.toHaveProperty("detail");
+    expect(steps[0]).toMatchObject({ output: "12 passed" });
   });
 });

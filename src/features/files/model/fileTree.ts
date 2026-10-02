@@ -1,4 +1,7 @@
 import { listDir, type FsEntry } from "../../../platform/tauri/fs";
+import { classifyRemoteError, isConnectionFailure } from "../../connections/model/remoteFailure";
+import { reportRemoteConnection } from "../../connections/model/remoteHealth";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 import { pathSegments } from "./fileName";
 import { joinPath, parentPath } from "../../../shared/lib/paths";
 
@@ -37,15 +40,30 @@ export function peekDir(path: string): FsEntry[] | null {
 export function listCachedDir(path: string): Promise<FsEntry[]> {
   const hit = dirs.get(path);
   if (hit) return Promise.resolve(hit);
-  return listDir(path).then((entries) => {
-    dirs.set(path, entries);
-    return entries;
-  });
+  return listDir(path).then(
+    (entries) => {
+      dirs.set(path, entries);
+      reportRemoteConnection(path, "files");
+      return entries;
+    },
+    (error: unknown) => {
+      reportRemoteConnection(path, "files", error);
+      throw error;
+    },
+  );
 }
 
+/** A folder on a machine that cannot be reached keeps showing what it last held. */
+const keepsLastListing = (path: string, error: unknown) =>
+  isRemoteProjectPath(path) && isConnectionFailure(classifyRemoteError(error));
+
 export function refreshDir(path: string): Promise<FsEntry[]> {
+  const previous = dirs.get(path);
   dirs.delete(path);
-  return listCachedDir(path);
+  return listCachedDir(path).catch((error: unknown) => {
+    if (previous && keepsLastListing(path, error)) dirs.set(path, previous);
+    throw error;
+  });
 }
 
 export function forgetDir(path: string) {
@@ -60,8 +78,8 @@ export async function refreshCachedDirs(): Promise<void> {
   if (paths.length === 0) return;
   await Promise.all(
     paths.map((path) =>
-      refreshDir(path).catch(() => {
-        forgetDir(path);
+      refreshDir(path).catch((error: unknown) => {
+        if (!keepsLastListing(path, error)) forgetDir(path);
       }),
     ),
   );

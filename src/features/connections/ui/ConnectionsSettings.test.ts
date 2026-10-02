@@ -28,10 +28,21 @@ beforeEach(() => {
   machines = [];
   state = { id: "setup", message: "Installing host…", done: false };
   vi.mocked(invoke).mockReset();
-  vi.mocked(invoke).mockImplementation(async (command) => {
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "remote_machines") return [...machines];
     if (command === "remote_ssh_begin" || command === "remote_ssh_reconnect")
       return "setup";
+    if (command === "remote_machine_update") {
+      const edit = args as { name: string; target: string; port: number | null };
+      const saved = {
+        ...machine,
+        name: edit.name || machine.name,
+        endpoint: `ssh://${edit.target}`,
+        ssh: { target: edit.target, port: edit.port, remotePort: 3774 },
+      };
+      machines = [saved];
+      return saved;
+    }
     if (command === "remote_ssh_poll") return { ...state };
     if (command === "remote_request")
       return { environmentId: "env", providers: ["codex"] };
@@ -274,4 +285,54 @@ it("does not spellcheck or autocorrect the machine name", async () => {
   expect(name.getAttribute("autocorrect")).toBe("off");
   expect(name.getAttribute("autocapitalize")).toBe("off");
   expect(container.textContent).toContain("loginctl enable-linger");
+});
+
+it("edits a machine's address, saves it first and reconnects through the interactive setup", async () => {
+  machines = [machine];
+  await render();
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Edit Home Mac"]')!.click(),
+  );
+  const address = 'input[placeholder="user@my-mac-mini or an SSH alias"]';
+  expect(container.querySelector<HTMLInputElement>(address)!.value).toBe("me@home");
+  expect(container.textContent).toContain("A hostname works too");
+  await fill(address, "me@10.0.0.9");
+  await act(async () => button("Save and reconnect").click());
+  expect(invoke).toHaveBeenCalledWith("remote_machine_update", {
+    machineId: "machine",
+    name: "Home Mac",
+    target: "me@10.0.0.9",
+    port: null,
+  });
+  expect(invoke).toHaveBeenCalledWith("remote_ssh_reconnect", { machineId: "machine" });
+  const order = vi.mocked(invoke).mock.calls.map(([command]) => command);
+  expect(order.indexOf("remote_machine_update")).toBeLessThan(order.indexOf("remote_ssh_reconnect"));
+  state = { ...state, done: true, error: "Host identity changed" };
+  await poll();
+  expect(container.textContent).toContain("The new address is saved");
+});
+
+it("only renames without reconnecting, and offers the host's name for a raw IP", async () => {
+  machines = [
+    {
+      ...machine,
+      name: "Mini.local",
+      endpoint: "ssh://me@192.168.1.5",
+      ssh: { target: "me@192.168.1.5", remotePort: 3774 },
+    },
+  ];
+  await render();
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>('[aria-label="Edit Mini.local"]')!.click(),
+  );
+  expect(container.textContent).toContain("Use me@Mini.local instead of the IP");
+  await act(async () => button("Use me@Mini.local instead of the IP").click());
+  const address = 'input[placeholder="user@my-mac-mini or an SSH alias"]';
+  expect(container.querySelector<HTMLInputElement>(address)!.value).toBe("me@Mini.local");
+  await fill(address, "me@192.168.1.5");
+  await fill('input[placeholder="Optional, e.g. Home Mac mini"]', "Office");
+  expect(button("Save")).toBeTruthy();
+  await act(async () => button("Save").click());
+  expect(requested("remote_ssh_reconnect")).toBe(false);
+  expect(container.textContent).toContain("was renamed");
 });

@@ -745,4 +745,72 @@ describe("remote host API", () => {
       (await s.call("git.index", { projectId: project.id })).value.result.files,
     ).toEqual([]);
   });
+  it("answers the git.actions commands, advertised as a capability", async () => {
+    const s = await setup();
+    expect((await s.call("environment.describe")).value.result.capabilities).toEqual(
+      expect.arrayContaining(["git.actions", "git.conflicts"]),
+    );
+    const checkout = join(s.directory, "actions");
+    mkdirSync(checkout);
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: checkout, encoding: "utf8" }).trim();
+    git("init", "-q");
+    git("checkout", "-q", "-b", "main");
+    git("config", "user.name", "Test");
+    git("config", "user.email", "test@example.test");
+    git("config", "commit.gpgsign", "false");
+    writeFileSync(join(checkout, "a.txt"), "one\n");
+    git("add", "a.txt");
+    git("commit", "-q", "-m", "first");
+    const head = git("rev-parse", "HEAD");
+    const project = await s.engine.openProject(checkout);
+    const cwd = project.cwd.replace(/\\/g, "/");
+    const run = async (command: string, args: Record<string, unknown> = {}) =>
+      (await s.call("workspace.run", { command, args: { cwd, ...args } })).value;
+
+    expect((await run("git_tags")).result).toEqual([]);
+    expect((await run("git_create_tag", { name: "v1", sha: head })).error).toBeUndefined();
+    expect((await run("git_tags")).result).toEqual(["v1"]);
+    expect((await run("git_operation_status")).result).toEqual({ operation: null, conflicts: [] });
+    expect((await run("git_blame", { relative: "a.txt" })).result).toHaveLength(1);
+    // Nothing is conflicted: the index says so, and there is nothing to compare.
+    expect((await run("git_diff_index")).result).toMatchObject({ conflicts: [], operation: null });
+    expect((await run("git_conflict_stages", { relative: "a.txt" })).error).toContain("no merge conflict");
+    expect((await run("git_reset", { sha: "--hard", mode: "hard" })).error).toBe("Invalid commit");
+    expect((await run("git_blame", { relative: "../a.txt" })).error).toContain("outside");
+
+    // History: the default graph follows HEAD; `all` adds other branches.
+    git("checkout", "-q", "-b", "side");
+    writeFileSync(join(checkout, "b.txt"), "side\n");
+    git("add", "b.txt");
+    git("commit", "-q", "-m", "side work");
+    git("checkout", "-q", "main");
+    const subjects = async (all: boolean) =>
+      (await run("git_history", { all })).result.commits.map((commit: { subject: string }) => commit.subject);
+    expect(await subjects(false)).toEqual(["first"]);
+    expect(await subjects(true)).toEqual(["side work", "first"]);
+
+    // Commit sign-off.
+    writeFileSync(join(checkout, "a.txt"), "two\n");
+    git("add", "a.txt");
+    expect((await run("git_commit", { message: "signed", amend: false, signoff: true })).error).toBeUndefined();
+    expect(git("log", "-1", "--format=%B")).toContain("Signed-off-by: Test <test@example.test>");
+
+    // Only folders of this host's projects are served.
+    const outside = mkdtempSync(join(tmpdir(), "monocode-outside-"));
+    cleanups.push(async () => rmSync(outside, { recursive: true, force: true }));
+    const refused = (
+      await s.call("workspace.run", {
+        command: "git_tags",
+        args: { cwd: outside.replace(/\\/g, "/") },
+      })
+    ).value;
+    expect(refused.error).toContain("outside");
+
+    // Like a branch switch, rewriting history waits for running sessions.
+    await expect(
+      s.engine.withIdleProject(project.id, async () => (await run("git_reset", { sha: head, mode: "soft" })).error),
+    ).resolves.toBe("A branch switch is already in progress");
+    expect((await run("git_reset", { sha: head, mode: "soft" })).error).toBeUndefined();
+  });
 });

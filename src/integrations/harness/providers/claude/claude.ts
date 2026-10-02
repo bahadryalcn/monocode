@@ -28,6 +28,7 @@ import {
   turnMetricsFromResult,
   buildClaudeSpawnArgs,
   buildClaudeUserMessage,
+  claudeInitCommands,
   buildControlRequest,
   buildControlResponse,
   claudeSettingsKey,
@@ -73,7 +74,13 @@ import {
   type ClaudeCliSettings,
   type ClaudeControlRequest,
 } from "./claudeProtocol";
+import {
+  agentFallbackCallId,
+  resolveStopTargets,
+  settledTaskStatus,
+} from "./claudeStopTask";
 import { isAgentToolName } from "../../core/preview";
+import { reportSessionCommands } from "../../core/reportedCommands";
 import { joinStreamText, snapshotRemainder } from "../../core/streamText";
 import {
   questionPromptTitle,
@@ -152,6 +159,9 @@ type Live = {
   backgroundTasks: Map<string, BackgroundTask>;
   /** Rows shown for tasks still running when Claude yielded, by task id. */
   backgroundRows: Map<string, string>;
+  /** Tasks the user asked to stop, and the calls that stand for them. */
+  stoppedTasks: Set<string>;
+  stoppedCalls: Set<string>;
   /** A task finished after Claude yielded; its follow-up turn is on the way. */
   awaitingResume: ReturnType<typeof setTimeout> | null;
   /** Last background list sent to the UI, to skip repeats. */
@@ -191,6 +201,7 @@ const INIT_TIMEOUT_MS = 8_000;
  * is let go anyway. The follow-up turn normally starts within a second or two.
  */
 const RESUME_GRACE_MS = 15_000;
+const STOPPED_DETAIL = "Stopped by you.";
 
 const liveByThread = new Map<string, Live>();
 const resumeByThread = new Map<string, Resume>();
@@ -352,6 +363,36 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
     { type: "message.completed" },
     { type: "reasoning.completed" },
   ]);
+}
+
+/**
+ * Stops one task (`callId` is the call its row stands for) or all of them,
+ * through Claude's own `stop_task` request: the task is killed by Claude, the
+ * turn goes on, and Claude reports the end like any other. Nothing here
+ * touches a process.
+ */
+export async function stopClaudeBackgroundWork(
+  sessionId: string,
+  callId?: string,
+): Promise<void> {
+  const live = liveByThread.get(sessionId);
+  if (!live) return;
+  for (const { taskId, callIds } of resolveStopTargets(live, callId)) {
+    live.stoppedTasks.add(taskId);
+    for (const id of callIds) live.stoppedCalls.add(id);
+    await writeJson(
+      sessionId,
+      buildControlRequest(nextControlId(live), {
+        subtype: "stop_task",
+        task_id: taskId,
+      }),
+    ).catch((error: unknown) => {
+      // Never sent, so the end that follows is not the user's.
+      live.stoppedTasks.delete(taskId);
+      for (const id of callIds) live.stoppedCalls.delete(id);
+      throw error;
+    });
+  }
 }
 
 export async function stopClaudeSession(sessionId: string): Promise<void> {
@@ -570,6 +611,8 @@ function newLiveState(input: {
     agentTasks: new Map(),
     backgroundTasks: new Map(),
     backgroundRows: new Map(),
+    stoppedTasks: new Set(),
+    stoppedCalls: new Set(),
     awaitingResume: null,
     backgroundKey: "",
     taskNotes: [],
@@ -733,6 +776,8 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.agentTasks.clear();
   live.backgroundTasks.clear();
   live.backgroundRows.clear();
+  live.stoppedTasks.clear();
+  live.stoppedCalls.clear();
   clearAwaitingResume(live);
   live.backgroundKey = "";
   live.taskNotes = [];
@@ -832,7 +877,10 @@ function handleLine(sessionId: string, live: Live, line: string): void {
       stringField(rec, "subtype") === "initialized")
   ) {
     markInitialized(live);
-    if (stringField(rec, "subtype") === "init") noteClaudeTurnStarted(live);
+    if (stringField(rec, "subtype") === "init") {
+      reportSessionCommands(sessionId, claudeInitCommands(rec));
+      noteClaudeTurnStarted(live);
+    }
   }
 
   if (type === "control_response") {
@@ -918,9 +966,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentCallFields(tool.name, tool.input),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
     });
@@ -943,9 +989,7 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentCallFields(tool.name, tool.input),
       status: "pending",
       detail: summarizeToolRequest(tool.name, parsed),
       preview: previewFromTool(tool.name, parsed),
@@ -989,9 +1033,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
           callId: streamed.id,
           title: streamed.title,
           kind: toolKindFromName(streamed.name),
-          ...(isAgentToolName(streamed.name) && stringField(use.input, "model")
-            ? { agentModel: stringField(use.input, "model") }
-            : {}),
+          ...agentCallFields(streamed.name, use.input),
           status: isAgentToolName(streamed.name) ? "in_progress" : "pending",
           preview: previewFromTool(streamed.name, use.input),
         });
@@ -1016,9 +1058,7 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      ...(isAgentToolName(tool.name) && stringField(tool.input, "model")
-        ? { agentModel: stringField(tool.input, "model") }
-        : {}),
+      ...agentCallFields(tool.name, tool.input),
       status: isAgentToolName(tool.name) ? "in_progress" : "pending",
       preview: previewFromTool(tool.name, tool.input),
     });
@@ -1058,7 +1098,11 @@ function handleUser(live: Live, rec: Record<string, unknown>): void {
       callId: tool.id,
       title: tool.title,
       kind: toolKindFromName(tool.name),
-      status: result.isError ? "failed" : "completed",
+      status: result.isError
+        ? live.stoppedCalls.has(tool.id)
+          ? "stopped"
+          : "failed"
+        : "completed",
       detail: result.text || undefined,
       preview: previewFromTool(tool.name, tool.input, result.text),
     });
@@ -1411,7 +1455,7 @@ function handleAgentLifecycle(
       completeAgentTask(
         live,
         updated.taskId,
-        updated.status === "completed" ? "completed" : "failed",
+        taskOutcome(live, updated.taskId, updated.status),
         updated.error,
       );
     }
@@ -1426,7 +1470,7 @@ function handleAgentLifecycle(
       completeAgentTask(
         live,
         notice.taskId,
-        notice.status === "completed" ? "completed" : "failed",
+        taskOutcome(live, notice.taskId, notice.status),
         notice.summary || undefined,
       );
     }
@@ -1497,6 +1541,23 @@ function handleToolProgress(live: Live, rec: Record<string, unknown>): void {
       ...(progress.subagentType ? { agentType: progress.subagentType } : {}),
     });
   }
+}
+
+/**
+ * What an Agent/Task call tells the transcript about the run it starts: the
+ * model it asked for, and the prompt it hands the subagent.
+ */
+function agentCallFields(
+  name: string,
+  input: Record<string, unknown>,
+): { agentModel?: string; agentPrompt?: string } {
+  if (!isAgentToolName(name)) return {};
+  const model = stringField(input, "model");
+  const prompt = stringField(input, "prompt");
+  return {
+    ...(model ? { agentModel: model } : {}),
+    ...(prompt ? { agentPrompt: prompt } : {}),
+  };
 }
 
 /**
@@ -1610,7 +1671,10 @@ function noteSubagentResults(
       kind: "tool",
       text: "",
       status: result.isError ? "failed" : "completed",
+      // A failure is shown open and in red from `detail`; a success keeps its
+      // result as bounded `output` for the panel to expand.
       ...(result.isError && result.text ? { detail: result.text } : {}),
+      ...(!result.isError && result.text ? { output: result.text } : {}),
     });
   }
 }
@@ -1645,7 +1709,7 @@ function upsertAgentTool(
   status: string,
   detail?: string,
 ): void {
-  const id = callId ?? `agent:${title}`;
+  const id = callId ?? agentFallbackCallId(title);
   const existing = live.toolsById.get(id);
   if (!existing) {
     live.toolsById.set(id, {
@@ -1689,6 +1753,19 @@ function upsertAgentTool(
   });
 }
 
+/** How a finished task reads in the transcript: done, stopped by you, or failed. */
+function taskOutcome(
+  live: Live,
+  taskId: string,
+  status?: string,
+): "completed" | "stopped" | "failed" {
+  const settled = settledTaskStatus(
+    status ?? "completed",
+    live.stoppedTasks.has(taskId),
+  );
+  return settled === "completed" || settled === "stopped" ? settled : "failed";
+}
+
 function completeAgentTask(
   live: Live,
   taskId: string,
@@ -1703,7 +1780,9 @@ function completeAgentTask(
       task.toolUseId,
       task.description,
       status,
-      detail ?? (status === "failed" ? "Subagent failed." : undefined),
+      status === "stopped"
+        ? STOPPED_DETAIL
+        : (detail ?? (status === "failed" ? "Subagent failed." : undefined)),
     );
   }
   maybeFinishTurn(live);
@@ -1787,11 +1866,13 @@ function settleBackgroundRow(
 ): void {
   const callId = live.backgroundRows.get(taskId);
   if (!callId || live.muteUpdates) return;
+  const outcome = taskOutcome(live, taskId, status);
+  const note = outcome === "stopped" ? STOPPED_DETAIL : detail;
   live.onEvent({
     type: "tool.updated",
     callId,
-    status: status === "completed" ? "completed" : "failed",
-    ...(detail ? { detail } : {}),
+    status: outcome,
+    ...(note ? { detail: note } : {}),
   });
 }
 

@@ -3,6 +3,8 @@ import {
   groupTurns,
   isHiddenTool,
   isNoticeBlock,
+  isStoppedBlock,
+  STOPPED_BY_YOU,
   isSubagentBlock,
   isToolBlock,
   subagentModelName,
@@ -43,12 +45,15 @@ export function isBackgroundOnly(
   return busy && (backgroundTasks?.length ?? 0) > 0 && backgroundAgents === 0;
 }
 
-export type DockAgentStatus = "running" | "done" | "failed";
+/** `stopped` is the user's doing, so it counts as neither done nor failed. */
+export type DockAgentStatus = "running" | "done" | "failed" | "stopped";
 
 /** One delegated run or background command in the latest turn. */
 export type DockAgent = {
   /** The transcript block that owns the row, for jumping to it. */
   blockId: string;
+  /** The provider's id for the call, which is how a stop request finds it. */
+  callId?: string;
   name: string;
   /** Subagents open onto their own trail; commands only have a row. */
   kind: "agent" | "command";
@@ -56,6 +61,9 @@ export type DockAgent = {
   model?: string;
   /** "46 steps, 1 failed", worded exactly as on the transcript row. */
   detail: string;
+  /** Epoch ms the run began and ended; absent on older sessions. */
+  startedAt?: number;
+  endedAt?: number;
 };
 
 export type ActivityDock = {
@@ -70,6 +78,7 @@ export type ActivityDock = {
   running: number;
   finished: number;
   failed: number;
+  stopped: number;
 };
 
 export type ActivityDockInput = {
@@ -99,6 +108,7 @@ export function deriveActivityDock({
   const agents = turn.flatMap((block) => dockAgent(block, busy));
   const running = agents.filter((agent) => agent.status === "running").length;
   const failed = agents.filter((agent) => agent.status === "failed").length;
+  const stopped = agents.filter((agent) => agent.status === "stopped").length;
   const backgroundCount = busy ? (backgroundTasks?.length ?? 0) : 0;
   const startedAt = turn.find((block) => block.role === "user")?.startedAt;
 
@@ -124,8 +134,9 @@ export function deriveActivityDock({
     backgroundAgents: backgroundCount > 0 ? backgroundAgents : undefined,
     agents,
     running,
-    finished: agents.length - running - failed,
+    finished: agents.length - running - failed - stopped,
     failed,
+    stopped,
   };
 }
 
@@ -136,8 +147,9 @@ function dockAgent(block: Block, busy: boolean): DockAgent[] {
   const state = toolCallState(block);
   // A call still marked in flight once the session is idle is a leftover of an
   // interrupted turn, not something running.
-  const status: DockAgentStatus =
-    state === "rejected"
+  const status: DockAgentStatus = isStoppedBlock(block)
+    ? "stopped"
+    : state === "rejected"
       ? "failed"
       : state === "pending" && busy
         ? "running"
@@ -145,13 +157,22 @@ function dockAgent(block: Block, busy: boolean): DockAgent[] {
   return [
     {
       blockId: block.id,
+      ...(block.tool?.callId ? { callId: block.tool.callId } : {}),
       name: agent ? subagentName(block) : toolCallLabel(block),
       kind: agent ? "agent" : "command",
       status,
       model: agent ? subagentModelName(block) : undefined,
       detail: agent
         ? subagentStatusLine(block, block.agentRun?.steps ?? [])
-        : "",
+        : isStoppedBlock(block)
+          ? STOPPED_BY_YOU
+          : "",
+      ...(agent && block.agentRun?.startedAt !== undefined
+        ? { startedAt: block.agentRun.startedAt }
+        : {}),
+      ...(agent && block.agentRun?.endedAt !== undefined
+        ? { endedAt: block.agentRun.endedAt }
+        : {}),
     },
   ];
 }
@@ -176,6 +197,7 @@ export function dockCountLabel(dock: ActivityDock): string {
     dock.running ? `${dock.running} running` : "",
     dock.finished ? `${dock.finished} done` : "",
     dock.failed ? `${dock.failed} failed` : "",
+    dock.stopped ? `${dock.stopped} stopped` : "",
   ]
     .filter(Boolean)
     .join(" · ");

@@ -189,6 +189,11 @@ describe("Codex requests reach the chat and notifications", () => {
       "Source",
     );
     expect(sent.some((m) => m.id === 91)).toBe(false);
+    await vi.waitFor(() =>
+      expect(
+        invoke.mock.calls.some(([command]) => command === "show_notification"),
+      ).toBe(true),
+    );
     expect(invoke).toHaveBeenCalledWith(
       "show_notification",
       expect.objectContaining({ sessionId: session.id, body: "Source" }),
@@ -227,6 +232,11 @@ describe("Codex requests reach the chat and notifications", () => {
     );
     expect(container.textContent).toContain("Allow");
     expect(document.querySelector(".approval-toast")).not.toBeNull();
+    await vi.waitFor(() =>
+      expect(
+        invoke.mock.calls.some(([command]) => command === "show_notification"),
+      ).toBe(true),
+    );
     expect(invoke).toHaveBeenCalledWith(
       "show_notification",
       expect.objectContaining({
@@ -270,6 +280,11 @@ describe("Codex requests reach the chat and notifications", () => {
       );
       expect(container.textContent).toContain("Read this source?");
       expect(sent.some((m) => m.id === 91)).toBe(false);
+      await vi.waitFor(() =>
+        expect(
+          invoke.mock.calls.some(([command]) => command === "show_notification"),
+        ).toBe(true),
+      );
       expect(invoke).toHaveBeenCalledWith(
         "show_notification",
         expect.objectContaining({

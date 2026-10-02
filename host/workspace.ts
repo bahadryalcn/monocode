@@ -17,6 +17,11 @@ import type {
   GitDiffIndex,
   GitFileDiff,
 } from "../src/platform/tauri/fs";
+import {
+  hostOperationState,
+  hostUnmerged,
+  unmergedMessage,
+} from "./git-conflicts";
 import type {
   ProjectSearchMatch,
   ProjectSearchResult,
@@ -519,6 +524,9 @@ export async function createHostPath(
   return relative(root, path).split(sep).join("/");
 }
 
+/** `git status` codes for unmerged paths: UU, AA, DD, AU, UA, DU, UD. */
+const UNMERGED_CODES: ReadonlySet<string> = new Set(["UU", "AA", "DD", "AU", "UA", "DU", "UD"]);
+
 function statusName(code: string): string {
   if (code === "??") return "untracked";
   if (code.includes("D")) return "deleted";
@@ -549,6 +557,8 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
       behind: 0,
       aheadOfDefault: 0,
       headPushed: false,
+      conflicts: [],
+      operation: null,
     };
   }
   const [
@@ -560,6 +570,8 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
     upstreamText,
     countsText,
     defaultText,
+    conflicts,
+    operation,
   ] = await Promise.all([
     git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => ""),
     git(root, ["rev-parse", "--verify", "HEAD"]).catch(() => ""),
@@ -591,6 +603,8 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
       "--short",
       "refs/remotes/origin/HEAD",
     ]).catch(() => ""),
+    hostUnmerged(root),
+    hostOperationState(root),
   ]);
   let [behind, ahead] = countsText.trim().split(/\s+/).map(Number);
   let defaultBranch = defaultText.trim().replace(/^origin\//, "");
@@ -647,6 +661,8 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
     const code = item.slice(0, 2);
     const path = item.slice(3);
     if (code.includes("R") || code.includes("C")) index++;
+    // Unmerged paths are listed under `conflicts`, not as ordinary changes.
+    if (UNMERGED_CODES.has(code)) continue;
     const count = counts.get(path) ?? { additions: 0, deletions: 0 };
     if (code === "??") {
       try {
@@ -685,6 +701,8 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
     behind: behind || 0,
     aheadOfDefault,
     headPushed,
+    conflicts,
+    operation,
   };
 }
 
@@ -790,9 +808,25 @@ export async function hostGitAction(
       );
       return;
     }
-    case "stageAll":
-      await git(root, ["add", "-A", "--", "."]);
+    case "stageAll": {
+      // Staging conflicted files would mark them resolved with their markers
+      // still in, and pathspec excludes do not hold back unmerged paths: with
+      // conflicts, name the other files instead.
+      if (!(await hostUnmerged(root)).length) {
+        await git(root, ["add", "-A", "--", "."]);
+        return;
+      }
+      const others = (await hostGitIndex(root)).files.map((file) => file.relative);
+      for (let start = 0; start < others.length; ) {
+        let end = start;
+        let length = 0;
+        while (end < others.length && (end === start || length + others[end].length < 16_000))
+          length += others[end++].length + 1;
+        await git(root, ["--literal-pathspecs", "add", "-A", "--", ...others.slice(start, end)]);
+        start = end;
+      }
       return;
+    }
     case "unstageAll":
       await git(root, ["reset", "-q", "--", "."]);
       return;
@@ -818,6 +852,8 @@ export async function hostGitAction(
         message.length > 100_000
       )
         throw new Error("Enter a commit message");
+      const unresolved = await hostUnmerged(root);
+      if (unresolved.length) throw new Error(unmergedMessage(unresolved));
       await git(root, ["commit", "-m", message], 1024 * 1024);
       return;
     }

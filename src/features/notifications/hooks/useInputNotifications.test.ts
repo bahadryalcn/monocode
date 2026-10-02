@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   probeNotificationPermission,
   saveNotificationsEnabled,
+  setNotificationBatchDelay,
   setWindowFocused,
 } from "../model/notifications";
 import { newSession, type Session } from "../../sessions/model/session";
@@ -65,6 +66,10 @@ describe("input notification delivery", () => {
         ),
       ),
     );
+    // The batcher delivers on a timer, even with a zero delay.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
   }
 
   beforeEach(async () => {
@@ -79,6 +84,7 @@ describe("input notification delivery", () => {
     invoke.mockClear();
     saveNotificationsEnabled(true);
     setWindowFocused(false);
+    setNotificationBatchDelay(0);
     await probeNotificationPermission();
     container = document.createElement("div");
     document.body.append(container);
@@ -137,13 +143,14 @@ describe("input notification delivery", () => {
       pendingQuestion: question(1, "Choose a branch"),
     };
     await render([session, other]);
-    expect(banners()).toHaveLength(2);
+    // Two sessions asking in the same burst leave as one coalesced banner.
+    expect(banners()).toHaveLength(1);
     await render([{ ...session, blocks: [] }, other]);
-    expect(banners()).toEqual([
-      { sessionId: "first", body: "Approve: Read source" },
-      { sessionId: "other", body: "Choose a branch" },
-      { sessionId: "first", body: "Choose a source" },
-    ]);
+    expect(banners()).toHaveLength(2);
+    expect(banners()[1]).toEqual({
+      sessionId: "first",
+      body: "Choose a source",
+    });
   });
 
   it("describes a new question while an approval remains pending", async () => {

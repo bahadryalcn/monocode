@@ -4,8 +4,13 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   isEditingQueuedHead,
+  moveQueuedMessage,
   queuedHead,
   queuedMessageForSubmit,
+  reorderQueuedMessages,
+  reorderSessionQueue,
+  resolveFollowUpRoute,
+  sentQueuedMessage,
 } from "./messageQueue";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
@@ -140,5 +145,177 @@ describe("queuedMessageForSubmit", () => {
       queuedMessageForSubmit(chat({ queueStatus: "paused" }), "a", "steer")?.id,
     ).toBe("a");
     expect(queuedMessageForSubmit(chat(), "missing", "steer")).toBeUndefined();
+  });
+});
+
+describe("resolveFollowUpRoute", () => {
+  const base = {
+    busy: true,
+    intent: "default" as const,
+    operatorCommand: false,
+    backgroundTaskCount: 0,
+    backgroundOnly: false,
+    setting: "steer" as const,
+  };
+
+  it("dispatches when the session is idle, whatever else is set", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, busy: false, requested: "queue" }),
+    ).toBe("dispatch");
+    expect(
+      resolveFollowUpRoute({ ...base, busy: false, setting: "queue" }),
+    ).toBe("dispatch");
+  });
+
+  it("follows the global setting while busy", () => {
+    expect(resolveFollowUpRoute({ ...base, setting: "steer" })).toBe("steer");
+    expect(resolveFollowUpRoute({ ...base, setting: "queue" })).toBe("queue");
+  });
+
+  it("lets an explicit request override the setting either way", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, setting: "steer", requested: "queue" }),
+    ).toBe("queue");
+    expect(
+      resolveFollowUpRoute({ ...base, setting: "queue", requested: "steer" }),
+    ).toBe("steer");
+  });
+
+  it("always queues while a worktree prepares and for plan, orchestrate and operator", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, worktreePreparing: true, requested: "steer" }),
+    ).toBe("queue");
+    expect(
+      resolveFollowUpRoute({ ...base, intent: "plan", requested: "steer" }),
+    ).toBe("queue");
+    expect(
+      resolveFollowUpRoute({ ...base, intent: "orchestrate" }),
+    ).toBe("queue");
+    expect(
+      resolveFollowUpRoute({ ...base, operatorCommand: true, requested: "steer" }),
+    ).toBe("queue");
+  });
+
+  it("steers when background tasks are open and nothing asked for a queue", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, setting: "queue", backgroundTaskCount: 1 }),
+    ).toBe("steer");
+    expect(
+      resolveFollowUpRoute({ ...base, setting: "steer", backgroundTaskCount: 2, backgroundOnly: true }),
+    ).toBe("steer");
+  });
+
+  it("honours an explicit queue beside a background task while the agent is still working", () => {
+    expect(
+      resolveFollowUpRoute({ ...base, backgroundTaskCount: 1, requested: "queue" }),
+    ).toBe("queue");
+  });
+
+  it("never parks an explicit queue behind background-only work", () => {
+    expect(
+      resolveFollowUpRoute({
+        ...base,
+        backgroundTaskCount: 1,
+        backgroundOnly: true,
+        requested: "queue",
+      }),
+    ).toBe("steer");
+  });
+});
+
+describe("restored queue", () => {
+  const gone = { id: "f1", name: "a.png", mimeType: "image/png", kind: "image" as const, size: 1, missing: true };
+
+  it("waits for the user instead of draining an idle session", () => {
+    expect(canDispatchQueuedHead(chat({ queueStatus: "restored" }))).toBe(false);
+  });
+
+  it("holds a head whose attachment is gone, for dispatch and steer alike", () => {
+    const session = chat({
+      queuedMessages: [{ ...queued("a", "see [image1]"), attachments: [gone] }, queued("b")],
+    });
+    expect(canDispatchQueuedHead(session)).toBe(false);
+    expect(queuedMessageForSubmit(session, "a", "steer")).toBeUndefined();
+    expect(queuedMessageForSubmit(session, "b", "steer")?.id).toBe("b");
+  });
+
+  it("goes back to draining once a row is sent from it", () => {
+    const sent = sentQueuedMessage(chat({ queueStatus: "restored" }), "a");
+    expect(sent.queueStatus).toBe("active");
+    expect(sent.queuedMessages?.map((message) => message.id)).toEqual(["b"]);
+    expect(canDispatchQueuedHead(sent)).toBe(true);
+  });
+
+  it("does not wake a paused queue when a row is sent", () => {
+    expect(sentQueuedMessage(chat({ queueStatus: "paused" }), "a").queueStatus).toBe("paused");
+  });
+
+  it("removing a restored row keeps the queue waiting", () => {
+    expect(dequeueQueuedMessage(chat({ queueStatus: "restored" }), "a").queueStatus).toBe("restored");
+  });
+});
+
+describe("reordering the queue", () => {
+  const ids = (queue: QueuedMessage[]) => queue.map((message) => message.id);
+  const three = [queued("a"), queued("b"), queued("c")];
+  const gone = { id: "f1", name: "a.png", mimeType: "image/png", kind: "image" as const, size: 1, missing: true };
+
+  it("moves a row to an index and clamps to the queue", () => {
+    expect(ids(moveQueuedMessage(three, "c", 0))).toEqual(["c", "a", "b"]);
+    expect(ids(moveQueuedMessage(three, "a", 1))).toEqual(["b", "a", "c"]);
+    expect(ids(moveQueuedMessage(three, "a", 99))).toEqual(["b", "c", "a"]);
+    expect(ids(moveQueuedMessage(three, "c", -4))).toEqual(["c", "a", "b"]);
+  });
+
+  it("returns the same queue when nothing moves (keyboard bounds, unknown row)", () => {
+    expect(moveQueuedMessage(three, "a", -1)).toBe(three);
+    expect(moveQueuedMessage(three, "c", 3)).toBe(three);
+    expect(moveQueuedMessage(three, "b", 1)).toBe(three);
+    expect(moveQueuedMessage(three, "zz", 0)).toBe(three);
+  });
+
+  it("reorders by ids against the live queue", () => {
+    expect(ids(reorderQueuedMessages(three, ["c", "b", "a"]))).toEqual(["c", "b", "a"]);
+    expect(reorderQueuedMessages(three, ["a", "b", "c"])).toBe(three);
+  });
+
+  it("ignores ids that left the queue and keeps rows added since the drag began", () => {
+    // The drag saw [a, b, c]; "b" was sent and "d" was added before the drop.
+    const live = [queued("a"), queued("c"), queued("d")];
+    expect(ids(reorderQueuedMessages(live, ["c", "b", "a"]))).toEqual(["c", "a", "d"]);
+    expect(ids(reorderQueuedMessages(live, ["x"]))).toEqual(["a", "c", "d"]);
+  });
+
+  it("changes order only: status, edited row and attachments stay as they were", () => {
+    const session = chat({
+      queuedMessages: [{ ...queued("a"), attachments: [gone] }, queued("b")],
+      queueStatus: "restored",
+      editingQueuedMessageId: "a",
+    });
+    const next = reorderSessionQueue(session, ["b", "a"]);
+    expect(ids(next.queuedMessages!)).toEqual(["b", "a"]);
+    expect(next.queueStatus).toBe("restored");
+    expect(next.editingQueuedMessageId).toBe("a");
+    expect(next.queuedMessages![1]).toBe(session.queuedMessages![0]);
+    expect(canDispatchQueuedHead(next)).toBe(false);
+    expect(reorderSessionQueue(session, ["a", "b"])).toBe(session);
+  });
+
+  it("does not start a paused queue, and the new head is what drains", () => {
+    const paused = reorderSessionQueue(chat({ queueStatus: "paused" }), ["b", "a"]);
+    expect(paused.queueStatus).toBe("paused");
+    expect(canDispatchQueuedHead(paused)).toBe(false);
+    const active = reorderSessionQueue(chat({ queueStatus: "active" }), ["b", "a"]);
+    expect(queuedHead(active)?.id).toBe("b");
+    expect(queuedMessageForSubmit(active, "a", "dispatch")).toBeUndefined();
+    expect(queuedMessageForSubmit(active, "b", "dispatch")?.id).toBe("b");
+  });
+
+  it("holds by id: the edit hold follows the edited row, not the head position", () => {
+    const editing = chat({ editingQueuedMessageId: "a" });
+    expect(isEditingQueuedHead(editing)).toBe(true);
+    const moved = reorderSessionQueue(editing, ["b", "a"]);
+    expect(isEditingQueuedHead(moved)).toBe(false);
+    expect(isEditingQueuedHead(reorderSessionQueue(moved, ["a", "b"]))).toBe(true);
   });
 });

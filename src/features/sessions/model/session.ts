@@ -84,8 +84,13 @@ export type ComposerTurnOptions = {
   resendEdited?: boolean;
   /** Restore an edited prompt when the resend rejects asynchronously. */
   onResendRejected?: (recovery: EditedResendRejection) => void;
+  /** Put the message back in the composer when the host could not take it after
+   * the composer let it go. Returns whether it was restored. */
+  onSendRejected?: () => boolean;
   /** Promote an existing unsent transcript block instead of appending a turn. */
   draftBlockId?: string;
+  /** Queue this message behind a running turn instead of following the follow-up setting. */
+  followUpBehavior?: "queue" | "steer";
 };
 
 export type PlanStatus = "streaming" | "ready" | "building" | "built";
@@ -207,8 +212,13 @@ export type AgentStep = {
   text: string;
   toolKind?: string;
   status?: string;
+  /** Failure text only; a failed step is shown open and in red. */
   detail?: string;
   preview?: ToolPreview;
+  /** What a successful call returned, bounded; absent on older sessions. */
+  output?: string;
+  /** Part of the output was cut or dropped to stay within the size limits. */
+  outputTruncated?: boolean;
 };
 
 /**
@@ -223,7 +233,13 @@ export type AgentRunMeta = {
   agentType?: string;
   /** Model reported for the child, which may differ from its parent. */
   model?: string;
+  /** What the subagent was asked to do, bounded. Absent when the provider does not expose it. */
+  prompt?: string;
   steps: AgentStep[];
+  /** Epoch ms the run's tool block was created. Absent on older sessions. */
+  startedAt?: number;
+  /** Epoch ms the run reached a terminal state. Absent while running, and on runs that never recorded one. */
+  endedAt?: number;
 };
 
 export type AttachmentKind = "image" | "audio" | "file";
@@ -250,6 +266,8 @@ export type Attachment = {
   data?: string;
   /** Object URL for in-session thumbnails. Not persisted. */
   previewUrl?: string;
+  /** Restored from a saved queue, and the file (or pasted data) is gone. */
+  missing?: boolean;
 };
 
 export type QueuedMessage = {
@@ -261,7 +279,11 @@ export type QueuedMessage = {
   intent?: TurnIntent;
 };
 
-export type MessageQueueStatus = "active" | "paused" | "resuming";
+/**
+ * "restored": the queue came back from disk after a restart. It waits for the
+ * user (Send next / Steer) instead of draining into a session nobody is watching.
+ */
+export type MessageQueueStatus = "active" | "paused" | "resuming" | "restored";
 
 /** The provider stopped the last turn at a usage limit. */
 export type UsageLimit = {
@@ -320,6 +342,13 @@ export type Block = {
     status?: string;
     detail?: string;
     preview?: ToolPreview;
+    /**
+     * A subagent step's result, for the panel to expand. Set only on the blocks
+     * `agentStepBlock` builds from an `AgentStep`; a transcript block's own
+     * result is `detail`.
+     */
+    output?: string;
+    outputTruncated?: boolean;
     /** Left running by the agent when it yielded; the turn waits on it. */
     background?: boolean;
   };
@@ -421,7 +450,7 @@ export type Session = {
    * Undefined when the provider cannot tell them apart. In-memory only.
    */
   backgroundAgents?: number;
-  /** Follow-ups waiting for current turn. In-memory only. */
+  /** Follow-ups waiting for current turn. Written through to the session store. */
   queuedMessages?: QueuedMessage[];
   /** Paused after user stops current turn; resuming waits for continued turn. */
   queueStatus?: MessageQueueStatus;
@@ -525,11 +554,74 @@ export function harnessSupportsAttachments(id: HarnessId): boolean {
   return !attachmentless.has(id);
 }
 
+/**
+ * What a harness's active transport cannot do, with the short reason the
+ * pickers show. Learned from the binary (Antigravity's Windows stream-json
+ * transport), not from the platform, so it follows whichever transport Rust
+ * reports.
+ */
+export type HarnessModeLimits = {
+  /** Access modes the transport cannot honour. */
+  runtimeModes?: Partial<Record<RuntimeMode, string>>;
+  /** Why plan turns cannot run, when they cannot. */
+  plan?: string;
+  /** Where a new session starts when it asked for a mode listed above. */
+  newSessionMode?: RuntimeMode;
+};
+
+const modeLimits = new Map<HarnessId, HarnessModeLimits>();
+
+export function setHarnessModeLimits(
+  id: HarnessId,
+  limits: HarnessModeLimits | undefined,
+): void {
+  if (limits) modeLimits.set(id, limits);
+  else modeLimits.delete(id);
+}
+
+/** Why this harness cannot run in `mode`, or undefined when it can. */
+export function runtimeModeUnavailableReason(
+  id: HarnessId,
+  mode: RuntimeMode,
+): string | undefined {
+  return modeLimits.get(id)?.runtimeModes?.[mode];
+}
+
+/** The harness's unavailable modes as one map for a picker, or undefined. */
+export function unavailableRuntimeModes(
+  id: HarnessId,
+): Partial<Record<RuntimeMode, string>> | undefined {
+  return modeLimits.get(id)?.runtimeModes;
+}
+
+export function planUnavailableReason(id: HarnessId): string | undefined {
+  return modeLimits.get(id)?.plan;
+}
+
+/**
+ * The access mode a brand-new session on this harness starts in: the one asked
+ * for (usually inherited from the session it was opened from), unless the
+ * transport cannot honour it. Then it is the transport's declared
+ * `newSessionMode`, and only that: no other mode is guessed at, so nothing is
+ * silently made more permissive than the transport itself says. Existing
+ * sessions are never routed through here, so a saved mode is never rewritten.
+ */
+export function runtimeModeForNewSession(
+  id: HarnessId,
+  requested: RuntimeMode = DEFAULT_RUNTIME_MODE,
+): RuntimeMode {
+  if (!runtimeModeUnavailableReason(id, requested)) return requested;
+  const fallback = modeLimits.get(id)?.newSessionMode;
+  return fallback && !runtimeModeUnavailableReason(id, fallback)
+    ? fallback
+    : requested;
+}
+
 export function newSession(
   harness: HarnessId = "claude",
   cwd = "~",
   model?: string,
-  runtimeMode: RuntimeMode = DEFAULT_RUNTIME_MODE,
+  runtimeMode?: RuntimeMode,
   modelSettings?: Record<string, string>,
 ): Session {
   const resolved = resolveModel(harness, model ?? preferredModelId(harness));
@@ -538,7 +630,9 @@ export function newSession(
     harness,
     model: resolved.id,
     modelSettings: preferredModelSettings(resolved, modelSettings),
-    runtimeMode,
+    // An explicit mode is kept as given (a restored or forked session); only a
+    // session started with no mode picks its harness's default.
+    runtimeMode: runtimeMode ?? runtimeModeForNewSession(harness),
     title: HARNESS_LABEL[harness],
     cwd,
     blocks: [],
@@ -551,7 +645,12 @@ export function newDefaultSession(
   runtimeMode: RuntimeMode = DEFAULT_RUNTIME_MODE,
 ): Session {
   const choice = defaultSessionChoice(cwd);
-  return newSession(choice.harness, cwd, choice.model, runtimeMode);
+  return newSession(
+    choice.harness,
+    cwd,
+    choice.model,
+    runtimeModeForNewSession(choice.harness, runtimeMode),
+  );
 }
 
 /**
@@ -595,7 +694,7 @@ export function newSessionForProject(
     harness,
     cwd,
     model,
-    seed?.runtimeMode,
+    runtimeModeForNewSession(harness, seed?.runtimeMode),
     carriesSeed ? seed?.modelSettings : undefined,
   );
 }
@@ -637,11 +736,12 @@ export function newSessionLike(
   seed: Session | undefined,
   cwd: string,
 ): Session {
+  const harness = seed?.harness ?? "claude";
   return newSession(
-    seed?.harness ?? "claude",
+    harness,
     cwd,
     seed?.model,
-    seed?.runtimeMode,
+    runtimeModeForNewSession(harness, seed?.runtimeMode),
     seed?.modelSettings,
   );
 }

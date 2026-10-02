@@ -5,6 +5,7 @@ import {
 } from "./claudeCatalog";
 import {
   applyClaudePromptEffortPrefix,
+  claudeInitCommands,
   applyClaudeTaskTool,
   askUserQuestionAllowInput,
   buildClaudeSpawnArgs,
@@ -81,6 +82,31 @@ describe("normalizeClaudeCliEffort", () => {
 
   it("maps max to high on sonnet 4.6", () => {
     expect(normalizeClaudeCliEffort("max", "claude-sonnet-4-6")).toBe("high");
+  });
+});
+
+describe("Claude slash commands", () => {
+  it("keeps a leading /command first when ultrathink is on", () => {
+    expect(
+      applyClaudePromptEffortPrefix("/goal tests pass", "ultrathink"),
+    ).toBe("/goal tests pass");
+    expect(
+      applyClaudePromptEffortPrefix("/Users/me/file.ts", "ultrathink"),
+    ).toBe("Ultrathink:\n/Users/me/file.ts");
+  });
+
+  it("reads the commands and skills the init message lists", () => {
+    expect(
+      claudeInitCommands({
+        slash_commands: ["goal", "pdf", "init"],
+        skills: ["pdf", 4],
+      }),
+    ).toEqual([
+      { name: "goal", kind: "command" },
+      { name: "pdf", kind: "skill" },
+      { name: "init", kind: "command" },
+    ]);
+    expect(claudeInitCommands({})).toEqual([]);
   });
 });
 

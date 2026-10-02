@@ -15,11 +15,18 @@ import {
 import { displayPath } from "../../../shared/lib/paths";
 import {
   composeToolTitle,
+  isAgentTool,
   isFileTool,
   isWeakToolTitle,
   mergeToolPreview,
   stubFilePreview,
 } from "./preview";
+import {
+  AGENT_PROMPT_CHARS,
+  budgetStepOutputs,
+  capHeadTail,
+  capStepOutput,
+} from "../../../features/sessions/model/agentOutput";
 import { joinStreamText } from "./streamText";
 import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
@@ -87,6 +94,7 @@ export function applyHarnessEvent(
         preview: event.preview,
         streaming: true,
         agentModel: event.agentModel,
+        agentPrompt: event.agentPrompt,
         ...(event.background ? { background: true } : {}),
       });
     case "tool.updated":
@@ -97,8 +105,12 @@ export function applyHarnessEvent(
         status: event.status,
         detail: event.detail,
         preview: event.preview,
-        streaming: event.status !== "completed" && event.status !== "failed",
+        streaming:
+          event.status !== "completed" &&
+          event.status !== "failed" &&
+          event.status !== "stopped",
         agentModel: event.agentModel,
+        agentPrompt: event.agentPrompt,
       });
     case "agent.step":
       return recordAgentStep(session, event);
@@ -540,7 +552,14 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     ...settled,
     busy: false,
     pendingQuestion: undefined,
-    blocks: stampTurnDuration(settled.blocks.map(stopBlockProgress), endedAt),
+    blocks: stampTurnDuration(
+      settled.blocks.map((block) =>
+        stopBlockProgress(
+          block.streaming ? endOpenAgentRun(block, endedAt) : block,
+        ),
+      ),
+      endedAt,
+    ),
   };
 }
 
@@ -562,6 +581,7 @@ function settlePendingApprovals(session: Session): Session {
       status === "success" ||
       status === "failed" ||
       status === "error" ||
+      status === "stopped" ||
       status === "cancelled" ||
       status === "canceled";
     return [
@@ -604,7 +624,7 @@ function failStreaming(session: Session): Session {
       const pendingApproval = !!block.approval && !block.approval.decided;
       if (!open && !pendingApproval) return block;
       return {
-        ...block,
+        ...(open ? endOpenAgentRun(block, Date.now()) : block),
         streaming: false,
         ...(block.tool && open
           ? { tool: { ...block.tool, status: "failed" } }
@@ -920,10 +940,12 @@ function upsertTool(
     preview?: ToolPreview;
     streaming: boolean;
     agentModel?: string;
+    agentPrompt?: string;
     background?: boolean;
   },
 ): Session {
   const index = findToolIndex(session, patch);
+  const prompt = capAgentPrompt(patch.agentPrompt);
   if (index < 0) {
     const detail = capToolDetail(patch.detail);
     const preview = fillPreview(patch.preview, detail, patch.kind, patch.title);
@@ -938,8 +960,16 @@ function upsertTool(
       role: "tool",
       text: label,
       streaming: patch.streaming,
-      ...(patch.agentModel
-        ? { agentRun: { name: label, model: patch.agentModel, steps: [] } }
+      ...(patch.agentModel || isAgentTool(patch.kind, label)
+        ? {
+            agentRun: {
+              name: label,
+              ...(patch.agentModel ? { model: patch.agentModel } : {}),
+              ...(prompt ? { prompt } : {}),
+              steps: [],
+              startedAt: Date.now(),
+            },
+          }
         : {}),
       tool: {
         callId: patch.callId,
@@ -977,7 +1007,9 @@ function upsertTool(
     prev.tool?.status === status &&
     prev.tool?.detail === detail &&
     (!patch.agentModel || prev.agentRun?.model === patch.agentModel) &&
+    (!prompt || prev.agentRun?.prompt === prompt) &&
     (!prev.agentRun || prev.agentRun.name === agentName) &&
+    !endsAgentRun(prev.agentRun, patch.streaming) &&
     samePreview(prev.tool?.preview, preview)
   ) {
     return session;
@@ -994,6 +1026,10 @@ function upsertTool(
             ...prev.agentRun,
             name: agentName,
             ...(patch.agentModel ? { model: patch.agentModel } : {}),
+            ...(prompt ? { prompt } : {}),
+            ...(endsAgentRun(prev.agentRun, patch.streaming)
+              ? { endedAt: Date.now() }
+              : {}),
           },
         }
       : {}),
@@ -1008,6 +1044,21 @@ function upsertTool(
     },
   };
   return { ...session, blocks };
+}
+
+/**
+ * True when this update is the one that finishes a run that has not been
+ * stamped as ended yet. `startedAt` is only ever set when the block is created;
+ * `endedAt` is set once and never overwritten by later updates.
+ */
+function endsAgentRun(run: AgentRunMeta | undefined, streaming: boolean) {
+  return !!run && !streaming && run.endedAt === undefined;
+}
+
+/** Stamps `endedAt` on runs a turn is closing out, leaving ended ones alone. */
+function endOpenAgentRun(block: Block, at: number): Block {
+  if (!block.agentRun || block.agentRun.endedAt !== undefined) return block;
+  return { ...block, agentRun: { ...block.agentRun, endedAt: at } };
 }
 
 const MAX_TOOL_DETAIL_CHARS = 8_000;
@@ -1085,6 +1136,14 @@ function recordAgentStep(
 
   const run = prev.agentRun;
   const detail = capToolDetail(event.detail);
+  // A preview's own output (Cursor reports results there) is the same thing
+  // as the step's output; keeping it in one place stops it being stored twice.
+  const previewOutput = event.preview?.output;
+  const preview =
+    event.preview && previewOutput !== undefined
+      ? { ...event.preview, output: undefined }
+      : event.preview;
+  const output = capStepOutput(event.output ?? previewOutput);
   const step: AgentStep = {
     id: event.stepId,
     kind: event.kind,
@@ -1092,7 +1151,9 @@ function recordAgentStep(
     ...(event.toolKind ? { toolKind: event.toolKind } : {}),
     ...(event.status ? { status: event.status } : {}),
     ...(detail ? { detail } : {}),
-    ...(event.preview ? { preview: event.preview } : {}),
+    ...(preview ? { preview } : {}),
+    ...(output ? { output: output.output } : {}),
+    ...(output?.truncated ? { outputTruncated: true } : {}),
   };
 
   const at = run?.steps.findIndex((entry) => entry.id === event.stepId) ?? -1;
@@ -1106,7 +1167,7 @@ function recordAgentStep(
       // A completion carries the result, not the request: keep the label the
       // call announced itself with rather than letting the result rename it.
       text: text || existing.text,
-      preview: mergeToolPreview(event.preview, existing.preview),
+      preview: mergeToolPreview(preview, existing.preview),
     };
   } else {
     steps = [...(run?.steps ?? []), step];
@@ -1114,6 +1175,7 @@ function recordAgentStep(
       steps = steps.slice(steps.length - MAX_AGENT_STEPS);
     }
   }
+  if (output) steps = budgetStepOutputs(steps);
 
   const next: AgentRunMeta = {
     ...(run?.model ? { model: run.model } : {}),
@@ -1126,7 +1188,10 @@ function recordAgentStep(
     ...((event.agentType ?? run?.agentType)
       ? { agentType: event.agentType ?? run?.agentType }
       : {}),
+    ...(run?.prompt ? { prompt: run.prompt } : {}),
     steps,
+    ...(run?.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
+    ...(run?.endedAt !== undefined ? { endedAt: run.endedAt } : {}),
   };
   if (run && sameAgentRun(run, next)) return session;
   const blocks = session.blocks.slice();
@@ -1137,6 +1202,7 @@ function recordAgentStep(
 function sameAgentRun(a: AgentRunMeta, b: AgentRunMeta): boolean {
   if (a.name !== b.name || a.agentType !== b.agentType || a.model !== b.model)
     return false;
+  if (a.startedAt !== b.startedAt || a.endedAt !== b.endedAt) return false;
   if (a.steps.length !== b.steps.length) return false;
   return a.steps.every((step, index) => sameAgentStep(step, b.steps[index]));
 }
@@ -1149,8 +1215,15 @@ function sameAgentStep(a: AgentStep, b: AgentStep): boolean {
     a.toolKind === b.toolKind &&
     a.status === b.status &&
     a.detail === b.detail &&
+    a.output === b.output &&
+    a.outputTruncated === b.outputTruncated &&
     samePreview(a.preview, b.preview)
   );
+}
+
+function capAgentPrompt(value: string | undefined): string | undefined {
+  const text = value?.trim();
+  return text ? capHeadTail(text, AGENT_PROMPT_CHARS).text : undefined;
 }
 
 function capAgentStepText(value: string): string {

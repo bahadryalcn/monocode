@@ -6,6 +6,12 @@ import {
   DIFF_CONFIG,
   diffLineStats,
   navigableChunkPositions,
+  PLUS_SVG,
+  revertChunkIn,
+  stageChunkIn,
+  UNDO_SVG,
+  widgetPos,
+  type GitStageHandler,
 } from "./editorGit";
 
 const REMOVED = "#f87171";
@@ -53,8 +59,15 @@ export function createSplitDiff(options: {
   extensions: Extension;
   /** Extensions for the left pane, on top of its read-only setup. */
   originalExtensions: Extension;
+  /**
+   * Stages new index contents (LF, like the documents; the handler restores
+   * the file's line endings). Read when a hunk is staged, so it can change
+   * without rebuilding the view; undefined hides the stage control.
+   */
+  stage?: () => GitStageHandler | undefined;
 }): MergeView {
-  const split = new MergeView({
+  // `renderRevertControl` runs after construction, so `split` is set by then.
+  const split: MergeView = new MergeView({
     a: {
       doc: options.original,
       extensions: [
@@ -74,7 +87,18 @@ export function createSplitDiff(options: {
     },
     diffConfig: DIFF_CONFIG,
     parent: options.parent,
+    // One small control per hunk in the gutter between the panes. The merge
+    // package would revert on mousedown by itself; these stop that and go
+    // through editorGit instead, so the result matches the inline layout.
+    revertControls: "a-to-b",
+    renderRevertControl: () =>
+      hunkControl((action, index) => {
+        if (action === "revert") revertSplitChunk(split, index);
+        // The editor's stage handler already reports failures.
+        else void stageSplitChunk(split, index, options.stage?.()).catch(() => {});
+      }),
   });
+  setSplitCanStage(split, options.stage?.() !== undefined);
   split.dom.style.height = "100%";
   split.dom.style.overscrollBehavior = "none";
   const afterPane = split.b.dom.parentElement;
@@ -83,6 +107,73 @@ export function createSplitDiff(options: {
       "1px solid color-mix(in srgb, var(--color-content) 12%, transparent)";
   }
   return split;
+}
+
+const HUNK_CONTROL_CLASS = "cm-split-hunk";
+
+function hunkControl(
+  onAction: (action: "revert" | "stage", chunkIndex: number) => void,
+): HTMLElement {
+  const bar = document.createElement("div");
+  bar.className = HUNK_CONTROL_CLASS;
+  const add = (action: "revert" | "stage", label: string, svg: string) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `${HUNK_CONTROL_CLASS}-${action}`;
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.innerHTML = svg;
+    // The merge package sets `data-chunk` on `bar` after rendering it.
+    button.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const index = Number(bar.dataset.chunk);
+      if (Number.isInteger(index)) onAction(action, index);
+    });
+    bar.append(button);
+  };
+  add("revert", "Revert change", UNDO_SVG);
+  add("stage", "Stage change", PLUS_SVG);
+  return bar;
+}
+
+/** Show or hide the stage control on every hunk (CSS keys off this class). */
+export function setSplitCanStage(split: MergeView, canStage: boolean) {
+  split.dom.classList.toggle("cm-split-can-stage", canStage);
+}
+
+/** Put hunk `index` of the right pane back to the left pane's text. */
+export function revertSplitChunk(split: MergeView, index: number): boolean {
+  const chunk = split.chunks[index];
+  if (!chunk) return false;
+  return revertChunkIn(
+    split.b,
+    split.a.state.doc,
+    widgetPos(split.b.state.doc, chunk),
+  );
+}
+
+/**
+ * Stage hunk `index` of the right pane, then make the left pane show the
+ * result so that hunk reads as unchanged right away. Whole hunks only: the
+ * inline layout's "stage the selected lines" has no counterpart here.
+ */
+export async function stageSplitChunk(
+  split: MergeView,
+  index: number,
+  onStage: GitStageHandler | undefined,
+): Promise<boolean> {
+  const chunk = split.chunks[index];
+  if (!chunk || !onStage) return false;
+  const contents = await stageChunkIn(
+    split.b,
+    split.a.state.doc,
+    widgetPos(split.b.state.doc, chunk),
+    onStage,
+  );
+  if (contents == null) return false;
+  setSplitOriginal(split, contents);
+  return true;
 }
 
 /** Where each hunk starts in the right pane, for next/previous navigation. */

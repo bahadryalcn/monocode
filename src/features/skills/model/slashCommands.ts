@@ -7,6 +7,8 @@ export type SlashToken = {
   start: number;
   end: number;
   query: string;
+  /** `$` for a Codex skill token; a plain slash token leaves it unset. */
+  trigger?: "$";
 };
 
 const MAX_PICKER = 50;
@@ -17,14 +19,21 @@ export function rankSkills(
   limit = MAX_PICKER,
 ): Skill[] {
   const needle = query.trim().toLowerCase();
+  // Templates list after commands and skills so the picker can show them as
+  // one "Templates" group.
+  const templatesLast = (ranked: Skill[]) => [
+    ...ranked.filter((skill) => skill.kind !== "template"),
+    ...ranked.filter((skill) => skill.kind === "template"),
+  ];
   if (!needle) {
-    return [...skills]
+    return templatesLast(
+      [...skills]
       .sort((a, b) => {
         const rank = scopeRank(a) - scopeRank(b);
         if (rank !== 0) return rank;
         return a.name.localeCompare(b.name);
-      })
-      .slice(0, limit);
+      }),
+    ).slice(0, limit);
   }
 
   const scored: { skill: Skill; score: number }[] = [];
@@ -50,10 +59,11 @@ export function rankSkills(
     if (b.score !== a.score) return b.score - a.score;
     return a.skill.name.localeCompare(b.skill.name);
   });
-  return scored.slice(0, limit).map((row) => row.skill);
+  return templatesLast(scored.map((row) => row.skill)).slice(0, limit);
 }
 
 function scopeRank(skill: Skill): number {
+  if (skill.kind === "template") return 3;
   if (skill.kind === "builtin") return 0;
   if (skill.kind === "native" || skill.scope === "project") return 1;
   return 2;
@@ -87,6 +97,31 @@ export function slashTokenAt(
   return { start, end, query: typed };
 }
 
+/**
+ * `$skill` token at `cursor`, Codex's way of naming a skill. Only at the start
+ * of a word and never in code, so `US$5`, `a$b` and `` `$HOME` `` stay plain.
+ */
+export function dollarTokenAt(text: string, cursor: number): SlashToken | null {
+  const i = clamp(cursor, 0, text.length);
+  let start = i;
+  while (start > 0 && !isSpace(text[start - 1]!)) start -= 1;
+  if (text[start] !== "$") return null;
+  const typed = text.slice(start + 1, i);
+  if (!/^[A-Za-z0-9_.-]*$/.test(typed)) return null;
+  if (isInCode(text, start)) return null;
+
+  let end = start + 1;
+  while (end < text.length && !isSpace(text[end]!)) end += 1;
+  return { start, end, query: typed, trigger: "$" };
+}
+
+function isInCode(text: string, at: number): boolean {
+  const before = text.slice(0, at);
+  if ((before.match(/```/g)?.length ?? 0) % 2 === 1) return true;
+  const line = before.slice(before.lastIndexOf("\n") + 1);
+  return (line.match(/`/g)?.length ?? 0) % 2 === 1;
+}
+
 export function replaceSlashToken(
   text: string,
   token: SlashToken,
@@ -94,7 +129,7 @@ export function replaceSlashToken(
 ): string {
   const rest = text.slice(token.end);
   const spacer = rest.startsWith(" ") ? "" : " ";
-  return `${text.slice(0, token.start)}/${name}${spacer}${rest}`;
+  return `${text.slice(0, token.start)}${token.trigger ?? "/"}${name}${spacer}${rest}`;
 }
 
 function isSpace(ch: string): boolean {

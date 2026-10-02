@@ -21,7 +21,6 @@ import {
   groupHits,
   hitsFromContentMatches,
   hitsFromFileRanks,
-  hitsFromSessionSearch,
   mergeHits,
   searchConversationTitles,
   searchRecentProjects,
@@ -38,6 +37,8 @@ import {
 import { prettyCwd, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { isLocalProject, type RecentProject } from "../../projects/model/recents";
+import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
+import { isProjectLockedIn } from "../../group-lock/model/lockState";
 import {
   cancelProjectSearch,
   searchProject,
@@ -46,9 +47,28 @@ import {
 import { type Session } from "../../sessions/model/session";
 import {
   cancelSessionSearch,
-  searchSessions,
+  searchSessionContent,
+  type SessionContentSession,
   type SessionSummary,
 } from "../../sessions/data/sessionStore";
+import {
+  loadProjectGroupAssignments,
+  loadProjectGroups,
+} from "../../projects/model/projectGroups";
+import {
+  chatEntries,
+  chatGroupFor,
+  DEFAULT_CHAT_FILTERS,
+  groupChatSessions,
+  hitsFromContentSessions,
+  scopeCwds,
+  sinceFor,
+  type ChatFilters,
+} from "../model/chatSearch";
+import { ChatFilterBar, ChatSearchResults } from "./ChatSearchResults";
+
+// Messages indexed after a search started show up on the next poll.
+const INDEX_POLL_MS = 2000;
 
 const SCOPES: { id: SearchScope; label: string }[] = [
   { id: "all", label: "All" },
@@ -99,13 +119,20 @@ export function SearchView({
   const [active, setActive] = useState(0);
   const [files, setFiles] = useState(() => peekProjectFiles(cwd) ?? []);
   const [contentHits, setContentHits] = useState<AppSearchHit[]>([]);
-  const [remoteHits, setRemoteHits] = useState<AppSearchHit[]>([]);
+  const [chatSessions, setChatSessions] = useState<SessionContentSession[]>([]);
+  const [chatFilters, setChatFilters] = useState<ChatFilters>(
+    DEFAULT_CHAT_FILTERS,
+  );
+  const [pendingIndex, setPendingIndex] = useState(0);
+  const [indexPoll, setIndexPoll] = useState(0);
   const [contentTruncated, setContentTruncated] = useState(false);
   const [sessionTruncated, setSessionTruncated] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const trimmed = query.trim();
+  const loading = filesLoading || sessionsLoading;
   const truncated = contentTruncated || sessionTruncated;
 
   useEffect(() => {
@@ -114,7 +141,9 @@ export function SearchView({
     setScope("all");
     setActive(0);
     setContentHits([]);
-    setRemoteHits([]);
+    setChatSessions([]);
+    setChatFilters(DEFAULT_CHAT_FILTERS);
+    setPendingIndex(0);
     setContentTruncated(false);
     setSessionTruncated(false);
     setError(null);
@@ -195,104 +224,148 @@ export function SearchView({
     () => (trimmed ? searchRecentProjects(recents, trimmed) : []),
     [recents, trimmed],
   );
+  const grouping = useMemo(
+    () => {
+      const groups = loadProjectGroups();
+      return { groups, assignments: loadProjectGroupAssignments(groups) };
+    },
+    // Re-read when the search opens or the project list changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [open, recents],
+  );
+  // The filters belong to the Conversations tab; the All tab searches everywhere.
+  const filters = scope === "conversations" ? chatFilters : DEFAULT_CHAT_FILTERS;
+  // "Everywhere" searches every stored conversation, so results from locked
+  // groups are dropped here, and again if a group locks while they are shown.
+  const lock = useLockSnapshot();
+  const visibleChatSessions = useMemo(
+    () => chatSessions.filter((session) => !isProjectLockedIn(lock, session.cwd)),
+    [chatSessions, lock],
+  );
+  const remoteHits = useMemo(
+    () => hitsFromContentSessions(visibleChatSessions),
+    [visibleChatSessions],
+  );
+  const chatGroups = useMemo(
+    () => groupChatSessions(visibleChatSessions, grouping),
+    [visibleChatSessions, grouping],
+  );
+  const chatRows = useMemo(() => chatEntries(chatGroups), [chatGroups]);
 
+  // Project files: the current folder only, so it is its own request.
   useEffect(() => {
-    if (!open || !trimmed) {
-      setRemoteHits([]);
+    const wantFiles = scope === "all" || scope === "files";
+    if (!open || !trimmed || !wantFiles || !isLocalProject(cwd)) {
       setContentHits([]);
-      setSessionTruncated(false);
       setContentTruncated(false);
-      setLoading(false);
+      setFilesLoading(false);
       setError(null);
       return;
     }
 
     let cancelled = false;
+    const searchId = crypto.randomUUID();
     const timer = window.setTimeout(() => {
-      const jobs: Promise<void>[] = [];
-      const wantSessions = scope === "all" || scope === "conversations";
-      const wantFiles = scope === "all" || scope === "files";
-
-      if (wantSessions) {
-        const searchOwner = crypto.randomUUID();
-        activeSessionOwner.current = searchOwner;
-        setLoading(true);
-        jobs.push(
-          searchSessions({ query: trimmed, searchOwner })
-            .then((result) => {
-              if (cancelled) return;
-              setRemoteHits(hitsFromSessionSearch(result.hits));
-              setSessionTruncated(result.truncated);
-            })
-            .catch(() => {
-              if (cancelled) return;
-              setRemoteHits([]);
-              setSessionTruncated(false);
-            })
-            .finally(() => {
-              if (activeSessionOwner.current === searchOwner) {
-                activeSessionOwner.current = null;
-              }
-            }),
-        );
-      } else {
-        setRemoteHits([]);
-        setSessionTruncated(false);
-      }
-
-      if (wantFiles && isLocalProject(cwd)) {
-        const searchId = crypto.randomUUID();
-        activeProjectSearchId.current = searchId;
-        setLoading(true);
-        jobs.push(
-          searchProject({
-            cwd,
-            query: trimmed,
-            searchId,
-          })
-            .then((result) => {
-              if (cancelled) return;
-              setContentHits(hitsFromContentMatches(result.matches));
-              setContentTruncated(result.truncated);
-              setError(null);
-            })
-            .catch((err: unknown) => {
-              if (cancelled) return;
-              setContentHits([]);
-              setContentTruncated(false);
-              setError(err instanceof Error ? err.message : String(err));
-            })
-            .finally(() => {
-              if (activeProjectSearchId.current === searchId) {
-                activeProjectSearchId.current = null;
-              }
-            }),
-        );
-      } else {
-        setContentHits([]);
-        setContentTruncated(false);
-      }
-
-      void Promise.all(jobs).then(() => {
-        if (!cancelled) setLoading(false);
-      });
+      activeProjectSearchId.current = searchId;
+      setFilesLoading(true);
+      searchProject({ cwd, query: trimmed, searchId })
+        .then((result) => {
+          if (cancelled) return;
+          setContentHits(hitsFromContentMatches(result.matches));
+          setContentTruncated(result.truncated);
+          setError(null);
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setContentHits([]);
+          setContentTruncated(false);
+          setError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (activeProjectSearchId.current === searchId) {
+            activeProjectSearchId.current = null;
+          }
+          if (!cancelled) setFilesLoading(false);
+        });
     }, 200);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
-      const searchOwner = activeSessionOwner.current;
-      activeSessionOwner.current = null;
-      if (searchOwner) {
-        void cancelSessionSearch(searchOwner).catch(() => undefined);
-      }
-      const searchId = activeProjectSearchId.current;
-      activeProjectSearchId.current = null;
-      if (searchId && isLocalProject(cwd)) {
+      if (activeProjectSearchId.current === searchId) {
+        activeProjectSearchId.current = null;
         void cancelProjectSearch(cwd, searchId).catch(() => undefined);
       }
     };
   }, [cwd, open, scope, trimmed]);
+
+  // Message content of every stored session. Debounced, and the previous query
+  // is cancelled in the backend when a newer one supersedes it.
+  useEffect(() => {
+    const wantSessions = scope === "all" || scope === "conversations";
+    if (!open || !trimmed || !wantSessions) {
+      setChatSessions([]);
+      setSessionTruncated(false);
+      setPendingIndex(0);
+      setSessionsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const searchOwner = crypto.randomUUID();
+    const timer = window.setTimeout(() => {
+      activeSessionOwner.current = searchOwner;
+      setSessionsLoading(true);
+      searchSessionContent({
+        query: trimmed,
+        searchOwner,
+        cwds: scopeCwds(filters.scope, cwd, recents, grouping),
+        harness: filters.harness === "any" ? undefined : filters.harness,
+        includeArchived: filters.archived,
+        since: sinceFor(filters.range),
+      })
+        .then((result) => {
+          if (cancelled) return;
+          setChatSessions(result.sessions);
+          setSessionTruncated(result.truncated);
+          setPendingIndex(result.pending);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setChatSessions([]);
+          setSessionTruncated(false);
+          setPendingIndex(0);
+        })
+        .finally(() => {
+          if (activeSessionOwner.current === searchOwner) {
+            activeSessionOwner.current = null;
+          }
+          if (!cancelled) setSessionsLoading(false);
+        });
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      if (activeSessionOwner.current === searchOwner) {
+        activeSessionOwner.current = null;
+        void cancelSessionSearch(searchOwner).catch(() => undefined);
+      }
+    };
+    // `recents` and `grouping` only shape the scope; changing them must not
+    // restart a search the user is waiting on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cwd, open, scope, trimmed, filters, indexPoll]);
+
+  // Text that is not indexed yet is searched again once the index has caught up.
+  useEffect(() => {
+    if (!open || !trimmed || pendingIndex === 0) return;
+    const timer = window.setTimeout(
+      () => setIndexPoll((tick) => tick + 1),
+      INDEX_POLL_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [open, trimmed, pendingIndex]);
 
   const hits = useMemo(() => {
     if (!trimmed) return [];
@@ -320,15 +393,24 @@ export function SearchView({
     trimmed,
   ]);
 
-  const activeHit = hits[active] ?? null;
+  // The Conversations tab lists results by project, with its own rows to step
+  // through; every other tab steps through `hits`.
+  const chatMode = scope === "conversations";
+  const rowCount = chatMode ? chatRows.length : hits.length;
 
   useEffect(() => {
     setActive(0);
-  }, [trimmed, scope]);
+  }, [trimmed, scope, filters]);
 
   useEffect(() => {
-    if (active >= hits.length) setActive(0);
-  }, [active, hits.length]);
+    if (active >= rowCount) setActive(0);
+  }, [active, rowCount]);
+
+  const openChat = (entry: { sessionId: string; blockId?: string } | undefined) => {
+    if (!entry) return;
+    onOpenSession(entry.sessionId, entry.blockId, trimmed);
+    onClose();
+  };
 
   const openHit = (hit: AppSearchHit | null) => {
     if (!hit) return;
@@ -351,31 +433,39 @@ export function SearchView({
   const onQueryKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      if (hits.length === 0) return;
-      setActive((index) => (index + 1) % hits.length);
+      if (rowCount === 0) return;
+      setActive((index) => (index + 1) % rowCount);
       return;
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      if (hits.length === 0) return;
-      setActive((index) => (index - 1 + hits.length) % hits.length);
+      if (rowCount === 0) return;
+      setActive((index) => (index - 1 + rowCount) % rowCount);
       return;
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      openHit(activeHit);
+      if (chatMode) openChat(chatRows[active]);
+      else openHit(hits[active] ?? null);
     }
   };
 
   if (!open) return null;
 
   const empty = !trimmed;
-  const noResults = !empty && hits.length === 0 && !loading;
+  const noResults = !empty && rowCount === 0 && !loading;
   const limitNotice = truncated ? (
     <p className="px-2.5 py-1 text-[11px] text-content/45">
       Results limited to the first matches
     </p>
   ) : null;
+  const indexNotice =
+    pendingIndex > 0 && scope !== "files" && scope !== "projects" ? (
+      <p className="px-2.5 py-1 text-[11px] text-content/45">
+        Indexing {pendingIndex} conversation{pendingIndex === 1 ? "" : "s"}.
+        Results may be incomplete.
+      </p>
+    ) : null;
 
   return (
     <div
@@ -440,6 +530,14 @@ export function SearchView({
         })}
       </div>
 
+      {chatMode ? (
+        <ChatFilterBar
+          filters={chatFilters}
+          inGroup={Boolean(chatGroupFor(cwd, grouping))}
+          onChange={setChatFilters}
+        />
+      ) : null}
+
       <div
         ref={lockOverscroll}
         className={
@@ -455,10 +553,24 @@ export function SearchView({
         ) : noResults ? (
           <>
             <p className="px-2 py-1.5 text-[12px] text-content/50">No results</p>
+            {indexNotice}
             {limitNotice}
+          </>
+        ) : chatMode ? (
+          <>
+            {indexNotice}
+            {limitNotice}
+            <ChatSearchResults
+              groups={chatGroups}
+              entries={chatRows}
+              active={active}
+              onActive={setActive}
+              onOpen={openChat}
+            />
           </>
         ) : (
           <>
+            {indexNotice}
             {limitNotice}
             <ResultList
               hits={hits}

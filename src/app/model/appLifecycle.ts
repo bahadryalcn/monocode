@@ -32,6 +32,7 @@ import {
   loadWorkspaceSnapshot,
   replaceInFlightSessions,
   saveWorkspaceSnapshot,
+  setSessionQueue,
   shouldPersistSession,
   upsertSession,
   type SessionSummary,
@@ -41,10 +42,21 @@ import {
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
+import { flushComposerDrafts } from "../../features/sessions/data/composerDraftStore";
+import { probeTurnTail, readTurnSteps, type TurnTail } from "../../platform/tauri/turnProbe";
+import { markAutoContinueDue } from "../../features/sessions/model/autoContinue";
+import {
+  classifyTurnRecovery,
+  shouldAutoContinue,
+  withFinishedTurn,
+} from "../../features/sessions/model/turnRecovery";
+import type { TurnSteps } from "../../features/sessions/model/turnSteps";
+import { loadAutoContinueInterrupted } from "../../features/settings/model/settings";
 import { loadWindowTransfer } from "./windowTransferBootstrap";
 import type { WindowTransferPayload } from "./windowTransfer";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
 import type { ProjectReturnMemory } from "../../features/projects/model/projectReturn";
+import { appName } from "../../shared/lib/appName";
 
 export type { ResumedWorkspace };
 export { hasInFlightSessions };
@@ -163,7 +175,7 @@ export async function askQuitConfirmation(
     quitDialogOpen = true;
     try {
       confirmed = await ask(quitWhileBusyMessage(inFlight), {
-        title: "MonoCode",
+        title: appName(),
         kind: "warning",
         okLabel: "Quit",
       });
@@ -309,6 +321,15 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
     workspace = workspaceFromResumed(sessions);
   }
 
+  if (workspace) {
+    const recovered = await Promise.all(
+      workspace.sessions.map((session) =>
+        interrupted.has(session.id) ? recoverInterruptedTurn(session) : session,
+      ),
+    );
+    workspace = { ...workspace, sessions: recovered };
+  }
+
   bootingResumed = workspace;
   if (workspace) {
     await Promise.all(
@@ -322,6 +343,121 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
     );
   }
   return workspace;
+}
+
+/**
+ * Local CLIs cannot outlive MonoCode: on Windows every harness child is in a
+ * kill-on-close job object, and on macOS/Linux each runs in its own process
+ * group that `kill_all` signals at exit (a crash leaves orphans, and the next
+ * launch reaps them). So at launch a chat that was mid-turn has no live
+ * process, and only the transcript can say whether the turn got to finish.
+ * Remote chats never come through here: their host keeps running and the app
+ * re-attaches to its snapshot.
+ */
+const LOCAL_CHILD_LIVENESS = "dead" as const;
+const PROBE_TIMEOUT_MS = 3000;
+
+function transcriptProvider(session: Session): "claude" | "codex" | null {
+  const provider = session.harness;
+  return (provider === "claude" || provider === "codex") && session.providerSessionId
+    ? provider
+    : null;
+}
+
+/** Bounded so a slow disk cannot hold up the first paint. */
+function withinTimeout<T>(work: Promise<T>, fallback: T): Promise<T> {
+  const timeout = new Promise<T>((resolve) =>
+    window.setTimeout(() => resolve(fallback), PROBE_TIMEOUT_MS),
+  );
+  return Promise.race([work, timeout]).catch(() => fallback);
+}
+
+async function transcriptTail(session: Session): Promise<TurnTail | "unsupported"> {
+  const provider = transcriptProvider(session);
+  if (!provider) return "unsupported";
+  return withinTimeout(
+    probeTurnTail({
+      provider,
+      providerSessionId: session.providerSessionId!,
+      cwd: sessionWorkCwd(session),
+      providerAccountId: session.providerAccountId,
+    }),
+    { state: "missing" } as TurnTail,
+  );
+}
+
+/** What the CLI recorded for the last turn, read alongside the tail probe. */
+function readRecordedSteps(session: Session): Promise<TurnSteps | null> {
+  const provider = transcriptProvider(session);
+  if (!provider) return Promise.resolve(null);
+  return withinTimeout(
+    readTurnSteps({
+      provider,
+      providerSessionId: session.providerSessionId!,
+      cwd: sessionWorkCwd(session),
+      providerAccountId: session.providerAccountId,
+    }),
+    null,
+  );
+}
+
+/**
+ * Put those steps into the session. Anything that goes wrong leaves it as it
+ * was: the quit note and the final reply logic still apply on top.
+ */
+async function withRecordedSteps(
+  session: Session,
+  steps: TurnSteps | null,
+  outcome: "finished" | "interrupted",
+): Promise<Session> {
+  if (!steps) return session;
+  try {
+    // The conversion pulls in the provider adapters; boot only pays for them
+    // when there is a turn to rebuild.
+    const { withTurnSteps } = await import("../../features/sessions/model/turnSteps");
+    return withTurnSteps(session, steps, outcome);
+  } catch {
+    return session;
+  }
+}
+
+/**
+ * A chat that was mid-turn when MonoCode went away: look at what really
+ * happened before anything is sent. A turn that finished is shown as finished;
+ * only a turn that was cut off may be continued, and only when that is certain.
+ * Either way the steps the CLI recorded while the app was away are filled in.
+ */
+async function recoverInterruptedTurn(session: Session): Promise<Session> {
+  const [tail, steps] = await Promise.all([
+    transcriptTail(session),
+    readRecordedSteps(session),
+  ]);
+  const recovery = classifyTurnRecovery({
+    wasInFlight: true,
+    liveness: LOCAL_CHILD_LIVENESS,
+    backgroundWorkAlive: false,
+    transcript: tail === "unsupported" ? tail : tail.state,
+  });
+  if (recovery.state === "finished") {
+    return withFinishedTurn(
+      await withRecordedSteps(session, steps, "finished"),
+      tail === "unsupported" ? undefined : tail.finalText,
+    );
+  }
+  const recovered =
+    recovery.state === "interrupted"
+      ? await withRecordedSteps(session, steps, "interrupted")
+      : session;
+  if (
+    shouldAutoContinue({
+      recovery,
+      enabled: loadAutoContinueInterrupted(),
+      queuedCount: recovered.queuedMessages?.length ?? 0,
+    })
+  ) {
+    markAutoContinueDue(recovered.id);
+  }
+  return recovered;
 }
 
 export function bindResumedSessions(sessions: Session[]): void {
@@ -356,7 +492,7 @@ export async function confirmReload(
 ): Promise<boolean> {
   if (!hasUnsavedFiles) return true;
   return ask("Reload MonoCode and discard unsaved changes?", {
-    title: "MonoCode",
+    title: appName(),
     kind: "warning",
     okLabel: "Reload",
   });
@@ -365,6 +501,7 @@ export async function confirmReload(
 export async function persistLiveTranscripts(
   sessions: Session[],
 ): Promise<void> {
+  await flushComposerDrafts().catch(() => undefined);
   await Promise.all(
     sessions
       .filter(shouldPersistSession)
@@ -398,6 +535,15 @@ export async function persistQuitState(
         : session;
       await write(upsertSession(payload));
     }),
+  );
+  // Drafts wait on a short timer; the quit must not.
+  await write(flushComposerDrafts());
+  // The queue hook writes through as it changes; this settles the last edit
+  // before the process goes.
+  await Promise.all(
+    sessions
+      .filter((session) => shouldPersistSession(session) && session.queuedMessages?.length)
+      .map((session) => write(setSessionQueue(session.id, session.queuedMessages))),
   );
   await write(
     saveWorkspaceSnapshot(
@@ -462,7 +608,7 @@ async function confirmAndCloseWindow(
     if (refs.length > 0) {
       const ok = await ask(
         "Close this window and stop its running chats? Other windows will stay open.",
-        { title: "MonoCode", kind: "warning", okLabel: "Close window" },
+        { title: appName(), kind: "warning", okLabel: "Close window" },
       );
       if (!ok) return;
     }

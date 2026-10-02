@@ -12,12 +12,14 @@ const SHOW: &str = "tray_show";
 const QUIT: &str = "tray_quit";
 
 pub fn install(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItemBuilder::with_id(SHOW, "Show MonoCode").build(app)?;
-    let quit = MenuItemBuilder::with_id(QUIT, "Quit MonoCode").build(app)?;
+    // The product name differs per build (MonoCode, MonoCode Fork, MonoCode Dev).
+    let name = &app.package_info().name;
+    let show = MenuItemBuilder::with_id(SHOW, format!("Show {name}")).build(app)?;
+    let quit = MenuItemBuilder::with_id(QUIT, format!("Quit {name}")).build(app)?;
     let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
 
     let mut tray = TrayIconBuilder::with_id("main")
-        .tooltip("MonoCode")
+        .tooltip(name)
         .menu(&menu)
         // Left click reopens; the menu stays on the right button.
         .show_menu_on_left_click(false)
