@@ -1,4 +1,5 @@
 import { pathKey, slash } from "../../../shared/lib/paths";
+import { moveIdByStep, orderByIds, type MoveStep } from "../../../shared/lib/reorder";
 import { PROJECT_MASCOTS } from "./projectMascots";
 import { TAB_GROUP_COLORS, tabGroupColor } from "../../workspace/model/tabGroups";
 import { notifyProjectPathsChanged } from "./recents";
@@ -200,6 +201,25 @@ export function updateProjectGroup(
   saveProjectGroups(
     current.map((group) => (group.id === id ? update(group) : group)),
   );
+}
+
+/**
+ * Saves the groups in this order. A group the list leaves out keeps its place
+ * after the others, so a stale drag from another window never drops one.
+ */
+export function reorderProjectGroups(ids: readonly string[]): boolean {
+  const current = loadProjectGroups();
+  const next = orderByIds(current, [...ids]);
+  if (next.every((group, index) => group.id === current[index].id)) return true;
+  return saveProjectGroups(next);
+}
+
+/** Moves one group a step up or down the list, or to the top. */
+export function moveProjectGroup(id: string, step: MoveStep): boolean {
+  const current = loadProjectGroups();
+  const ids = current.map((group) => group.id);
+  const next = moveIdByStep(ids, id, step);
+  return next === ids ? false : reorderProjectGroups(next);
 }
 
 /** Removes the group; its projects become ungrouped. */

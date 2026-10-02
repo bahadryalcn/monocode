@@ -46,6 +46,7 @@ function setup(
   reducedMotion = false,
   axis: "x" | "y" = "x",
   externalDrop?: ReorderExternalDrop<string>,
+  foldOnDrag = false,
 ) {
   Object.assign(browser, { matchMedia: () => ({ matches: reducedMotion }) });
   const onReorder = vi.fn();
@@ -53,7 +54,9 @@ function setup(
   // Render the real hook to obtain its gesture interface without mocking React.
   // Mount/unmount effects and native click targeting need a browser check.
   function Probe() {
-    reorder = useAnimatedReorder(ids, onReorder, axis, externalDrop);
+    reorder = useAnimatedReorder(ids, onReorder, axis, externalDrop, {
+      foldOnDrag,
+    });
     return null;
   }
   renderToString(createElement(Probe));
@@ -300,5 +303,36 @@ describe("workspace tab gestures", () => {
     expect(onReorder).not.toHaveBeenCalled();
     expect(tabs.every((tab) => tab.style.transform === "")).toBe(true);
     expect(reorder.consumeClick()).toBe(true);
+  });
+
+  it("measures again when a drag starts if the blocks fold", () => {
+    const { reorder, tabs, onReorder } = setup(false, "y", undefined, true);
+    // Unfolded blocks are far apart; once the drag starts they sit 33px apart.
+    const unfolded = [0, 100, 200];
+    const folded = [0, 33, 66];
+    let isFolded = false;
+    tabs.forEach((tab, index) => {
+      tab.getBoundingClientRect = () => {
+        const top = (isFolded ? folded : unfolded)[index];
+        return { left: 0, right: 100, width: 100, top, bottom: top + 32, height: 32 };
+      };
+    });
+    reorder.onItemPointerDown(ids[2], {
+      button: 0,
+      clientX: 0,
+      clientY: 216,
+      pointerId: 1,
+    } as ReactPointerEvent);
+    isFolded = true;
+    pointer("pointermove", 40);
+    vi.advanceTimersByTime(16);
+    // The grabbed point stays under the pointer: 66 + 16 - 42 = 40.
+    expect(tabs[2].style.transform).toBe("translate3d(0, -42px, 0)");
+    pointer("pointerup", 40);
+    vi.runAllTimers();
+    expect(onReorder).toHaveBeenCalledExactlyOnceWith(
+      ["sessions", "explorer", "changes"],
+      "explorer",
+    );
   });
 });

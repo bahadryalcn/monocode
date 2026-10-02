@@ -8,7 +8,9 @@ import {
   linkProjectGroup,
   loadProjectGroupAssignments,
   loadProjectGroups,
+  moveProjectGroup,
   nextProjectGroupName,
+  reorderProjectGroups,
   saveProjectGroupAssignments,
   saveProjectGroups,
   setProjectGroupAssignment,
@@ -183,5 +185,52 @@ describe("linked workspace groups", () => {
       true,
       undefined,
     ]);
+  });
+});
+
+describe("group order", () => {
+  const seed = () =>
+    saveProjectGroups(
+      ["a", "b", "c"].map((id) => ({
+        id,
+        name: id.toUpperCase(),
+        collapsed: id === "b",
+        lockable: id === "c" || undefined,
+      })),
+    );
+  const ids = () => loadProjectGroups().map((group) => group.id);
+
+  it("rewrites the saved array and keeps every group's own state", () => {
+    seed();
+    expect(reorderProjectGroups(["c", "a", "b"])).toBe(true);
+    expect(ids()).toEqual(["c", "a", "b"]);
+    const groups = loadProjectGroups();
+    expect(groups.find((group) => group.id === "b")?.collapsed).toBe(true);
+    expect(groups.find((group) => group.id === "c")?.lockable).toBe(true);
+  });
+
+  it("keeps groups a stale order leaves out, after the others", () => {
+    seed();
+    reorderProjectGroups(["b", "ghost"]);
+    expect(ids()).toEqual(["b", "a", "c"]);
+  });
+
+  it("moves a group up, down or to the top", () => {
+    seed();
+    expect(moveProjectGroup("b", "up")).toBe(true);
+    expect(ids()).toEqual(["b", "a", "c"]);
+    moveProjectGroup("b", "down");
+    moveProjectGroup("b", "down");
+    expect(ids()).toEqual(["a", "c", "b"]);
+    moveProjectGroup("b", "top");
+    expect(ids()).toEqual(["b", "a", "c"]);
+  });
+
+  it("does nothing at the ends or for an unknown group", () => {
+    seed();
+    expect(moveProjectGroup("a", "up")).toBe(false);
+    expect(moveProjectGroup("c", "down")).toBe(false);
+    expect(moveProjectGroup("zzz", "top")).toBe(false);
+    expect(ids()).toEqual(["a", "b", "c"]);
   });
 });

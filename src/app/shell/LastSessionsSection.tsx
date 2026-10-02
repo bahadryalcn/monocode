@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Check,
   ChevronDown,
@@ -15,6 +15,12 @@ import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
 import { ExplorerMenu } from "../../features/files/ui/ExplorerMenu";
 import { Popover } from "../../shared/ui/Popover";
+import {
+  RAIL_DRAG_HANDLE,
+  RAIL_SECTION_HEADER,
+  SectionMenuButton,
+  type RailSectionDrag,
+} from "./useRailSections";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
 import { useRecentSessions } from "../../features/sessions/hooks/useRecentSessions";
 import {
@@ -79,6 +85,8 @@ export function LastSessionsSection({
   searchActive,
   onOpenSession,
   onOpenProject,
+  drag,
+  onShownChange,
   ...appearance
 }: {
   source: RecentSessionsSource;
@@ -89,6 +97,10 @@ export function LastSessionsSection({
   searchActive: boolean;
   onOpenSession?: (sessionId: string) => void;
   onOpenProject: (path: string) => void;
+  /** Lets the rail move this section by its header. */
+  drag?: RailSectionDrag;
+  /** Reports whether the section is on screen: it has nothing to show without sessions. */
+  onShownChange?: (shown: boolean) => void;
 } & Appearance) {
   const [prefs, setPrefs] = useState(loadRecentSessionsPrefs);
   const [menu, setMenu] = useState<{
@@ -112,7 +124,12 @@ export function LastSessionsSection({
       }),
     [stored, source.live, projectKeys, prefs.count],
   );
-  if (rows.length === 0) return null;
+  const hasRows = rows.length > 0;
+  useEffect(() => {
+    onShownChange?.(hasRows);
+    return () => onShownChange?.(false);
+  }, [hasRows, onShownChange]);
+  if (!hasRows) return null;
 
   const update = (next: RecentSessionsPrefs) => {
     setPrefs(next);
@@ -125,13 +142,19 @@ export function LastSessionsSection({
   const menuRow = menu?.row;
 
   return (
-    <div className="mb-2 shrink-0">
-      <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
+    <div ref={drag?.setRef} className="reorder-item rail-reorder-block mb-2 shrink-0">
+      <div
+        {...drag?.headerProps}
+        title={drag ? "Drag to reorder" : undefined}
+        className={`${RAIL_SECTION_HEADER} ${drag ? RAIL_DRAG_HANDLE : ""}`}
+      >
         <button
           type="button"
           aria-expanded={!prefs.collapsed}
           onClick={() => update({ ...prefs, collapsed: !prefs.collapsed })}
-          className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1 text-left text-xs text-content/50 hover:text-content"
+          className={`flex min-w-0 flex-1 items-center gap-1 rounded-md px-1 text-left text-xs text-content/50 hover:text-content ${
+            drag ? "cursor-grab" : ""
+          }`}
         >
           {prefs.collapsed ? (
             <ChevronRight className="size-3 shrink-0" strokeWidth={1.75} />
@@ -146,12 +169,17 @@ export function LastSessionsSection({
             onChange={(count) => update({ ...prefs, count })}
           />
         )}
+        {drag ? (
+          <SectionMenuButton label="Last sessions" onOpen={drag.openMenu} />
+        ) : null}
       </div>
       {prefs.collapsed ? null : (
         <div
           role="list"
           aria-label="Last sessions"
-          className="flex max-h-[min(20rem,35vh)] flex-col gap-px overflow-y-auto px-2"
+          className={`max-h-[min(20rem,35vh)] flex-col gap-px overflow-y-auto px-2 ${
+            drag?.folded ? "hidden" : "flex"
+          }`}
         >
           {rows.map((row) => (
             <SessionRow
@@ -212,6 +240,7 @@ function CountPicker({
       <button
         ref={anchor}
         type="button"
+        data-no-drag
         title="Sessions shown"
         aria-label={`Sessions shown: ${recentCountLabel(count)}`}
         aria-haspopup="menu"

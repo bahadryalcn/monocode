@@ -3,7 +3,9 @@ import {
   AppWindow,
   Archive,
   ArrowDownCircle,
+  ArrowUp,
   BellOff,
+  ChevronDown,
   ExternalLink,
   FolderOpen,
   FolderPlus,
@@ -58,6 +60,7 @@ import {
   deleteProjectGroup,
   loadProjectGroupAssignments,
   loadProjectGroups,
+  moveProjectGroup,
   projectGroupColor,
   projectGroupIdForPath,
   saveProjectGroups,
@@ -592,6 +595,29 @@ export function useProjectMenu({
               icon: Lock,
             },
           ];
+    // Reordering reveals nothing, so a locked group can still be moved.
+    const groupIds = loadProjectGroups().map((item) => item.id);
+    const groupIndex = groupIds.indexOf(group.id);
+    const moveItems: TabGroupMenuExtraItem[] = [
+      {
+        id: "move-group-up",
+        label: "Move up",
+        icon: ArrowUp,
+        disabled: groupIndex <= 0,
+      },
+      {
+        id: "move-group-down",
+        label: "Move down",
+        icon: ChevronDown,
+        disabled: groupIndex >= groupIds.length - 1,
+      },
+      {
+        id: "move-group-top",
+        label: "Move to top",
+        icon: ArrowUp,
+        disabled: groupIndex <= 0,
+      },
+    ];
     // A locked group offers nothing that would touch or reveal its projects.
     const groupItems: TabGroupMenuExtraItem[] = locked
       ? []
@@ -692,9 +718,26 @@ export function useProjectMenu({
         }}
         showActions={false}
         ariaLabel="Project group actions"
-        extraItems={[...lockItems, ...groupItems]}
+        extraItems={[
+          ...moveItems,
+          ...lockItems.map((item, index) =>
+            index === 0 ? { ...item, sepBefore: true } : item,
+          ),
+          ...groupItems,
+        ]}
         onExtraPick={(action) => {
           const file = group.workspaceFile;
+          if (action.startsWith("move-group-")) {
+            moveProjectGroup(
+              group.id,
+              action === "move-group-up"
+                ? "up"
+                : action === "move-group-down"
+                  ? "down"
+                  : "top",
+            );
+            return;
+          }
           if (action === "unlock-group") {
             requestUnlock(group.id);
             return;

@@ -3405,3 +3405,12 @@ html.theme-light .btw-burst {
   margin-top: 4px;
   overflow-wrap: anywhere;
 }
+
+/* Rail sections and groups move as blocks: keep their controls out of the way. */
+.rail-reorder-block[data-reordering] [data-no-drag] {
+  visibility: hidden;
+}
+
+.rail-reorder-block[data-dragging] {
+  background: color-mix(in srgb, var(--color-content) 8%, transparent);
+}

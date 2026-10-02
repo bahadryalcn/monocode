@@ -19,7 +19,15 @@ import {
   Settings,
   Zap,
 } from "../../shared/ui/icons";
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
@@ -72,8 +80,10 @@ import {
   loadProjectGroupAssignments,
   changeProjectGroupMembers,
   loadProjectGroups,
+  moveProjectGroup,
   projectGroupColor,
   projectGroupIdForPath,
+  reorderProjectGroups,
   updateProjectGroup,
   type ProjectGroup,
 } from "../../features/projects/model/projectGroups";
@@ -111,6 +121,16 @@ import { OPEN_PROJECT_CHANGES_EVENT, summarizeGroupGit } from "../../features/pr
 import { useLinkedGroupStatus } from "../../features/projects/model/linkedWorkspace";
 import { useGroupLock } from "../../features/group-lock/hooks/useGroupLock";
 import { isProjectLockedIn } from "../../features/group-lock/model/lockState";
+import type { RailSectionId } from "../../features/projects/model/railSections";
+import {
+  keepFocus,
+  moveStepForKey,
+  RAIL_DRAG_HANDLE,
+  RAIL_SECTION_HEADER,
+  SectionMenuButton,
+  useRailSections,
+  type RailSectionDrag,
+} from "./useRailSections";
 
 type Props = {
   visible?: boolean;
@@ -207,20 +227,29 @@ export function ProjectRail({
   const [projectGroupAssignments, setProjectGroupAssignments] = useState(
     loadProjectGroupAssignments,
   );
-  useEffect(
-    () =>
-      subscribeProjectPathsChanged(() => {
-        setRailOrder(loadProjectRailOrder());
-        setPinnedPaths(loadPinnedProjects());
-        setGroupLabels(loadTabGroupLabels());
-        setGroupColors(loadTabGroupColors());
-        setGroupMascots(loadTabGroupMascots());
-        setGroupCustomColors(loadTabGroupCustomColors());
-        setProjectGroups(loadProjectGroups());
-        setProjectGroupAssignments(loadProjectGroupAssignments());
-      }),
-    [],
-  );
+  useEffect(() => {
+    const reload = () => {
+      setRailOrder(loadProjectRailOrder());
+      setPinnedPaths(loadPinnedProjects());
+      setGroupLabels(loadTabGroupLabels());
+      setGroupColors(loadTabGroupColors());
+      setGroupMascots(loadTabGroupMascots());
+      setGroupCustomColors(loadTabGroupCustomColors());
+      setProjectGroups(loadProjectGroups());
+      setProjectGroupAssignments(loadProjectGroupAssignments());
+    };
+    const unsubscribe = subscribeProjectPathsChanged(reload);
+    // Another window moved a group or a project: its writes arrive as storage events.
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key.startsWith("monocode.project")) reload();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      unsubscribe();
+      window.removeEventListener("storage", onStorage);
+    };
+  }, []);
+  const [lastSessionsShown, setLastSessionsShown] = useState(false);
   const [inboxMenu, setInboxMenu] = useState<{
     x: number;
     y: number;
@@ -417,6 +446,148 @@ export function ProjectRail({
   const projectIds = groupedProjectSections.ungrouped.map((item) => item.path);
   const pinnedSortable = useAnimatedReorder(pinnedIds, onReorderPinned, "y");
   const projectSortable = useAnimatedReorder(projectIds, onReorderProjects, "y");
+  // A group moves as a block: while one is dragged every group shows only its
+  // header (the saved collapsed state is untouched), so the blocks stay one size.
+  const groupSortable = useAnimatedReorder(
+    projectGroups.map((group) => group.id),
+    reorderProjectGroups,
+    "y",
+    undefined,
+    { foldOnDrag: true },
+  );
+  const shownSections = new Set<RailSectionId>(["projects"]);
+  if (lastSessionsShown) shownSections.add("last-sessions");
+  if (pinnedProjects.length > 0) shownSections.add("pinned");
+  if (projectGroups.length > 0) shownSections.add("groups");
+  const rail = useRailSections(shownSections);
+  const searchOrPageActive =
+    searchActive || inboxActive || notesActive || automationsActive;
+  const sectionNodes: Record<RailSectionId, ReactNode> = {
+    "last-sessions": recentSessions ? (
+      <LastSessionsSection
+        source={recentSessions}
+        projectKeys={railProjectKeys}
+        enabled={visible}
+        activeSessionId={activeSessionId}
+        searchActive={searchOrPageActive}
+        onOpenSession={onSelectAgent}
+        onOpenProject={onSelectProject}
+        drag={rail.drag("last-sessions")}
+        onShownChange={setLastSessionsShown}
+        groupLabels={groupLabels}
+        groupColors={groupColors}
+        groupCustomColors={groupCustomColors}
+        groupLogos={groupLogos}
+        groupMascots={groupMascots}
+      />
+    ) : null,
+    pinned:
+      pinnedProjects.length > 0 ? (
+        <ProjectSection
+          label="Pinned"
+          items={pinnedProjects}
+          muteStatuses={muteStatuses}
+          cwd={cwd}
+          busy={busy}
+          statsEnabled={visible}
+          sortable={pinnedSortable}
+          drag={rail.drag("pinned")}
+          pinned
+          searchActive={searchOrPageActive}
+          onSelect={onSelectProject}
+          onTogglePin={toggleProjectPin}
+          onContextMenu={onProjectContextMenu}
+          onOpenMenu={projectMenu.open}
+          groupLabels={groupLabels}
+          groupColors={groupColors}
+          groupCustomColors={groupCustomColors}
+          groupLogos={groupLogos}
+          groupMascots={groupMascots}
+        />
+      ) : null,
+    groups:
+      projectGroups.length > 0 ? (
+        <div
+          ref={rail.drag("groups").setRef}
+          className="reorder-item rail-reorder-block mb-2 shrink-0"
+        >
+          <ProjectSectionHeader
+            label="Groups"
+            drag={rail.drag("groups")}
+            onAddGroup={(x, y) => projectMenu.createGroup(x, y)}
+          />
+          <div
+            className={`flex-col gap-px px-2 ${rail.folded ? "hidden" : "flex"}`}
+          >
+            {groupedProjectSections.grouped.map(({ group, items, locked }) => (
+              <ProjectGroupSection
+                key={group.id}
+                group={group}
+                items={items}
+                locked={locked}
+                sortableGroups={groupSortable}
+                muteStatuses={muteStatuses}
+                cwd={cwd}
+                busy={busy}
+                statsEnabled={visible}
+                searchActive={searchOrPageActive}
+                onSelect={onSelectProject}
+                onTogglePin={toggleProjectPin}
+                onContextMenu={onProjectContextMenu}
+                onOpenMenu={projectMenu.open}
+                onReorder={onReorderProjects}
+                onToggleCollapsed={() =>
+                  locked
+                    ? projectMenu.requestUnlock(group.id)
+                    : updateProjectGroup(group.id, (current) => ({
+                        ...current,
+                        collapsed: !current.collapsed,
+                      }))
+                }
+                onToggleLock={() => projectMenu.toggleGroupLock(group.id)}
+                onOpenGroupMenu={(x, y) =>
+                  projectMenu.openGroupMenu(group.id, x, y)
+                }
+                groupLabels={groupLabels}
+                groupColors={groupColors}
+                groupCustomColors={groupCustomColors}
+                groupLogos={groupLogos}
+                groupMascots={groupMascots}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null,
+    projects: (
+      <ProjectSection
+        label="Projects"
+        items={groupedProjectSections.ungrouped}
+        muteStatuses={muteStatuses}
+        emptyLabel={
+          sections.projects.length === 0 && projectGroups.length === 0
+            ? "No projects yet"
+            : undefined
+        }
+        onAdd={onOpenProject}
+        cwd={cwd}
+        busy={busy}
+        statsEnabled={visible}
+        sortable={projectSortable}
+        drag={rail.drag("projects")}
+        pinned={false}
+        searchActive={searchOrPageActive}
+        onSelect={onSelectProject}
+        onTogglePin={toggleProjectPin}
+        onContextMenu={onProjectContextMenu}
+        onOpenMenu={projectMenu.open}
+        groupLabels={groupLabels}
+        groupColors={groupColors}
+        groupCustomColors={groupCustomColors}
+        groupLogos={groupLogos}
+        groupMascots={groupMascots}
+      />
+    ),
+  };
   return (
     <nav
       ref={resize.setPaneRef}
@@ -498,135 +669,9 @@ export function ProjectRail({
             }}
             className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-2"
           >
-            {recentSessions ? (
-              <LastSessionsSection
-                source={recentSessions}
-                projectKeys={railProjectKeys}
-                enabled={visible}
-                activeSessionId={activeSessionId}
-                searchActive={
-                  searchActive ||
-                  inboxActive ||
-                  notesActive ||
-                  automationsActive
-                }
-                onOpenSession={onSelectAgent}
-                onOpenProject={onSelectProject}
-                groupLabels={groupLabels}
-                groupColors={groupColors}
-                groupCustomColors={groupCustomColors}
-                groupLogos={groupLogos}
-                groupMascots={groupMascots}
-              />
-            ) : null}
-
-            {pinnedProjects.length > 0 ? (
-              <ProjectSection
-                label="Pinned"
-                items={pinnedProjects}
-                muteStatuses={muteStatuses}
-                cwd={cwd}
-                busy={busy}
-                statsEnabled={visible}
-                sortable={pinnedSortable}
-                pinned
-                searchActive={
-                  searchActive ||
-                  inboxActive ||
-                  notesActive ||
-                  automationsActive
-                }
-                onSelect={onSelectProject}
-                onTogglePin={toggleProjectPin}
-                onContextMenu={onProjectContextMenu}
-                onOpenMenu={projectMenu.open}
-                groupLabels={groupLabels}
-                groupColors={groupColors}
-                groupCustomColors={groupCustomColors}
-                groupLogos={groupLogos}
-                groupMascots={groupMascots}
-              />
-            ) : null}
-
-            {projectGroups.length > 0 ? (
-              <div className="mb-2 shrink-0">
-                <ProjectSectionHeader
-                  label="Groups"
-                  onAddGroup={(x, y) => projectMenu.createGroup(x, y)}
-                />
-                <div className="flex flex-col gap-px px-2">
-                  {groupedProjectSections.grouped.map(({ group, items, locked }) => (
-                    <ProjectGroupSection
-                      key={group.id}
-                      group={group}
-                      items={items}
-                      locked={locked}
-                      muteStatuses={muteStatuses}
-                      cwd={cwd}
-                      busy={busy}
-                      statsEnabled={visible}
-                      searchActive={
-                        searchActive ||
-                        inboxActive ||
-                        notesActive ||
-                        automationsActive
-                      }
-                      onSelect={onSelectProject}
-                      onTogglePin={toggleProjectPin}
-                      onContextMenu={onProjectContextMenu}
-                      onOpenMenu={projectMenu.open}
-                      onReorder={onReorderProjects}
-                      onToggleCollapsed={() =>
-                        locked
-                          ? projectMenu.requestUnlock(group.id)
-                          : updateProjectGroup(group.id, (current) => ({
-                              ...current,
-                              collapsed: !current.collapsed,
-                            }))
-                      }
-                      onToggleLock={() => projectMenu.toggleGroupLock(group.id)}
-                      onOpenGroupMenu={(x, y) =>
-                        projectMenu.openGroupMenu(group.id, x, y)
-                      }
-                      groupLabels={groupLabels}
-                      groupColors={groupColors}
-                      groupCustomColors={groupCustomColors}
-                      groupLogos={groupLogos}
-                      groupMascots={groupMascots}
-                    />
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <ProjectSection
-              label="Projects"
-              items={groupedProjectSections.ungrouped}
-              muteStatuses={muteStatuses}
-              emptyLabel={
-                sections.projects.length === 0 && projectGroups.length === 0
-                  ? "No projects yet"
-                  : undefined
-              }
-              onAdd={onOpenProject}
-              cwd={cwd}
-              busy={busy}
-              statsEnabled={visible}
-              sortable={projectSortable}
-              pinned={false}
-              searchActive={
-                searchActive || inboxActive || notesActive || automationsActive
-              }
-              onSelect={onSelectProject}
-              onTogglePin={toggleProjectPin}
-              onContextMenu={onProjectContextMenu}
-              onOpenMenu={projectMenu.open}
-              groupLabels={groupLabels}
-              groupColors={groupColors}
-              groupCustomColors={groupCustomColors}
-              groupLogos={groupLogos}
-              groupMascots={groupMascots}
-            />
+            {rail.order.map((id) => (
+              <Fragment key={id}>{sectionNodes[id]}</Fragment>
+            ))}
           </div>
           <LiveAgentsPreview
             agents={visibleLiveAgents}
@@ -655,6 +700,7 @@ export function ProjectRail({
         </>
       )}
       {visible ? projectMenu.element : null}
+      {visible ? rail.element : null}
       {visible && inboxMenu ? (
         <InboxNotificationMenu
           {...inboxMenu}
@@ -695,6 +741,7 @@ function ProjectSection({
   busy,
   statsEnabled,
   sortable,
+  drag,
   pinned,
   searchActive,
   onSelect,
@@ -716,6 +763,8 @@ function ProjectSection({
   busy: Set<string>;
   statsEnabled: boolean;
   sortable: SortableHandle;
+  /** Moves the whole section; its body hides while any section is dragged. */
+  drag: RailSectionDrag;
   pinned: boolean;
   searchActive: boolean;
   onSelect: (path: string) => void;
@@ -729,14 +778,17 @@ function ProjectSection({
   groupMascots: Record<string, string>;
 }) {
   return (
-    <div className="shrink-0 mb-2">
-      <ProjectSectionHeader label={label} onAdd={onAdd} />
-      {items.length === 0 && emptyLabel ? (
+    <div
+      ref={drag.setRef}
+      className="reorder-item rail-reorder-block shrink-0 mb-2"
+    >
+      <ProjectSectionHeader label={label} onAdd={onAdd} drag={drag} />
+      {items.length === 0 && emptyLabel && !drag.folded ? (
         <p className="px-4 pb-1 text-[11px] leading-tight text-content/40">
           {emptyLabel}
         </p>
       ) : null}
-      <div className="flex flex-col gap-px px-2">
+      <div className={`flex-col gap-px px-2 ${drag.folded ? "hidden" : "flex"}`}>
         {items.map((item) => (
           <ProjectCard
             key={item.path}
@@ -765,21 +817,30 @@ function ProjectSection({
 
 function ProjectSectionHeader({
   label,
+  drag,
   onAdd,
   onAddGroup,
 }: {
   label: string;
+  drag: RailSectionDrag;
   onAdd?: () => void;
   onAddGroup?: (x: number, y: number) => void;
 }) {
   return (
-    <div className="flex items-center gap-1 px-3 pb-1.5 pt-1">
+    <div
+      {...drag.headerProps}
+      tabIndex={0}
+      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+      title="Drag to reorder"
+      className={`${RAIL_SECTION_HEADER} ${RAIL_DRAG_HANDLE} rounded-md outline-none focus-visible:bg-content/8`}
+    >
       <span className="min-w-0 flex-1 truncate px-1 text-xs text-content/50">
         {label}
       </span>
       {onAddGroup ? (
         <button
           type="button"
+          data-no-drag
           title="New project group"
           aria-label="New project group"
           onClick={(event) => {
@@ -792,6 +853,7 @@ function ProjectSectionHeader({
         </button>
       ) : null}
       {onAdd ? <AddProjectButton onOpenFolder={onAdd} /> : null}
+      <SectionMenuButton label={label} onOpen={drag.openMenu} />
     </div>
   );
 }
@@ -813,6 +875,7 @@ function ProjectGroupSection({
   onToggleLock,
   onOpenGroupMenu,
   locked,
+  sortableGroups,
   groupLabels,
   groupColors,
   groupCustomColors,
@@ -822,6 +885,8 @@ function ProjectGroupSection({
   group: ProjectGroup;
   /** Locked groups get no items: only the name and the padlock show. */
   locked: boolean;
+  /** Orders the groups; the header is the drag handle. */
+  sortableGroups: SortableHandle;
   items: RecentProject[];
   muteStatuses: ReadonlyMap<string, string | null>;
   cwd: string;
@@ -850,6 +915,9 @@ function ProjectGroupSection({
   const countLabel = `${items.length} ${items.length === 1 ? "project" : "projects"}`;
   const expanded = !group.collapsed && !locked;
   const collapsed = !expanded;
+  // While any group is dragged, every group shows only its header.
+  const folded = sortableGroups.draggingId !== null;
+  const showBody = expanded && !folded;
   const linkStatus = useLinkedGroupStatus(group.id);
   const localPaths = useMemo(
     () => items.map((item) => item.path).filter(isLocalProject),
@@ -878,15 +946,38 @@ function ProjectGroupSection({
 
   return (
     <div
-      className={`shrink-0 overflow-hidden rounded-md ${
-        expanded ? "mb-1.5 bg-content/5" : ""
+      ref={(el) => sortableGroups.setItemRef(group.id, el)}
+      className={`reorder-item rail-reorder-block shrink-0 overflow-hidden rounded-md ${
+        showBody ? "mb-1.5 bg-content/5" : ""
       }`}
       data-project-group={group.id}
       role="group"
       aria-label={group.name}
     >
       <div
-        className="project-reorder-item group relative flex h-8 items-stretch rounded-md px-2 opacity-65 cursor-default"
+        className={`project-reorder-item group relative flex h-8 items-stretch rounded-md px-2 opacity-65 ${RAIL_DRAG_HANDLE}`}
+        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          if ((event.target as HTMLElement | null)?.closest("[data-no-drag]")) {
+            return;
+          }
+          sortableGroups.onItemPointerDown(group.id, event);
+        }}
+        // The click that ends a drag must not expand, collapse or unlock.
+        onClickCapture={(event) => {
+          if (!sortableGroups.consumeClick()) return;
+          event.preventDefault();
+          event.stopPropagation();
+        }}
+        onKeyDown={(event) => {
+          const step = moveStepForKey(event);
+          if (!step) return;
+          event.preventDefault();
+          event.stopPropagation();
+          moveProjectGroup(group.id, step);
+          keepFocus(event.target as HTMLElement);
+        }}
         onContextMenu={(event) => {
           event.preventDefault();
           event.currentTarget.querySelector<HTMLButtonElement>("button")?.focus();
@@ -899,7 +990,7 @@ function ProjectGroupSection({
           aria-label={locked ? `${group.name}, locked` : `${group.name}, ${countLabel}`}
           title={locked ? `${group.name} · Locked` : `${group.name} · ${countLabel}`}
           onClick={onToggleCollapsed}
-          className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 cursor-grab items-center gap-2 text-left"
         >
           <div className="grid size-4 shrink-0 place-items-center">
             {collapsed ? (
@@ -1033,7 +1124,10 @@ The group was left as it is.`
         </button>
       </div>
       {expanded ? (
-        <div data-project-group-items className="flex flex-col gap-px p-1">
+        <div
+          data-project-group-items
+          className={`flex-col gap-px p-1 ${folded ? "hidden" : "flex"}`}
+        >
           {items.map((item) => (
             <ProjectCard
               key={item.path}
@@ -1399,6 +1493,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
       <button
         ref={anchor}
         type="button"
+        data-no-drag
         title="Open project"
         aria-label="Open project"
         aria-haspopup="menu"
