@@ -11,6 +11,7 @@ import {
   type SessionSyncResponse,
 } from "./protocol";
 import { remoteProjectFor } from "./remoteProjects";
+import type { RemoteRailSession } from "./remoteRailSessions";
 import { blocksSending } from "./remoteConnection";
 import {
   notifyRemoteRecovered,
@@ -598,4 +599,94 @@ export function useRemoteProjectSessions(
     };
   }, [project, remote?.projectId, machine?.id, refresh]);
   return { machine, sessions, loaded };
+}
+
+/** Lists the host sessions of every remote project on the rail, so one that
+ * runs on its machine shows up without its project being opened here. A
+ * project whose machine does not answer keeps its last list. */
+export function useRemoteRailSessions(
+  projects: readonly string[],
+): RemoteRailSession[] {
+  const key = projects.join("\n");
+  const { machines } = useRemoteMachines(projects.length > 0);
+  const [sessions, setSessions] = useState<RemoteRailSession[]>([]);
+  useEffect(() => {
+    const targets = (key ? key.split("\n") : []).flatMap((project) => {
+      const remote = remoteProjectFor(project);
+      const machine = remote && machines.find(
+        (entry) => entry.environmentId === remote.environmentId,
+      );
+      return remote && machine ? [{ project, remote, machine }] : [];
+    });
+    if (targets.length === 0) {
+      setSessions([]);
+      return;
+    }
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+    // The cached list may be old: nothing in it counts as running until the host says so.
+    const lists = new Map<string, HostSessionSummary[]>(targets.map(({ project }) => [
+      project,
+      cachedSessions(project).map((session) => ({
+        ...session,
+        status: "idle" as const,
+        needsInput: false,
+      })),
+    ]));
+    let shown = "";
+    const publish = () => {
+      const next = [...lists].flatMap(([project, list]) =>
+        list.map((session) => ({ project, session })));
+      const serialized = JSON.stringify(next);
+      if (serialized === shown) return;
+      shown = serialized;
+      setSessions(next);
+    };
+    publish();
+    const poll = async () => {
+      const results = await Promise.all(targets.map(async ({ project, remote, machine }) => {
+        try {
+          const next = await remoteRequest<HostSessionSummary[]>(
+            machine.id,
+            "sessions.list",
+            { projectId: remote.projectId },
+          );
+          return Array.isArray(next) ? { project, next } : undefined;
+        } catch {
+          return undefined;
+        }
+      }));
+      if (disposed) return;
+      let historyChanged = false;
+      for (const result of results) {
+        if (!result) continue;
+        lists.set(result.project, result.next);
+        const stored = JSON.stringify(result.next);
+        try {
+          if (localStorage.getItem(historyKey(result.project)) !== stored) {
+            localStorage.setItem(historyKey(result.project), stored);
+            historyChanged = true;
+          }
+        } catch {
+          /* the list is refetched next time */
+        }
+      }
+      if (historyChanged) window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
+      publish();
+      failures = results.some(Boolean) ? 0 : Math.min(4, failures + 1);
+      const active = [...lists.values()].some((list) =>
+        list.some((session) => session.status === "running"));
+      timer = setTimeout(
+        () => void poll(),
+        failures ? Math.min(30_000, 3_000 * 2 ** failures) : active ? 4_000 : 10_000,
+      );
+    };
+    void poll();
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+    };
+  }, [key, machines]);
+  return sessions;
 }

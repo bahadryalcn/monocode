@@ -81,6 +81,16 @@ import {
   type AutomationTemplateIcon,
 } from "../model/automationTemplates";
 import {
+  backgroundMachineFor,
+  backgroundMachines,
+  deleteHostAutomation,
+  listHostAutomationRuns,
+  listHostAutomations,
+  runHostAutomationNow,
+  saveHostAutomation,
+} from "../model/hostAutomationClient";
+import type { RemoteMachine } from "../../connections/model/protocol";
+import {
   AZUREDEVOPS_CHANGE_EVENT,
   azureDevOpsConnected,
 } from "../../inbox/model/azureDevOps";
@@ -92,6 +102,7 @@ import { LINEAR_CHANGE_EVENT, linearConnected } from "../../inbox/model/linear";
 import { JIRA_CHANGE_EVENT, jiraConnected } from "../../inbox/model/jira";
 import { defaultSessionChoice, firstEnabledHarness, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
 import { projectKey, projectName } from "../../../shared/lib/paths";
+import { parseRemotePath } from "../../connections/model/remoteProjects";
 import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
 import { isProjectLockedIn } from "../../group-lock/model/lockState";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -189,12 +200,20 @@ function AutomationsContent({
   );
   // Automations aimed at a project in a locked group are not listed.
   const lock = useLockSnapshot();
+  // Automations that machines' hosts run on their own, this computer's included.
+  const [machines, setMachines] = useState<RemoteMachine[]>([]);
+  const [hostAutomations, setHostAutomations] = useState<Automation[]>([]);
+  const hostAutomationsRef = useRef(hostAutomations);
+  const showHostAutomations = useCallback((next: Automation[]) => {
+    hostAutomationsRef.current = next;
+    setHostAutomations(next);
+  }, []);
   const automations = useMemo(
     () =>
-      storedAutomations.filter(
+      [...storedAutomations, ...hostAutomations].filter(
         (automation) => !isProjectLockedIn(lock, automation.cwd),
       ),
-    [lock, storedAutomations],
+    [hostAutomations, lock, storedAutomations],
   );
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -219,7 +238,10 @@ function AutomationsContent({
       setAutomations(next);
       setSelectedId((current) => {
         const preferred = current ?? rememberedAutomationId;
-        return preferred && next.some((entry) => entry.id === preferred)
+        return preferred &&
+          [...next, ...hostAutomationsRef.current].some(
+            (entry) => entry.id === preferred,
+          )
           ? preferred
           : (next[0]?.id ?? null);
       });
@@ -236,6 +258,23 @@ function AutomationsContent({
     return subscribeAutomations(() => void refresh());
   }, [refresh]);
 
+  const refreshHost = useCallback(async () => {
+    try {
+      const capable = await backgroundMachines();
+      setMachines(capable);
+      showHostAutomations(await listHostAutomations(capable));
+    } catch {
+      // A machine that does not answer keeps its last known automations.
+    }
+  }, [showHostAutomations]);
+
+  // The host reports no changes, so its runs are polled while this view is open.
+  useEffect(() => {
+    void refreshHost();
+    const timer = window.setInterval(() => void refreshHost(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [refreshHost]);
+
   useEffect(() => {
     rememberedAutomationId = selectedId;
     if (!selectedId) {
@@ -243,7 +282,11 @@ function AutomationsContent({
       return;
     }
     let cancelled = false;
-    void listAutomationRuns(selectedId)
+    const target = automations.find((entry) => entry.id === selectedId);
+    void (target?.host
+      ? listHostAutomationRuns(target)
+      : listAutomationRuns(selectedId)
+    )
       .then((next) => {
         if (!cancelled) setRuns(next);
       })
@@ -309,11 +352,19 @@ function AutomationsContent({
     if (saving) return;
     setSaving(true);
     try {
-      const saved = await saveAutomation(nextDraft);
+      const saved = nextDraft.runInBackground
+        ? await saveHostAutomation(machines, nextDraft)
+        : await saveAutomation(nextDraft);
+      if (saved.host)
+        showHostAutomations([
+          ...hostAutomationsRef.current.filter((entry) => entry.id !== saved.id),
+          saved,
+        ]);
       setPickerOpen(false);
       setDraft(null);
       setSelectedId(saved.id);
-      await refresh();
+      setError(null);
+      await (saved.host ? refreshHost() : refresh());
     } catch (reason: unknown) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -325,6 +376,11 @@ function AutomationsContent({
     if (running) return;
     setRunning(automation.id);
     try {
+      if (automation.host) {
+        await runHostAutomationNow(automation);
+        await refreshHost();
+        return;
+      }
       const run = await createManualAutomationRun(automation.id);
       await onLaunch(automation, run);
     } catch (reason: unknown) {
@@ -338,7 +394,14 @@ function AutomationsContent({
     if (!window.confirm(`Delete “${automation.name}” and its run history?`))
       return;
     try {
-      await deleteAutomation(automation.id);
+      if (automation.host) {
+        await deleteHostAutomation(automation);
+        showHostAutomations(
+          hostAutomationsRef.current.filter(
+            (entry) => entry.id !== automation.id,
+          ),
+        );
+      } else await deleteAutomation(automation.id);
       setSelectedId(null);
       await refresh();
     } catch (reason: unknown) {
@@ -348,6 +411,14 @@ function AutomationsContent({
 
   const onToggle = async (automation: Automation, enabled: boolean) => {
     try {
+      if (automation.host) {
+        await saveHostAutomation(machines, {
+          ...draftFromAutomation(automation),
+          enabled,
+        });
+        await refreshHost();
+        return;
+      }
       await setAutomationEnabled(automation, enabled);
       await refresh();
     } catch (reason: unknown) {
@@ -448,6 +519,11 @@ function AutomationsContent({
             saving={saving}
             running={editorDraft.id === running}
             dirty={draft != null}
+            backgroundMachine={
+              selected?.host && editorDraft.id
+                ? selected.host.machineName
+                : backgroundMachineName(machines, editorDraft.cwd)
+            }
             onChange={setDraft}
             onClose={() => {
               setDraft(null);
@@ -465,6 +541,12 @@ function AutomationsContent({
                 : undefined
             }
             onOpenSession={async (sessionId) => {
+              if (selected?.host && editorDraft.id) {
+                setError(
+                  `This run’s session is on ${selected.host.machineName}. Open the project there to read it.`,
+                );
+                return;
+              }
               try {
                 await onOpenSession(sessionId);
               } catch (reason: unknown) {
@@ -480,6 +562,15 @@ function AutomationsContent({
       </main>
     </div>
   );
+}
+
+function backgroundMachineName(
+  machines: readonly RemoteMachine[],
+  cwd: string,
+): string | undefined {
+  const machine = backgroundMachineFor(machines, cwd);
+  if (!machine) return undefined;
+  return parseRemotePath(cwd) ? machine.name : "this computer";
 }
 
 function AutomationCard({
@@ -535,7 +626,10 @@ function AutomationCard({
             }
             className="size-3"
           />
-          <span className="min-w-0 truncate">{triggerLabel(automation)}</span>
+          <span className="min-w-0 truncate">
+            {triggerLabel(automation)}
+            {automation.host ? ` · on ${automation.host.machineName}` : ""}
+          </span>
         </span>
         <span className="mt-1 block truncate text-[13px] font-semibold text-content">
           {automation.name}
@@ -809,6 +903,7 @@ function AutomationEditor({
   saving,
   running,
   dirty,
+  backgroundMachine,
   onChange,
   onClose,
   onSubmit,
@@ -822,6 +917,8 @@ function AutomationEditor({
   saving: boolean;
   running: boolean;
   dirty: boolean;
+  /** The machine whose host can run this draft's project in the background. */
+  backgroundMachine?: string;
   onChange: (draft: AutomationDraft) => void;
   onClose: () => void;
   onSubmit: (event: FormEvent) => void;
@@ -1380,6 +1477,32 @@ function AutomationEditor({
               <SectionTitle>Session</SectionTitle>
               <div className="mt-3 divide-y divide-content/7 rounded-md border border-content/10">
                 <SettingsRow
+                  label="Runs"
+                  hint={
+                    backgroundMachine
+                      ? "In the background keeps running with this app closed"
+                      : "Background runs need the project’s machine connected"
+                  }
+                >
+                  <SettingsSelect
+                    label="Runs"
+                    value={draft.runInBackground ? "background" : "app"}
+                    disabled={draft.id != null || !backgroundMachine}
+                    options={[
+                      { value: "app", label: "While this app is open" },
+                      {
+                        value: "background",
+                        label: `In the background on ${backgroundMachine ?? "its machine"}`,
+                      },
+                    ]}
+                    onChange={(value) =>
+                      update("runInBackground", value === "background")
+                    }
+                  />
+                </SettingsRow>
+                {draft.runInBackground ? null : (
+                  <>
+                <SettingsRow
                   label="Working copy"
                   hint="This repo, or a fresh worktree"
                 >
@@ -1429,6 +1552,8 @@ function AutomationEditor({
                     onChange={(value) => update("sessionFolderId", value)}
                   />
                 </SettingsRow>
+                  </>
+                )}
               </div>
             </section>
 
@@ -1439,7 +1564,7 @@ function AutomationEditor({
                     Advanced
                   </span>
                   <span className="mt-0.5 block text-[11px] text-content/40">
-                    Catch-up window for missed runs
+                    Catch-up window and run limits
                   </span>
                 </span>
                 <ChevronDown className="size-3.5 text-content/40" />
@@ -1447,15 +1572,44 @@ function AutomationEditor({
               <div className="divide-y divide-content/7 border-t border-content/8">
                 <SettingsRow
                   label="Missed-run grace"
-                  hint="Catch up if a scheduled run was missed"
+                  hint={
+                    draft.runInBackground
+                      ? "Background runs catch up within 12 hours"
+                      : "Catch up if a scheduled run was missed"
+                  }
                 >
                   <SettingsSelect
                     label="Missed-run grace"
-                    value={String(draft.missedRunGraceMinutes)}
+                    value={String(
+                      draft.runInBackground ? 720 : draft.missedRunGraceMinutes,
+                    )}
+                    disabled={draft.runInBackground}
                     options={GRACE_OPTIONS}
                     onChange={(value) =>
                       update("missedRunGraceMinutes", Number(value))
                     }
+                  />
+                </SettingsRow>
+                <SettingsRow
+                  label="Run time limit"
+                  hint="Stop a run that is still going after this long"
+                >
+                  <SettingsSelect
+                    label="Run time limit"
+                    value={String(draft.maxRunMinutes)}
+                    options={RUN_TIME_LIMIT_OPTIONS}
+                    onChange={(value) => update("maxRunMinutes", Number(value))}
+                  />
+                </SettingsRow>
+                <SettingsRow
+                  label="Runs per day"
+                  hint="Skip scheduled and event runs past this many a day"
+                >
+                  <SettingsSelect
+                    label="Runs per day"
+                    value={String(draft.maxRunsPerDay)}
+                    options={RUNS_PER_DAY_OPTIONS}
+                    onChange={(value) => update("maxRunsPerDay", Number(value))}
                   />
                 </SettingsRow>
               </div>
@@ -1655,6 +1809,25 @@ const GRACE_OPTIONS = [
   { value: "120", label: "2 hours" },
   { value: "720", label: "12 hours" },
   { value: "1440", label: "24 hours" },
+] as const;
+
+const RUN_TIME_LIMIT_OPTIONS = [
+  { value: "0", label: "No limit" },
+  { value: "15", label: "15 minutes" },
+  { value: "30", label: "30 minutes" },
+  { value: "60", label: "1 hour" },
+  { value: "120", label: "2 hours" },
+  { value: "240", label: "4 hours" },
+  { value: "480", label: "8 hours" },
+] as const;
+
+const RUNS_PER_DAY_OPTIONS = [
+  { value: "0", label: "No limit" },
+  { value: "1", label: "1" },
+  { value: "3", label: "3" },
+  { value: "5", label: "5" },
+  { value: "10", label: "10" },
+  { value: "20", label: "20" },
 ] as const;
 
 const TEMPLATE_ICONS: Record<AutomationTemplateIcon, typeof Search> = {

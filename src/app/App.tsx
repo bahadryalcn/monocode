@@ -95,6 +95,7 @@ import { FilePicker } from "../features/files/ui/FilePicker";
 import { useLockSnapshot } from "../features/group-lock/hooks/useGroupLock";
 import {
   getGroupLockView,
+  isProjectLocked,
   startGroupLockWatcher,
 } from "../features/group-lock/model/groupLock";
 import {
@@ -161,8 +162,10 @@ import {
 } from "../features/sessions/model/attachments";
 import {
   basename,
+  isLocalDirectory,
   listDir,
   notifyGitChanged,
+  openPathWithDefaultApp,
   pickCodeWorkspaceFile,
   pickFolders,
   readTextFile,
@@ -594,6 +597,7 @@ import {
 } from "../features/notes";
 import {
   claimDueAutomations,
+  listAutomationRuns,
   listAutomations,
   recoverAutomationRuns,
   updateAutomationRun,
@@ -603,6 +607,12 @@ import {
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
 import type { QuickLaunch } from "../features/quick-composer/model/quickComposer";
 import { claimInboxAutomationRuns } from "../features/automations/model/automationEvents";
+import {
+  LOCKED_PROJECT_SKIP,
+  automationLimits,
+  dailyRunLimitSkip,
+  runLimitBreach,
+} from "../features/automations/model/automationLimits";
 import {
   SECOND_OPINION_TITLE,
   buildSecondOpinionRequest,
@@ -630,7 +640,13 @@ import {
   remotePendingWorktree,
   remoteTabCwd,
   remoteSessionFor,
+  useRemoteRailSessions,
 } from "../features/connections/model/connections";
+import {
+  remoteLiveAgents,
+  remoteLiveSessionInfos,
+  unopenedRemoteSessions,
+} from "../features/connections/model/remoteRailSessions";
 import { buildRemotePlan, remoteSessionActions } from "../features/connections/model/remoteSessionActions";
 import { remoteSessionState } from "../features/connections/model/remoteSessionState";
 import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
@@ -1907,14 +1923,47 @@ function Workspace({
     activeSessionId,
   );
 
+  // Host sessions of the rail's remote projects that no tab here has loaded:
+  // they run on their machine whether or not this app looks at them.
+  const remoteRailProjects = useMemo(
+    () =>
+      visibleRecents
+        .map((project) => project.path)
+        .filter(isRemoteProjectPath),
+    [visibleRecents],
+  );
+  const listedRemoteSessions = useRemoteRailSessions(remoteRailProjects);
+  const loadedRemoteShellIds = useMemo(
+    () =>
+      sessions
+        .filter(
+          (session) =>
+            isRemoteProjectPath(session.cwd) && session.blocks.length > 0,
+        )
+        .map((session) => session.id)
+        .join("\n"),
+    [sessions],
+  );
+  const unopenedRemote = useMemo(() => {
+    const loadedHostIds = new Set<string>();
+    for (const shellId of loadedRemoteShellIds.split("\n")) {
+      const hostId = shellId && remoteSessionFor(shellId);
+      if (hostId) loadedHostIds.add(hostId);
+    }
+    return unopenedRemoteSessions(listedRemoteSessions, loadedHostIds);
+  }, [listedRemoteSessions, loadedRemoteShellIds]);
+  const unopenedRemoteRef = useRef(unopenedRemote);
+  unopenedRemoteRef.current = unopenedRemote;
+
   const liveAgents = useMemo(
     () =>
       liveAgentsEnabled
-        ? liveAgentsFromSessions(sessions, unseenFinishedIds).filter(
-            (agent) => !isProjectLockedIn(lockSnapshot, agent.cwd),
-          )
+        ? [
+            ...liveAgentsFromSessions(sessions, unseenFinishedIds),
+            ...remoteLiveAgents(unopenedRemote),
+          ].filter((agent) => !isProjectLockedIn(lockSnapshot, agent.cwd))
         : [],
-    [liveAgentsEnabled, lockSnapshot, sessions, unseenFinishedIds],
+    [liveAgentsEnabled, lockSnapshot, sessions, unseenFinishedIds, unopenedRemote],
   );
 
   const hiddenApprovalToasts = useMemo(
@@ -6185,6 +6234,14 @@ function Workspace({
         const fileCwd = gitCwdRef.current;
         const fileProjectCwd = sidebarCwdRef.current;
         const resolved = await resolveFileOpenRequest(fileCwd, path, options);
+        // A folder has nothing to show in an editor tab: hand it to the
+        // system's file manager instead.
+        if (await isLocalDirectory(resolved)) {
+          void openPathWithDefaultApp(resolved).catch((error) => {
+            console.error("Failed to open folder:", error);
+          });
+          return;
+        }
         rememberOpenedFile(fileCwd, resolved);
         const tab = tabsRef.current.find(
           (entry) => entry.id === activeTabIdRef.current,
@@ -7677,6 +7734,10 @@ function Workspace({
   const automationSessionReservations = useRef(new Set<string>());
   const automationRecoveryRef = useRef<Promise<void> | null>(null);
   const automationRecoveryCutoffRef = useRef(Date.now());
+  // Launches of one automation start one at a time, so the daily limit sees
+  // the runs claimed alongside it.
+  const automationStartGate = useRef(new Map<string, Promise<void>>());
+  const onStopRef = useRef<(sessionId: string) => void>(() => undefined);
 
   const launchAutomation = useCallback(
     async (
@@ -7693,7 +7754,36 @@ function Workspace({
         automationSessionReservations.current.delete(reservationId);
         reservationId = undefined;
       };
+      const limits = automationLimits(automation);
+      const earlier =
+        automationStartGate.current.get(automation.id) ?? Promise.resolve();
+      let started = () => undefined as void;
+      automationStartGate.current.set(
+        automation.id,
+        new Promise<void>((resolve) => {
+          started = resolve;
+        }),
+      );
+      let watchdog: number | undefined;
+      let breach: string | null = null;
       try {
+        await earlier;
+        const skip = isProjectLocked(automation.cwd)
+          ? LOCKED_PROJECT_SKIP
+          : run.trigger === "manual"
+            ? null
+            : dailyRunLimitSkip(
+                limits,
+                limits.maxRunsPerDay > 0
+                  ? await listAutomationRuns(automation.id)
+                  : [],
+                run.id,
+                Date.now(),
+              );
+        if (skip) {
+          await updateAutomationRun(run.id, "skipped", { error: skip });
+          return;
+        }
         const eventRun = run.trigger === "event";
         const linkedWorkItem =
           sourceWorkItem ?? linkedWorkItemFromAutomationEvent(run);
@@ -7792,6 +7882,17 @@ function Workspace({
         await updateAutomationRun(run.id, "running", {
           sessionId: session.id,
         });
+        started();
+        if (limits.maxRunMinutes > 0) {
+          const startedAt = Date.now();
+          const sessionId = session.id;
+          watchdog = window.setInterval(() => {
+            breach = runLimitBreach(limits, { startedAt, now: Date.now() });
+            if (!breach) return;
+            window.clearInterval(watchdog);
+            onStopRef.current(sessionId);
+          }, 15_000);
+        }
         // From here the settlement callback owns reservation cleanup, including
         // a rejected submission that never starts an agent turn.
         releaseAfterSettle = true;
@@ -7804,15 +7905,18 @@ function Workspace({
           rejectionMessage:
             "The selected agent session could not start this run.",
           onSettled: (outcome) => {
-            const status =
-              outcome.status === "completed"
+            window.clearInterval(watchdog);
+            const error = breach ?? outcome.error;
+            const status = breach
+              ? "failed"
+              : outcome.status === "completed"
                 ? "succeeded"
                 : outcome.status === "cancelled"
                   ? "cancelled"
                   : "failed";
             void updateAutomationRun(run.id, status, {
               sessionId: session.id,
-              ...(outcome.error ? { error: outcome.error } : {}),
+              ...(error ? { error } : {}),
             })
               .catch(() => undefined)
               .finally(releaseReservation);
@@ -7824,7 +7928,11 @@ function Workspace({
         }).catch(() => undefined);
         throw reason;
       } finally {
-        if (!releaseAfterSettle) releaseReservation();
+        started();
+        if (!releaseAfterSettle) {
+          window.clearInterval(watchdog);
+          releaseReservation();
+        }
       }
     },
     [appendTab, focusOpenSession, submitSession],
@@ -9207,6 +9315,7 @@ function Workspace({
     },
     [flushHarnessEvents],
   );
+  onStopRef.current = onStop;
 
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
@@ -10107,22 +10216,29 @@ function Workspace({
       setInboxViewOpen(false);
       setNotesViewOpen(false);
       setAutomationsViewOpen(false);
-      onOpenApprovalSession(sessionId);
+      const remote = unopenedRemoteRef.current.find(
+        ({ session }) => session.id === sessionId,
+      );
+      if (remote) onSelectRemoteSession(remote.project, sessionId);
+      else onOpenApprovalSession(sessionId);
     },
-    [onOpenApprovalSession],
+    [onOpenApprovalSession, onSelectRemoteSession],
   );
 
   // Sessions for the rail's "Last sessions". Kept referentially stable so the
   // rail only refetches when a title or status really changed.
   const liveSessionInfoRef = useRef<ReturnType<typeof liveSessionInfos>>([]);
   const railLiveSessions = useMemo(() => {
-    const next = liveSessionInfos(sessions, unseenFinishedIds);
+    const next = [
+      ...liveSessionInfos(sessions, unseenFinishedIds),
+      ...remoteLiveSessionInfos(unopenedRemote),
+    ];
     if (sameLiveSessionInfos(liveSessionInfoRef.current, next)) {
       return liveSessionInfoRef.current;
     }
     liveSessionInfoRef.current = next;
     return next;
-  }, [sessions, unseenFinishedIds]);
+  }, [sessions, unseenFinishedIds, unopenedRemote]);
   const recentSessions = useMemo(
     () => ({
       history,

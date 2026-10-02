@@ -13,6 +13,7 @@ import {
   type RemoteProvider,
 } from "../src/features/connections/model/protocol";
 import { HostEngine } from "./engine";
+import { HostAutomations } from "./automations";
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
@@ -133,6 +134,7 @@ export function createHostServer(
   engine: HostEngine,
   providers: RemoteProvider[],
   lifecycle?: (request: IncomingMessage, response: ServerResponse) => void,
+  automations = new HostAutomations(engine.store, engine),
 ) {
   const catalogs = new Map<
     string,
@@ -293,6 +295,7 @@ export function createHostServer(
                 "sessions.draft",
                 "sessions.plan",
                 "sync",
+                "automations",
               ],
             };
             break;
@@ -421,6 +424,22 @@ export function createHostServer(
             result = engine.store.transaction(() => syncPush(engine.store.db, params.ops as SyncOp[]));
             break;
           }
+          case "automations.list":
+            result = automations.list();
+            break;
+          case "automations.save":
+            result = automations.save(params.automation);
+            break;
+          case "automations.delete":
+            automations.delete(String(params.automationId ?? ""));
+            result = { deleted: true };
+            break;
+          case "automations.runs":
+            result = automations.runs(String(params.automationId ?? ""));
+            break;
+          case "automations.runNow":
+            result = automations.runNow(String(params.automationId ?? ""));
+            break;
           case "attachments.upload":
             result = writeAttachmentChunk(engine.store, params);
             break;

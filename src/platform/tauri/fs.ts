@@ -813,6 +813,14 @@ export function openPathWithDefaultApp(path: string): Promise<void> {
   return invoke<void>("open_path_with_default_app", { path });
 }
 
+/** Whether a path on this computer is a folder; false when it is missing or on another machine. */
+export function isLocalDirectory(path: string): Promise<boolean> {
+  if (path.startsWith(REMOTE_PATH_PREFIX)) return Promise.resolve(false);
+  return invoke<{ isDir: boolean }[]>("inspect_paths", { paths: [path] })
+    .then((infos) => infos[0]?.isDir === true)
+    .catch(() => false);
+}
+
 export function homeDir(): Promise<string> {
   return invoke<string>("home_dir");
 }
