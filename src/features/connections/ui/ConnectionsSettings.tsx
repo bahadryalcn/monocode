@@ -1,16 +1,25 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
-import { Internet, Loader, Plus, Trash2 } from "../../../shared/ui/icons";
+import { Internet, Loader, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
 import {
   connectMachine,
   disconnectMachine,
   recordRemoteCapabilities,
   refreshRemoteMachines,
   remoteRequest,
+  subscribeEditRequests,
   subscribeReconnectRequests,
+  takeEditRequest,
   takeReconnectRequest,
+  updateMachine,
   useRemoteMachines,
 } from "../model/connections";
+import {
+  draftFromMachine,
+  editImpact,
+  hostnameSuggestion,
+  parseMachineDraft,
+} from "../model/machineEdit";
 import { notifyRemoteRecovered } from "../model/remoteHealth";
 import {
   REMOTE_PROVIDERS,
@@ -27,6 +36,8 @@ const button =
 export function ConnectionsSettings() {
   const { machines, loaded } = useRemoteMachines();
   const [adding, setAdding] = useState(false);
+  // The machine whose definition the form edits; none when it adds one.
+  const [editing, setEditing] = useState<RemoteMachine>();
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
   const [port, setPort] = useState("");
@@ -47,6 +58,8 @@ export function ConnectionsSettings() {
   const alive = useRef(true);
   const currentJob = useRef<string | undefined>(undefined);
   const submitting = useRef(false);
+  // The running connection follows an edit, so its outcome is worded for one.
+  const afterEdit = useRef(false);
   const progress = useRef<HTMLDivElement>(null);
   useEffect(() => {
     alive.current = true;
@@ -73,16 +86,25 @@ export function ConnectionsSettings() {
           setBusy(false);
           setJobId(undefined);
           setAnswer("");
-          if (next.error) setError(next.error);
+          if (next.error)
+            setError(
+              afterEdit.current
+                ? `${next.error}
+
+The new address is saved. Edit it again, or choose Reconnect to retry.`
+                : next.error,
+            );
           else if (next.machine) {
             setAdding(false);
             setTarget("");
             setName("");
             setPort("");
             setNotice(
-              updatingMachine
-                ? `${next.machine.name} was updated and reconnected.`
-                : `${next.machine.name} is connected. To work on it, click + next to Projects in the project rail and choose Open folder on a machine.`,
+              afterEdit.current
+                ? `${next.machine.name} is connected through its new address.`
+                : updatingMachine
+                  ? `${next.machine.name} was updated and reconnected.`
+                  : `${next.machine.name} is connected. To work on it, click + next to Projects in the project rail and choose Open folder on a machine.`,
             );
             setUpdatingMachine(undefined);
             setStatus((current) => ({
@@ -93,6 +115,7 @@ export function ConnectionsSettings() {
             // Views that were waiting on this machine reload now.
             notifyRemoteRecovered(next.machine.environmentId);
           }
+          afterEdit.current = false;
           return;
         }
       } catch (reason) {
@@ -167,9 +190,10 @@ export function ConnectionsSettings() {
       clearTimeout(timer);
     };
   }, [machines, busy]);
-  const begin = async (machine?: RemoteMachine, upgrade = false) => {
+  const begin = async (machine?: RemoteMachine, upgrade = false, edited = false) => {
     if (submitting.current) return;
     submitting.current = true;
+    afterEdit.current = edited;
     setBusy(true);
     setError("");
     setNotice("");
@@ -194,12 +218,63 @@ export function ConnectionsSettings() {
       setJobId(id);
     } catch (reason) {
       submitting.current = false;
+      afterEdit.current = false;
       if (alive.current) {
         setError(String(reason));
         setBusy(false);
       }
     }
   };
+  const startEdit = (machine: RemoteMachine) => {
+    const draft = draftFromMachine(machine);
+    setEditing(machine);
+    setName(draft.name);
+    setTarget(draft.target);
+    setPort(draft.port);
+    setAdding(true);
+    setError("");
+    setNotice("");
+  };
+  const closeForm = () => {
+    setAdding(false);
+    setEditing(undefined);
+    setTarget("");
+    setName("");
+    setPort("");
+  };
+  // Saving is the user's own action, so it connects even when automatic
+  // reconnecting is off. The connection runs as a setup job, the same one
+  // Reconnect uses, which is where a new host key or password is answered.
+  const save = async () => {
+    if (!editing || busy) return;
+    const parsed = parseMachineDraft({ name, target, port });
+    if (!parsed.ok) return setError(parsed.error);
+    const impact = editImpact(editing, parsed.value);
+    if (!impact.changed) return closeForm();
+    setBusy(true);
+    setError("");
+    try {
+      const saved = await updateMachine(editing, parsed.value, impact.reconnect);
+      closeForm();
+      setBusy(false);
+      if (impact.reconnect) await begin(saved, false, true);
+      else setNotice(`${saved.name} was renamed.`);
+    } catch (reason) {
+      setBusy(false);
+      setError(String(reason));
+    }
+  };
+  // A view that cannot reach a machine asks for its address to be edited here.
+  useEffect(() => {
+    const start = () => {
+      const machine = takeEditRequest(machines);
+      if (machine?.ssh) startEdit(machine);
+    };
+    start();
+    return subscribeEditRequests(start);
+    // `startEdit` only sets state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machines]);
   // A view that cannot reach a machine asks for it to be reconnected here, where
   // the SSH prompts are answered.
   useEffect(() => {
@@ -255,6 +330,12 @@ export function ConnectionsSettings() {
       if (alive.current) setRevoking(false);
     }
   };
+  const suggestion = hostnameSuggestion(target, editing?.name ?? "");
+  const draft = parseMachineDraft({ name, target, port });
+  const saveLabel =
+    editing && draft.ok && !editImpact(editing, draft.value).reconnect
+      ? "Save"
+      : "Save and reconnect";
   return (
     <div data-setting-id="remote-machines" className="flex flex-col gap-5">
       <div className="flex items-end justify-between gap-4">
@@ -324,6 +405,15 @@ export function ConnectionsSettings() {
                       onClick={() => void begin(machine)}
                     >
                       Reconnect
+                    </button>
+                    <button
+                      className="rounded p-2 text-content/40 hover:bg-selection hover:text-content disabled:opacity-40"
+                      disabled={busy}
+                      aria-label={`Edit ${machine.name}`}
+                      title="Edit name and address…"
+                      onClick={() => startEdit(machine)}
+                    >
+                      <Pencil className="size-4" />
                     </button>
                   </div>
                 )}
@@ -409,11 +499,13 @@ export function ConnectionsSettings() {
           className="flex flex-col gap-4 rounded-xl border border-stroke p-5"
           onSubmit={(event) => {
             event.preventDefault();
-            void begin();
+            void (editing ? save() : begin());
           }}
         >
           <div className="flex items-center justify-between">
-            <h3 className="text-[14px] font-medium">Connect through SSH</h3>
+            <h3 className="text-[14px] font-medium">
+              {editing ? `Edit ${editing.name}` : "Connect through SSH"}
+            </h3>
             <span className="rounded bg-selection px-2 py-1 text-[11px] text-content/60">
               SSH
             </span>
@@ -431,6 +523,26 @@ export function ConnectionsSettings() {
               autoComplete="off"
               spellCheck={false}
             />
+            <span className="text-[11px] leading-relaxed text-content/45">
+              A hostname works too, such as a Mac's Bonjour name (
+              <code className="rounded bg-content/10 px-1">
+                user@MacBook-Pro.local
+              </code>
+              ) or an alias from{" "}
+              <code className="rounded bg-content/10 px-1">~/.ssh/config</code>.
+              Then the address does not need editing when the IP changes.
+            </span>
+            {suggestion && (
+              <button
+                type="button"
+                disabled={busy}
+                className="self-start rounded-md bg-content/8 px-2 py-1 text-[11px] text-content/80 hover:bg-content/15 hover:text-content disabled:opacity-40"
+                title="Fills the address. Nothing is saved or tested until you save."
+                onClick={() => setTarget(suggestion)}
+              >
+                Use {suggestion} instead of the IP
+              </button>
+            )}
           </label>
           <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
             Name <span className="sr-only">(optional)</span>
@@ -462,6 +574,17 @@ export function ConnectionsSettings() {
               />
             </label>
           </details>
+          {editing ? (
+            <p className="text-[12px] leading-relaxed text-content/45">
+              Saving a new address closes the current connection and connects
+              to it. If this computer has not connected to that address
+              before, SSH asks you here whether to trust its host key. The
+              machine's projects, sessions and history stay linked to it. If
+              the address turns out to be another machine, the change stays
+              saved so you can fix it; nothing is installed there.
+            </p>
+          ) : (
+            <>
           <p className="text-[12px] leading-relaxed text-content/45">
             MonoCode installs and starts its background host, then connects
             securely. Your SSH keys and config are used automatically. Enable
@@ -479,17 +602,19 @@ export function ConnectionsSettings() {
             log out. The host keeps running until you stop it on that machine;
             removing it here only disconnects this desktop.
           </p>
+            </>
+          )}
           <div className="flex justify-end gap-2">
             <button
               type="button"
               disabled={busy}
               className="px-3 py-2 text-[13px] text-content/50"
-              onClick={() => setAdding(false)}
+              onClick={closeForm}
             >
               Cancel
             </button>
             <button className={button} disabled={busy || !target.trim()}>
-              {busy ? "Connecting…" : "Connect"}
+              {editing ? (busy ? "Saving…" : saveLabel) : busy ? "Connecting…" : "Connect"}
             </button>
           </div>
         </form>

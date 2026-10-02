@@ -35,7 +35,10 @@ export type RemoteConnectionEvent =
   /** The SSH process behind the machine's tunnel ended by itself. */
   | { type: "tunnel-exit"; exitCode?: number | null; stderr: string; at: number }
   /** A reconnect worked, or Update Host finished: forget any problem. */
-  | { type: "recovered"; at: number };
+  | { type: "recovered"; at: number }
+  /** The machine's address was edited: what was learned about the old one no
+   * longer applies, and a connection to the new one is being made. */
+  | { type: "reset" };
 
 /** Takes anything secret or machine-sized out of an error before it is shown:
  * bearer tokens, key=value credentials and whole `ssh …` command lines. */
@@ -110,6 +113,8 @@ export function reduceConnection(
   event: RemoteConnectionEvent,
 ): RemoteConnectionState {
   switch (event.type) {
+    case "reset":
+      return state === INITIAL_CONNECTION ? state : INITIAL_CONNECTION;
     case "recovered":
       return { status: "connected", lastSeen: event.at };
     case "ok":

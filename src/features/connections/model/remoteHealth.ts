@@ -111,6 +111,16 @@ export function notifyRemoteRecovered(environmentId?: string): void {
   recoveredListeners.forEach((listener) => listener());
 }
 
+/** A machine's address was edited: forget that it was unreachable and let the
+ * next attempt, to the new address, speak for itself. */
+export function resetRemoteConnection(environmentId: string): void {
+  unreachable.delete(environmentId);
+  for (const key of [...failures.keys()]) if (key.startsWith(`${environmentId}
+`)) failures.delete(key);
+  applyRemoteConnection(environmentId, { type: "reset" });
+  emit();
+}
+
 function recover(environmentId: string): void {
   for (const [key, failure] of [...failures])
     if (key.startsWith(`${environmentId}\n`) && failure.kind === "unreachable")

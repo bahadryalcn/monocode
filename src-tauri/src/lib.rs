@@ -274,6 +274,7 @@ pub fn run() {
             remote::remote_request,
             remote::remote_ssh_begin,
             remote::remote_ssh_reconnect,
+            remote::remote_machine_update,
             remote::remote_ssh_poll,
             remote::remote_ssh_answer,
             remote::remote_ssh_cancel,

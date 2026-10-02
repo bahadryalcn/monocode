@@ -4,6 +4,7 @@ import {
   readRemoteConnection,
   remotePollDue,
   reportRemoteLoad,
+  resetRemoteConnection,
   resetRemoteHealth,
   subscribeRemoteRecovered,
 } from "./remoteHealth";
@@ -84,4 +85,17 @@ it("keeps one connection status per machine, fed by every view's loads", () => {
   expect(readRemoteConnection("env").status).toBe("outdated-host");
   notifyRemoteRecovered("env");
   expect(readRemoteConnection("env").status).toBe("connected");
+});
+
+it("starts a machine's connection over when its address is edited", () => {
+  const recovered = vi.fn();
+  const unsubscribe = subscribeRemoteRecovered(recovered);
+  reportRemoteLoad(project, "changes", down);
+  expect(readRemoteConnection("env").status).toBe("unreachable");
+  expect(remotePollDue(project)).toBe(false);
+  resetRemoteConnection("env");
+  expect(readRemoteConnection("env")).toEqual({ status: "connecting" });
+  expect(remotePollDue(project)).toBe(true);
+  expect(recovered).not.toHaveBeenCalled();
+  unsubscribe();
 });

@@ -12,7 +12,12 @@ import {
 } from "./protocol";
 import { remoteProjectFor } from "./remoteProjects";
 import { blocksSending } from "./remoteConnection";
-import { notifyRemoteRecovered, readRemoteConnection, recordRemoteConnection } from "./remoteHealth";
+import {
+  notifyRemoteRecovered,
+  readRemoteConnection,
+  recordRemoteConnection,
+  resetRemoteConnection,
+} from "./remoteHealth";
 import { loadRemoteAutoReconnect } from "../../settings/model/settings";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
 
@@ -48,6 +53,28 @@ export function takeReconnectRequest(machines: RemoteMachine[]): RemoteMachine |
 export function subscribeReconnectRequests(listener: () => void): () => void {
   window.addEventListener(RECONNECT, listener);
   return () => window.removeEventListener(RECONNECT, listener);
+}
+
+const EDIT = "monocode:edit-machine";
+let editRequest: string | undefined;
+
+/** Opens Connections settings with this machine's definition ready to edit. */
+export function requestMachineEdit(machineId: string) {
+  editRequest = machineId;
+  window.dispatchEvent(new Event(EDIT));
+  window.dispatchEvent(new Event(OPEN_CONNECTIONS_EVENT));
+}
+
+/** The machine a view asked to edit, once, if it is one of `machines`. */
+export function takeEditRequest(machines: RemoteMachine[]): RemoteMachine | undefined {
+  const machine = machines.find((entry) => entry.id === editRequest);
+  if (machine) editRequest = undefined;
+  return machine;
+}
+
+export function subscribeEditRequests(listener: () => void): () => void {
+  window.addEventListener(EDIT, listener);
+  return () => window.removeEventListener(EDIT, listener);
 }
 
 const capabilitiesByEnvironment = new Map<string, string[]>();
@@ -334,6 +361,29 @@ export async function connectMachine(
   machinesLoaded = true;
   window.dispatchEvent(new Event(CHANGE));
   return machine;
+}
+
+/** Saves a machine's new name or SSH address. Its id and environment id stay,
+ * so every project on it keeps working. When the way in changed, the desktop
+ * closes the old tunnel and the machine's connection status starts over. */
+export async function updateMachine(
+  machine: RemoteMachine,
+  edit: { name: string; target: string; port: number | null },
+  reconnect: boolean,
+): Promise<RemoteMachine> {
+  const saved = await invoke<RemoteMachine>("remote_machine_update", {
+    machineId: machine.id,
+    name: edit.name,
+    target: edit.target,
+    port: edit.port,
+  });
+  cachedMachines = cachedMachines.map((entry) => (entry.id === saved.id ? saved : entry));
+  if (reconnect) {
+    machineOnline.delete(saved.id);
+    resetRemoteConnection(saved.environmentId);
+  }
+  window.dispatchEvent(new Event(CHANGE));
+  return saved;
 }
 
 export async function disconnectMachine(machineId: string): Promise<void> {

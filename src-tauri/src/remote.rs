@@ -292,6 +292,81 @@ pub fn remote_connect(
     Ok(machine.public())
 }
 
+/// What an edit changes in a saved SSH machine: its label and where to dial.
+/// The machine's id, environment id and credential are never part of it.
+fn apply_edit(
+    machines: &mut [StoredMachine],
+    machine_id: &str,
+    name: &str,
+    target: String,
+    port: Option<u16>,
+) -> Result<StoredMachine, String> {
+    let machine = machines
+        .iter_mut()
+        .find(|m| m.id == machine_id)
+        .ok_or("Machine is no longer connected")?;
+    let old = machine
+        .ssh
+        .as_ref()
+        .ok_or("This connection does not use SSH")?;
+    // The host's own port is whatever setup reported; only the way in changes.
+    let ssh = SshTarget {
+        target,
+        port,
+        remote_port: old.remote_port,
+    };
+    machine.endpoint = format!("ssh://{}", ssh.target);
+    machine.ssh = Some(ssh);
+    let name: String = name.trim().chars().take(100).collect();
+    if !name.is_empty() {
+        machine.name = name;
+    }
+    Ok(machine.clone())
+}
+
+/// Saves a new name or address for a machine and keeps everything that
+/// projects and the host know it by. Where the way in changed, the tunnel to
+/// the old address is closed here (on purpose, so nothing reports it as
+/// dropped) and its cached failure goes with it; the caller then reconnects
+/// through `remote_ssh_reconnect`, which can ask the user about a new host key.
+#[tauri::command(async)]
+pub fn remote_machine_update(
+    app: AppHandle,
+    state: State<'_, RemoteConnections>,
+    machine_id: String,
+    name: String,
+    target: String,
+    port: Option<u16>,
+) -> Result<Machine, String> {
+    let target = remote_ssh::validate_target(&target, port)?;
+    // A running setup would write its older copy of the machine back over this.
+    if state
+        .jobs
+        .lock()
+        .map_err(|_| "Connection setup is unavailable")?
+        .values()
+        .any(|job| !job.view().done)
+    {
+        return Err("Another SSH connection is being set up. Finish or cancel it first.".into());
+    }
+    let _guard = state
+        .store
+        .lock()
+        .map_err(|_| "Connection store is locked")?;
+    let path = store_path(&app)?;
+    let mut machines = read(&path)?;
+    let before = machines
+        .iter()
+        .find(|m| m.id == machine_id)
+        .and_then(|m| m.ssh.clone());
+    let machine = apply_edit(&mut machines, &machine_id, &name, target, port)?;
+    write(&path, &machines)?;
+    if before != machine.ssh {
+        state.tunnels.remove(&machine_id);
+    }
+    Ok(machine.public())
+}
+
 #[tauri::command(async)]
 pub fn remote_disconnect(
     app: AppHandle,
@@ -551,7 +626,7 @@ fn start_ssh_job(
                 != Some(&machine.environment_id)
             {
                 return Err(
-                    "Host identity changed. Remove this connection and add the machine again."
+                    "Host identity changed: this address answers as a different machine. Fix the address, or remove this connection and add the machine again."
                         .into(),
                 );
             }
@@ -750,6 +825,72 @@ mod tests {
             assert!(endpoint(url).is_err(), "{url}");
         }
     }
+    fn saved(id: &str, target: &str) -> StoredMachine {
+        StoredMachine {
+            id: id.into(),
+            name: "Home Mac".into(),
+            endpoint: format!("ssh://{target}"),
+            environment_id: format!("env-{id}"),
+            token: "secret-token".into(),
+            ssh: Some(SshTarget {
+                target: target.into(),
+                port: None,
+                remote_port: 3999,
+            }),
+        }
+    }
+
+    #[test]
+    fn editing_the_address_keeps_identity_and_credentials() {
+        let mut machines = vec![saved("a", "me@192.168.1.5"), saved("b", "me@other")];
+        let edited = apply_edit(
+            &mut machines,
+            "a",
+            " Mac ",
+            "me@new.local".into(),
+            Some(2222),
+        )
+        .unwrap();
+        assert_eq!(edited.id, "a");
+        assert_eq!(edited.environment_id, "env-a");
+        assert_eq!(edited.token, "secret-token");
+        assert_eq!(edited.name, "Mac");
+        assert_eq!(edited.endpoint, "ssh://me@new.local");
+        let ssh = edited.ssh.unwrap();
+        assert_eq!(
+            (ssh.target.as_str(), ssh.port, ssh.remote_port),
+            ("me@new.local", Some(2222), 3999)
+        );
+        // Only the edited machine changed, and a blank name keeps the old one.
+        assert_eq!(machines[1].ssh.as_ref().unwrap().target, "me@other");
+        let again =
+            apply_edit(&mut machines, "a", "  ", "me@new.local".into(), Some(2222)).unwrap();
+        assert_eq!(again.name, "Mac");
+    }
+
+    #[test]
+    fn only_a_saved_ssh_machine_can_be_edited() {
+        let mut machines = vec![saved("a", "me@home")];
+        machines[0].ssh = None;
+        assert!(apply_edit(&mut machines, "a", "", "me@x".into(), None).is_err());
+        assert!(apply_edit(&mut machines, "missing", "", "me@x".into(), None).is_err());
+    }
+
+    #[test]
+    fn an_edited_store_round_trips_with_the_token_intact() {
+        let path =
+            std::env::temp_dir().join(format!("monocode-edit-{}.json", uuid::Uuid::new_v4()));
+        let mut machines = vec![saved("a", "me@192.168.1.5")];
+        write(&path, &machines).unwrap();
+        apply_edit(&mut machines, "a", "", "me@new.local".into(), None).unwrap();
+        write(&path, &machines).unwrap();
+        let loaded = read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].token, "secret-token");
+        assert_eq!(loaded[0].ssh.as_ref().unwrap().target, "me@new.local");
+    }
+
     #[test]
     fn public_machine_metadata_never_contains_the_token() {
         let stored = StoredMachine {

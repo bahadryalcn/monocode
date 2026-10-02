@@ -11,7 +11,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SshTarget {
     pub target: String,
@@ -580,6 +580,9 @@ pub struct Tunnel {
     /// Set when the app closes the tunnel on purpose, or when its unexpected
     /// exit has been reported: either way nothing more is reported.
     settled: Arc<AtomicBool>,
+    /// Where this tunnel leads, so one started for an address the machine no
+    /// longer has is never reused. `None` for a tunnel adopted without it.
+    target: Option<SshTarget>,
 }
 impl Drop for Tunnel {
     fn drop(&mut self) {
@@ -624,6 +627,7 @@ impl Tunnel {
             stderr,
             stderr_done,
             settled: Arc::new(AtomicBool::new(false)),
+            target: None,
         }
     }
     /// Reports through `sink`, once, if ssh exits on its own. A tunnel dropped
@@ -694,7 +698,8 @@ impl Tunnel {
         let child = command
             .spawn()
             .map_err(|e| format!("Could not start OpenSSH: {e}"))?;
-        let tunnel = Self::adopt(child, port);
+        let mut tunnel = Self::adopt(child, port);
+        tunnel.target = Some(target.clone());
         let deadline = Instant::now() + Duration::from_secs(if job.is_some() { 150 } else { 20 });
         loop {
             if job.is_some_and(|j| j.cancelled.load(Ordering::Relaxed)) {
@@ -807,7 +812,13 @@ impl Tunnels {
         let slot = self.slots().entry(id.into()).or_default().clone();
         let mut current = slot.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(tunnel) = current.tunnel.as_mut() {
-            if tunnel.alive() {
+            // A request that read the machine just before its address was edited
+            // can start a tunnel to the old one; it is dropped here, not reused.
+            let stale = tunnel
+                .target
+                .as_ref()
+                .is_some_and(|started| started != target);
+            if tunnel.alive() && !stale {
                 return Ok(TunnelLease {
                     endpoint: format!("http://127.0.0.1:{}", tunnel.port),
                     slot: slot.clone(),
@@ -1119,6 +1130,39 @@ mod tests {
         tunnels.insert("n".into(), "env", Tunnel::adopt(long_lived_child(), 3));
         tunnels.clear();
         assert!(events.recv_timeout(Duration::from_millis(900)).is_err());
+    }
+    #[test]
+    fn removing_a_machines_tunnel_clears_its_failure_and_reports_nothing() {
+        let (tunnels, events) = exit_events();
+        tunnels.insert("m".into(), "env", Tunnel::adopt(long_lived_child(), 1));
+        tunnels.slots().get("m").unwrap().lock().unwrap().failure =
+            Some((Instant::now(), "old address failed".into()));
+        tunnels.remove("m");
+        assert!(tunnels.slots().get("m").is_none());
+        assert!(events.recv_timeout(Duration::from_millis(700)).is_err());
+    }
+    #[test]
+    fn a_tunnel_started_for_another_address_is_not_reused() {
+        let tunnels = Tunnels::default();
+        let target = |host: &str| SshTarget {
+            target: host.into(),
+            port: None,
+            remote_port: 3774,
+        };
+        let mut tunnel = Tunnel::adopt(long_lived_child(), 4321);
+        tunnel.target = Some(target("me@old"));
+        tunnels.insert("m".into(), "env", tunnel);
+        let Ok(lease) = tunnels.endpoint("m", "env", &target("me@old"), false) else {
+            panic!("same address reuses the tunnel")
+        };
+        assert_eq!(lease.endpoint, "http://127.0.0.1:4321");
+        let error = tunnels
+            .endpoint("m", "env", &target("me@new"), false)
+            .err()
+            .expect("the old tunnel is dropped, not reused");
+        assert!(error.starts_with("Machine is unreachable"));
+        let slot = tunnels.slots().get("m").unwrap().clone();
+        assert!(slot.lock().unwrap().tunnel.is_none());
     }
     #[test]
     fn a_missing_tunnel_is_not_started_when_connecting_is_not_allowed() {

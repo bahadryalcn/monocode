@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Loader } from "../../../shared/ui/icons";
-import { OPEN_CONNECTIONS_EVENT } from "../model/connections";
+import { OPEN_CONNECTIONS_EVENT, requestMachineEdit } from "../model/connections";
 import { needsSignIn } from "../model/remoteConnection";
 import type { RemoteFailure } from "../model/remoteFailure";
 import { useRemoteConnection } from "../model/useRemoteConnection";
@@ -60,6 +60,11 @@ export function RemoteLoadError({
           >
             {reconnecting ? <Loader className="size-3 animate-spin" aria-hidden="true" /> : null}
             {reconnecting ? "Reconnecting…" : needsAuth ? "Sign in and reconnect" : "Reconnect"}
+          </button>
+        ) : null}
+        {failure.kind === "unreachable" && machine?.ssh ? (
+          <button type="button" className={ACTION} onClick={() => requestMachineEdit(machine.id)}>
+            Edit address…
           </button>
         ) : null}
         {failure.kind === "unreachable" || failure.kind === "outdated" ? (
