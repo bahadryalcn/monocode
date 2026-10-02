@@ -7,6 +7,7 @@ import { codexCommandPresentation } from "../../../integrations/harness/provider
 import { recoverCursorSubagents } from "../../../integrations/harness/providers/cursor/cursorSubagents";
 import { pathKey } from "../../../shared/lib/paths";
 import { persistableAttachment } from "../model/attachments";
+import { clearComposerDraft } from "../model/draftCache";
 import {
   markMissingAttachments,
   persistableQueue,
@@ -473,6 +474,15 @@ export async function getSession(sessionId: string): Promise<Session | null> {
   return session ? withStoredQueue(session) : null;
 }
 
+/** Which of `paths` still exist on disk. */
+export async function existingPaths(paths: string[]): Promise<Set<string>> {
+  const infos = await invoke<{ path: string }[]>("inspect_paths", { paths });
+  // `inspect_paths` expands `~` and normalizes separators, so match on what
+  // came back rather than on what was sent.
+  const present = new Set(infos.map((info) => pathKey(info.path)));
+  return new Set(paths.filter((path) => present.has(pathKey(path))));
+}
+
 /**
  * Queued follow-ups saved with the session. They come back as "restored": the
  * session is idle after a restart, so the queue waits for the user instead of
@@ -480,27 +490,21 @@ export async function getSession(sessionId: string): Promise<Session | null> {
  */
 async function withStoredQueue(session: Session): Promise<Session> {
   try {
-    const raw = await invoke<unknown>("session_get_queue", {
-      sessionId: session.id,
-    });
-    const queue = await markMissingAttachments(
-      restoreQueuedMessages(raw),
-      async (paths) => {
-        const infos = await invoke<{ path: string }[]>("inspect_paths", {
-          paths,
-        });
-        // `inspect_paths` expands `~` and normalizes separators, so match on
-        // what came back rather than on what was sent.
-        const present = new Set(infos.map((info) => pathKey(info.path)));
-        return new Set(paths.filter((path) => present.has(pathKey(path))));
-      },
-    );
+    const queue = await loadStoredQueue(session.id);
     if (queue.length === 0) return session;
     return { ...session, queuedMessages: queue, queueStatus: "restored" };
   } catch {
     // A queue that cannot be read must not cost the reader the session.
     return session;
   }
+}
+
+/** The saved queue for a session id, with attachments whose file is gone flagged. */
+export async function loadStoredQueue(
+  sessionId: string,
+): Promise<QueuedMessage[]> {
+  const raw = await invoke<unknown>("session_get_queue", { sessionId });
+  return markMissingAttachments(restoreQueuedMessages(raw), existingPaths);
 }
 
 /** Write the session's queue through to disk; an empty queue removes it. */
@@ -674,6 +678,8 @@ export async function deleteSession(
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
     removeSessionAdditionalDirs(sessionId);
+    // The cache's change listener deletes the saved draft row.
+    clearComposerDraft(sessionId);
     const tombstone = setTimeout(() => deletedSessionIds.delete(sessionId), 60_000);
     if (typeof tombstone === "object") tombstone.unref();
   } catch (error) {

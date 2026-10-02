@@ -71,7 +71,8 @@ export function shouldAutoContinue(input: {
 /**
  * The transcript of a turn that finished while the app was closed: the quit
  * note goes (the turn was not cut off after all) and the final reply is added
- * unless the session already ends with it.
+ * unless the turn already holds it (the steps rebuilt from the transcript
+ * include it).
  */
 export function withFinishedTurn(
   session: Session,
@@ -81,7 +82,7 @@ export function withFinishedTurn(
     ? session.blocks.slice(0, -1)
     : session.blocks;
   const text = finalText?.trim();
-  if (text && !endsWithAssistantText(blocks, text)) {
+  if (text && !turnHasAssistantText(blocks, text)) {
     blocks = [
       ...blocks,
       { id: crypto.randomUUID(), role: "assistant", text },
@@ -90,10 +91,11 @@ export function withFinishedTurn(
   return blocks === session.blocks ? session : { ...session, blocks };
 }
 
-function endsWithAssistantText(blocks: Block[], text: string): boolean {
+/** The turn (everything after the last user block) already holds this reply. */
+function turnHasAssistantText(blocks: Block[], text: string): boolean {
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index];
-    if (block.role === "assistant") return block.text.trim() === text;
+    if (block.role === "assistant" && block.text.trim() === text) return true;
     if (block.role === "user") return false;
   }
   return false;

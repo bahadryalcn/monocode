@@ -728,6 +728,85 @@ fn get_session_queue(conn: &Connection, session_id: &str) -> rusqlite::Result<Op
     Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
 }
 
+const COMPOSER_DRAFT_MAX_BYTES: usize = 8_000_000;
+/// A draft nobody touched for this long is not coming back; listing drops it.
+const COMPOSER_DRAFT_MAX_AGE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Write-through for the unsent text in a session's composer. Keyed by the
+/// session id even when that session has no transcript row yet (a blank new
+/// chat), so it has its own table and no foreign key. `None` deletes the row.
+#[tauri::command(async)]
+pub fn session_set_draft(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    draft: Option<Value>,
+) -> Result<(), String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    set_composer_draft(&conn, &session_id, draft.as_ref())
+}
+
+/// Every saved draft, read once at launch so each composer can start from its own.
+#[tauri::command(async)]
+pub fn session_list_drafts(store: State<'_, SessionStore>) -> Result<Vec<Value>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_composer_drafts(&conn).map_err(|e| e.to_string())
+}
+
+fn set_composer_draft(
+    conn: &Connection,
+    session_id: &str,
+    draft: Option<&Value>,
+) -> Result<(), String> {
+    let Some(draft) = draft else {
+        conn.execute(
+            "DELETE FROM composer_drafts WHERE session_id = ?1",
+            [session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+    if !draft.is_object() {
+        return Err("draft must be an object".into());
+    }
+    let json = serde_json::to_string(draft).map_err(|e| e.to_string())?;
+    if json.len() > COMPOSER_DRAFT_MAX_BYTES {
+        return Err("draft is too large".into());
+    }
+    conn.execute(
+        "INSERT INTO composer_drafts (session_id, draft_json, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(session_id) DO UPDATE SET
+           draft_json = excluded.draft_json,
+           updated_at = excluded.updated_at",
+        params![session_id, json, now_millis()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Rows as `{ sessionId, draft }`, oldest-expired ones deleted first. A row
+/// that no longer parses is skipped rather than failing the whole list.
+fn list_composer_drafts(conn: &Connection) -> rusqlite::Result<Vec<Value>> {
+    conn.execute(
+        "DELETE FROM composer_drafts WHERE updated_at < ?1",
+        [now_millis() - COMPOSER_DRAFT_MAX_AGE_MS],
+    )?;
+    let mut statement = conn
+        .prepare("SELECT session_id, draft_json FROM composer_drafts ORDER BY updated_at DESC")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut drafts = Vec::new();
+    for row in rows {
+        let (session_id, raw) = row?;
+        if let Ok(draft) = serde_json::from_str::<Value>(&raw) {
+            drafts.push(json!({ "sessionId": session_id, "draft": draft }));
+        }
+    }
+    Ok(drafts)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InFlightSession {
@@ -1121,6 +1200,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS session_queues (
            session_id TEXT PRIMARY KEY,
            queue_json TEXT NOT NULL,
+           updated_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS composer_drafts (
+           session_id TEXT PRIMARY KEY,
+           draft_json TEXT NOT NULL,
            updated_at INTEGER NOT NULL
          );",
     )?;
@@ -3299,6 +3383,72 @@ mod tests {
         set_session_queue(&conn, "s1", Some(&json!([{ "id": "q1" }]))).unwrap();
         delete_session(&conn, "s1").unwrap();
         assert_eq!(get_session_queue(&conn, "s1").unwrap(), None);
+    }
+
+    #[test]
+    fn composer_draft_round_trips_replaces_and_clears() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert!(list_composer_drafts(&conn).unwrap().is_empty());
+
+        // No transcript row is needed: a blank new chat has a draft too.
+        let first = json!({ "text": "half a thought", "attachments": [] });
+        set_composer_draft(&conn, "blank-1", Some(&first)).unwrap();
+        set_composer_draft(&conn, "s2", Some(&json!({ "text": "other" }))).unwrap();
+        let second = json!({ "text": "half a thought, longer", "attachments": [] });
+        set_composer_draft(&conn, "blank-1", Some(&second)).unwrap();
+
+        let listed = list_composer_drafts(&conn).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(listed.contains(&json!({ "sessionId": "blank-1", "draft": second })));
+
+        set_composer_draft(&conn, "blank-1", None).unwrap();
+        let listed = list_composer_drafts(&conn).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["sessionId"], "s2");
+    }
+
+    #[test]
+    fn composer_draft_rejects_non_objects_and_survives_transcript_saves() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert!(set_composer_draft(&conn, "s1", Some(&json!("text"))).is_err());
+
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat")).unwrap();
+        let draft = json!({ "text": "later" });
+        set_composer_draft(&conn, "s1", Some(&draft)).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat renamed")).unwrap();
+        assert_eq!(
+            list_composer_drafts(&conn).unwrap(),
+            vec![json!({ "sessionId": "s1", "draft": draft })]
+        );
+    }
+
+    #[test]
+    fn composer_draft_listing_drops_expired_and_unparseable_rows() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        set_composer_draft(&conn, "fresh", Some(&json!({ "text": "keep" }))).unwrap();
+        set_composer_draft(&conn, "old", Some(&json!({ "text": "stale" }))).unwrap();
+        conn.execute(
+            "UPDATE composer_drafts SET updated_at = ?1 WHERE session_id = 'old'",
+            [now_millis() - COMPOSER_DRAFT_MAX_AGE_MS - 1],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO composer_drafts (session_id, draft_json, updated_at)
+             VALUES ('broken', 'not json', ?1)",
+            [now_millis()],
+        )
+        .unwrap();
+
+        let listed = list_composer_drafts(&conn).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0]["sessionId"], "fresh");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM composer_drafts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 2, "only the expired row is deleted");
     }
 
     #[test]

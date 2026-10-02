@@ -244,6 +244,8 @@ type Props = SessionPaneProps & {
   /** An opened host conversation whose transcript has not arrived yet. */
   remoteSessionLoading?: boolean;
   remoteSessionStarted?: boolean;
+  /** A host chat whose last turn the host lost: shows Continue, as a quit turn does locally. */
+  interruptedTurn?: boolean;
   /** Why a message to the host cannot be delivered now; Send still tries to reconnect. */
   sendBlockedReason?: string;
   allowedModelHarnesses?: readonly HarnessId[];
@@ -272,6 +274,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   remoteFeatures,
   remoteSessionLoading = false,
   remoteSessionStarted = false,
+  interruptedTurn,
   sendBlockedReason,
   allowedModelHarnesses,
   session,
@@ -783,8 +786,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
           perItemStop ? stopBackground() : Promise.resolve(onStop(session.id))
         }
       />
-      {canAutoContinue(session) && !isAutoContinueDue(session.id) ? (
+      {(interruptedTurn ?? canAutoContinue(session)) &&
+      !isAutoContinueDue(session.id) ? (
         <InterruptedNotice
+          message={
+            remote ? "The host stopped this turn before it finished." : undefined
+          }
           onContinue={() => onSubmit(session.id, CONTINUE_PROMPT, [])}
         />
       ) : null}

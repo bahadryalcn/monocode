@@ -63,6 +63,24 @@ describe("isInFlightSession", () => {
   });
 });
 
+describe("a chat on another machine", () => {
+  const remote = chat("remote://env-1/home/me/app", { busy: true });
+
+  it("is not in flight: its turn keeps running on the host when the app quits", () => {
+    expect(isInFlightSession(remote)).toBe(false);
+    expect(hasInFlightSessions([remote])).toBe(false);
+    expect(inFlightRefs([remote], [newTab(remote.id)])).toEqual([]);
+  });
+
+  it("does not hide a local turn running beside it", () => {
+    const local = chat("/tmp/a", { busy: true });
+    expect(hasInFlightSessions([remote, local])).toBe(true);
+    expect(inFlightRefs([remote, local], [newTab(remote.id), newTab(local.id)]).map((ref) => ref.sessionId)).toEqual([
+      local.id,
+    ]);
+  });
+});
+
 describe("inFlightRefs", () => {
   it("walks open tabs first, then parked busy sessions", () => {
     const parked = chat("/tmp/parked", { busy: true });

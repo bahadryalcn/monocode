@@ -36,14 +36,13 @@ export function queueShortcutApplies(input: {
   backgroundOnly: boolean;
   allowBusySubmit: boolean;
   disabled: boolean;
-  remote: boolean;
   popupOpen: boolean;
   draftMode: boolean;
   text: string;
   attachmentCount: number;
 }): boolean {
   if (!input.busy || input.backgroundOnly || !input.allowBusySubmit) return false;
-  if (input.disabled || input.remote || input.popupOpen || input.draftMode) {
+  if (input.disabled || input.popupOpen || input.draftMode) {
     return false;
   }
   if (!input.text.trim() && input.attachmentCount === 0) return false;

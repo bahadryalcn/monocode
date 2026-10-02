@@ -42,13 +42,15 @@ import {
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
-import { probeTurnTail, type TurnTail } from "../../platform/tauri/turnProbe";
+import { flushComposerDrafts } from "../../features/sessions/data/composerDraftStore";
+import { probeTurnTail, readTurnSteps, type TurnTail } from "../../platform/tauri/turnProbe";
 import { markAutoContinueDue } from "../../features/sessions/model/autoContinue";
 import {
   classifyTurnRecovery,
   shouldAutoContinue,
   withFinishedTurn,
 } from "../../features/sessions/model/turnRecovery";
+import type { TurnSteps } from "../../features/sessions/model/turnSteps";
 import { loadAutoContinueInterrupted } from "../../features/settings/model/settings";
 import { loadWindowTransfer } from "./windowTransferBootstrap";
 import type { WindowTransferPayload } from "./windowTransfer";
@@ -355,30 +357,81 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
 const LOCAL_CHILD_LIVENESS = "dead" as const;
 const PROBE_TIMEOUT_MS = 3000;
 
-async function transcriptTail(session: Session): Promise<TurnTail | "unsupported"> {
+function transcriptProvider(session: Session): "claude" | "codex" | null {
   const provider = session.harness;
-  if ((provider !== "claude" && provider !== "codex") || !session.providerSessionId) {
-    return "unsupported";
-  }
-  const probe = probeTurnTail({
-    provider,
-    providerSessionId: session.providerSessionId,
-    cwd: sessionWorkCwd(session),
-    providerAccountId: session.providerAccountId,
-  });
-  const timeout = new Promise<TurnTail>((resolve) =>
-    window.setTimeout(() => resolve({ state: "missing" }), PROBE_TIMEOUT_MS),
+  return (provider === "claude" || provider === "codex") && session.providerSessionId
+    ? provider
+    : null;
+}
+
+/** Bounded so a slow disk cannot hold up the first paint. */
+function withinTimeout<T>(work: Promise<T>, fallback: T): Promise<T> {
+  const timeout = new Promise<T>((resolve) =>
+    window.setTimeout(() => resolve(fallback), PROBE_TIMEOUT_MS),
   );
-  return Promise.race([probe, timeout]).catch((): TurnTail => ({ state: "missing" }));
+  return Promise.race([work, timeout]).catch(() => fallback);
+}
+
+async function transcriptTail(session: Session): Promise<TurnTail | "unsupported"> {
+  const provider = transcriptProvider(session);
+  if (!provider) return "unsupported";
+  return withinTimeout(
+    probeTurnTail({
+      provider,
+      providerSessionId: session.providerSessionId!,
+      cwd: sessionWorkCwd(session),
+      providerAccountId: session.providerAccountId,
+    }),
+    { state: "missing" } as TurnTail,
+  );
+}
+
+/** What the CLI recorded for the last turn, read alongside the tail probe. */
+function readRecordedSteps(session: Session): Promise<TurnSteps | null> {
+  const provider = transcriptProvider(session);
+  if (!provider) return Promise.resolve(null);
+  return withinTimeout(
+    readTurnSteps({
+      provider,
+      providerSessionId: session.providerSessionId!,
+      cwd: sessionWorkCwd(session),
+      providerAccountId: session.providerAccountId,
+    }),
+    null,
+  );
+}
+
+/**
+ * Put those steps into the session. Anything that goes wrong leaves it as it
+ * was: the quit note and the final reply logic still apply on top.
+ */
+async function withRecordedSteps(
+  session: Session,
+  steps: TurnSteps | null,
+  outcome: "finished" | "interrupted",
+): Promise<Session> {
+  if (!steps) return session;
+  try {
+    // The conversion pulls in the provider adapters; boot only pays for them
+    // when there is a turn to rebuild.
+    const { withTurnSteps } = await import("../../features/sessions/model/turnSteps");
+    return withTurnSteps(session, steps, outcome);
+  } catch {
+    return session;
+  }
 }
 
 /**
  * A chat that was mid-turn when MonoCode went away: look at what really
  * happened before anything is sent. A turn that finished is shown as finished;
  * only a turn that was cut off may be continued, and only when that is certain.
+ * Either way the steps the CLI recorded while the app was away are filled in.
  */
 async function recoverInterruptedTurn(session: Session): Promise<Session> {
-  const tail = await transcriptTail(session);
+  const [tail, steps] = await Promise.all([
+    transcriptTail(session),
+    readRecordedSteps(session),
+  ]);
   const recovery = classifyTurnRecovery({
     wasInFlight: true,
     liveness: LOCAL_CHILD_LIVENESS,
@@ -387,20 +440,24 @@ async function recoverInterruptedTurn(session: Session): Promise<Session> {
   });
   if (recovery.state === "finished") {
     return withFinishedTurn(
-      session,
+      await withRecordedSteps(session, steps, "finished"),
       tail === "unsupported" ? undefined : tail.finalText,
     );
   }
+  const recovered =
+    recovery.state === "interrupted"
+      ? await withRecordedSteps(session, steps, "interrupted")
+      : session;
   if (
     shouldAutoContinue({
       recovery,
       enabled: loadAutoContinueInterrupted(),
-      queuedCount: session.queuedMessages?.length ?? 0,
+      queuedCount: recovered.queuedMessages?.length ?? 0,
     })
   ) {
-    markAutoContinueDue(session.id);
+    markAutoContinueDue(recovered.id);
   }
-  return session;
+  return recovered;
 }
 
 export function bindResumedSessions(sessions: Session[]): void {
@@ -444,6 +501,7 @@ export async function confirmReload(
 export async function persistLiveTranscripts(
   sessions: Session[],
 ): Promise<void> {
+  await flushComposerDrafts().catch(() => undefined);
   await Promise.all(
     sessions
       .filter(shouldPersistSession)
@@ -478,6 +536,8 @@ export async function persistQuitState(
       await write(upsertSession(payload));
     }),
   );
+  // Drafts wait on a short timer; the quit must not.
+  await write(flushComposerDrafts());
   // The queue hook writes through as it changes; this settles the last edit
   // before the process goes.
   await Promise.all(

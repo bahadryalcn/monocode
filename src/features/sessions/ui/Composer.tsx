@@ -221,7 +221,13 @@ import {
   taggedMcpServers,
   type McpTag,
 } from "../model/mcpPicker";
-import { getComposerMcpTags, setComposerMcpTags } from "../model/draftCache";
+import {
+  getComposerAttachments,
+  getComposerMcpTags,
+  setComposerAttachments,
+  setComposerMcpTags,
+  takeComposerNotice,
+} from "../model/draftCache";
 import { type McpConnection } from "../../settings/model/mcp";
 import {
   getCachedMcpSettings,
@@ -389,6 +395,7 @@ function MessageQueue({
   status,
   onDelete,
   canAttach,
+  remote = false,
   onEdit,
   onEditingChange,
   onSteer,
@@ -397,6 +404,8 @@ function MessageQueue({
   messages: QueuedMessage[];
   status?: MessageQueueStatus;
   canAttach: boolean;
+  /** The turn runs on another machine: it cannot be steered, and the queue is this app's. */
+  remote?: boolean;
   onDelete?: (messageId: string) => void;
   onEdit?: (
     messageId: string,
@@ -503,15 +512,17 @@ function MessageQueue({
                   Attachment missing
                 </span>
               ) : null}
-              <button
-                type="button"
-                disabled={attachmentGone}
-                onClick={() => onSteer?.(message.id)}
-                className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content disabled:opacity-30"
-              >
-                <CornerDownRight className="size-3.5" />
-                Steer
-              </button>
+              {remote ? null : (
+                <button
+                  type="button"
+                  disabled={attachmentGone}
+                  onClick={() => onSteer?.(message.id)}
+                  className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content disabled:opacity-30"
+                >
+                  <CornerDownRight className="size-3.5" />
+                  Steer
+                </button>
+              )}
               <button
                 type="button"
                 title="Edit queued message"
@@ -533,6 +544,11 @@ function MessageQueue({
             </div>
           );
         })}
+        {remote ? (
+          <div className="border-t border-stroke py-1 text-[11px] text-content/40">
+            Sent one at a time when the host finishes this turn, while MonoCode is open.
+          </div>
+        ) : null}
       </div>
       {editingMessage ? (
         <QueuedMessageEditDialog
@@ -643,7 +659,10 @@ export function Composer({
   const boxRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
-  const attachmentsRef = useRef<Attachment[]>([]);
+  // A remount (or a restart) starts from the attachments the draft was saved with.
+  const attachmentsRef = useRef<Attachment[]>(
+    sessionId ? getComposerAttachments(sessionId) : [],
+  );
   const borrowedAttachmentIdsRef = useRef(new Set<string>());
   const attachmentLifecycleRef = useRef(0);
   const consumedQuoteId = useRef<number | null>(null);
@@ -688,12 +707,18 @@ export function Composer({
   const [hasValue, setHasValue] = useState(
     () =>
       (initialDraft ?? "").trim().length > 0 ||
+      attachmentsRef.current.length > 0 ||
       !!inboxCard ||
       !!noteCard ||
       !!handoffCard,
   );
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [pasteError, setPasteError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>(
+    () => attachmentsRef.current,
+  );
+  // Says so when a restored draft lost an attachment whose file is gone.
+  const [pasteError, setPasteError] = useState<string | null>(
+    () => (sessionId ? takeComposerNotice(sessionId) : undefined) ?? null,
+  );
   const [fileDrag, setFileDrag] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
   const [planSelected, setPlanSelected] = useState(false);
@@ -990,6 +1015,16 @@ export function Composer({
   useEffect(() => {
     if (sessionId) setComposerMcpTags(sessionId, selectedMcp);
   }, [sessionId, selectedMcp]);
+
+  useEffect(() => {
+    // Object URLs die with this pane, so the saved copy keeps none.
+    if (sessionId) {
+      setComposerAttachments(
+        sessionId,
+        attachments.map(({ previewUrl: _preview, ...file }) => file),
+      );
+    }
+  }, [sessionId, attachments]);
 
   useEffect(() => {
     syncHasValue(ref.current?.value ?? "", attachmentsRef.current);
@@ -2143,7 +2178,6 @@ export function Composer({
           backgroundOnly,
           allowBusySubmit,
           disabled: disabled || worktreeRemoved,
-          remote,
           popupOpen: false,
           draftMode: draftActive,
           text: e.currentTarget.value,
@@ -2333,6 +2367,7 @@ export function Composer({
         messages={queuedMessages}
         status={queueStatus}
         canAttach={attachmentsSupported}
+        remote={remote}
         onDelete={onDeleteQueuedMessage}
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}
@@ -3033,7 +3068,6 @@ export function Composer({
                     backgroundOnly,
                     allowBusySubmit,
                     disabled: disabled || worktreeRemoved,
-                    remote,
                     popupOpen: false,
                     draftMode: draftActive,
                     text: draft,

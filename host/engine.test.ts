@@ -7,6 +7,7 @@ import type { HostProvider } from "./providers";
 import { HostEngine, parseCommand } from "./engine";
 import { HostStore } from "./store";
 import { readAttachmentChunk, writeAttachmentChunk } from "./attachments";
+import { applySessionSync } from "../src/features/connections/model/protocol";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -862,6 +863,40 @@ describe("headless session ownership", () => {
       status: "idle",
       title: "codex · Work",
     });
+  });
+
+  it("catches a client up from a stale copy even after the host trimmed its event log", async () => {
+    const { engine, store, turns, id } = setup();
+    engine.command({ type: "send", commandId: "work", sessionId: id, text: "Work" });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    const stale = store.session(id);
+    // The app went away here; the turn keeps producing output meanwhile.
+    for (let step = 0; step < 3; step++) {
+      turns[0].input.onEvent({ type: "approval.requested", requestId: step + 1, title: `Run ${step}?` });
+    }
+    turns[0].input.onEvent({ type: "message.delta", text: "finished the work" });
+    turns[0].finish();
+    await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
+    const current = store.session(id);
+    expect(current.revision).toBeGreaterThan(stale.revision + 1);
+
+    // The retained events no longer reach back to the client's revision.
+    store.db.prepare("DELETE FROM events WHERE session_id=? AND revision<=?").run(id, stale.revision + 1);
+    expect(store.events(id, stale.revision).snapshot?.revision).toBe(current.revision);
+
+    // The app does not read events: its sync is by block revision, so the
+    // stale copy still becomes the host's state, in order and without repeats.
+    const sync = store.sync(id, stale.revision);
+    expect(sync.kind).toBe("delta");
+    const caughtUp = applySessionSync(stale, sync);
+    expect(caughtUp.session.blocks.map((block) => block.id)).toEqual(
+      current.session.blocks.map((block) => block.id),
+    );
+    expect(caughtUp.session.blocks).toEqual(current.session.blocks);
+    expect(caughtUp.status).toBe("idle");
+
+    // A client ahead of the host (restored or replaced host) reloads in full.
+    expect(store.sync(id, current.revision + 10).kind).toBe("snapshot");
   });
 
   it("requires snapshot recovery when the client's event cursor is invalid", () => {

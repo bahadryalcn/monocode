@@ -52,6 +52,7 @@ import {
 } from "../../platform/tauri/fs";
 import { IS_MAC, MOD } from "../../platform/tauri/platform";
 import { copyText } from "../../platform/tauri/clipboard";
+import { forgetRemoteQueue } from "../../features/connections/model/useRemoteQueue";
 import { resolveModel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
 import { sessionDisplayTitle } from "../../features/sessions/model/session";
@@ -442,6 +443,7 @@ function SidebarComponent({
           projectId: hostProject.projectId,
           sessionId,
         });
+        forgetRemoteQueue(sessionId);
         onRemoteSessionDeleted?.(sessionId);
       }
       refreshRemoteProjectSessions();

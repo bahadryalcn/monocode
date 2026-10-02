@@ -66,3 +66,41 @@ describe("draftCache", () => {
     expect(getComposerMcpTags("mcp-one")).toEqual([]);
   });
 });
+
+describe("draftCache persistence hooks", () => {
+  it("restores a saved draft but never over text typed in this run", async () => {
+    const { clearComposerDraft, restoreComposerDraft, getComposerDraft } = await import("./draftCache");
+    clearComposerDraft("r1");
+    expect(
+      restoreComposerDraft("r1", { text: "saved", mcpTags: [], attachments: [] }),
+    ).toBe(true);
+    expect(getComposerDraft("r1")).toBe("saved");
+
+    setComposerDraft("r2", "typed now");
+    expect(
+      restoreComposerDraft("r2", { text: "saved", mcpTags: [], attachments: [] }),
+    ).toBe(false);
+    expect(getComposerDraft("r2")).toBe("typed now");
+  });
+
+  it("tells subscribers which session changed, and not for no-ops", async () => {
+    const { subscribeComposerDrafts } = await import("./draftCache");
+    const seen: string[] = [];
+    const stop = subscribeComposerDrafts((id) => seen.push(id));
+    setComposerDraft("n1", "a");
+    setComposerDraft("n1", "a");
+    setComposerDraft("n1", "");
+    setComposerDraft("n1", "");
+    stop();
+    setComposerDraft("n1", "b");
+    expect(seen).toEqual(["n1", "n1"]);
+  });
+
+  it("hands a restore notice out once", async () => {
+    const { restoreComposerDraft, takeComposerNotice, clearComposerDraft } = await import("./draftCache");
+    clearComposerDraft("m1");
+    restoreComposerDraft("m1", { text: "x", mcpTags: [], attachments: [], notice: "lost one" });
+    expect(takeComposerNotice("m1")).toBe("lost one");
+    expect(takeComposerNotice("m1")).toBeUndefined();
+  });
+});

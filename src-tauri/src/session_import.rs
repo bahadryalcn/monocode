@@ -463,7 +463,7 @@ pub(crate) fn discover_in(claude_projects: &Path, codex_roots: &[PathBuf]) -> Di
 
 /// The prompt a person typed, or nothing for the wrappers Claude Code records
 /// around slash commands and system notices.
-fn claude_prompt(record: &Value) -> Option<String> {
+pub(crate) fn claude_prompt(record: &Value) -> Option<String> {
     let text = claude_message_text(record)?;
     let text = text.trim();
     if text.is_empty() {
@@ -775,6 +775,16 @@ pub(crate) fn read_claude_transcript(
     path: &Path,
     max_bytes: usize,
 ) -> Result<ClaudeTranscript, String> {
+    let mut reader = open_log(path).ok_or_else(|| format!("Cannot open {}", path.display()))?;
+    claude_transcript_from(&mut *reader, max_bytes)
+}
+
+/// `read_claude_transcript` over any reader, so a window of a file reduces the
+/// same way the whole file does.
+pub(crate) fn claude_transcript_from(
+    reader: &mut dyn BufRead,
+    max_bytes: usize,
+) -> Result<ClaudeTranscript, String> {
     #[derive(Deserialize)]
     struct Peek {
         #[serde(rename = "type")]
@@ -782,7 +792,6 @@ pub(crate) fn read_claude_transcript(
         #[serde(rename = "isSidechain")]
         is_sidechain: Option<bool>,
     }
-    let mut reader = open_log(path).ok_or_else(|| format!("Cannot open {}", path.display()))?;
     let mut buf = Vec::new();
     let mut kept: VecDeque<String> = VecDeque::new();
     let mut bytes = 0usize;
@@ -900,6 +909,14 @@ pub(crate) fn read_codex_transcript(
     max_bytes: usize,
 ) -> Result<CodexTranscript, String> {
     let mut reader = open_log(path).ok_or_else(|| format!("Cannot open {}", path.display()))?;
+    codex_transcript_from(&mut *reader, max_bytes)
+}
+
+/// `read_codex_transcript` over any reader; see `claude_transcript_from`.
+pub(crate) fn codex_transcript_from(
+    reader: &mut dyn BufRead,
+    max_bytes: usize,
+) -> Result<CodexTranscript, String> {
     let mut buf = Vec::new();
     let mut entries: Vec<(Option<UserSource>, CodexEntry)> = Vec::new();
     let mut by_call: HashMap<String, usize> = HashMap::new();

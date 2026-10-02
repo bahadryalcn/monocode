@@ -95,7 +95,7 @@ fn probe_in(config_dir: &Path, provider: &str, id: &str, cwd: &str) -> TurnTail 
     }
 }
 
-fn find_claude_transcript(config_dir: &Path, id: &str, cwd: &str) -> Option<PathBuf> {
+pub(crate) fn find_claude_transcript(config_dir: &Path, id: &str, cwd: &str) -> Option<PathBuf> {
     let file = format!("{id}.jsonl");
     let direct = claude_project_dir(config_dir, &expand_home(cwd).to_string_lossy()).join(&file);
     if direct.is_file() {
@@ -110,7 +110,7 @@ fn find_claude_transcript(config_dir: &Path, id: &str, cwd: &str) -> Option<Path
         .find(|path| path.is_file())
 }
 
-fn find_codex_rollout(codex_dir: &Path, id: &str) -> Option<PathBuf> {
+pub(crate) fn find_codex_rollout(codex_dir: &Path, id: &str) -> Option<PathBuf> {
     let suffix = format!("{id}.jsonl");
     fn walk(dir: &Path, suffix: &str, depth: usize) -> Option<PathBuf> {
         let mut subdirs = Vec::new();

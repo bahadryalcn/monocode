@@ -101,6 +101,13 @@ describe("withFinishedTurn", () => {
     expect(next.blocks).toEqual([user, reply]);
   });
 
+  it("does not repeat a reply that sits before later rows of the same turn", () => {
+    const reply: Block = { id: "a1", role: "assistant", text: "All done." };
+    const note: Block = { id: "s1", role: "system", text: "Background task finished" };
+    const session = chat([user, reply, note]);
+    expect(withFinishedTurn(session, "All done.")).toBe(session);
+  });
+
   it("does not match an earlier turn's reply", () => {
     const old: Block = { id: "a0", role: "assistant", text: "All done." };
     const next = withFinishedTurn(chat([old, user]), "All done.");

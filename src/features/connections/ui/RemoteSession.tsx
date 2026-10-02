@@ -39,6 +39,15 @@ import {
   useRemoteMachines,
 } from "../model/connections";
 import { blocksSending, sendAfterReconnect } from "../model/remoteConnection";
+import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
+import {
+  nextRemoteQueuedMessage,
+  queueSessionFields,
+  shouldQueueRemoteMessage,
+} from "../model/remoteQueue";
+import { remoteTurnInterrupted } from "../model/remoteRecovery";
+import { forgetRemoteQueue, useRemoteQueue } from "../model/useRemoteQueue";
+import { useRemoteRecovery } from "../model/useRemoteRecovery";
 import { reportRemoteConnection, subscribeRemoteRecovered } from "../model/remoteHealth";
 import { useRemoteConnection } from "../model/useRemoteConnection";
 import { RemoteConnectionBanner } from "./RemoteConnectionBanner";
@@ -69,6 +78,8 @@ export type RemoteSessionOverrides = Partial<SessionPaneProps> & {
   remoteFeatures: { attachments: boolean; plan: boolean; draft: boolean };
   remoteSessionLoading: boolean;
   remoteSessionStarted: boolean;
+  /** The host recorded that this chat's last turn was lost; Continue is offered. */
+  interruptedTurn: boolean;
   sendBlockedReason?: string;
   allowedModelHarnesses: readonly HarnessId[];
 };
@@ -330,6 +341,9 @@ function ConnectedRemoteSession({
     !hasHostBlock(pending.commandId);
   const busy =
     !!hostSession?.busy || unseenActive || (startingActive && !starting?.draft) || pendingSendActive;
+  // Follow-ups sent while a turn runs wait here, on this computer, and go out
+  // one by one when it ends. Keyed by the host's session id.
+  const queue = useRemoteQueue(activeSessionId);
   // An accepted turn stays on screen until a sync shows the host's copy, so
   // the transcript never drops it for a moment in between.
   useEffect(() => {
@@ -674,6 +688,7 @@ function ConnectedRemoteSession({
         sessionId: id,
       });
       cachedSessionSnapshots.delete(snapshotKey(machine.id, id));
+      forgetRemoteQueue(id);
       if (!alive.current || version !== bindingVersion.current) return;
       setSnapshot(undefined);
       rememberRemoteSession(shell.id);
@@ -952,6 +967,25 @@ function ConnectedRemoteSession({
     planBlockId?: string,
   ): boolean => {
     if (
+      (text.trim() || attachments.length) &&
+      shouldQueueRemoteMessage({
+        busy,
+        working: sending || preparingRef.current || !!pending,
+        asDraft,
+      })
+    ) {
+      // Before the saved queue is read, or without a session to key it by,
+      // the composer keeps the message.
+      if (!queue.loaded || !activeSessionId) return false;
+      queue.enqueue({
+        id: crypto.randomUUID(),
+        text,
+        attachments,
+        intent: options?.intent,
+      });
+      return true;
+    }
+    if (
       sending ||
       preparingRef.current ||
       pending ||
@@ -979,6 +1013,60 @@ function ConnectedRemoteSession({
     }
     return launch(turn);
   };
+
+  const working = sending || !!pending;
+  const queuedSession: Session = {
+    ...(hostSession ?? shell),
+    busy,
+    ...queueSessionFields(queue.queue),
+  };
+  const nextQueued = nextRemoteQueuedMessage({
+    session: queuedSession,
+    loaded: queue.loaded,
+    online,
+    canSend: connection.canSend,
+    working,
+    changing: !!changes,
+  });
+  const [drainRetry, setDrainRetry] = useState(0);
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
+  // Send the head of the queue once the turn is over and the machine is
+  // reachable. A held queue loses nothing: it simply waits for both.
+  useEffect(() => {
+    if (!nextQueued) return;
+    const timer = setTimeout(() => {
+      const accepted = submitRef.current(nextQueued.text, nextQueued.attachments, {
+        intent: nextQueued.intent,
+      });
+      if (accepted) queue.sent(nextQueued.id);
+      else setDrainRetry((value) => value + 1);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [nextQueued?.id, drainRetry]);
+
+  // After a restart or a reconnect: a run this app saw working that the host
+  // now reports as lost is continued once, when the setting says so.
+  const hostSnapshot =
+    snapshot && snapshot.session.id === sessionId ? snapshot : undefined;
+  useRemoteRecovery({
+    environmentId: machine.environmentId,
+    shellId: shell.id,
+    hostSessionId: hostSession?.id,
+    status: hostSnapshot?.status,
+    runId: hostSnapshot?.runId,
+    fresh: online,
+    providerSessionId: hostSession?.providerSessionId,
+    queueLoaded: queue.loaded,
+    queuedCount: queue.queue.messages.length,
+    ready: online && connection.canSend && !busy && !working && !changes,
+    send: () => submit(CONTINUE_PROMPT, []),
+  });
+  const interruptedTurn = remoteTurnInterrupted({
+    status: hostSnapshot?.status,
+    providerSessionId: hostSession?.providerSessionId,
+    busy,
+  });
 
   const modelSource = useMemo<ModelSource>(() => {
     const models = (harness: HarnessId) =>
@@ -1095,6 +1183,7 @@ function ConnectedRemoteSession({
     runtimeMode: configuration.mode,
     busy,
     blocks: unconfirmed ? [...blocks, unconfirmed] : blocks,
+    ...queueSessionFields(queue.queue),
   };
 
   const catalogProblem = catalog?.errors[configuration.harness] ?? catalogError;
@@ -1187,13 +1276,16 @@ function ConnectedRemoteSession({
   };
 
   const stopTurn = () => {
-    if (hostSession?.busy && snapshot?.runId)
+    if (hostSession?.busy && snapshot?.runId) {
+      // What is queued waits for the user instead of sending as the turn ends.
+      queue.pause();
       void run({
         type: "cancel",
         commandId: crypto.randomUUID(),
         sessionId: hostSession.id,
         runId: snapshot.runId,
       });
+    }
   };
   const approve = (
     requestId: number,
@@ -1337,11 +1429,14 @@ function ConnectedRemoteSession({
       return true;
     },
     onPlaceSessionInFolder: noop,
-    onDeleteQueuedMessage: noop,
-    onEditQueuedMessage: noop,
-    onQueuedMessageEditingChange: noop,
-    onSteerQueuedMessage: noop,
-    onResumeQueue: noop,
+    onDeleteQueuedMessage: (_, id) => queue.remove(id),
+    onEditQueuedMessage: (_, id, text, attachments) => queue.edit(id, text, attachments),
+    onQueuedMessageEditingChange: (_, id) => queue.setEditing(id),
+    // A host turn cannot be steered: "Send next" lets the queue drain, which
+    // sends the head as soon as the turn is over.
+    onSteerQueuedMessage: () => queue.release(),
+    onResumeQueue: () => queue.release(),
+    interruptedTurn,
     onUsageLimitResume: noop,
     onUsageLimitResumeAtReset: (_, enabled) =>
       usageLimit(enabled ? "arm" : "disarm"),

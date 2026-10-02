@@ -6,7 +6,6 @@ const running = {
   backgroundOnly: false,
   allowBusySubmit: true,
   disabled: false,
-  remote: false,
   popupOpen: false,
   draftMode: false,
   text: "also update the docs",
@@ -40,11 +39,10 @@ describe("queueShortcutApplies", () => {
     expect(queueShortcutApplies({ ...running, text: "  " })).toBe(false);
   });
 
-  it("leaves it alone for background-only turns, popups, drafts and remote sessions", () => {
+  it("leaves it alone for background-only turns, popups and drafts", () => {
     expect(queueShortcutApplies({ ...running, backgroundOnly: true })).toBe(false);
     expect(queueShortcutApplies({ ...running, popupOpen: true })).toBe(false);
     expect(queueShortcutApplies({ ...running, draftMode: true })).toBe(false);
-    expect(queueShortcutApplies({ ...running, remote: true })).toBe(false);
     expect(queueShortcutApplies({ ...running, allowBusySubmit: false })).toBe(false);
     expect(queueShortcutApplies({ ...running, disabled: true })).toBe(false);
   });
