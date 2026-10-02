@@ -25,8 +25,15 @@ import type { ColorScheme } from "../../settings/model/appearance";
 import { basename } from "../../../platform/tauri/fs";
 import { highlightDiffFile, type SyntaxToken } from "../../files/editor/syntaxTokens";
 import { DiffCommentComposer } from "./DiffCommentComposer";
+import {
+  DiffOverviewContext,
+  DiffOverviewRegistry,
+  DiffOverviewRuler,
+  useDiffOverviewSource,
+} from "./DiffOverviewRuler";
 import { DiffLayoutToggle, useDiffLayout } from "./DiffLayoutToggle";
 import type { DiffLayout } from "../../settings/model/settings";
+import { splitRowMarks, unifiedRowMarks } from "../model/diffOverview";
 import { buildSplitRows, type SplitRow } from "../model/splitRows";
 import {
   expandFold,
@@ -113,6 +120,7 @@ export function UnifiedDiffView({
   >({});
   const fileRefs = useRef(new Map<string, HTMLElement>());
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const overview = useMemo(() => new DiffOverviewRegistry(), []);
   const fileKey = useMemo(
     () => files.map((file) => file.id).join("\n"),
     [files],
@@ -235,7 +243,7 @@ export function UnifiedDiffView({
     <div
       className={
         fill
-          ? "flex h-full min-h-0 flex-1 flex-col overflow-hidden"
+          ? "relative flex h-full min-h-0 flex-1 flex-col overflow-hidden"
           : "flex flex-col"
       }
     >
@@ -293,28 +301,33 @@ export function UnifiedDiffView({
               : "flex flex-col"
           }
         >
-          {files.map((file) => (
-            <FileSection
-              key={file.id}
-              file={file}
-              expanded={open.has(file.id)}
-              focused={resolvedFocusId === file.id}
-              busy={busyId === file.id}
-              reveals={reveals[file.id] ?? EMPTY_REVEALS}
-              fileLayout={fileLayout}
-              diffLayout={diffLayout}
-              colorScheme={colorScheme}
-              scrollerRef={scrollerRef}
-              onToggle={toggleFile}
-              onReveal={revealFold}
-              onStageFile={onStageFile}
-              onDiscardFile={onDiscardFile}
-              onStageHunk={onStageHunk}
-              bindRef={bindFileRef}
-            />
-          ))}
+          <DiffOverviewContext.Provider value={fill ? overview : null}>
+            {files.map((file) => (
+              <FileSection
+                key={file.id}
+                file={file}
+                expanded={open.has(file.id)}
+                focused={resolvedFocusId === file.id}
+                busy={busyId === file.id}
+                reveals={reveals[file.id] ?? EMPTY_REVEALS}
+                fileLayout={fileLayout}
+                diffLayout={diffLayout}
+                colorScheme={colorScheme}
+                scrollerRef={scrollerRef}
+                onToggle={toggleFile}
+                onReveal={revealFold}
+                onStageFile={onStageFile}
+                onDiscardFile={onDiscardFile}
+                onStageHunk={onStageHunk}
+                bindRef={bindFileRef}
+              />
+            ))}
+          </DiffOverviewContext.Provider>
         </div>
       </div>
+      {fill ? (
+        <DiffOverviewRuler scrollerRef={scrollerRef} registry={overview} />
+      ) : null}
     </div>
   );
 }
@@ -630,6 +643,14 @@ function VirtualRows({
   const sizedRows: readonly SizedRow[] = splitRows ?? rows;
   const rowLayout = useMemo(() => layoutRows(sizedRows), [sizedRows]);
   const totalHeight = rowLayout.totalHeight;
+  const overviewMarks = useMemo(
+    () =>
+      splitRows
+        ? splitRowMarks(splitRows, rowLayout)
+        : unifiedRowMarks(rows, rowLayout),
+    [rows, rowLayout, splitRows],
+  );
+  useDiffOverviewSource(fileId, overviewMarks, bodyRef);
   const minWidthCh = useMemo(() => {
     let before = 40;
     let after = 40;
@@ -807,7 +828,7 @@ function VirtualRows({
   }, [near, scrollerRef, split]);
 
   if (!near) {
-    return <div style={{ height: totalHeight }} />;
+    return <div ref={bodyRef} style={{ height: totalHeight }} />;
   }
 
   const lanePad = {

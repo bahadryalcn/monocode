@@ -130,6 +130,7 @@ import {
 import { editorLint } from "../editor/editorLint";
 import { editorSearch } from "../editor/editorSearch";
 import { editorScrollbar } from "../editor/editorScrollbar";
+import { attachSplitOverview, editorOverview } from "../editor/editorOverview";
 import { EditorConflictBar } from "./EditorConflictBar";
 import { FilePreviewSearch } from "./FilePreviewSearch";
 import {
@@ -931,7 +932,7 @@ export function CodeMirrorEditor({
       editorTyping(path),
       editorAutocomplete,
       editorLint(path, (count) => onErrorCountChangeRef.current(count)),
-      splitDiff ? [] : editorScrollbar,
+      splitDiff ? [] : [editorOverview, editorScrollbar],
       editorSearch,
       Prec.high(
         keymap.of([
@@ -1026,6 +1027,7 @@ export function CodeMirrorEditor({
       view = new EditorView({ doc: initialDoc, parent: host, extensions });
     }
     splitRef.current = split;
+    const detachSplitOverview = split ? attachSplitOverview(split) : null;
     scrollerRef.current = split ? split.dom : view.scrollDOM;
     if (carry?.saved) {
       savedDocumentRef.current = carry.saved;
@@ -1090,6 +1092,7 @@ export function CodeMirrorEditor({
       savedDocumentRef.current = null;
       setChunkNav(null);
       setSelectionTarget(null);
+      detachSplitOverview?.();
       if (split) split.destroy();
       else view.destroy();
     };
@@ -1324,7 +1327,7 @@ export function CodeMirrorEditor({
             Blame unavailable: {blameError}
           </p>
         ) : null}
-        <div ref={hostRef} className="min-h-0 flex-1" />
+        <div ref={hostRef} className="relative min-h-0 flex-1" />
       </div>
       {commentTarget ? (
         <DiffCommentComposer

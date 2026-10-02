@@ -181,9 +181,13 @@ export function editorGit(options?: {
     gitDecorations,
     gitGutter,
     gitHunkActions,
-    gitOverview,
     gitTheme,
   ];
+}
+
+/** The hunks against the diff base; empty while the diff is switched off. */
+export function gitChunks(state: EditorState): readonly Chunk[] {
+  return state.field(chunksField, false) ?? [];
 }
 
 export function diffNavigablePositions(view: EditorView): number[] {
@@ -769,91 +773,6 @@ function activeChunkIndex(
   return index;
 }
 
-const gitOverview = ViewPlugin.fromClass(
-  class {
-    readonly dom: HTMLDivElement;
-
-    constructor(readonly view: EditorView) {
-      this.dom = document.createElement("div");
-      this.dom.className = "cm-gitOverview";
-      this.dom.title = "Changes";
-      this.dom.addEventListener("mousedown", (event) => {
-        this.onMouseDown(event);
-      });
-      view.dom.appendChild(this.dom);
-      this.draw();
-    }
-
-    update(update: ViewUpdate) {
-      if (
-        update.docChanged ||
-        update.geometryChanged ||
-        update.state.field(chunksField) !== update.startState.field(chunksField)
-      ) {
-        this.draw();
-      }
-    }
-
-    destroy() {
-      this.dom.remove();
-    }
-
-    onMouseDown(event: MouseEvent) {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      this.jump(event);
-      const move = (next: MouseEvent) => this.jump(next);
-      const stop = () => {
-        window.removeEventListener("mousemove", move);
-        window.removeEventListener("mouseup", stop);
-      };
-      window.addEventListener("mousemove", move);
-      window.addEventListener("mouseup", stop);
-    }
-
-    jump(event: MouseEvent) {
-      const rect = this.dom.getBoundingClientRect();
-      if (rect.height <= 0) return;
-      const ratio = Math.min(
-        1,
-        Math.max(0, (event.clientY - rect.top) / rect.height),
-      );
-      const doc = this.view.state.doc;
-      const lineNumber = Math.min(
-        doc.lines,
-        Math.max(1, Math.floor(ratio * doc.lines) + 1),
-      );
-      const pos = doc.line(lineNumber).from;
-      this.view.dispatch({
-        effects: EditorView.scrollIntoView(pos, { y: "center" }),
-      });
-    }
-
-    draw() {
-      const { state } = this.view;
-      const chunks = state.field(chunksField);
-      const original = state.field(originalField);
-      this.dom.replaceChildren();
-      if (chunks.length === 0) {
-        this.dom.hidden = true;
-        return;
-      }
-      this.dom.hidden = false;
-      const height = Math.max(
-        1,
-        this.dom.clientHeight || this.view.dom.clientHeight,
-      );
-      for (const tick of overviewTicks(state.doc, chunks, original)) {
-        const el = document.createElement("div");
-        el.className = `cm-gitOverviewTick cm-gitOverview-${tick.kind}`;
-        el.style.top = `${tick.top * 100}%`;
-        el.style.height = `${Math.max(3, tick.size * height)}px`;
-        this.dom.appendChild(el);
-      }
-    }
-  },
-);
-
 const gitHunkActions = ViewPlugin.fromClass(
   class {
     readonly bar: HTMLDivElement;
@@ -1139,34 +1058,6 @@ const gitTheme = EditorView.theme({
     boxShadow: "inset 3px 0 0 #f87171",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
-  },
-  ".cm-gitOverview": {
-    position: "absolute",
-    top: "0",
-    right: "0",
-    bottom: "0",
-    zIndex: "13",
-    width: "var(--editor-scrollbar-width, 18px)",
-    pointerEvents: "none",
-  },
-  ".cm-gitOverviewTick": {
-    position: "absolute",
-    left: "3px",
-    right: "2px",
-    boxSizing: "border-box",
-    borderRadius: "1px",
-    pointerEvents: "auto",
-  },
-  ".cm-gitOverview-add": {
-    backgroundColor: "#34d399",
-  },
-  ".cm-gitOverview-del": {
-    backgroundColor: "#f87171",
-  },
-  ".cm-gitOverview-mod": {
-    display: "flex",
-    flexDirection: "row",
-    background: "linear-gradient(to right, #f87171 0 50%, #34d399 50% 100%)",
   },
   ".cm-gitHunkBar": {
     position: "absolute",
