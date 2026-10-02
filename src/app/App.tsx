@@ -86,6 +86,15 @@ import { ProviderSignInDialog } from "../features/sessions/ui/ProviderSignInDial
 import { TitleBar, type Tab as TitleTab } from "./shell/TitleBar";
 import { MenuBar } from "./shell/MenuBar";
 import { FilePicker } from "../features/files/ui/FilePicker";
+import { useLockSnapshot } from "../features/group-lock/hooks/useGroupLock";
+import {
+  getGroupLockView,
+  startGroupLockWatcher,
+} from "../features/group-lock/model/groupLock";
+import {
+  isProjectLockedIn,
+  visibleProjects,
+} from "../features/group-lock/model/lockState";
 import {
   DeleteSessionDialog,
   type SessionDeleteChoice,
@@ -452,6 +461,7 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   queuedMessageForSubmit,
+  reorderSessionQueue,
   resolveFollowUpRoute,
   sentQueuedMessage,
 } from "../features/sessions/model/messageQueue";
@@ -980,6 +990,14 @@ function Workspace({
       ? rememberProject(resumed.projectCwd)
       : loadRecents(),
   );
+  // What is not behind a locked group. The rail itself gets the full list, so
+  // it can keep the saved order and pins of projects that are hidden.
+  const lockSnapshot = useLockSnapshot();
+  const visibleRecents = useMemo(
+    () => visibleProjects(lockSnapshot, recents, (project) => project.path),
+    [lockSnapshot, recents],
+  );
+  useEffect(() => startGroupLockWatcher(), []);
   const [seed] = useState(() => {
     const cwd = lastProjectPath() ?? "~";
     const session = newDefaultSession(cwd);
@@ -1782,9 +1800,11 @@ function Workspace({
   const liveAgents = useMemo(
     () =>
       liveAgentsEnabled
-        ? liveAgentsFromSessions(sessions, unseenFinishedIds)
+        ? liveAgentsFromSessions(sessions, unseenFinishedIds).filter(
+            (agent) => !isProjectLockedIn(lockSnapshot, agent.cwd),
+          )
         : [],
-    [liveAgentsEnabled, sessions, unseenFinishedIds],
+    [liveAgentsEnabled, lockSnapshot, sessions, unseenFinishedIds],
   );
 
   const hiddenApprovalToasts = useMemo(
@@ -5420,6 +5440,37 @@ function Workspace({
     [openProjects],
   );
 
+  // A locked project is never on screen. This catches a lock taken while the
+  // project was open, a restored tab, and a notification click alike. Nothing
+  // is closed: the project's tabs and running agents stay as they are, out of
+  // sight, and come back when the group is unlocked.
+  const activeProjectLocked = isProjectLockedIn(lockSnapshot, sidebarCwd);
+  useLayoutEffect(() => {
+    if (!activeProjectLocked) return;
+    const next = visibleRecents.find((project) =>
+      looksLikeProject(project.path),
+    );
+    if (next) {
+      openProjects([next.path]);
+      return;
+    }
+    // Nothing unlocked to go to: a blank session with no project.
+    const session = newDefaultSession("~", sessionDefaults?.runtimeMode);
+    const tab = newTab(session.id);
+    setSessions((prev) => [...prev, session]);
+    appendTab(tab, "~");
+    setActiveTabId(tab.id);
+    setProjectCwd("~");
+  }, [
+    activeProjectLocked,
+    activeTabId,
+    appendTab,
+    openProjects,
+    sessionDefaults?.runtimeMode,
+    sidebarCwd,
+    visibleRecents,
+  ]);
+
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
     // the last one selected ends up focused.
@@ -7800,6 +7851,19 @@ function Workspace({
     [],
   );
 
+  const onReorderQueuedMessages = useCallback(
+    (sessionId: string, messageIds: string[]) => {
+      setSessions((prev) =>
+        prev.map((session) =>
+          session.id === sessionId
+            ? reorderSessionQueue(session, messageIds)
+            : session,
+        ),
+      );
+    },
+    [],
+  );
+
   const onEditQueuedMessage = useCallback(
     (
       sessionId: string,
@@ -9821,7 +9885,7 @@ function Workspace({
     unseen: inboxUnseen,
     linkedSessionUpdateIds,
     linkedSessionUpdates,
-  } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
+  } = useInboxActivity(visibleRecents, sidebarCwd, sidebarHistory, {
     onActivity: onInboxActivity,
   });
   linkedSessionUpdatesRef.current = linkedSessionUpdates;
@@ -10359,9 +10423,10 @@ function Workspace({
   const onNavigateProjectList = useCallback(
     (delta: number) => {
       const current = normalizeProjectPath(projectCwdRef.current);
-      const ids = projectRailItems(loadRecents(), current).map(
-        (project) => project.path,
-      );
+      const ids = projectRailItems(
+        visibleProjects(getGroupLockView().lock, loadRecents(), (project) => project.path),
+        current,
+      ).map((project) => project.path);
       const next = adjacentItemId(ids, current, delta);
       if (!next || sameProjectPath(next, current)) return;
       onSelectProject(next);
@@ -10623,6 +10688,15 @@ function Workspace({
         ) {
           return;
         }
+        // In the note editor the same chord makes the selection bold.
+        if (
+          shortcut === "App: Toggle Sidebar" &&
+          e.key.toLowerCase() === "b" &&
+          e.target instanceof Element &&
+          e.target.closest("[data-note-editor] .cm-content")
+        ) {
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         const a = actions.current;
@@ -10820,7 +10894,7 @@ function Workspace({
   );
 
   const sessionPaneProps = {
-    recents,
+    recents: visibleRecents,
     hideProjectPicker: true,
     onFocus: onFocusPane,
     onClose: onClosePane,
@@ -10844,6 +10918,7 @@ function Workspace({
     onDeleteQueuedMessage,
     onEditQueuedMessage,
     onQueuedMessageEditingChange,
+    onReorderQueuedMessages,
     onSteerQueuedMessage,
     onResumeQueue,
     onUsageLimitResume,
@@ -10910,7 +10985,7 @@ function Workspace({
       onPlaceOnPane={onPlaceTabOnPane}
       onGoToFile={onGoToFile}
       onPinFile={onPinFile}
-      recents={recents}
+      recents={visibleRecents}
       onSelectProject={onSelectProject}
     />
   );
@@ -11209,7 +11284,7 @@ function Workspace({
                       key={panel.sessionId}
                       target={panel.item}
                       cwd={panel.cwd}
-                      recents={recents}
+                      recents={visibleRecents}
                       visible={
                         !searchViewOpen &&
                         !settingsOpen &&
@@ -11227,9 +11302,13 @@ function Workspace({
                 <SearchView
                   open
                   cwd={gitCwd}
-                  recents={recents}
+                  recents={visibleRecents}
                   history={projectHistory}
-                  sessions={sessions.filter((session) => !session.inboxAsk)}
+                  sessions={sessions.filter(
+                    (session) =>
+                      !session.inboxAsk &&
+                      !isProjectLockedIn(lockSnapshot, session.cwd),
+                  )}
                   focusToken={searchViewFocusToken}
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
@@ -11271,7 +11350,7 @@ function Workspace({
               {inboxViewOpen ? (
                 <InboxView
                   cwd={sidebarCwd}
-                  recents={recents}
+                  recents={visibleRecents}
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
                   onClose={onLeaveInbox}
@@ -11292,7 +11371,7 @@ function Workspace({
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
                   cwd={projectCwd}
-                  recents={recents}
+                  recents={visibleRecents}
                   onClose={onLeaveNotes}
                   onToggleSidebar={onToggleSidebar}
                 />
@@ -11302,7 +11381,7 @@ function Workspace({
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
                   cwd={projectCwd}
-                  recents={recents}
+                  recents={visibleRecents}
                   onClose={onLeaveAutomations}
                   onToggleSidebar={onToggleSidebar}
                   onLaunch={(automation, run) =>
@@ -11317,7 +11396,7 @@ function Workspace({
                   anchor={settingsAnchor}
                   notificationProjectPath={notificationProjectPath}
                   notificationSettingsRequest={notificationSettingsRequest}
-                  recents={recents}
+                  recents={visibleRecents}
                   cwd={sidebarCwd}
                   sessions={sidebarHistory}
                   liveSessions={sessions}

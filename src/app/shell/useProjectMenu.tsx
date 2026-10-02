@@ -9,6 +9,8 @@ import {
   FolderPlus,
   FolderTree,
   ImagePlus,
+  Lock,
+  LockOpen,
   Pencil,
   Pin,
   PinOff,
@@ -94,6 +96,16 @@ import { knownRemoteMachine, requestMachineEdit } from "../../features/connectio
 import { useNotificationProjects } from "../../features/notifications/hooks/useNotificationProjects";
 import { updateNotificationPreferences } from "../../features/notifications/model/notificationPreferences";
 import type { ExplorerMenuItem } from "../../features/files/ui/ExplorerMenu";
+import { useGroupLock } from "../../features/group-lock/hooks/useGroupLock";
+import {
+  getGroupLockView,
+  lockGroup,
+  makeGroupLockable,
+  removeGroupLock,
+} from "../../features/group-lock/model/groupLock";
+import { PasswordPromptDialog } from "../../features/group-lock/ui/PasswordPromptDialog";
+import { SetLockPasswordDialog } from "../../features/group-lock/ui/SetLockPasswordDialog";
+import { UnlockGroupDialog } from "../../features/group-lock/ui/UnlockGroupDialog";
 
 const REVEAL_LABEL = IS_MAC
   ? "Reveal in Finder"
@@ -112,6 +124,9 @@ function projectMenuExtraItems(
   canReconnect: boolean,
   currentProjectGroupId?: string,
 ): TabGroupMenuExtraItem[] {
+  // A locked group is not offered as a destination.
+  const lockedGroups = getGroupLockView().lock.lockedGroupIds;
+  projectGroups = projectGroups.filter((group) => !lockedGroups.has(group.id));
   const groupSubmenu: ExplorerMenuItem[] = [
     { kind: "item", id: "project-group:new", label: "New group…" },
     ...(projectGroups.length > 0 ? [{ kind: "sep" } as const] : []),
@@ -256,6 +271,11 @@ export function useProjectMenu({
     path: string;
     name: string;
   } | null>(null);
+  const [lockDialog, setLockDialog] = useState<
+    | { kind: "unlock" | "remove-lock"; groupId: string; name: string }
+    | { kind: "set"; groupId: string; lockNow: boolean }
+    | null
+  >(null);
   const [menuError, setMenuError] = useState<string | null>(null);
   const [externalEditors, setExternalEditors] = useState<
     ExternalEditor[] | null
@@ -271,6 +291,8 @@ export function useProjectMenu({
     [],
   );
   const groupLogos = useTabGroupLogos();
+  // Group menus and the lock dialogs follow lock changes, not just storage.
+  useGroupLock();
   const notificationPreferences = useProjectNotificationPreferences();
   const menuPath = projectMenu?.path;
   useNotificationProjects(menuPath ? [menuPath] : []);
@@ -359,6 +381,35 @@ export function useProjectMenu({
     setFetchAll(null);
     setRemoving(null);
     setBackgroundProject(null);
+    setLockDialog(null);
+  };
+
+  const groupNamed = (groupId: string) =>
+    loadProjectGroups().find((group) => group.id === groupId)?.name ?? "group";
+
+  const requestUnlock = (groupId: string) => {
+    captureTrigger();
+    setLockDialog({ kind: "unlock", groupId, name: groupNamed(groupId) });
+  };
+
+  /** Marks the group lockable, asking for a first password when there is none. */
+  const makeLockable = (groupId: string, lockNow: boolean) => {
+    if (!getGroupLockView().hasPassword) {
+      captureTrigger();
+      setLockDialog({ kind: "set", groupId, lockNow });
+      return;
+    }
+    makeGroupLockable(groupId);
+    if (lockNow) lockGroup(groupId);
+  };
+
+  /** The padlock on a group header: lock an open group, ask to open a locked one. */
+  const toggleGroupLock = (groupId: string) => {
+    if (getGroupLockView().lock.lockedGroupIds.has(groupId)) {
+      requestUnlock(groupId);
+    } else {
+      makeLockable(groupId, true);
+    }
   };
 
   const groupLabels = projectMenu ? loadTabGroupLabels() : {};
@@ -521,53 +572,30 @@ export function useProjectMenu({
     if (!groupMenu) return null;
     const group = loadProjectGroups().find((item) => item.id === groupMenu.id);
     if (!group) return null;
-    return (
-      <TabGroupMenu
-        x={groupMenu.x}
-        y={groupMenu.y}
-        groupId={group.id}
-        label={group.name}
-        colorIndex={group.colorIndex ?? null}
-        customColor={group.customColor ?? null}
-        currentColor={projectGroupColor(group)}
-        logoPath={null}
-        mascotName={group.mascot ?? null}
-        mascotProject={group.id}
-        onRename={(_, name) =>
-          updateProjectGroup(group.id, (current) => ({
-            ...current,
-            name: name.trim() || current.name,
-          }))
-        }
-        onColorChange={(_, colorIndex) =>
-          updateProjectGroup(group.id, (current) => ({
-            ...current,
-            colorIndex: colorIndex ?? undefined,
-            customColor: undefined,
-          }))
-        }
-        onCustomColorChange={(_, customColor) =>
-          updateProjectGroup(group.id, (current) => ({
-            ...current,
-            colorIndex: undefined,
-            customColor,
-          }))
-        }
-        onMascotChange={(_, mascot) =>
-          updateProjectGroup(group.id, (current) => ({
-            ...current,
-            mascot: mascot ?? undefined,
-          }))
-        }
-        onLogoChange={() => {}}
-        onPick={() => {}}
-        onClose={() => {
-          setGroupMenu(null);
-          restoreFocus();
-        }}
-        showActions={false}
-        ariaLabel="Project group actions"
-        extraItems={[
+    const locked = getGroupLockView().lock.lockedGroupIds.has(group.id);
+    const lockItems: TabGroupMenuExtraItem[] = locked
+      ? [
+          { id: "unlock-group", label: "Unlock…", icon: LockOpen },
+          { id: "remove-group-lock", label: "Remove lock…", icon: Lock },
+        ]
+      : group.lockable
+        ? [
+            { id: "lock-group", label: "Lock group", icon: Lock },
+            { id: "remove-group-lock", label: "Remove lock…", icon: Lock },
+          ]
+        : [
+            { id: "lock-group", label: "Lock group", icon: Lock },
+            {
+              id: "make-lockable",
+              label: "Make lockable",
+              description: "Ask for the password once it is locked",
+              icon: Lock,
+            },
+          ];
+    // A locked group offers nothing that would touch or reveal its projects.
+    const groupItems: TabGroupMenuExtraItem[] = locked
+      ? []
+      : [
           ...(onAddProjectToGroup
             ? [
                 {
@@ -617,9 +645,78 @@ export function useProjectMenu({
             icon: Trash2,
             danger: true,
           },
-        ]}
+        ];
+    return (
+      <TabGroupMenu
+        x={groupMenu.x}
+        y={groupMenu.y}
+        groupId={group.id}
+        label={group.name}
+        colorIndex={group.colorIndex ?? null}
+        customColor={group.customColor ?? null}
+        currentColor={projectGroupColor(group)}
+        logoPath={null}
+        mascotName={group.mascot ?? null}
+        mascotProject={group.id}
+        onRename={(_, name) =>
+          updateProjectGroup(group.id, (current) => ({
+            ...current,
+            name: name.trim() || current.name,
+          }))
+        }
+        onColorChange={(_, colorIndex) =>
+          updateProjectGroup(group.id, (current) => ({
+            ...current,
+            colorIndex: colorIndex ?? undefined,
+            customColor: undefined,
+          }))
+        }
+        onCustomColorChange={(_, customColor) =>
+          updateProjectGroup(group.id, (current) => ({
+            ...current,
+            colorIndex: undefined,
+            customColor,
+          }))
+        }
+        onMascotChange={(_, mascot) =>
+          updateProjectGroup(group.id, (current) => ({
+            ...current,
+            mascot: mascot ?? undefined,
+          }))
+        }
+        onLogoChange={() => {}}
+        onPick={() => {}}
+        onClose={() => {
+          setGroupMenu(null);
+          restoreFocus();
+        }}
+        showActions={false}
+        ariaLabel="Project group actions"
+        extraItems={[...lockItems, ...groupItems]}
         onExtraPick={(action) => {
           const file = group.workspaceFile;
+          if (action === "unlock-group") {
+            requestUnlock(group.id);
+            return;
+          }
+          if (action === "lock-group") {
+            toggleGroupLock(group.id);
+            return;
+          }
+          if (action === "make-lockable") {
+            makeLockable(group.id, false);
+            return;
+          }
+          if (action === "remove-group-lock") {
+            captureTrigger();
+            setLockDialog({
+              kind: "remove-lock",
+              groupId: group.id,
+              name: group.name,
+            });
+            return;
+          }
+          if (locked) return;
           if (action === "delete-project-group") {
             return deleteProjectGroup(group.id);
           }
@@ -718,6 +815,46 @@ export function useProjectMenu({
           }}
         />
       ) : null}
+      {lockDialog?.kind === "unlock" ? (
+        <UnlockGroupDialog
+          groupId={lockDialog.groupId}
+          name={lockDialog.name}
+          onClose={() => {
+            setLockDialog(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
+      {lockDialog?.kind === "remove-lock" ? (
+        <PasswordPromptDialog
+          title={`Remove lock from ${lockDialog.name}`}
+          description="The group stays; it just stops asking for the password."
+          submitLabel="Remove lock"
+          danger
+          verify={(password) => removeGroupLock(lockDialog.groupId, password)}
+          onDone={() => {
+            setLockDialog(null);
+            restoreFocus();
+          }}
+          onClose={() => {
+            setLockDialog(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
+      {lockDialog?.kind === "set" ? (
+        <SetLockPasswordDialog
+          mode="set"
+          onDone={() => {
+            makeGroupLockable(lockDialog.groupId);
+            if (lockDialog.lockNow) lockGroup(lockDialog.groupId);
+          }}
+          onClose={() => {
+            setLockDialog(null);
+            restoreFocus();
+          }}
+        />
+      ) : null}
       {additionalDirsProject ? (
         <AdditionalDirsDialog
           project={additionalDirsProject.path}
@@ -745,6 +882,8 @@ export function useProjectMenu({
     open,
     openGroupMenu,
     createGroup,
+    toggleGroupLock,
+    requestUnlock,
     close,
     dismiss,
     isOpen: projectMenu != null,
@@ -756,7 +895,8 @@ export function useProjectMenu({
       notificationMenu != null ||
       additionalDirsProject != null ||
       removing != null ||
-      backgroundProject != null,
+      backgroundProject != null ||
+      lockDialog != null,
     element,
   };
 }

@@ -213,6 +213,23 @@ export function shouldNotifyFor(context: NotificationContext): boolean {
   return context.permission === "granted" || context.permission === "prompt";
 }
 
+export const LOCKED_NOTIFICATION_TEXT =
+  "A session in a locked group needs attention";
+
+/** The same notification with nothing that names the project or the session. */
+export function maskLockedNotification(
+  payload: NotificationPayload,
+): NotificationPayload {
+  return {
+    ...payload,
+    title: LOCKED_NOTIFICATION_TEXT,
+    subtitle: "",
+    body: "",
+    projectName: "Locked group",
+    sessionTitle: "Locked session",
+  };
+}
+
 /** Decision and text in one: null means stay quiet. */
 export function decideNotification(
   session: Session,

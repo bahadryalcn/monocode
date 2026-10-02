@@ -6,6 +6,8 @@ import {
   enteredBackgroundFinish,
   flashFor,
   lastLine,
+  LOCKED_NOTIFICATION_TEXT,
+  maskLockedNotification,
   pruneUnseen,
   sessionPhase,
   taskbarAttention,
@@ -366,5 +368,36 @@ describe("lastLine", () => {
     expect(lastLine("```\ncode\n```")).toBe("code");
     expect(lastLine("x".repeat(200), 10)).toBe(`${"x".repeat(9)}…`);
     expect(lastLine("")).toBe("");
+  });
+});
+
+describe("notifications for a locked group", () => {
+  const secret: NotificationPayload = {
+    sessionId: "s1",
+    kind: "finished",
+    title: "Finished · secret-project",
+    subtitle: "Fix the secret thing",
+    body: "Shipped the secret thing",
+    projectName: "secret-project",
+    sessionTitle: "Fix the secret thing",
+  };
+
+  it("names neither the project nor the session", () => {
+    const masked = maskLockedNotification(secret);
+    expect(masked.title).toBe(LOCKED_NOTIFICATION_TEXT);
+    expect(JSON.stringify(masked)).not.toMatch(/secret/i);
+    expect(masked.sessionId).toBe("s1");
+  });
+
+  it("stays neutral when a burst is coalesced with an open session", () => {
+    const open: NotificationPayload = {
+      ...secret,
+      sessionId: "s2",
+      title: "Finished · public",
+      projectName: "public",
+      sessionTitle: "Public work",
+    };
+    const merged = coalesceNotifications([maskLockedNotification(secret), open]);
+    expect(JSON.stringify(merged)).not.toMatch(/secret/i);
   });
 });

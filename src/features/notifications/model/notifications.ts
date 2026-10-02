@@ -2,10 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { projectName } from "../../../shared/lib/paths";
 import type { Session } from "../../sessions/model/session";
 import { loadSoundsEnabled, playCue } from "../../settings/model/sounds";
+import { isProjectLocked } from "../../group-lock/model/groupLock";
 import {
   attentionText,
   createNotificationBatcher,
   decideNotification,
+  maskLockedNotification,
   turnKey,
   turnOutcome,
   type AttentionKind,
@@ -365,5 +367,7 @@ async function notifyProjectSession(
   );
   if (!payload) return false;
   if (kind !== "input") markUnseen(session.id);
-  return batcher.enqueue(payload);
+  return batcher.enqueue(
+    isProjectLocked(session.cwd) ? maskLockedNotification(payload) : payload,
+  );
 }

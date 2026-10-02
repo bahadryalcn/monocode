@@ -1,4 +1,7 @@
-import { canDispatchQueuedHead } from "../../sessions/model/messageQueue";
+import {
+  canDispatchQueuedHead,
+  reorderQueuedMessages,
+} from "../../sessions/model/messageQueue";
 import { applyQueuedEdit } from "../../sessions/model/queuedMessageEdit";
 import type {
   Attachment,
@@ -82,6 +85,15 @@ export function editRemoteMessage(
     ),
     editingId: undefined,
   };
+}
+
+/** Drag or keyboard reorder: only the order changes, never the status or the edited row. */
+export function reorderRemoteMessages(
+  queue: RemoteQueue,
+  ids: string[],
+): RemoteQueue {
+  const messages = reorderQueuedMessages(queue.messages, ids);
+  return messages === queue.messages ? queue : { ...queue, messages };
 }
 
 export function setRemoteEditing(

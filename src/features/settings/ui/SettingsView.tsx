@@ -60,6 +60,9 @@ import { OPEN_SESSION_IMPORT_EVENT } from "../../sessions/import/importModel";
 import { JiraSettings } from "./JiraSettings";
 import { GradientBlurBackground } from "./GradientBlurBackground";
 import { McpSettings } from "./McpSettings";
+import { GroupLockSettings } from "../../group-lock/ui/GroupLockSettings";
+import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
+import { isProjectLockedIn } from "../../group-lock/model/lockState";
 import { InboxProviderMark } from "../../inbox/ui/InboxProviderMark";
 import { RemoveProjectDialog } from "../../projects/ui/RemoveProjectDialog";
 import { WindowControls } from "../../../app/shell/WindowControls";
@@ -641,6 +644,9 @@ export function SettingsView({
                   onCheckRemove={onCheckWorktreeRemoval}
                   onDeleteSessions={onDeleteWorktreeSessions}
                 />
+              ) : null}
+              {section === "groupLock" ? (
+                <GroupLockSettings controls={{ Group, Row, Toggle, Select }} />
               ) : null}
               {section === "inbox" ? (
                 <InboxPage
@@ -4575,11 +4581,16 @@ function ProviderRow({
 
 function useArchivedProjects(): ArchivedProject[] {
   const [items, setItems] = useState(loadArchivedProjects);
+  const lock = useLockSnapshot();
   useEffect(
     () => subscribeArchivedProjects(() => setItems(loadArchivedProjects())),
     [],
   );
-  return items;
+  // An archived project can still sit in a locked group.
+  return useMemo(
+    () => items.filter((item) => !isProjectLockedIn(lock, item.path)),
+    [items, lock],
+  );
 }
 
 function archivedProjectLabel(path: string): string {

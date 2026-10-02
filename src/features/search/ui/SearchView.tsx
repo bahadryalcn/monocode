@@ -37,6 +37,8 @@ import {
 import { prettyCwd, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { isLocalProject, type RecentProject } from "../../projects/model/recents";
+import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
+import { isProjectLockedIn } from "../../group-lock/model/lockState";
 import {
   cancelProjectSearch,
   searchProject,
@@ -233,13 +235,20 @@ export function SearchView({
   );
   // The filters belong to the Conversations tab; the All tab searches everywhere.
   const filters = scope === "conversations" ? chatFilters : DEFAULT_CHAT_FILTERS;
+  // "Everywhere" searches every stored conversation, so results from locked
+  // groups are dropped here, and again if a group locks while they are shown.
+  const lock = useLockSnapshot();
+  const visibleChatSessions = useMemo(
+    () => chatSessions.filter((session) => !isProjectLockedIn(lock, session.cwd)),
+    [chatSessions, lock],
+  );
   const remoteHits = useMemo(
-    () => hitsFromContentSessions(chatSessions),
-    [chatSessions],
+    () => hitsFromContentSessions(visibleChatSessions),
+    [visibleChatSessions],
   );
   const chatGroups = useMemo(
-    () => groupChatSessions(chatSessions, grouping),
-    [chatSessions, grouping],
+    () => groupChatSessions(visibleChatSessions, grouping),
+    [visibleChatSessions, grouping],
   );
   const chatRows = useMemo(() => chatEntries(chatGroups), [chatGroups]);
 

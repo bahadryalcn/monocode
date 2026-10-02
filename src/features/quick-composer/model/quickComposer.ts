@@ -3,6 +3,7 @@ import { isHarnessAvailable } from "../../../integrations/harness/core/availabil
 import { invoke } from "@tauri-apps/api/core";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { loadQuickComposerShortcut } from "../../settings/model/settings";
+import { visibleProjects } from "../../group-lock/model/groupLock";
 import { pathKey, projectName, prettyParent } from "../../../shared/lib/paths";
 import {
   loadArchivedProjects,
@@ -304,11 +305,16 @@ export function orderQuickProjects(
 }
 
 export function loadQuickProjects(): string[] {
-  return orderQuickProjects(
-    loadRecents().map((item) => item.path),
-    loadPinnedProjects(),
-    loadProjectRailOrder(),
-    loadArchivedProjects().map((item) => item.path),
+  // Projects in a locked group are not offered. This window learns which
+  // groups are open from the main one, so until then they stay hidden.
+  return visibleProjects(
+    orderQuickProjects(
+      loadRecents().map((item) => item.path),
+      loadPinnedProjects(),
+      loadProjectRailOrder(),
+      loadArchivedProjects().map((item) => item.path),
+    ),
+    (path) => path,
   );
 }
 

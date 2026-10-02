@@ -282,3 +282,67 @@ describe("a queue restored after a restart", () => {
     expect(onSteer).not.toHaveBeenCalled();
   });
 });
+
+describe("reordering queued messages", () => {
+  async function renderReorder(onReorder = vi.fn(), count = 3) {
+    const queuedMessages = ["q1", "q2", "q3"]
+      .slice(0, count)
+      .map((id) => ({ id, text: id, attachments: [] }));
+    await act(async () =>
+      root.render(
+        createElement(Composer, {
+          focused: true,
+          harness: "claude",
+          model: "m",
+          runtimeMode: "supervised",
+          executionCwd: "/repo",
+          sessionId: "s1",
+          hideProjectPicker: true,
+          hideBranchPicker: true,
+          queuedMessages: queuedMessages as never,
+          queueStatus: "restored",
+          onReorderQueuedMessages: onReorder,
+          onFocus: () => {},
+          onCwdChange: () => {},
+          onModelChange: () => {},
+          onRuntimeModeChange: () => {},
+          onSubmit: () => true,
+        }),
+      ),
+    );
+    return onReorder;
+  }
+  const handle = (id: string) =>
+    container.querySelector<HTMLElement>(`[data-queue-handle="${id}"]`)!;
+  const key = (id: string, init: KeyboardEventInit) => {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    act(() => {
+      handle(id).dispatchEvent(event);
+    });
+    return event;
+  };
+
+  it("labels the handle and moves a row with Alt+Arrow", async () => {
+    const onReorder = await renderReorder();
+    expect(handle("q2").getAttribute("aria-label")).toBe("Reorder queued message");
+    expect(handle("q2").title).toBe("Drag to reorder");
+
+    expect(key("q2", { key: "ArrowUp", altKey: true }).defaultPrevented).toBe(true);
+    expect(onReorder).toHaveBeenLastCalledWith(["q2", "q1", "q3"]);
+    key("q2", { key: "ArrowDown", altKey: true });
+    expect(onReorder).toHaveBeenLastCalledWith(["q1", "q3", "q2"]);
+  });
+
+  it("stops at the ends and ignores plain arrows", async () => {
+    const onReorder = await renderReorder();
+    key("q1", { key: "ArrowUp", altKey: true });
+    key("q3", { key: "ArrowDown", altKey: true });
+    key("q2", { key: "ArrowUp" });
+    expect(onReorder).not.toHaveBeenCalled();
+  });
+
+  it("offers no handle for a single message", async () => {
+    await renderReorder(vi.fn(), 1);
+    expect(container.querySelector("[data-queue-handle]")).toBeNull();
+  });
+});

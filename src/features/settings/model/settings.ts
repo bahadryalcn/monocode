@@ -28,6 +28,7 @@ export type SettingsSectionId =
   | "skills"
   | "inbox"
   | "worktrees"
+  | "groupLock"
   | "archive";
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -137,6 +138,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description: "Manage additional worktrees for each project.",
     keywords: "git branch worktree working copy project create delete",
   },
+  {
+    id: "groupLock",
+    group: "workspace",
+    label: "Group lock",
+    description:
+      "Protect project groups in the rail with one password. An access lock for the interface, not encryption.",
+    keywords: "password privacy hide private protect secure passcode",
+  },
 ];
 
 export function settingsSectionsByGroup(): {
@@ -162,6 +171,24 @@ export type SettingsEntry = {
 };
 
 export const SETTINGS_INDEX: SettingsEntry[] = [
+  {
+    id: "group-lock-password",
+    section: "groupLock",
+    label: "Lock password",
+    keywords: "set change remove forgot reset passcode group rail protect",
+  },
+  {
+    id: "group-lock-options",
+    section: "groupLock",
+    label: "Lock groups again when MonoCode starts",
+    keywords: "auto lock inactivity timeout minutes launch startup unlock all",
+  },
+  {
+    id: "group-lock-groups",
+    section: "groupLock",
+    label: "Lockable groups",
+    keywords: "group rail project password lock now",
+  },
   { id: "remote-machines", section: "connections", label: "Your machines", keywords: "ssh remote connect host server environment" },
   {
     id: "remote-auto-reconnect",

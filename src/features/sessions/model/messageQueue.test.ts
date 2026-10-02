@@ -4,8 +4,11 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   isEditingQueuedHead,
+  moveQueuedMessage,
   queuedHead,
   queuedMessageForSubmit,
+  reorderQueuedMessages,
+  reorderSessionQueue,
   resolveFollowUpRoute,
   sentQueuedMessage,
 } from "./messageQueue";
@@ -249,5 +252,70 @@ describe("restored queue", () => {
 
   it("removing a restored row keeps the queue waiting", () => {
     expect(dequeueQueuedMessage(chat({ queueStatus: "restored" }), "a").queueStatus).toBe("restored");
+  });
+});
+
+describe("reordering the queue", () => {
+  const ids = (queue: QueuedMessage[]) => queue.map((message) => message.id);
+  const three = [queued("a"), queued("b"), queued("c")];
+  const gone = { id: "f1", name: "a.png", mimeType: "image/png", kind: "image" as const, size: 1, missing: true };
+
+  it("moves a row to an index and clamps to the queue", () => {
+    expect(ids(moveQueuedMessage(three, "c", 0))).toEqual(["c", "a", "b"]);
+    expect(ids(moveQueuedMessage(three, "a", 1))).toEqual(["b", "a", "c"]);
+    expect(ids(moveQueuedMessage(three, "a", 99))).toEqual(["b", "c", "a"]);
+    expect(ids(moveQueuedMessage(three, "c", -4))).toEqual(["c", "a", "b"]);
+  });
+
+  it("returns the same queue when nothing moves (keyboard bounds, unknown row)", () => {
+    expect(moveQueuedMessage(three, "a", -1)).toBe(three);
+    expect(moveQueuedMessage(three, "c", 3)).toBe(three);
+    expect(moveQueuedMessage(three, "b", 1)).toBe(three);
+    expect(moveQueuedMessage(three, "zz", 0)).toBe(three);
+  });
+
+  it("reorders by ids against the live queue", () => {
+    expect(ids(reorderQueuedMessages(three, ["c", "b", "a"]))).toEqual(["c", "b", "a"]);
+    expect(reorderQueuedMessages(three, ["a", "b", "c"])).toBe(three);
+  });
+
+  it("ignores ids that left the queue and keeps rows added since the drag began", () => {
+    // The drag saw [a, b, c]; "b" was sent and "d" was added before the drop.
+    const live = [queued("a"), queued("c"), queued("d")];
+    expect(ids(reorderQueuedMessages(live, ["c", "b", "a"]))).toEqual(["c", "a", "d"]);
+    expect(ids(reorderQueuedMessages(live, ["x"]))).toEqual(["a", "c", "d"]);
+  });
+
+  it("changes order only: status, edited row and attachments stay as they were", () => {
+    const session = chat({
+      queuedMessages: [{ ...queued("a"), attachments: [gone] }, queued("b")],
+      queueStatus: "restored",
+      editingQueuedMessageId: "a",
+    });
+    const next = reorderSessionQueue(session, ["b", "a"]);
+    expect(ids(next.queuedMessages!)).toEqual(["b", "a"]);
+    expect(next.queueStatus).toBe("restored");
+    expect(next.editingQueuedMessageId).toBe("a");
+    expect(next.queuedMessages![1]).toBe(session.queuedMessages![0]);
+    expect(canDispatchQueuedHead(next)).toBe(false);
+    expect(reorderSessionQueue(session, ["a", "b"])).toBe(session);
+  });
+
+  it("does not start a paused queue, and the new head is what drains", () => {
+    const paused = reorderSessionQueue(chat({ queueStatus: "paused" }), ["b", "a"]);
+    expect(paused.queueStatus).toBe("paused");
+    expect(canDispatchQueuedHead(paused)).toBe(false);
+    const active = reorderSessionQueue(chat({ queueStatus: "active" }), ["b", "a"]);
+    expect(queuedHead(active)?.id).toBe("b");
+    expect(queuedMessageForSubmit(active, "a", "dispatch")).toBeUndefined();
+    expect(queuedMessageForSubmit(active, "b", "dispatch")?.id).toBe("b");
+  });
+
+  it("holds by id: the edit hold follows the edited row, not the head position", () => {
+    const editing = chat({ editingQueuedMessageId: "a" });
+    expect(isEditingQueuedHead(editing)).toBe(true);
+    const moved = reorderSessionQueue(editing, ["b", "a"]);
+    expect(isEditingQueuedHead(moved)).toBe(false);
+    expect(isEditingQueuedHead(reorderSessionQueue(moved, ["a", "b"]))).toBe(true);
   });
 });

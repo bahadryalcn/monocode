@@ -1434,6 +1434,7 @@ function ConnectedRemoteSession({
     onDeleteQueuedMessage: (_, id) => queue.remove(id),
     onEditQueuedMessage: (_, id, text, attachments) => queue.edit(id, text, attachments),
     onQueuedMessageEditingChange: (_, id) => queue.setEditing(id),
+    onReorderQueuedMessages: (_, ids) => queue.reorder(ids),
     // A host turn cannot be steered: "Send next" lets the queue drain, which
     // sends the head as soon as the turn is over.
     onSteerQueuedMessage: () => queue.release(),

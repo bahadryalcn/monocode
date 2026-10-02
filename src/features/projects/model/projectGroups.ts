@@ -21,6 +21,8 @@ export type ProjectGroup = {
    * when the file changes; projects the user added by hand are never touched.
    */
   workspaceFolders?: string[];
+  /** Opening the group asks for the app lock password. See group-lock. */
+  lockable?: boolean;
 };
 
 function normalizeGroup(value: unknown): ProjectGroup | null {
@@ -67,6 +69,7 @@ function normalizeGroup(value: unknown): ProjectGroup | null {
         : { colorIndex }),
     ...(mascot ? { mascot } : {}),
     ...(workspaceFile ? { workspaceFile, workspaceFolders } : {}),
+    ...(candidate.lockable === true ? { lockable: true } : {}),
   };
 }
 

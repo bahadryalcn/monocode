@@ -130,6 +130,7 @@ import { useProjectDiffStats } from "../../features/source-control/hooks/useProj
 import { useSortable } from "../../shared/hooks/useSortable";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
 import { normalizeHex } from "../../shared/lib/colorUtils";
+import { useVisibleProjects } from "../../features/group-lock/hooks/useGroupLock";
 import {
   collectRailProjects,
   looksLikeProject,
@@ -317,6 +318,8 @@ type Props = {
   onOpenWhatsNew?: (version: string) => void;
   onDismissUpdate?: () => void;
 };
+
+const recentPath = (project: RecentProject) => project.path;
 
 function SidebarComponent({
   cwd,
@@ -728,6 +731,9 @@ function SidebarComponent({
     },
     { axis: "y" },
   );
+  // The full rail gets every project (it keeps their order and pins and hides
+  // locked groups itself); the pickers and menus get only what is unlocked.
+  const visibleRecents = useVisibleProjects(recents, recentPath);
   const showProjectRail = Boolean(onSelectProject && onOpenProject);
   // Settings live in the rail slot, so they keep it visible even when the
   // project rail itself is collapsed.
@@ -1634,7 +1640,7 @@ function SidebarComponent({
           {onSelectProject && !compactRailVisible ? (
             <SidebarProjectPicker
               cwd={cwd}
-              recents={recents}
+              recents={visibleRecents}
               busy={projectPathBusy(busyProjectPaths, cwd)}
               onSelectProject={onSelectProject}
               onOpenProject={onOpenProject}
@@ -2133,7 +2139,7 @@ function SidebarComponent({
       {compactRailVisible ? (
         <CompactProjectRail
           cwd={cwd}
-          recents={recents}
+          recents={visibleRecents}
           busy={projectPathBusy(busyProjectPaths, cwd)}
           tabs={visibleTabs}
           activeTab={tab}

@@ -6800,8 +6800,12 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     {
         // explorer.exe returns 1 even when it opened the folder.
         let path_str = path.to_string_lossy().replace('/', "\\");
+        // Only the path may be quoted: with the whole `/select,…` argument in
+        // quotes (what `arg` does for a path with spaces) explorer ignores it
+        // and opens Documents.
+        use std::os::windows::process::CommandExt;
         Command::new("explorer")
-            .arg(format!("/select,{path_str}"))
+            .raw_arg(format!("/select,\"{path_str}\""))
             .spawn()
             .map_err(|e| e.to_string())?;
         Ok(())

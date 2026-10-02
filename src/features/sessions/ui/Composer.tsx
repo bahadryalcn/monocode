@@ -102,6 +102,8 @@ import {
   unavailableRuntimeModes,
 } from "../model/session";
 import { hasMissingAttachment } from "../model/queuePersistence";
+import { moveQueuedMessage } from "../model/messageQueue";
+import { useAnimatedReorder } from "../../../shared/hooks/useAnimatedReorder";
 import type {
   UserQuestionPrompt,
   UserQuestionReply,
@@ -347,6 +349,8 @@ type Props = {
     attachments: Attachment[],
   ) => void;
   onQueuedMessageEditingChange?: (messageId?: string) => void;
+  /** The queue in its new order, as ids; resolved against the live queue by the owner. */
+  onReorderQueuedMessages?: (messageIds: string[]) => void;
   onSteerQueuedMessage?: (messageId: string) => void;
   onResumeQueue?: () => void;
   onUsageLimitResume?: () => void;
@@ -398,6 +402,7 @@ function MessageQueue({
   remote = false,
   onEdit,
   onEditingChange,
+  onReorder,
   onSteer,
   onResume,
 }: {
@@ -413,9 +418,38 @@ function MessageQueue({
     attachments: Attachment[],
   ) => void;
   onEditingChange?: (messageId?: string) => void;
+  onReorder?: (messageIds: string[]) => void;
   onSteer?: (messageId: string) => void;
   onResume?: () => void;
 }) {
+  const sortable = useAnimatedReorder(
+    messages.map((message) => message.id),
+    (ids) => onReorder?.(ids),
+    "y",
+  );
+  const card = useRef<HTMLDivElement>(null);
+  const refocus = useRef<string | undefined>(undefined);
+  // Moving a focused row in the DOM drops its focus; give it back after a keyboard move.
+  useLayoutEffect(() => {
+    if (!refocus.current) return;
+    card.current
+      ?.querySelector<HTMLElement>(`[data-queue-handle="${refocus.current}"]`)
+      ?.focus();
+    refocus.current = undefined;
+  }, [messages]);
+  const moveByKey = (event: KeyboardEvent, id: string, index: number) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown"))
+      return;
+    event.preventDefault();
+    const next = moveQueuedMessage(
+      messages,
+      id,
+      index + (event.key === "ArrowUp" ? -1 : 1),
+    );
+    if (next === messages) return;
+    refocus.current = id;
+    onReorder?.(next.map((message) => message.id));
+  };
   const [editingId, setEditingId] = useState<string>();
   const onEditingChangeRef = useRef(onEditingChange);
   onEditingChangeRef.current = onEditingChange;
@@ -452,6 +486,7 @@ function MessageQueue({
       <div
         className="relative z-0 rounded-t-[10px] border border-b-0 border-content/10 bg-content/3 px-2 py-1"
         data-message-queue-card
+        ref={card}
       >
         {paused ? (
           <div className="flex h-7 items-center gap-2 border-b border-stroke text-[12px]">
@@ -496,11 +531,29 @@ function MessageQueue({
           return (
             <div
               key={message.id}
-              className={`flex min-h-7 items-center gap-2 text-[12px] ${
+              ref={(node) => sortable.setItemRef(message.id, node)}
+              className={`reorder-item flex min-h-7 items-center gap-2 text-[12px] data-[dragging]:rounded-md data-[dragging]:bg-background-base data-[dragging]:shadow-lg ${
                 index > 0 ? "border-t border-stroke" : ""
               }`}
             >
-              <ListEnd className="size-3.5 shrink-0" />
+              {messages.length > 1 ? (
+                <button
+                  type="button"
+                  data-queue-handle={message.id}
+                  title="Drag to reorder"
+                  aria-label="Reorder queued message"
+                  aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                  onPointerDown={(event) =>
+                    sortable.onItemPointerDown(message.id, event)
+                  }
+                  onKeyDown={(event) => moveByKey(event, message.id, index)}
+                  className="grid size-6 shrink-0 cursor-grab touch-none place-items-center rounded-md hover:bg-content/10 hover:text-content active:cursor-grabbing"
+                >
+                  <ListEnd className="size-3.5" />
+                </button>
+              ) : (
+                <ListEnd className="size-3.5 shrink-0" />
+              )}
               <span className="min-w-0 flex-1 truncate text-content/80">
                 {label}
               </span>
@@ -644,6 +697,7 @@ export function Composer({
   onDeleteQueuedMessage,
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
+  onReorderQueuedMessages,
   onSteerQueuedMessage,
   onResumeQueue,
   onUsageLimitResume,
@@ -2371,6 +2425,7 @@ export function Composer({
         onDelete={onDeleteQueuedMessage}
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}
+        onReorder={onReorderQueuedMessages}
         onSteer={onSteerQueuedMessage}
         onResume={onResumeQueue}
       />

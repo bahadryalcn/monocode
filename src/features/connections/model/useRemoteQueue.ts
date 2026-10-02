@@ -11,6 +11,7 @@ import {
   pauseRemoteQueue,
   releaseRemoteQueue,
   removeRemoteMessage,
+  reorderRemoteMessages,
   sentRemoteMessage,
   setRemoteEditing,
   type RemoteQueue,
@@ -115,6 +116,10 @@ export function useRemoteQueue(key: string | undefined) {
     ),
     setEditing: useCallback(
       (id?: string) => update((queue) => setRemoteEditing(queue, id)),
+      [update],
+    ),
+    reorder: useCallback(
+      (ids: string[]) => update((queue) => reorderRemoteMessages(queue, ids)),
       [update],
     ),
     release: useCallback(() => update(releaseRemoteQueue), [update]),

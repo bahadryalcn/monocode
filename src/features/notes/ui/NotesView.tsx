@@ -1,7 +1,8 @@
 import { LoaderCircle, Plus, Search, File, Trash2, X } from "../../../shared/ui/icons";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { openSearchPanel } from "@codemirror/search";
+import type { EditorView } from "@codemirror/view";
 import {
-  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -10,7 +11,6 @@ import {
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { useMarkdownMode } from "../../sessions/ui/MarkdownModeToggle";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
@@ -52,7 +52,9 @@ import {
   resolveTabGroupLogo,
   resolveTabGroupMascot,
 } from "../../workspace/model/tabGroups";
-import { AgentMarkdown, MarkdownSourceHighlight } from "../../sessions/ui/AgentMarkdown";
+import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
+import { openReplacePanel } from "../../files/editor/editorSearch";
+import { NoteMarkdownEditor, NoteMarkdownToolbar } from "./NoteMarkdownEditor";
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 420;
@@ -60,6 +62,9 @@ const DEFAULT_WIDTH = 280;
 
 let rememberedWidth = DEFAULT_WIDTH;
 let rememberedNoteId: string | null = null;
+
+type NoteViewMode = "preview" | "source" | "split";
+const rememberedModes = new Map<string, NoteViewMode>();
 
 // Keep pending saves ordered across editor unmounts and reopened notes.
 const noteSaveQueues = new Map<
@@ -162,7 +167,8 @@ export function NotesView({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      // The editor's find panel closes on Escape before Notes does.
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       event.stopPropagation();
       onCloseRef.current();
@@ -560,7 +566,16 @@ function NoteEditor({
 }) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const blank = !note.body.trim() && note.title === "Untitled";
-  const [mode, setMode] = useMarkdownMode(note.id);
+  // New untitled notes open in source so typing isn't behind the preview.
+  const [mode, setModeState] = useState<NoteViewMode>(
+    () => rememberedModes.get(note.id) ?? (blank ? "source" : "preview"),
+  );
+  const setMode = (next: NoteViewMode) => {
+    rememberedModes.set(note.id, next);
+    setModeState(next);
+  };
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   type Edits = Partial<Pick<Note, "title" | "body" | "tags">>;
   const [edits, setEdits] = useState<Edits>({});
   const title = edits.title ?? note.title;
@@ -579,7 +594,7 @@ function NoteEditor({
   const projectChangeRef = useRef(projectChange);
   const noteRef = useRef(note);
   const dropZoneRef = useRef<HTMLDivElement>(null);
-  const sourceFieldRef = useRef<HTMLTextAreaElement>(null);
+  const editorViewRef = useRef<EditorView | null>(null);
   const lastDropAt = useRef(0);
   const skipSave = useRef(false);
   const saveTimer = useRef<number | null>(null);
@@ -588,12 +603,6 @@ function NoteEditor({
   noteRef.current = note;
   onSavedRef.current = onSaved;
   const time = formatRelativeTime(new Date(note.updatedAt).toISOString());
-
-  useEffect(() => {
-    if (blank) setMode("source");
-    // New untitled notes open in source so typing isn't behind the preview.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const editNote = useCallback((change: Edits) => {
     const next = { ...editsRef.current, ...change };
@@ -668,15 +677,13 @@ function NoteEditor({
   }, [saveNow]);
 
   const insertionRange = useCallback(() => {
-    const field = sourceFieldRef.current;
-    if (!field) {
+    const view = editorViewRef.current;
+    if (!view || modeRef.current === "preview") {
       const end = bodyRef.current.length;
       return { start: end, end };
     }
-    return {
-      start: field.selectionStart,
-      end: field.selectionEnd,
-    };
+    const { from, to } = view.state.selection.main;
+    return { start: from, end: to };
   }, []);
 
   const addDroppedImages = useCallback(
@@ -698,10 +705,15 @@ function NoteEditor({
         setSaveError(null);
         scheduleSave();
         window.requestAnimationFrame(() => {
-          const field = sourceFieldRef.current;
-          if (!field) return;
-          field.focus();
-          field.setSelectionRange(inserted.cursor, inserted.cursor);
+          const view = editorViewRef.current;
+          if (!view || modeRef.current === "preview") return;
+          view.focus();
+          view.dispatch({
+            selection: {
+              anchor: Math.min(inserted.cursor, view.state.doc.length),
+            },
+            scrollIntoView: true,
+          });
         });
       } catch (err: unknown) {
         setSaveError(err instanceof Error ? err.message : String(err));
@@ -783,6 +795,32 @@ function NoteEditor({
     event.currentTarget.blur();
   };
 
+  const onEditorShortcut = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    // The editor handles these itself while it has focus.
+    if (event.defaultPrevented || event.altKey || event.shiftKey) return;
+    if (!(IS_MAC ? event.metaKey : event.ctrlKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "s") {
+      event.preventDefault();
+      void saveNow();
+      return;
+    }
+    if (key !== "f" && key !== "h") return;
+    event.preventDefault();
+    if (mode === "preview") setMode("source");
+    window.requestAnimationFrame(() => {
+      const view = editorViewRef.current;
+      if (view) (key === "h" ? openReplacePanel : openSearchPanel)(view);
+    });
+  };
+
+  const editing = mode !== "preview";
+  const preview = body.trim() ? (
+    <AgentMarkdown text={body} cwd={sourceCwd} hardBreaks />
+  ) : (
+    <p className="text-[13px] text-content/45">No description</p>
+  );
+
   const canAddToChat = Boolean(body.trim());
   const draft: Note = {
     ...note,
@@ -795,6 +833,7 @@ function NoteEditor({
   return (
     <div
       ref={lockOverscroll}
+      onKeyDown={onEditorShortcut}
       className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none"
     >
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-8 py-8">
@@ -887,21 +926,29 @@ function NoteEditor({
             </div>
           ) : null}
         </header>
-        <div
-          role="tablist"
-          aria-label="Note sections"
-          className="flex h-9 items-stretch gap-4 border-b border-stroke"
-        >
-          <NoteDetailTab
-            label="Preview"
-            selected={mode === "preview"}
-            onSelect={() => setMode("preview")}
-          />
-          <NoteDetailTab
-            label="Source"
-            selected={mode === "source"}
-            onSelect={() => setMode("source")}
-          />
+        <div className="flex h-9 items-stretch gap-4 border-b border-stroke">
+          <div
+            role="tablist"
+            aria-label="Note sections"
+            className="flex shrink-0 items-stretch gap-4"
+          >
+            <NoteDetailTab
+              label="Preview"
+              selected={mode === "preview"}
+              onSelect={() => setMode("preview")}
+            />
+            <NoteDetailTab
+              label="Source"
+              selected={mode === "source"}
+              onSelect={() => setMode("source")}
+            />
+            <NoteDetailTab
+              label="Split"
+              selected={mode === "split"}
+              onSelect={() => setMode("split")}
+            />
+          </div>
+          {editing ? <NoteMarkdownToolbar viewRef={editorViewRef} /> : null}
         </div>
         <div
           ref={dropZoneRef}
@@ -940,77 +987,32 @@ function NoteEditor({
               {imageBusy ? "Adding images…" : "Drop images here"}
             </div>
           ) : null}
-          {mode === "source" ? (
-            <NoteSource
-              textareaRef={sourceFieldRef}
-              autoFocus={blank}
-              value={body}
-              onChange={(next) => {
-                editNote({ body: next });
-                scheduleSave();
-              }}
-            />
-          ) : body.trim() ? (
-            <AgentMarkdown text={body} cwd={sourceCwd} hardBreaks />
-          ) : (
-            <p className="text-[13px] text-content/45">No description</p>
-          )}
+          <div className={mode === "split" ? "grid grid-cols-2 gap-6" : ""}>
+            {/* Stays mounted in preview so undo history survives the switch. */}
+            <div className={editing ? "min-w-0" : "hidden"}>
+              <NoteMarkdownEditor
+                viewRef={editorViewRef}
+                autoFocus={blank}
+                value={body}
+                onChange={(next) => {
+                  editNote({ body: next });
+                  scheduleSave();
+                }}
+                onSave={() => void saveNow()}
+              />
+            </div>
+            {mode === "source" ? null : (
+              <div
+                className={`min-w-0 ${
+                  mode === "split" ? "border-l border-stroke pl-6" : ""
+                }`}
+              >
+                {preview}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function NoteSource({
-  value,
-  onChange,
-  textareaRef,
-  autoFocus = false,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  textareaRef: { current: HTMLTextAreaElement | null };
-  autoFocus?: boolean;
-}) {
-  const lines = value.split("\n");
-  const gutterWidth = `calc(${Math.max(String(lines.length).length, 2)}ch + 0.75rem)`;
-  const textOffset = `calc(${gutterWidth} + 0.75rem)`;
-
-  return (
-    <div className="relative min-h-[448px]">
-      <div
-        aria-hidden
-        className="pointer-events-none grid font-mono text-[13px] leading-5 text-content/85"
-        style={{
-          gridTemplateColumns: `${gutterWidth} minmax(0, 1fr)`,
-        }}
-      >
-        {lines.map((line, index) => (
-          <Fragment key={index}>
-            <div className="select-none pr-2 text-right tabular-nums whitespace-nowrap text-content/40">
-              {index + 1}
-            </div>
-            <div className="min-h-5 min-w-0 pl-3 whitespace-pre-wrap wrap-break-word">
-              {line ? <MarkdownSourceHighlight text={line} /> : "\u00a0"}
-            </div>
-          </Fragment>
-        ))}
-      </div>
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-y-0 w-px bg-content/10"
-        style={{ left: gutterWidth }}
-      />
-      <textarea
-        ref={textareaRef}
-        value={value}
-        autoFocus={autoFocus}
-        onChange={(event) => onChange(event.target.value)}
-        spellCheck={false}
-        placeholder="Write markdown…"
-        className="markdown-source-field absolute inset-0 h-full w-full resize-none overflow-hidden border-0 bg-transparent py-0 pr-0 font-mono text-[13px] leading-5 whitespace-pre-wrap wrap-break-word outline-none"
-        style={{ paddingLeft: textOffset }}
-      />
     </div>
   );
 }

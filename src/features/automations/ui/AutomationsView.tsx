@@ -92,6 +92,8 @@ import { LINEAR_CHANGE_EVENT, linearConnected } from "../../inbox/model/linear";
 import { JIRA_CHANGE_EVENT, jiraConnected } from "../../inbox/model/jira";
 import { defaultSessionChoice, firstEnabledHarness, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
 import { projectKey, projectName } from "../../../shared/lib/paths";
+import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
+import { isProjectLockedIn } from "../../group-lock/model/lockState";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
 import {
@@ -182,8 +184,17 @@ function AutomationsContent({
   onLaunch,
   onOpenSession,
 }: Pick<Props, "cwd" | "recents" | "onLaunch" | "onOpenSession">) {
-  const [automations, setAutomations] = useState<Automation[]>(
+  const [storedAutomations, setAutomations] = useState<Automation[]>(
     () => peekAutomations() ?? [],
+  );
+  // Automations aimed at a project in a locked group are not listed.
+  const lock = useLockSnapshot();
+  const automations = useMemo(
+    () =>
+      storedAutomations.filter(
+        (automation) => !isProjectLockedIn(lock, automation.cwd),
+      ),
+    [lock, storedAutomations],
   );
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(

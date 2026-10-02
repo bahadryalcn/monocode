@@ -8,6 +8,8 @@ import {
   GitBranch,
   Internet,
   Inbox,
+  Lock,
+  LockOpen,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -107,6 +109,8 @@ import { useProjectMenu } from "./useProjectMenu";
 import { GroupGitPopover } from "../../features/projects/ui/GroupGitPopover";
 import { OPEN_PROJECT_CHANGES_EVENT, summarizeGroupGit } from "../../features/projects/model/groupGit";
 import { useLinkedGroupStatus } from "../../features/projects/model/linkedWorkspace";
+import { useGroupLock } from "../../features/group-lock/hooks/useGroupLock";
+import { isProjectLockedIn } from "../../features/group-lock/model/lockState";
 
 type Props = {
   visible?: boolean;
@@ -275,9 +279,16 @@ export function ProjectRail({
     () => collectRailProjects(recents, cwd),
     [cwd, recents],
   );
+  // Projects in a locked group stay in `allProjects` so their saved order and
+  // pins survive, but nothing below lists them while the group is locked.
+  const { lock } = useGroupLock();
   const railProjectKeys = useMemo(
-    () => new Set(allProjects.keys()),
-    [allProjects],
+    () => new Set([...allProjects.keys()].filter((key) => !lock.lockedProjectKeys.has(key))),
+    [allProjects, lock],
+  );
+  const visibleLiveAgents = useMemo(
+    () => liveAgents.filter((agent) => !isProjectLockedIn(lock, agent.cwd)),
+    [liveAgents, lock],
   );
   const notificationProjects = useNotificationProjects([...allProjects.keys()]);
   const menuTrigger = useRef<HTMLElement | null>(null);
@@ -291,6 +302,10 @@ export function ProjectRail({
   const sections = useMemo(
     () => projectRailSections(recents, cwd, railOrder, pinnedPaths),
     [cwd, pinnedPaths, railOrder, recents],
+  );
+  const pinnedProjects = useMemo(
+    () => sections.pinned.filter((item) => !isProjectLockedIn(lock, item.path)),
+    [lock, sections.pinned],
   );
   const groupedProjectSections = useMemo(() => {
     const byGroup = new Map<string, RecentProject[]>(
@@ -310,10 +325,13 @@ export function ProjectRail({
       ungrouped,
       grouped: projectGroups.map((group) => ({
         group,
-        items: byGroup.get(group.id) ?? [],
+        locked: lock.lockedGroupIds.has(group.id),
+        items: lock.lockedGroupIds.has(group.id)
+          ? []
+          : (byGroup.get(group.id) ?? []),
       })),
     };
-  }, [projectGroupAssignments, projectGroups, sections.projects]);
+  }, [lock, projectGroupAssignments, projectGroups, sections.projects]);
   const busy = useMemo(() => {
     const set = new Set<string>();
     for (const path of busyPaths ?? []) set.add(path);
@@ -382,7 +400,7 @@ export function ProjectRail({
   };
 
   const onReorderPinned = (ids: string[]) => {
-    const subset = new Set(sections.pinned.map((item) => item.path));
+    const subset = new Set(pinnedProjects.map((item) => item.path));
     const next = reorderSubset(railOrder, ids, subset);
     setRailOrder(next);
     saveProjectRailOrder(next);
@@ -395,7 +413,7 @@ export function ProjectRail({
     saveProjectRailOrder(next);
   };
 
-  const pinnedIds = sections.pinned.map((item) => item.path);
+  const pinnedIds = pinnedProjects.map((item) => item.path);
   const projectIds = groupedProjectSections.ungrouped.map((item) => item.path);
   const pinnedSortable = useAnimatedReorder(pinnedIds, onReorderPinned, "y");
   const projectSortable = useAnimatedReorder(projectIds, onReorderProjects, "y");
@@ -502,10 +520,10 @@ export function ProjectRail({
               />
             ) : null}
 
-            {sections.pinned.length > 0 ? (
+            {pinnedProjects.length > 0 ? (
               <ProjectSection
                 label="Pinned"
-                items={sections.pinned}
+                items={pinnedProjects}
                 muteStatuses={muteStatuses}
                 cwd={cwd}
                 busy={busy}
@@ -537,11 +555,12 @@ export function ProjectRail({
                   onAddGroup={(x, y) => projectMenu.createGroup(x, y)}
                 />
                 <div className="flex flex-col gap-px px-2">
-                  {groupedProjectSections.grouped.map(({ group, items }) => (
+                  {groupedProjectSections.grouped.map(({ group, items, locked }) => (
                     <ProjectGroupSection
                       key={group.id}
                       group={group}
                       items={items}
+                      locked={locked}
                       muteStatuses={muteStatuses}
                       cwd={cwd}
                       busy={busy}
@@ -558,11 +577,14 @@ export function ProjectRail({
                       onOpenMenu={projectMenu.open}
                       onReorder={onReorderProjects}
                       onToggleCollapsed={() =>
-                        updateProjectGroup(group.id, (current) => ({
-                          ...current,
-                          collapsed: !current.collapsed,
-                        }))
+                        locked
+                          ? projectMenu.requestUnlock(group.id)
+                          : updateProjectGroup(group.id, (current) => ({
+                              ...current,
+                              collapsed: !current.collapsed,
+                            }))
                       }
+                      onToggleLock={() => projectMenu.toggleGroupLock(group.id)}
                       onOpenGroupMenu={(x, y) =>
                         projectMenu.openGroupMenu(group.id, x, y)
                       }
@@ -607,7 +629,7 @@ export function ProjectRail({
             />
           </div>
           <LiveAgentsPreview
-            agents={liveAgents}
+            agents={visibleLiveAgents}
             activeSessionId={activeSessionId}
             onSelect={onSelectAgent}
             groupLabels={groupLabels}
@@ -636,7 +658,7 @@ export function ProjectRail({
       {visible && inboxMenu ? (
         <InboxNotificationMenu
           {...inboxMenu}
-          projectPaths={[...allProjects.keys()]}
+          projectPaths={[...railProjectKeys]}
           onOpenSettings={onOpenNotificationSettings}
           onClose={() => {
             setInboxMenu(null);
@@ -788,7 +810,9 @@ function ProjectGroupSection({
   onOpenMenu,
   onReorder,
   onToggleCollapsed,
+  onToggleLock,
   onOpenGroupMenu,
+  locked,
   groupLabels,
   groupColors,
   groupCustomColors,
@@ -796,6 +820,8 @@ function ProjectGroupSection({
   groupMascots,
 }: {
   group: ProjectGroup;
+  /** Locked groups get no items: only the name and the padlock show. */
+  locked: boolean;
   items: RecentProject[];
   muteStatuses: ReadonlyMap<string, string | null>;
   cwd: string;
@@ -808,6 +834,7 @@ function ProjectGroupSection({
   onOpenMenu: (path: string, x: number, y: number) => void;
   onReorder: (ids: string[]) => void;
   onToggleCollapsed: () => void;
+  onToggleLock: () => void;
   onOpenGroupMenu: (x: number, y: number) => void;
   groupLabels: Record<string, string>;
   groupColors: Record<string, number>;
@@ -821,7 +848,8 @@ function ProjectGroupSection({
     "y",
   );
   const countLabel = `${items.length} ${items.length === 1 ? "project" : "projects"}`;
-  const expanded = !group.collapsed;
+  const expanded = !group.collapsed && !locked;
+  const collapsed = !expanded;
   const linkStatus = useLinkedGroupStatus(group.id);
   const localPaths = useMemo(
     () => items.map((item) => item.path).filter(isLocalProject),
@@ -867,18 +895,14 @@ function ProjectGroupSection({
       >
         <button
           type="button"
-          aria-expanded={!group.collapsed}
-          aria-label={`${group.name}, ${countLabel}`}
-          title={`${group.name} · ${countLabel}`}
+          aria-expanded={expanded}
+          aria-label={locked ? `${group.name}, locked` : `${group.name}, ${countLabel}`}
+          title={locked ? `${group.name} · Locked` : `${group.name} · ${countLabel}`}
           onClick={onToggleCollapsed}
-          className={`flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none ${
-            localPaths.length > 0
-              ? ""
-              : "group-hover:pr-6 group-has-[:focus-visible]:pr-6"
-          }`}
+          className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left"
         >
           <div className="grid size-4 shrink-0 place-items-center">
-            {group.collapsed ? (
+            {collapsed ? (
               <>
                 <span
                   data-group-mascot
@@ -906,7 +930,7 @@ function ProjectGroupSection({
             )}
           </div>
           <span className={nameClassName}>{group.name}</span>
-          {group.workspaceFile ? (
+          {group.workspaceFile && !locked ? (
             <span
               role="img"
               aria-label={
@@ -932,6 +956,7 @@ The group was left as it is.`
             </span>
           ) : null}
         </button>
+        <div className="my-auto flex shrink-0 items-center transition-[margin] duration-150 group-hover:mr-6 group-has-[:focus-visible]:mr-6 motion-reduce:transition-none">
         {localPaths.length > 0 ? (
           <button
             ref={gitAnchor}
@@ -946,7 +971,7 @@ The group was left as it is.`
               event.stopPropagation();
               setOverviewOpen((value) => !value);
             }}
-            className="my-auto mr-0 flex h-5 shrink-0 items-center gap-0.5 rounded-md px-1 text-[11px] font-semibold tabular-nums text-content/50 transition-[margin] duration-150 hover:bg-content/8 hover:text-content group-hover:mr-6 group-has-[:focus-visible]:mr-6 aria-expanded:bg-content/8 motion-reduce:transition-none"
+            className="my-auto flex h-5 shrink-0 items-center gap-0.5 rounded-md px-1 text-[11px] font-semibold tabular-nums text-content/50 hover:bg-content/8 hover:text-content aria-expanded:bg-content/8"
           >
             <GitBranch className="size-3" strokeWidth={1.75} />
             {gitSummary.dirty > 0 ? (
@@ -954,6 +979,29 @@ The group was left as it is.`
             ) : null}
           </button>
         ) : null}
+        <button
+          type="button"
+          data-no-drag
+          title={locked ? "Unlock…" : "Lock group"}
+          aria-label={locked ? `Unlock ${group.name}` : `Lock ${group.name}`}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleLock();
+          }}
+          className={`size-5 shrink-0 place-items-center rounded-md hover:bg-content/8 hover:text-content ${
+            locked
+              ? "grid text-content/60"
+              : "hidden text-content/50 group-hover:grid group-has-[:focus-visible]:grid"
+          }`}
+        >
+          {locked ? (
+            <Lock className="size-3.5" strokeWidth={1.75} />
+          ) : (
+            <LockOpen className="size-3.5" strokeWidth={1.75} />
+          )}
+        </button>
+        </div>
         {overviewOpen ? (
           <GroupGitPopover
             anchor={gitAnchor}

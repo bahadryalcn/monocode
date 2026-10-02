@@ -9,6 +9,7 @@ import {
   queueSessionFields,
   releaseRemoteQueue,
   removeRemoteMessage,
+  reorderRemoteMessages,
   sentRemoteMessage,
   setRemoteEditing,
   shouldQueueRemoteMessage,
@@ -149,5 +150,31 @@ describe("nextRemoteQueuedMessage", () => {
     const gone = { id: "f", name: "a.png", mimeType: "image/png", kind: "image" as const, size: 1, missing: true };
     const queue: RemoteQueue = { messages: [{ id: "a", text: "x", attachments: [gone] }], status: "active" };
     expect(nextRemoteQueuedMessage({ session: session({}, queue), ...ready })).toBeUndefined();
+  });
+
+  it("sends the new head after a reorder, and still waits when paused", () => {
+    const queue = queueOf("a", "b");
+    const moved = reorderRemoteMessages(queue, ["b", "a"]);
+    expect(nextRemoteQueuedMessage({ session: session({}, moved), ...ready })?.id).toBe("b");
+    const paused = reorderRemoteMessages(pauseRemoteQueue(queue), ["b", "a"]);
+    expect(nextRemoteQueuedMessage({ session: session({}, paused), ...ready })).toBeUndefined();
+  });
+});
+
+describe("reordering a remote queue", () => {
+  const ids = (queue: RemoteQueue) => queue.messages.map((message) => message.id);
+
+  it("changes only the order, keeping status and the edited row", () => {
+    const restored: RemoteQueue = { ...setRemoteEditing(queueOf("a", "b", "c"), "b"), status: "restored" };
+    const next = reorderRemoteMessages(restored, ["c", "b", "a"]);
+    expect(ids(next)).toEqual(["c", "b", "a"]);
+    expect(next.status).toBe("restored");
+    expect(next.editingId).toBe("b");
+  });
+
+  it("is a no-op for the same order and resolves ids against the live queue", () => {
+    const queue = queueOf("a", "c", "d");
+    expect(reorderRemoteMessages(queue, ["a", "c", "d"])).toBe(queue);
+    expect(ids(reorderRemoteMessages(queue, ["c", "b", "a"]))).toEqual(["c", "a", "d"]);
   });
 });

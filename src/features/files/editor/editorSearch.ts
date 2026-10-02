@@ -170,7 +170,7 @@ export function openFindInActiveEditor(): boolean {
   return true;
 }
 
-function openReplacePanel(view: EditorView): boolean {
+export function openReplacePanel(view: EditorView): boolean {
   openSearchPanel(view);
   panels.get(view)?.setReplaceVisible(true, true);
   return true;

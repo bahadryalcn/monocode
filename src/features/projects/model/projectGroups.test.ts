@@ -173,4 +173,15 @@ describe("linked workspace groups", () => {
       [pathKey("/work/docs")]: "acme",
     });
   });
+
+  it("keeps the lockable flag only when it is set", () => {
+    saveProjectGroups([
+      { id: "a", name: "A", collapsed: false, lockable: true },
+      { id: "b", name: "B", collapsed: false, lockable: false },
+    ]);
+    expect(loadProjectGroups().map((group) => group.lockable)).toEqual([
+      true,
+      undefined,
+    ]);
+  });
 });

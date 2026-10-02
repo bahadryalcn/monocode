@@ -15,6 +15,8 @@ import {
   type ModelPrices,
 } from "../../providers/model/providerUsage";
 import { railGroupLookup } from "../model/railGroups";
+import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
+import { isProjectLockedIn } from "../../group-lock/model/lockState";
 import {
   USAGE_RANGES,
   summarizeUsageOverview,
@@ -106,11 +108,18 @@ export function UsageOverview() {
 
   // "Today" and the rail groups are read whenever the logs, range or prices
   // change, which is also when the window should move on.
+  // Usage of projects in a locked group is left out, names and costs both.
+  const lock = useLockSnapshot();
   const data = useMemo(
     () =>
       load.status === "ready"
         ? summarizeUsageOverview(
-            load.usage,
+            load.usage.map(({ account, rows }) => ({
+              account,
+              rows: rows.filter(
+                (row) => !row.project || !isProjectLockedIn(lock, row.project),
+              ),
+            })),
             range,
             new Date(),
             stackBy,
@@ -118,7 +127,7 @@ export function UsageOverview() {
             pricing,
           )
         : null,
-    [load, range, stackBy, pricing],
+    [load, lock, range, stackBy, pricing],
   );
 
   const rangeLabel =

@@ -1,5 +1,6 @@
 import { isPreparingHandoff } from "./handoff";
 import type { FollowUpBehavior } from "../../settings/model/settings";
+import { moveItem, orderByIds } from "../../../shared/lib/reorder";
 import { hasMissingAttachment } from "./queuePersistence";
 import type { QueuedMessage, Session, TurnIntent } from "./session";
 
@@ -29,6 +30,45 @@ export function dequeueQueuedMessage(
         ? undefined
         : session.editingQueuedMessageId,
   };
+}
+
+/**
+ * Move one queued row to `toIndex` (clamped to the queue). Returns the same
+ * array when the row is unknown or already there, so callers can skip a write.
+ */
+export function moveQueuedMessage(
+  queue: QueuedMessage[],
+  fromId: string,
+  toIndex: number,
+): QueuedMessage[] {
+  const from = queue.findIndex((message) => message.id === fromId);
+  if (from < 0) return queue;
+  const to = Math.max(0, Math.min(Math.trunc(toIndex), queue.length - 1));
+  return moveItem(queue, from, to);
+}
+
+/**
+ * Put the queue in the order of `ids`, resolved against the queue as it is now:
+ * ids that are gone are ignored and rows added since keep their place at the
+ * end, so a drop that raced a send, a removal or a new message cannot lose or
+ * duplicate a row. Returns the same array when nothing moves.
+ */
+export function reorderQueuedMessages(
+  queue: QueuedMessage[],
+  ids: string[],
+): QueuedMessage[] {
+  const next = orderByIds(queue, ids);
+  return next.every((message, index) => message === queue[index])
+    ? queue
+    : next;
+}
+
+/** Reorder a session's queue. Status and the edited row are left alone: order is all that changes. */
+export function reorderSessionQueue(session: Session, ids: string[]): Session {
+  const queue = session.queuedMessages;
+  if (!queue) return session;
+  const next = reorderQueuedMessages(queue, ids);
+  return next === queue ? session : { ...session, queuedMessages: next };
 }
 
 /**

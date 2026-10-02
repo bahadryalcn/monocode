@@ -688,6 +688,7 @@ describe("settings navigation", () => {
       "inbox",
       "archive",
       "worktrees",
+      "groupLock",
     ]);
   });
 
