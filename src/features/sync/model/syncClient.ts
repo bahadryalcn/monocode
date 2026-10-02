@@ -160,7 +160,8 @@ export function startSyncLoop(
     running = true;
     current = (async () => {
       try {
-        for (const machineId of only ? [only] : listMachineIds()) {
+        const eligible = listMachineIds();
+        for (const machineId of only ? eligible.filter((id) => id === only) : eligible) {
           await runSyncCycle(machineId, requestFor(machineId)).catch(() => undefined);
         }
       } finally {
