@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitChangedFile, GitDiffIndex } from "../../../platform/tauri/fs";
-import { applyIndexAction } from "./optimisticIndex";
+import { applyCommit, applyIndexAction } from "./optimisticIndex";
 
 function file(
   relative: string,
@@ -99,6 +99,31 @@ describe("applyIndexAction", () => {
     );
     expect(sides(next)).toEqual([["b.ts", "modified", false, true]]);
     expect([next.additions, next.deletions]).toEqual([2, 1]);
+  });
+
+  it("a commit takes the staged files and their line counts", () => {
+    const next = applyCommit(
+      index([
+        file("a.ts", { staged: true, unstaged: false }),
+        file("b.ts"),
+        file("c.ts", { staged: true }),
+      ]),
+      false,
+    );
+    expect(sides(next)).toEqual([
+      ["b.ts", "modified", false, true],
+      ["c.ts", "modified", false, true],
+    ]);
+    expect([next.additions, next.deletions]).toEqual([4, 2]);
+  });
+
+  it("a commit of everything leaves no changes", () => {
+    const next = applyCommit(
+      index([file("a.ts"), file("b.ts", { staged: true })]),
+      true,
+    );
+    expect(next.files).toEqual([]);
+    expect([next.additions, next.deletions]).toEqual([0, 0]);
   });
 
   it("discarding keeps the staged side of a file", () => {

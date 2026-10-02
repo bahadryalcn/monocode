@@ -32,8 +32,11 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronUp,
+  Folder,
   RotateCcw,
 } from "../../../shared/ui/icons";
+import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 import { formatInteger } from "../../../shared/lib/numbers";
 import { minimalSetup } from "codemirror";
 import {
@@ -64,6 +67,7 @@ import {
   gitStageFile,
   notifyGitChanged,
   readTextFile,
+  revealPath,
   subscribeGitChanged,
   writeTextFile,
   type GitFileDiffKind,
@@ -142,6 +146,12 @@ import {
 type EditorNavigationRequest = EditorNavigation & { token: number };
 
 export const FILE_EDITOR_AUTOSAVE_DELAY_MS = 1_000;
+
+const REVEAL_LABEL = IS_MAC
+  ? "Reveal in Finder"
+  : IS_WIN
+    ? "Reveal in File Explorer"
+    : "Open Containing Folder";
 
 const editorScheme = new Compartment();
 const editorGitConfig = new Compartment();
@@ -543,6 +553,16 @@ export function FileEditor({
             <RotateCcw className="size-3" strokeWidth={1.75} />
             Retry
           </button>
+          {isRemoteProjectPath(path) ? null : (
+            <button
+              type="button"
+              onClick={() => void revealPath(path).catch(() => {})}
+              className="mx-auto mt-2 flex h-7 items-center gap-1.5 rounded-md bg-content/10 px-2.5 text-[12px] text-content hover:bg-content/15"
+            >
+              <Folder className="size-3" strokeWidth={1.75} />
+              {REVEAL_LABEL}
+            </button>
+          )}
         </div>
       </div>
     );

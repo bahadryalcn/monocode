@@ -309,6 +309,53 @@ describe("GitChangesPanel action feedback", () => {
     expect(commitButton().textContent?.trim()).toBe("Commit");
     expect(statusText()).toBeNull();
   });
+
+  it("clears committed files as soon as the commit is made, before the push ends", async () => {
+    const cwd = "/repo-feedback-push";
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ files: [changed(true)], remote: "origin", upstream: "origin/x" }),
+    );
+    vi.mocked(gitCommit).mockResolvedValueOnce(undefined);
+    let finishPush!: () => void;
+    vi.mocked(gitPush).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishPush = resolve)),
+    );
+    await renderPanel(cwd);
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!;
+      setValue.call(textarea, "Fix it");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(sections()).toEqual(["Staged Changes"]);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Commit options"]')!
+        .click();
+    });
+    const pushItem = [
+      ...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ].find((item) => item.textContent?.trim() === "Commit & Push")!;
+    await act(async () => pushItem.click());
+    await act(async () => {});
+
+    // Still pushing, and the poll still reads the old index.
+    expect(statusText()).toBe("Pushing…");
+    expect(sections()).toEqual([]);
+    expect(container.querySelector("textarea")?.value).toBe("");
+
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ remote: "origin", upstream: "origin/x" }),
+    );
+    await act(async () => finishPush());
+    await act(async () => {});
+    expect(sections()).toEqual([]);
+    expect(statusText()).toBeNull();
+  });
 });
 
 describe("GitChangesPanel pull action", () => {

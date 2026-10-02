@@ -43,7 +43,11 @@ import { GitConflictRows } from "./GitConflictRows";
 import { GitOperationBanner } from "./GitOperationBanner";
 import { GitStashSection } from "./GitStashSection";
 import { GitActionsMenu, type ChangesActions } from "./GitActionsMenu";
-import { applyIndexAction, type IndexAction } from "../model/optimisticIndex";
+import {
+  applyCommit,
+  applyIndexAction,
+  type IndexAction,
+} from "../model/optimisticIndex";
 import { AUTO_FETCH_MS, loadAutoFetch, saveAutoFetch } from "../model/autoFetch";
 import {
   basename,
@@ -729,13 +733,16 @@ function ChangedFiles({
       // Amending with an empty box keeps the message the commit already has.
       const text = message.trim() || (await gitHeadMessage(cwd));
       await gitCommit(cwd, text, amending, options?.signoff ?? false);
+      // The commit is made: its files leave the list now, not after the push
+      // and the reload that follow.
+      if (index) showOptimistic(applyCommit(index, stageAll));
+      setMessage("");
+      setAmendTarget(null);
       if (push || createPr) {
         setPending("Pushing…");
         await gitPush(cwd);
         recordPrActivity();
       }
-      setMessage("");
-      setAmendTarget(null);
       onMutated();
       if (createPr) {
         setPending("Creating pull request…");
