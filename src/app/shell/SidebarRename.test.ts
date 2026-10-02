@@ -453,6 +453,136 @@ describe("sidebar session multiselection", () => {
   });
 });
 
+describe("sidebar session bulk actions", () => {
+  const selectedIds = () =>
+    Array.from(
+      container.querySelectorAll('[data-session-selected="true"]'),
+      (el) => el.getAttribute("data-session-card"),
+    );
+  const bar = () =>
+    container.querySelector<HTMLElement>("[data-session-bulk-bar]");
+  const barButton = (label: string) =>
+    Array.from(bar()!.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) =>
+        button.textContent === label ||
+        button.getAttribute("aria-label") === label,
+    )!;
+  const clickCard = (id: string, init: MouseEventInit = {}) =>
+    act(() =>
+      container
+        .querySelector(`[data-session-card="${id}"]`)!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true, ...init })),
+    );
+
+  beforeEach(() => {
+    props.sessions = [1, 2, 3].map((n) => ({
+      ...props.sessions[0],
+      id: `session-${n}`,
+      updatedAt: 100 - n,
+    }));
+  });
+
+  it("toggles rows with plain clicks in selection mode and leaves it on Escape", () => {
+    act(() => render());
+    expect(bar()).toBeNull();
+    act(() =>
+      container
+        .querySelector<HTMLElement>('[aria-label="Select conversations"]')!
+        .click(),
+    );
+    expect(container.querySelectorAll("[data-session-checkbox]")).toHaveLength(
+      3,
+    );
+    clickCard("session-2");
+    clickCard("session-3");
+    clickCard("session-2");
+    expect(selectedIds()).toEqual(["session-3"]);
+    expect(props.onSelectSession).not.toHaveBeenCalled();
+    expect(bar()!.textContent).toContain("1 selected");
+
+    act(() => barButton("Select all").click());
+    expect(selectedIds()).toEqual(["session-1", "session-2", "session-3"]);
+
+    pressKey(document.body, "Escape");
+    expect(selectedIds()).toEqual([]);
+    expect(bar()).toBeNull();
+    expect(container.querySelector("[data-session-checkbox]")).toBeNull();
+  });
+
+  it("enters selection mode from the row menu and selects all with the shortcut", () => {
+    act(() => render());
+    act(() =>
+      card().dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      ),
+    );
+    const select = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent === "Select")!;
+    act(() => select.click());
+    expect(selectedIds()).toEqual(["session-1"]);
+    expect(container.querySelector("[data-session-checkbox]")).not.toBeNull();
+
+    const event = new KeyboardEvent("keydown", {
+      key: "a",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => document.body.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    expect(selectedIds()).toEqual(["session-1", "session-2", "session-3"]);
+  });
+
+  it("deletes the selection after one confirmation, skipping running sessions and reporting failures", async () => {
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal("confirm", confirm);
+    props.onDeleteSession = vi.fn();
+    props.onDeleteSessionNow = vi.fn(async (id: string) => {
+      if (id === "session-2") throw new Error("disk full");
+      return true;
+    });
+    act(() => render());
+    clickCard("session-1", { ctrlKey: true });
+    clickCard("session-3", { shiftKey: true });
+    expect(bar()!.textContent).toContain("3 selected");
+
+    await act(async () => barButton("Delete selected").click());
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith(
+      "Delete 2 conversations? This can’t be undone.\n\n1 running conversation will be skipped.",
+    );
+    expect(vi.mocked(props.onDeleteSessionNow).mock.calls).toEqual([
+      ["session-2"],
+      ["session-3"],
+    ]);
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="status"]')?.textContent).toBe(
+      "1 running conversation was skipped. 1 conversation could not be deleted: disk full.",
+    );
+  });
+
+  it("asks before deleting the selection with the Delete key", async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    props.busySessionIds = new Set();
+    props.onDeleteSession = vi.fn();
+    props.onDeleteSessionNow = vi.fn(async () => true);
+    act(() => render());
+    clickCard("session-2", { ctrlKey: true });
+    clickCard("session-3", { ctrlKey: true });
+
+    await act(async () => {
+      pressKey(document.body, "Delete");
+    });
+    expect(confirm).toHaveBeenCalledWith(
+      "Delete 2 conversations? This can’t be undone.",
+    );
+    expect(props.onDeleteSessionNow).not.toHaveBeenCalled();
+    expect(selectedIds()).toEqual(["session-2", "session-3"]);
+  });
+});
+
 describe("sidebar session IDs", () => {
   function openCopyIdMenu(sessionId: string) {
     act(() => {

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   orderedSessionActionIds,
   pruneSessionSelection,
+  selectAllSessions,
+  sessionSelectionRange,
   toggleSessionSelection,
 } from "./sessionSelection";
 
@@ -36,5 +38,33 @@ describe("session selection", () => {
     expect([
       ...pruneSessionSelection(new Set(["one", "two"]), new Set(["two"])),
     ]).toEqual(["two"]);
+  });
+
+  it("keeps the same selection when nothing was pruned", () => {
+    const selected = new Set(["one"]);
+    expect(pruneSessionSelection(selected, new Set(["one", "two"]))).toBe(
+      selected,
+    );
+  });
+
+  it("selects the range between the anchor and the target in list order", () => {
+    const ids = ["one", "two", "three", "four"];
+    expect(sessionSelectionRange(ids, "two", "four")).toEqual([
+      "two",
+      "three",
+      "four",
+    ]);
+    expect(sessionSelectionRange(ids, "three", "one")).toEqual([
+      "one",
+      "two",
+      "three",
+    ]);
+    expect(sessionSelectionRange(ids, "gone", "two")).toEqual(["two"]);
+  });
+
+  it("selects every listed session", () => {
+    const all = selectAllSessions(new Set(["two", "stale"]), ["one", "two"]);
+    expect([...all]).toEqual(["one", "two"]);
+    expect(selectAllSessions(all, ["one", "two"])).toBe(all);
   });
 });

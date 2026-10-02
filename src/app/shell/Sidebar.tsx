@@ -11,6 +11,7 @@ import {
   Archive,
   Chatting,
   Check,
+  CheckList,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -30,10 +31,12 @@ import {
   Share,
   Settings,
   StickyNote,
+  Trash2,
   Zap,
 } from "../../shared/ui/icons";
 import {
   memo,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -68,8 +71,17 @@ import { orchestrationTaskLabel } from "../../features/orchestration/model/orche
 import {
   orderedSessionActionIds,
   pruneSessionSelection,
+  selectAllSessions,
+  sessionSelectionRange,
   toggleSessionSelection,
 } from "../../features/sessions/model/sessionSelection";
+import {
+  bulkDeleteConfirmMessage,
+  bulkDeleteSummary,
+  deleteSessionsInBulk,
+  splitRunningSessions,
+} from "../../features/sessions/model/bulkSessionDelete";
+import { TransientNotice } from "../../shared/ui/TransientNotice";
 import {
   paneDropFromPoint,
   setExternalPaneDrop,
@@ -281,6 +293,9 @@ type Props = {
   onCancelReminders?: (sessionIds: readonly string[]) => void;
   onDeleteSession?: (sessionId: string) => void;
   onDeleteSessions?: (sessionIds: readonly string[]) => void;
+  /** Delete without asking. Resolves false when the session was kept and
+   * rejects on an error, so a bulk delete can report it. */
+  onDeleteSessionNow?: (sessionId: string) => Promise<boolean>;
   onOpenFile: OpenFileFn;
   onOpenTerminal?: (cwd: string) => void;
   onFileMoved?: (from: string, to: string) => void;
@@ -378,6 +393,7 @@ function SidebarComponent({
   onCancelReminders,
   onDeleteSession: onDeleteLocalSession,
   onDeleteSessions: onDeleteLocalSessions,
+  onDeleteSessionNow: onDeleteLocalSessionNow,
   onOpenFile,
   onOpenTerminal,
   onFileMoved,
@@ -586,6 +602,10 @@ function SidebarComponent({
   );
   const contextSelectionRef = useRef(false);
   const selectionAnchorRef = useRef<string | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
+  const dismissBulkNotice = useCallback(() => setBulkNotice(null), []);
+  const bulkDeleteActive = useRef(false);
   const [folderMenu, setFolderMenu] = useState<{
     x: number;
     y: number;
@@ -724,6 +744,7 @@ function SidebarComponent({
     if (tab !== "sessions") {
       selectionAnchorRef.current = null;
       setSelectedSessionIds(new Set());
+      setSelectionMode(false);
       return;
     }
     const available = new Set(sessionNavigationIds);
@@ -914,6 +935,7 @@ function SidebarComponent({
     setRenamingFolderId(null);
     setFolderMenu(null);
     setSessionDrop(null);
+    setSelectionMode(false);
     pendingFolderSessionIds.current.clear();
   }, [cwd]);
 
@@ -995,24 +1017,67 @@ function SidebarComponent({
     return () => scrollParent.removeEventListener("scroll", onScroll, true);
   }, [sessionMenu, folderMenu, filterMenu]);
 
+  const selectionKeys = useRef({
+    selectAll: () => {},
+    deleteSelected: () => {},
+  });
   useEffect(() => {
-    if (selectedSessionIds.size === 0) return;
+    if (selectedSessionIds.size === 0 && !selectionMode) return;
     const clear = () => {
       selectionAnchorRef.current = null;
       contextSelectionRef.current = false;
       setSelectedSessionIds(new Set());
+      setSelectionMode(false);
       setSessionMenu(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      clear();
+      if (event.key === "Escape") {
+        clear();
+        return;
+      }
+      if (event.defaultPrevented || contextSelectionRef.current) return;
+      const target = event.target instanceof Element ? event.target : null;
+      // Typing, dialogs and menus keep their own keys.
+      if (
+        target?.closest(
+          "input,textarea,select,[contenteditable],[role='dialog'],[role='menu']",
+        )
+      )
+        return;
+      if (
+        target &&
+        target !== document.body &&
+        !target.closest("[data-session-list-panel]")
+      )
+        return;
+      const mod = event.ctrlKey || event.metaKey;
+      if (selectionMode && mod && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        selectionKeys.current.selectAll();
+        return;
+      }
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        !mod &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        selectionKeys.current.deleteSelected();
+      }
     };
     // A pointer landing off the cards drops the selection; a menu acting on
-    // it stays open, and the cards handle their own clicks.
+    // it stays open, and the cards handle their own clicks. Selection mode
+    // also survives the rest of the session list, such as its search field.
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
       const el = target instanceof Element ? target : null;
-      if (el?.closest("[data-session-card],[data-popover-side]")) return;
+      if (
+        el?.closest(
+          "[data-session-card],[data-popover-side],[data-session-selection-keep]",
+        )
+      )
+        return;
+      if (selectionMode && el?.closest("[data-session-list-panel]")) return;
       clear();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -1021,7 +1086,7 @@ function SidebarComponent({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [selectedSessionIds.size]);
+  }, [selectedSessionIds.size, selectionMode]);
 
   const commitSessionFolders = (next: SessionFolder[]) => {
     setSessionFolders(next);
@@ -1160,6 +1225,9 @@ function SidebarComponent({
       disabled: !onSetReminders,
       submenu: sessionReminderPresets(),
     },
+    ...(!multipleMenuSessions && !selectionMode
+      ? [{ kind: "item" as const, id: "select", label: "Select" }]
+      : []),
     { kind: "sep" as const },
     { kind: "item" as const, id: "folder-new", label: "New folder" },
     ...(sessionFolders.length > 0 ? [{ kind: "sep" as const }] : []),
@@ -1256,6 +1324,12 @@ function SidebarComponent({
     const archived = allMenuSessionsArchived;
     const pinned = allMenuSessionsPinned;
     closeSessionMenu();
+    if (id === "select") {
+      selectionAnchorRef.current = sessionId;
+      setSelectionMode(true);
+      setSelectedSessionIds(new Set([sessionId]));
+      return;
+    }
     if (id === "reminder:cancel") {
       onCancelReminders?.(sessionIds);
       return;
@@ -1270,11 +1344,7 @@ function SidebarComponent({
       return;
     }
     if (id === "pin") {
-      if (sessionIds.length > 1 && onPinSessions) {
-        onPinSessions(sessionIds, !pinned);
-      } else {
-        for (const id of sessionIds) onPinSession?.(id, !pinned);
-      }
+      pinSessions(sessionIds, !pinned);
       return;
     }
     if (id === "rename") {
@@ -1324,21 +1394,128 @@ function SidebarComponent({
       return;
     }
     if (id === "archive") {
-      if (sessionIds.length > 1 && onArchiveSessions) {
-        onArchiveSessions(sessionIds, !archived);
-      } else {
-        for (const id of sessionIds) onArchiveSession?.(id, !archived);
-      }
+      archiveSessions(sessionIds, !archived);
       return;
     }
     if (id === "delete") {
-      if (sessionIds.length > 1 && onDeleteSessions) {
-        onDeleteSessions(sessionIds);
-      } else {
-        for (const id of sessionIds) onDeleteSession?.(id);
-      }
+      if (sessionIds.length > 1) void bulkDeleteSessions(sessionIds);
+      else for (const id of sessionIds) onDeleteSession?.(id);
     }
   };
+
+  const archiveSessions = (sessionIds: readonly string[], archived: boolean) => {
+    if (sessionIds.length > 1 && onArchiveSessions) {
+      onArchiveSessions(sessionIds, archived);
+    } else {
+      for (const id of sessionIds) onArchiveSession?.(id, archived);
+    }
+  };
+
+  const pinSessions = (sessionIds: readonly string[], pinned: boolean) => {
+    if (sessionIds.length > 1 && onPinSessions) {
+      onPinSessions(sessionIds, pinned);
+    } else {
+      for (const id of sessionIds) onPinSession?.(id, pinned);
+    }
+  };
+
+  // Read at delete time, so a conversation that starts running while the
+  // confirmation is open is still left alone.
+  const runningSessionIdsRef = useRef<ReadonlySet<string>>(new Set());
+  runningSessionIdsRef.current = new Set([
+    ...listedBusySessionIds,
+    ...listedApprovalSessionIds,
+  ]);
+
+  const bulkDeleteSessions = async (sessionIds: readonly string[]) => {
+    if (bulkDeleteActive.current || sessionIds.length === 0) return;
+    const machine = remote.machine;
+    if (remoteProject && (!machine || !hostProject)) {
+      window.alert("Connect this project's machine to delete its sessions.");
+      return;
+    }
+    const deleteOne =
+      remoteProject && machine && hostProject
+        ? async (sessionId: string) => {
+            await remoteRequest(machine.id, "sessions.delete", {
+              projectId: hostProject.projectId,
+              sessionId,
+            });
+            forgetRemoteQueue(sessionId);
+            onRemoteSessionDeleted?.(sessionId);
+          }
+        : onDeleteLocalSessionNow;
+    if (!deleteOne) {
+      // Without the reporting delete, only a handler that asks first may run.
+      onDeleteSessions?.(sessionIds);
+      return;
+    }
+    const { deletable, running } = splitRunningSessions(
+      sessionIds,
+      runningSessionIdsRef.current,
+    );
+    if (deletable.length === 0) {
+      setBulkNotice(bulkDeleteSummary({ skipped: running, failed: [] }));
+      return;
+    }
+    if (
+      !window.confirm(bulkDeleteConfirmMessage(deletable.length, running.length))
+    )
+      return;
+    bulkDeleteActive.current = true;
+    try {
+      const result = await deleteSessionsInBulk(deletable, {
+        isRunning: (id) => runningSessionIdsRef.current.has(id),
+        deleteOne,
+      });
+      setBulkNotice(
+        bulkDeleteSummary({
+          skipped: [...running, ...result.skipped],
+          failed: result.failed,
+        }),
+      );
+    } finally {
+      bulkDeleteActive.current = false;
+      if (remoteProject) refreshRemoteProjectSessions();
+    }
+  };
+
+  // The bar acts on the selection in list order, like the context menu.
+  const selectedOrderedIds = sessionNavigationIds.filter((id) =>
+    selectedSessionIds.has(id),
+  );
+  const selectedSessions = listedSessions.filter((session) =>
+    selectedSessionIds.has(session.id),
+  );
+  const allSelectedArchived =
+    selectedSessions.length > 0 &&
+    selectedSessions.every((session) => session.archived);
+  const allSelectedPinned =
+    selectedSessions.length > 0 &&
+    selectedSessions.every((session) => session.pinned);
+  const selectAllListedSessions = () => {
+    contextSelectionRef.current = false;
+    setSelectedSessionIds((current) =>
+      selectAllSessions(current, sessionNavigationIds),
+    );
+  };
+  const clearSessionSelection = () => {
+    selectionAnchorRef.current = null;
+    contextSelectionRef.current = false;
+    setSelectedSessionIds(new Set());
+    setSelectionMode(false);
+  };
+  selectionKeys.current = {
+    selectAll: selectAllListedSessions,
+    deleteSelected: () => {
+      if (onDeleteSession || onDeleteSessions) {
+        void bulkDeleteSessions(selectedOrderedIds);
+      }
+    },
+  };
+  const showBulkBar =
+    selectionMode ||
+    (selectedSessionIds.size > 0 && !contextSelectionRef.current);
 
   const onFolderMenuPick = (id: string) => {
     if (!folderMenu) return;
@@ -1402,23 +1579,22 @@ function SidebarComponent({
         selectionAnchorRef.current = null;
       }
       const anchor = selectionAnchorRef.current ?? activeListedSessionId ?? sessionId;
-      const start = visibleIds.indexOf(anchor);
-      const end = visibleIds.indexOf(sessionId);
-      const range =
-        start < 0 || end < 0
-          ? [sessionId]
-          : visibleIds.slice(Math.min(start, end), Math.max(start, end) + 1);
-      selectionAnchorRef.current = start < 0 ? sessionId : anchor;
+      const range = sessionSelectionRange(visibleIds, anchor, sessionId);
+      selectionAnchorRef.current = visibleIds.includes(anchor)
+        ? anchor
+        : sessionId;
       setSelectedSessionIds(
         (current) =>
           new Set(
-            event.ctrlKey || event.metaKey ? [...current, ...range] : range,
+            event.ctrlKey || event.metaKey || selectionMode
+              ? [...current, ...range]
+              : range,
           ),
       );
       return;
     }
     selectionAnchorRef.current = sessionId;
-    if (event.ctrlKey || event.metaKey) {
+    if (event.ctrlKey || event.metaKey || selectionMode) {
       const next = toggleSessionSelection(selectedSessionIds, sessionId);
       if (next.size === 0) selectionAnchorRef.current = null;
       setSelectedSessionIds(next);
@@ -1431,6 +1607,14 @@ function SidebarComponent({
 
   // Cards are memoized. Their handlers go through one stable set that calls
   // the latest version, so a sidebar render no longer re-renders every card.
+  const onSessionCardDelete = (sessionId: string) => {
+    if (selectedSessionIds.size > 0 && !contextSelectionRef.current) {
+      void bulkDeleteSessions(selectedOrderedIds);
+      return;
+    }
+    onDeleteSession?.(sessionId);
+  };
+
   const cardHandlers = useRef({
     onSessionCardSelect,
     onOpenInboxItem,
@@ -1440,7 +1624,7 @@ function SidebarComponent({
     onSessionContextMenu,
     onArchiveSession,
     setRenamingSessionId,
-    onDeleteSession,
+    onSessionCardDelete,
   });
   cardHandlers.current = {
     onSessionCardSelect,
@@ -1451,7 +1635,7 @@ function SidebarComponent({
     onSessionContextMenu,
     onArchiveSession,
     setRenamingSessionId,
-    onDeleteSession,
+    onSessionCardDelete,
   };
   const cardActions = useMemo(
     () => ({
@@ -1474,7 +1658,7 @@ function SidebarComponent({
       rename: (sessionId: string) =>
         cardHandlers.current.setRenamingSessionId(sessionId),
       delete: (sessionId: string) =>
-        cardHandlers.current.onDeleteSession?.(sessionId),
+        cardHandlers.current.onSessionCardDelete(sessionId),
     }),
     [],
   );
@@ -1496,6 +1680,7 @@ function SidebarComponent({
         session={session}
         isActive={session.id === activeListedSessionId}
         isSelected={selectedSessionIds.has(session.id)}
+        selectionMode={selectionMode}
         busy={listedBusySessionIds.has(session.id)}
         done={unseenFinishedIds.has(session.id)}
         linkedUpdate={linkedSessionUpdateIds.has(session.id)}
@@ -1749,11 +1934,31 @@ function SidebarComponent({
           )}
         </div>
         {tab === "sessions" && cwd && cwd !== "~" ? (
-          <div className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
+          <div
+            data-session-list-panel
+            className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2"
+          >
             <div className="relative flex h-7 min-w-0 flex-1 items-center">
               <Search className="pointer-events-none absolute left-2 size-3 shrink-0 opacity-50" />
               {sessionSearchInput}
             </div>
+            <span data-session-selection-keep className="contents">
+              <SessionsHeaderButton
+                label={selectionMode ? "Stop selecting" : "Select conversations"}
+                active={selectionMode}
+                onClick={() => {
+                  if (selectionMode) {
+                    clearSessionSelection();
+                    return;
+                  }
+                  contextSelectionRef.current = false;
+                  setSessionMenu(null);
+                  setSelectionMode(true);
+                }}
+              >
+                <CheckList className="size-3" strokeWidth={1.75} />
+              </SessionsHeaderButton>
+            </span>
             <SessionsHeaderButton
               label="Filter sessions"
               active={filtersActive}
@@ -1765,11 +1970,76 @@ function SidebarComponent({
             </SessionsHeaderButton>
           </div>
         ) : null}
+        {tab === "sessions" && cwd && cwd !== "~" && showBulkBar ? (
+          <div
+            role="toolbar"
+            aria-label="Selected conversations"
+            data-session-bulk-bar
+            data-session-selection-keep
+            className="flex min-h-8 shrink-0 flex-wrap items-center gap-x-1 gap-y-0.5 border-b border-stroke bg-content/5 px-2 py-1 text-[11px] text-content/70"
+          >
+            <span className="mr-auto shrink-0 pl-0.5 tabular-nums text-content">
+              {selectedSessionIds.size} selected
+            </span>
+            <button
+              type="button"
+              disabled={
+                sessionNavigationIds.length === 0 ||
+                selectedSessionIds.size === sessionNavigationIds.length
+              }
+              onClick={selectAllListedSessions}
+              className="rounded-md px-1.5 py-0.5 hover:bg-content/10 hover:text-content disabled:pointer-events-none disabled:opacity-40"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              onClick={clearSessionSelection}
+              className="rounded-md px-1.5 py-0.5 hover:bg-content/10 hover:text-content"
+            >
+              {selectedSessionIds.size > 0 ? "Clear" : "Done"}
+            </button>
+            {selectedSessionIds.size > 0 ? (
+              <span className="flex shrink-0 items-center gap-px">
+                {onPinSession || onPinSessions ? (
+                  <BulkBarAction
+                    label={allSelectedPinned ? "Unpin" : "Pin"}
+                    onClick={() =>
+                      pinSessions(selectedOrderedIds, !allSelectedPinned)
+                    }
+                  >
+                    <Pin className="size-3" strokeWidth={1.75} />
+                  </BulkBarAction>
+                ) : null}
+                {onArchiveSession || onArchiveSessions ? (
+                  <BulkBarAction
+                    label={allSelectedArchived ? "Unarchive" : "Archive"}
+                    onClick={() =>
+                      archiveSessions(selectedOrderedIds, !allSelectedArchived)
+                    }
+                  >
+                    <Archive className="size-3" strokeWidth={1.75} />
+                  </BulkBarAction>
+                ) : null}
+                {onDeleteSession || onDeleteSessions ? (
+                  <BulkBarAction
+                    label="Delete"
+                    danger
+                    onClick={() => void bulkDeleteSessions(selectedOrderedIds)}
+                  >
+                    <Trash2 className="size-3" strokeWidth={1.75} />
+                  </BulkBarAction>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <div
           ref={(el) => {
             sessionsLock(el);
             sessionsScrollRef.current = el;
           }}
+          data-session-list-panel
           className={`min-h-0 flex-1 overflow-y-auto overscroll-none ${
             tab === "sessions" ? "" : "hidden"
           }`}
@@ -2145,6 +2415,9 @@ function SidebarComponent({
           onChange={onSessionFiltersChange}
           onClose={() => setFilterMenu(null)}
         />
+      ) : null}
+      {bulkNotice ? (
+        <TransientNotice message={bulkNotice} onDismiss={dismissBulkNotice} />
       ) : null}
       {linkingSession ? (
         <LinkSessionWorkItemDialog
@@ -2815,6 +3088,32 @@ function WorkspaceTitleActions({
   );
 }
 
+function BulkBarAction({
+  label,
+  danger = false,
+  onClick,
+  children,
+}: {
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={`${label} selected`}
+      aria-label={`${label} selected`}
+      onClick={onClick}
+      className={`grid size-6 place-items-center rounded-md text-content/60 hover:bg-content/10 ${
+        danger ? "hover:text-red-400" : "hover:text-content"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 function SessionsHeaderButton({
   label,
   active = false,
@@ -3090,6 +3389,7 @@ const SessionCard = memo(function SessionCard({
   session,
   isActive,
   isSelected,
+  selectionMode = false,
   busy,
   done,
   linkedUpdate,
@@ -3111,6 +3411,7 @@ const SessionCard = memo(function SessionCard({
   session: SessionSummary;
   isActive: boolean;
   isSelected: boolean;
+  selectionMode?: boolean;
   busy: boolean;
   done: boolean;
   linkedUpdate: boolean;
@@ -3484,6 +3785,21 @@ const SessionCard = memo(function SessionCard({
               compact && !orchestrationExpanded ? "" : "mt-1"
             }`}
           >
+            {selectionMode ? (
+              <span
+                aria-hidden
+                data-session-checkbox={isSelected ? "checked" : "unchecked"}
+                className={`grid size-3.5 shrink-0 place-items-center rounded-[4px] border ${
+                  isSelected
+                    ? "border-accent bg-accent text-white"
+                    : "border-content/35"
+                }`}
+              >
+                {isSelected ? (
+                  <Check className="size-2.5" strokeWidth={2.5} />
+                ) : null}
+              </span>
+            ) : null}
             {session.pinned ? (
               <Pin
                 className="size-3 shrink-0 text-content/45"

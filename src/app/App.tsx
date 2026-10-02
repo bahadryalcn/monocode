@@ -4730,6 +4730,8 @@ function Workspace({
       sessionId: string,
       mode: "archive" | "delete",
       skipDeleteConfirm = false,
+      // A bulk caller collects errors itself instead of one dialog each.
+      onError?: (detail: string) => void,
     ): Promise<boolean> => {
       if (
         removingSessionIds.current.has(sessionId) ||
@@ -4962,6 +4964,10 @@ function Workspace({
         return removed;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
+        if (onError) {
+          onError(detail);
+          return false;
+        }
         void message(`Could not ${mode} this conversation.\n\n${detail}`, {
           title: appName(),
           kind: "error",
@@ -5214,6 +5220,21 @@ function Workspace({
       for (const sessionId of sessionIds) {
         if (!(await onRemoveHistorySession(sessionId, "delete", true))) break;
       }
+    },
+    [onRemoveHistorySession],
+  );
+
+  const onDeleteHistorySessionNow = useCallback(
+    async (sessionId: string): Promise<boolean> => {
+      const failures: string[] = [];
+      const removed = await onRemoveHistorySession(
+        sessionId,
+        "delete",
+        true,
+        (detail) => failures.push(detail),
+      );
+      if (failures.length > 0) throw new Error(failures[0]);
+      return removed;
     },
     [onRemoveHistorySession],
   );
@@ -11314,6 +11335,7 @@ function Workspace({
               onCancelReminders={sessionReminders.cancel}
               onDeleteSession={onDeleteHistorySession}
               onDeleteSessions={onDeleteHistorySessions}
+              onDeleteSessionNow={onDeleteHistorySessionNow}
               onOpenFile={onOpenFile}
               onOpenTerminal={onOpenTerminal}
               onFileMoved={onFileMoved}
