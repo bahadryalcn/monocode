@@ -10,6 +10,7 @@ pub mod control_cli;
 mod cursor_store;
 mod external_editor;
 mod fs;
+mod git_conflicts;
 mod gitlab;
 mod harness;
 mod harness_updates;
@@ -415,6 +416,7 @@ pub fn run() {
             fs::git_stash_action,
             fs::git_conflicts,
             fs::git_resolve_conflict,
+            git_conflicts::git_conflict_stages,
             fs::git_file_history,
             fs::git_blame,
             worktrees::git_worktrees,

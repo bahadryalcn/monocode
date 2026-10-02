@@ -2009,6 +2009,9 @@ function SidebarComponent({
                   onOpenDiff ??
                   ((path) => onOpenFile(path, undefined, { exact: true }))
                 }
+                onOpenInEditor={(path, pin) =>
+                  onOpenFile(path, undefined, { exact: true, pin })
+                }
                 onOpenAllChanges={onOpenAllChanges ?? (() => {})}
                 onOpenCommit={onOpenCommit ?? (() => {})}
               />

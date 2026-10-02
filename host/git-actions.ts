@@ -1,7 +1,13 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { relative, sep } from "node:path";
 import { promisify } from "node:util";
+import {
+  hostConflictStages,
+  hostConflictStageSet,
+  hostOperationState,
+  hostUnmerged,
+  unmergedMessage,
+} from "./git-conflicts";
 import { workspacePath } from "./workspace";
 
 const exec = promisify(execFile);
@@ -41,6 +47,7 @@ export const GIT_ACTION_COMMANDS = [
   "git_remote_remove",
   "git_conflicts",
   "git_resolve_conflict",
+  "git_conflict_stages",
   "git_file_history",
   "git_blame",
 ] as const;
@@ -257,26 +264,7 @@ export function parseHistoryLog(
   });
 }
 
-const OPERATION_MARKERS = [
-  ["rebase-merge", "rebase"],
-  ["rebase-apply", "rebase"],
-  ["CHERRY_PICK_HEAD", "cherry-pick"],
-  ["REVERT_HEAD", "revert"],
-  ["MERGE_HEAD", "merge"],
-] as const;
-
-/** The operation git stopped in the middle of, in one git call. Rebase is
- * first: a rebase that stops on a conflict also leaves CHERRY_PICK_HEAD. */
-async function operationState(root: string): Promise<string | null> {
-  const paths = await gitOrNull(root, [
-    "rev-parse",
-    ...OPERATION_MARKERS.flatMap(([name]) => ["--git-path", name]),
-  ]);
-  if (!paths) return null;
-  const lines = paths.split("\n");
-  const found = OPERATION_MARKERS.find((_, index) => lines[index] && existsSync(resolve(root, lines[index])));
-  return found?.[1] ?? null;
-}
+const operationState = hostOperationState;
 
 async function conflicts(root: string): Promise<string[]> {
   const out = await gitOrNull(root, [
@@ -488,12 +476,20 @@ export async function runGitAction(
       // `core.editor=true` accepts the prepared message instead of opening an editor.
       const operation = await operationState(root);
       if (!operation) throw new Error("No operation in progress");
-      await git(
-        root,
-        operation === "merge"
-          ? ["-c", "core.editor=true", "commit", "--no-edit"]
-          : ["-c", "core.editor=true", operation, "--continue"],
-      );
+      const unresolved = await hostUnmerged(root);
+      if (unresolved.length) throw new Error(unmergedMessage(unresolved));
+      try {
+        await git(
+          root,
+          operation === "merge"
+            ? ["-c", "core.editor=true", "commit", "--no-edit"]
+            : ["-c", "core.editor=true", operation, "--continue"],
+        );
+      } catch (reason) {
+        // A rebase that reaches a conflicting commit exits non-zero but is
+        // working: the panel then shows the next conflicts.
+        if (!(await operationState(root)) || !(await hostUnmerged(root)).length) throw reason;
+      }
       return;
     }
     case "git_delete_branch": {
@@ -549,11 +545,20 @@ export async function runGitAction(
     case "git_resolve_conflict": {
       const path = repoPath(root, input.relative);
       if (input.side !== "ours" && input.side !== "theirs") throw new Error("Invalid side");
-      const flag = input.side === "ours" ? "--ours" : "--theirs";
-      await git(root, ["checkout", flag, "--", path]);
+      const stages = await hostConflictStageSet(root, path);
+      if (!stages.size) throw new Error("This file has no merge conflict");
+      // `checkout --ours/--theirs` fails when that side deleted the file;
+      // taking the deletion is `git rm`.
+      if (!stages.has(input.side === "ours" ? 2 : 3)) {
+        await git(root, ["rm", "-f", "--", path]);
+        return;
+      }
+      await git(root, ["checkout", input.side === "ours" ? "--ours" : "--theirs", "--", path]);
       await git(root, ["add", "--", path]);
       return;
     }
+    case "git_conflict_stages":
+      return hostConflictStages(root, repoPath(root, input.relative));
     case "git_file_history": {
       const path = repoPath(root, input.relative);
       const [head, remotes, output] = await Promise.all([

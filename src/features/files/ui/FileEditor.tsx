@@ -81,6 +81,7 @@ import {
   useDiffLayout,
 } from "../../source-control/ui/DiffLayoutToggle";
 import { hasConflictMarkers } from "../../source-control/model/conflictMarkers";
+import { nextConflictedFile } from "../../source-control/model/conflictSection";
 import { requestOpenCommit } from "../../source-control/ui/GitFileInspector";
 import { editorAutocomplete } from "../editor/editorAutocomplete";
 import { editorBlame, refreshBlame } from "../editor/editorBlame";
@@ -541,6 +542,7 @@ export function FileEditor({
                     : undefined
                 }
                 onDocChange={setDraft}
+                onOpenFile={onOpenFile}
               />
             </div>
           }
@@ -563,6 +565,7 @@ export function FileEditor({
           onStageGit={
             showDiff && gitDiff?.kind === "unstaged" ? stageGit : undefined
           }
+          onOpenFile={onOpenFile}
         />
       )}
       <footer className="flex h-6 shrink-0 items-center border-t border-stroke px-2.5 font-mono text-[10.5px] text-content/40">
@@ -602,6 +605,7 @@ export function CodeMirrorEditor({
   canAutosave,
   onStageGit,
   onDocChange,
+  onOpenFile,
   formatOnSave = true,
 }: {
   path: string;
@@ -618,6 +622,8 @@ export function CodeMirrorEditor({
   canAutosave: () => boolean;
   onStageGit?: (contents: string) => Promise<void>;
   onDocChange?: (content: string) => void;
+  /** Lets the conflict bar step to the next conflicted file. */
+  onOpenFile?: (path: string) => void;
   formatOnSave?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -1138,6 +1144,25 @@ export function CodeMirrorEditor({
     };
   }, [conflictCount, cwd, gitRelative, hadConflicts]);
 
+  const [fileNote, setFileNote] = useState<string | null>(null);
+  useEffect(() => setFileNote(null), [path]);
+
+  // The next file git still lists as unmerged, wrapping around.
+  const openNextConflictedFile = useCallback(async () => {
+    if (!onOpenFile) return;
+    try {
+      const next = nextConflictedFile(await gitConflicts(cwd), gitRelative);
+      if (!next) {
+        setFileNote("No other conflicted files");
+        return;
+      }
+      setFileNote(null);
+      onOpenFile(`${cwd.replace(/[\\/]+$/, "")}/${next}`);
+    } catch (error: unknown) {
+      setFileNote(error instanceof Error ? error.message : String(error));
+    }
+  }, [cwd, gitRelative, onOpenFile]);
+
   const markResolved = useCallback(async () => {
     if (!gitRelative) return;
     setMarking({ busy: true, error: null });
@@ -1286,6 +1311,8 @@ export function CodeMirrorEditor({
           error={marking.error}
           onPrev={() => viewRef.current && stepConflict(viewRef.current, -1)}
           onNext={() => viewRef.current && stepConflict(viewRef.current, 1)}
+          onNextFile={onOpenFile && gitRelative ? () => void openNextConflictedFile() : undefined}
+          fileNote={fileNote}
           onMarkResolved={() => void markResolved()}
         />
         {blameOn && blameError ? (

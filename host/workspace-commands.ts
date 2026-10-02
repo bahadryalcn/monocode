@@ -13,6 +13,7 @@ import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { FileMtime, FsEntry, GitPr, ProjectFile } from "../src/platform/tauri/fs";
+import { hostUnmerged, unmergedMessage } from "./git-conflicts";
 import { hostWorktrees } from "./git-worktrees";
 import { createHostBranch, hostBranches, switchHostBranch } from "./git-branches";
 import {
@@ -502,6 +503,8 @@ export class WorkspaceCommands {
   private async gitCommit(cwd: unknown, message: unknown, amend: unknown, signoff: unknown) {
     if (typeof message !== "string" || !message.trim() || message.length > 100_000)
       throw new Error("Enter a commit message");
+    const unresolved = await hostUnmerged(await this.gitRoot(cwd));
+    if (unresolved.length) throw new Error(unmergedMessage(unresolved));
     await this.gitCommand(cwd, [
       "commit",
       ...(amend === true ? ["--amend"] : []),

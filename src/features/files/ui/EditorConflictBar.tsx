@@ -14,6 +14,8 @@ export function EditorConflictBar({
   error,
   onPrev,
   onNext,
+  onNextFile,
+  fileNote,
   onMarkResolved,
 }: {
   count: number;
@@ -22,8 +24,23 @@ export function EditorConflictBar({
   error: string | null;
   onPrev: () => void;
   onNext: () => void;
+  /** Opens the next file git lists as unmerged; absent when the editor cannot open files. */
+  onNextFile?: () => void;
+  /** Why the last "next file" did nothing. */
+  fileNote?: string | null;
   onMarkResolved: () => void;
 }) {
+  const nextFile = onNextFile ? (
+    <button
+      type="button"
+      title="Open the next conflicted file"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onNextFile}
+      className="h-6 shrink-0 rounded-md px-2 text-[11px] text-content/70 hover:bg-content/10 hover:text-content"
+    >
+      Next file
+    </button>
+  ) : null;
   if (count === 0 && !canMarkResolved) return null;
   return (
     <header
@@ -37,6 +54,12 @@ export function EditorConflictBar({
             {count === 1 ? "1 conflict" : `${count} conflicts`}
           </span>
           <div className="flex items-center gap-0.5">
+            {fileNote ? (
+              <span className="mr-1 truncate text-content/50" role="status" title={fileNote}>
+                {fileNote}
+              </span>
+            ) : null}
+            {nextFile}
             <button
               type="button"
               title="Previous conflict"
@@ -70,16 +93,24 @@ export function EditorConflictBar({
               "All conflicts resolved"
             )}
           </span>
-          <button
-            type="button"
-            disabled={marking}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={onMarkResolved}
-            title="Save the file and stage it"
-            className="mr-2 h-6 shrink-0 rounded-md bg-content/10 px-2 text-[11px] font-medium text-content hover:bg-content/15 disabled:opacity-50"
-          >
-            {marking ? "Staging…" : "Mark resolved"}
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            {fileNote ? (
+              <span className="truncate text-content/50" role="status" title={fileNote}>
+                {fileNote}
+              </span>
+            ) : null}
+            {nextFile}
+            <button
+              type="button"
+              disabled={marking}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onMarkResolved}
+              title="Save the file and stage it"
+              className="mr-2 h-6 shrink-0 rounded-md bg-content/10 px-2 text-[11px] font-medium text-content hover:bg-content/15 disabled:opacity-50"
+            >
+              {marking ? "Staging…" : "Mark resolved"}
+            </button>
+          </div>
         </>
       )}
     </header>

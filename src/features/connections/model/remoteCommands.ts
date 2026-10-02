@@ -76,6 +76,7 @@ export const HOST_COMMANDS = new Set([
   "git_remote_remove",
   "git_conflicts",
   "git_resolve_conflict",
+  "git_conflict_stages",
   "git_file_history",
   "git_blame",
   "git_worktrees",
@@ -151,17 +152,20 @@ export async function runRemoteCommand(
       path: fromHost(entry.path),
     }));
   if ((command === "git_diff_index" || command === "git_diff_files") && result && typeof result === "object") {
-    const index = result as { files: { path: string }[] };
+    const index = result as { files: { path: string }[]; conflicts?: { path: string }[] };
     const root = String(hostArgs.cwd).replace(/[\\/]+$/, "");
+    const withHostPath = (file: { path: string }) => ({
+      ...file,
+      path: fromHost(`${root}/${file.path}`),
+    });
     return {
       ...index,
-      files: index.files.map((file) => ({
-        ...file,
-        path: fromHost(`${root}/${file.path}`),
-      })),
+      files: index.files.map(withHostPath),
+      // Absent from a host that predates conflict info.
+      ...(index.conflicts ? { conflicts: index.conflicts.map(withHostPath) } : {}),
     };
   }
-  if (command === "git_file_diff" && result && typeof result === "object") {
+  if ((command === "git_file_diff" || command === "git_conflict_stages") && result && typeof result === "object") {
     const diff = result as { path: string };
     const root = String(hostArgs.cwd).replace(/[\\/]+$/, "");
     return { ...diff, path: fromHost(`${root}/${diff.path}`) };

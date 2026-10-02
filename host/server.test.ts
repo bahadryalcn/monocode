@@ -747,7 +747,9 @@ describe("remote host API", () => {
   });
   it("answers the git.actions commands, advertised as a capability", async () => {
     const s = await setup();
-    expect((await s.call("environment.describe")).value.result.capabilities).toContain("git.actions");
+    expect((await s.call("environment.describe")).value.result.capabilities).toEqual(
+      expect.arrayContaining(["git.actions", "git.conflicts"]),
+    );
     const checkout = join(s.directory, "actions");
     mkdirSync(checkout);
     const git = (...args: string[]) =>
@@ -771,6 +773,9 @@ describe("remote host API", () => {
     expect((await run("git_tags")).result).toEqual(["v1"]);
     expect((await run("git_operation_status")).result).toEqual({ operation: null, conflicts: [] });
     expect((await run("git_blame", { relative: "a.txt" })).result).toHaveLength(1);
+    // Nothing is conflicted: the index says so, and there is nothing to compare.
+    expect((await run("git_diff_index")).result).toMatchObject({ conflicts: [], operation: null });
+    expect((await run("git_conflict_stages", { relative: "a.txt" })).error).toContain("no merge conflict");
     expect((await run("git_reset", { sha: "--hard", mode: "hard" })).error).toBe("Invalid commit");
     expect((await run("git_blame", { relative: "../a.txt" })).error).toContain("outside");
 

@@ -38,6 +38,8 @@ import {
   loadGraphPanelHeight,
   saveGraphPanelHeight,
 } from "./GitHistoryGraph";
+import { GitConflictCompare } from "./GitConflictCompare";
+import { GitConflictRows } from "./GitConflictRows";
 import { GitOperationBanner } from "./GitOperationBanner";
 import { GitStashSection } from "./GitStashSection";
 import { GitActionsMenu, type ChangesActions } from "./GitActionsMenu";
@@ -83,7 +85,11 @@ import { MOD } from "../../../platform/tauri/platform";
 import { applyProjectDiffStats } from "../hooks/useProjectDiffStats";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { isRemoteProjectPath } from "../../projects/model/recents";
-import { GIT_ACTIONS, useRemoteSupports } from "../../connections/model/remoteCapabilities";
+import {
+  GIT_ACTIONS,
+  GIT_CONFLICTS,
+  useRemoteSupports,
+} from "../../connections/model/remoteCapabilities";
 import {
   remotePollDue,
   reportRemoteLoad,
@@ -91,6 +97,15 @@ import {
 } from "../../connections/model/remoteHealth";
 import { RemoteLoadError } from "../../connections/ui/RemoteLoadError";
 import type { CommitMenuOptions } from "../model/gitActionsMenu";
+import {
+  commitBlockedMessage,
+  needsLegacyConflictPoll,
+  resolveConflictState,
+  sameConflicts,
+  type ConflictRow,
+} from "../model/conflictSection";
+import { useConflictActions } from "../hooks/useConflictActions";
+import { useLegacyConflictStatus } from "../hooks/useLegacyConflictStatus";
 import { appName } from "../../../shared/lib/appName";
 
 const GIT_POLL_MS = 2000;
@@ -105,6 +120,7 @@ function confirmNative(message: string, okLabel?: string): Promise<boolean> {
 
 let stagedOpen = true;
 let changesOpen = true;
+let conflictsOpen = true;
 let graphOpen = true;
 let changesView: ChangesView = loadChangesView();
 /** Folders the user collapsed in tree view, keyed `<kind>:<dir>`. */
@@ -122,6 +138,8 @@ type Props = {
   selectedKind?: GitFileDiffKind;
   selectedSha?: string;
   onOpenFile: (path: string, kind: GitFileDiffKind, pin?: boolean) => void;
+  /** Opens a conflicted file in the editor, where its blocks can be resolved. */
+  onOpenInEditor?: (path: string, pin?: boolean) => void;
   onOpenAllChanges: (kind: GitFileDiffKind) => void;
   onOpenCommit: (commit: GitHistoryCommit, pin?: boolean) => void;
 };
@@ -134,11 +152,23 @@ export function GitChangesPanel({
   selectedKind,
   selectedSha,
   onOpenFile,
+  onOpenInEditor,
   onOpenAllChanges,
   onOpenCommit,
 }: Props) {
   const { index, reload } = useDiffIndex(cwd, enabled);
-  const files = index?.files ?? [];
+  // Fetch, and the merge status of a host that predates conflict info, need
+  // this computer or a host with `git.actions`.
+  const gitActions = useRemoteSupports(cwd, GIT_ACTIONS) === true;
+  const legacyConflicts = useLegacyConflictStatus(
+    cwd,
+    enabled && gitActions && needsLegacyConflictPoll(index),
+  );
+  const conflictState = useMemo(
+    () => resolveConflictState(cwd, index, legacyConflicts),
+    [cwd, index, legacyConflicts],
+  );
+  const { files, conflicts, operation } = conflictState;
   const paneRef = useRef<HTMLDivElement>(null);
   // Lets the header menu drive the commit box and bulk stage actions below.
   const changesRef = useRef<ChangesActions | null>(null);
@@ -155,8 +185,6 @@ export function GitChangesPanel({
     return () => window.clearTimeout(timer);
   }, [status]);
 
-  // Fetch needs this computer or a host with `git.actions`.
-  const gitActions = useRemoteSupports(cwd, GIT_ACTIONS) === true;
   const canFetch = gitActions && Boolean(index?.remote);
   const [autoFetch, setAutoFetch] = useState(loadAutoFetch);
 
@@ -247,12 +275,20 @@ export function GitChangesPanel({
           ) : null}
         </div>
       </header>
-      <GitOperationBanner cwd={cwd} enabled={enabled} onOpenFile={onOpenFile} />
+      {operation && gitActions ? (
+        <GitOperationBanner
+          cwd={cwd}
+          operation={operation}
+          conflictCount={conflicts.length}
+          onChanged={() => onMutated()}
+        />
+      ) : null}
       <ChangedFiles
         cwd={cwd}
         textHarness={textHarness}
         index={index}
         files={files}
+        conflicts={conflicts}
         selected={selectedPath}
         selectedKind={selectedKind}
         enabled={enabled}
@@ -261,13 +297,14 @@ export function GitChangesPanel({
         setBusy={setBusy}
         actionsRef={changesRef}
         onOpenFile={onOpenFile}
+        onOpenInEditor={onOpenInEditor}
         onOpenAllChanges={onOpenAllChanges}
         onMutated={onMutated}
       />
       <GitStashSection
         cwd={cwd}
         enabled={enabled}
-        hasChanges={files.length > 0}
+        hasChanges={files.length > 0 || conflicts.length > 0}
         onOpenCommit={onOpenCommit}
       />
       {graphExpanded ? (
@@ -312,6 +349,7 @@ function ChangedFiles({
   textHarness,
   index,
   files,
+  conflicts,
   selected,
   selectedKind,
   enabled,
@@ -320,6 +358,7 @@ function ChangedFiles({
   setBusy,
   actionsRef,
   onOpenFile,
+  onOpenInEditor,
   onOpenAllChanges,
   onMutated,
 }: {
@@ -327,6 +366,8 @@ function ChangedFiles({
   textHarness?: HarnessId;
   index: GitDiffIndex | null;
   files: GitChangedFile[];
+  /** Unmerged files, listed first and never as ordinary changes. */
+  conflicts: ConflictRow[];
   selected?: string;
   selectedKind?: GitFileDiffKind;
   enabled: boolean;
@@ -336,6 +377,7 @@ function ChangedFiles({
   /** Filled with the handlers the header menu calls into. */
   actionsRef: RefObject<ChangesActions | null>;
   onOpenFile: (path: string, kind: GitFileDiffKind, pin?: boolean) => void;
+  onOpenInEditor?: (path: string, pin?: boolean) => void;
   onOpenAllChanges: (kind: GitFileDiffKind) => void;
   onMutated: (paths?: string[]) => void;
 }) {
@@ -350,6 +392,12 @@ function ChangedFiles({
   const [menuOpen, setMenuOpen] = useState(false);
   const [stagedExpanded, setStagedExpanded] = useState(stagedOpen);
   const [changesExpanded, setChangesExpanded] = useState(changesOpen);
+  const [conflictsExpanded, setConflictsExpanded] = useState(conflictsOpen);
+  const [compareFile, setCompareFile] = useState<string | null>(null);
+  const canCompare = useRemoteSupports(cwd, GIT_CONFLICTS) === true;
+  const conflictActions = useConflictActions({ cwd, busy, setBusy, onMutated });
+  // Git refuses to commit with unmerged paths; say which, instead of its error.
+  const blockedMessage = commitBlockedMessage(conflicts);
   const [view, setView] = useState<ChangesView>(changesView);
   const { pr, reload: reloadPr } = usePrStatus(cwd, index?.branch);
   const staged = useMemo(() => files.filter((file) => file.staged), [files]);
@@ -366,7 +414,10 @@ function ChangedFiles({
     index.branch === index.defaultBranch;
   const canGenerate = files.length > 0 && !busy && !isRemoteProjectPath(cwd);
   const canCommit =
-    (staged.length > 0 || amend) && message.trim().length > 0 && !busy;
+    (staged.length > 0 || amend) &&
+    message.trim().length > 0 &&
+    !busy &&
+    !blockedMessage;
   const canCreatePr =
     hasRemote &&
     !!index?.branch &&
@@ -375,6 +426,7 @@ function ChangedFiles({
     !onDefault &&
     !diverged &&
     files.length === 0 &&
+    conflicts.length === 0 &&
     (index?.aheadOfDefault ?? 0) > 0 &&
     (index?.behind ?? 0) === 0;
   const canViewPr = hasOpenPr && !!pr?.url;
@@ -586,6 +638,7 @@ function ChangedFiles({
   ) => {
     const amending = options ? options.amend : amend;
     if (options ? busy : !canCommit) return;
+    if (blockedMessage) return;
     if (!message.trim() && !amending) {
       messageRef.current?.focus();
       return;
@@ -819,6 +872,11 @@ function ChangedFiles({
             </div>
           ) : null}
         </div>
+        {blockedMessage ? (
+          <p role="alert" className="mt-1.5 text-[11px] leading-snug text-amber-400">
+            {blockedMessage}
+          </p>
+        ) : null}
         {index ? (
           <GitSyncActions
             index={index}
@@ -846,7 +904,7 @@ function ChangedFiles({
         ref={lockOverscroll}
         className={`min-h-0 flex-1 overflow-y-auto overscroll-none py-1 ${failure ? "opacity-60" : ""}`}
       >
-        {files.length === 0 ? (
+        {files.length === 0 && conflicts.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/45">
             {index
               ? index.ahead > 0 || index.behind > 0
@@ -858,6 +916,45 @@ function ChangedFiles({
           </p>
         ) : (
           <>
+            {conflicts.length > 0 ? (
+              <FileSection
+                title="Merge Conflicts"
+                count={conflicts.length}
+                open={conflictsExpanded}
+                onToggle={() => {
+                  conflictsOpen = !conflictsExpanded;
+                  setConflictsExpanded(conflictsOpen);
+                }}
+                headerActions={[
+                  {
+                    title: "Accept All Current",
+                    label: "All Current",
+                    onClick: () => void conflictActions.acceptAll(conflicts, "ours"),
+                  },
+                  {
+                    title: "Accept All Incoming",
+                    label: "All Incoming",
+                    onClick: () => void conflictActions.acceptAll(conflicts, "theirs"),
+                  },
+                ]}
+              >
+                <GitConflictRows
+                  rows={conflicts}
+                  selected={selected}
+                  busy={busy}
+                  canCompare={canCompare}
+                  onOpen={(row, pin) =>
+                    (onOpenInEditor ?? ((path, pinned) => onOpenFile(path, "unstaged", pinned)))(
+                      row.path,
+                      pin,
+                    )
+                  }
+                  onCompare={(row) => setCompareFile(row.relative)}
+                  onChoose={(row, choice) => void conflictActions.choose(row, choice)}
+                  onMarkResolved={(row) => void conflictActions.markResolved(row)}
+                />
+              </FileSection>
+            ) : null}
             {staged.length > 0 ? (
               <FileSection
                 title="Staged Changes"
@@ -938,6 +1035,13 @@ function ChangedFiles({
           </>
         )}
       </div>
+      {compareFile ? (
+        <GitConflictCompare
+          cwd={cwd}
+          relative={compareFile}
+          onClose={() => setCompareFile(null)}
+        />
+      ) : null}
     </aside>
   );
 }
@@ -1159,9 +1263,16 @@ export function FileSection({
   count: number;
   open: boolean;
   onToggle: () => void;
-  view: ChangesView;
-  onToggleView: () => void;
-  headerActions: { title: string; icon: ReactNode; onClick: () => void }[];
+  /** Without these there is no list/tree toggle: the section is always a list. */
+  view?: ChangesView;
+  onToggleView?: () => void;
+  headerActions: {
+    title: string;
+    icon?: ReactNode;
+    /** Short text shown instead of an icon. */
+    label?: string;
+    onClick: () => void;
+  }[];
   children: ReactNode;
 }) {
   return (
@@ -1190,25 +1301,40 @@ export function FileSection({
             {count}
           </span>
         </button>
-        <IconAction
-          title={view === "tree" ? "View as List" : "View as Tree"}
-          onClick={onToggleView}
-        >
-          {view === "tree" ? (
-            <ListBullet className="size-3.5" strokeWidth={1.75} />
-          ) : (
-            <FolderTree className="size-3.5" strokeWidth={1.75} />
-          )}
-        </IconAction>
-        {headerActions.map((action) => (
+        {view && onToggleView ? (
           <IconAction
-            key={action.title}
-            title={action.title}
-            onClick={action.onClick}
+            title={view === "tree" ? "View as List" : "View as Tree"}
+            onClick={onToggleView}
           >
-            {action.icon}
+            {view === "tree" ? (
+              <ListBullet className="size-3.5" strokeWidth={1.75} />
+            ) : (
+              <FolderTree className="size-3.5" strokeWidth={1.75} />
+            )}
           </IconAction>
-        ))}
+        ) : null}
+        {headerActions.map((action) =>
+          action.label ? (
+            <button
+              key={action.title}
+              type="button"
+              title={action.title}
+              aria-label={action.title}
+              onClick={action.onClick}
+              className="h-5 shrink-0 rounded px-1 text-[10px] font-medium text-content/55 hover:bg-content/10 hover:text-content"
+            >
+              {action.label}
+            </button>
+          ) : (
+            <IconAction
+              key={action.title}
+              title={action.title}
+              onClick={action.onClick}
+            >
+              {action.icon}
+            </IconAction>
+          ),
+        )}
       </div>
       {open ? <ul>{children}</ul> : null}
     </div>
@@ -1628,7 +1754,7 @@ function useDiffIndex(
         indexRef.current = next;
         setIndex(next);
         applyProjectDiffStats(cwd, {
-          files: next.files.length,
+          files: next.files.length + (next.conflicts?.length ?? 0),
           additions: next.additions,
           deletions: next.deletions,
         });
@@ -1706,6 +1832,13 @@ function changedFilePaths(prev: GitDiffIndex, next: GitDiffIndex): string[] {
       paths.push(file.path);
     }
   }
+  // A file entering, leaving or changing kind has new contents on disk.
+  const before = new Map((prev.conflicts ?? []).map((file) => [file.relative, file]));
+  const after = new Map((next.conflicts ?? []).map((file) => [file.relative, file]));
+  for (const [relative, file] of after) {
+    if (before.get(relative)?.kind !== file.kind) paths.push(file.path);
+  }
+  for (const [relative, file] of before) if (!after.has(relative)) paths.push(file.path);
   return paths;
 }
 
@@ -1723,7 +1856,9 @@ function sameIndex(prev: GitDiffIndex | null, next: GitDiffIndex): boolean {
     prev.ahead !== next.ahead ||
     prev.behind !== next.behind ||
     prev.aheadOfDefault !== next.aheadOfDefault ||
-    prev.headPushed !== next.headPushed
+    prev.headPushed !== next.headPushed ||
+    (prev.operation ?? null) !== (next.operation ?? null) ||
+    !sameConflicts(prev.conflicts, next.conflicts)
   ) {
     return false;
   }

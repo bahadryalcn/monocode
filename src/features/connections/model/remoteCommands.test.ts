@@ -109,6 +109,49 @@ it("adds remote paths to Git index entries", async () => {
   expect(index.files[0].path).toBe("remote://env/home/me/repo/src/app.ts");
 });
 
+it("maps the conflict entries of an index, and leaves a host without them alone", async () => {
+  remoteRequest.mockResolvedValueOnce({
+    branch: "main",
+    files: [],
+    conflicts: [{ path: "a.txt", relative: "a.txt", kind: "both-modified" }],
+    operation: "merge",
+  });
+  expect(
+    await runRemoteCommand("git_diff_index", { cwd: "remote://env/home/me/repo" }),
+  ).toMatchObject({
+    conflicts: [{ path: "remote://env/home/me/repo/a.txt", relative: "a.txt", kind: "both-modified" }],
+    operation: "merge",
+  });
+  remoteRequest.mockResolvedValueOnce({ branch: "main", files: [] });
+  const older = (await runRemoteCommand("git_diff_files", {
+    cwd: "remote://env/home/me/repo",
+  })) as Record<string, unknown>;
+  expect("conflicts" in older).toBe(false);
+});
+
+it("reads the three versions of a conflicted file through the host", async () => {
+  remoteRequest.mockResolvedValueOnce({
+    path: "a.txt",
+    relative: "a.txt",
+    kind: "both-modified",
+    base: "a\n",
+    ours: "b\n",
+    theirs: "c\n",
+    binary: false,
+    tooLarge: false,
+  });
+  expect(
+    await runRemoteCommand("git_conflict_stages", {
+      cwd: "remote://env/home/me/repo",
+      relative: "a.txt",
+    }),
+  ).toMatchObject({ path: "remote://env/home/me/repo/a.txt", ours: "b\n" });
+  expect(remoteRequest).toHaveBeenCalledWith("machine", "workspace.run", {
+    command: "git_conflict_stages",
+    args: { cwd: "/home/me/repo", relative: "a.txt" },
+  });
+});
+
 it("routes project search through the host and maps match paths", async () => {
   remoteRequest.mockResolvedValueOnce({
     matches: [{ path: "/home/me/repo/src/app.ts", relative: "src/app.ts", line: 4 }],

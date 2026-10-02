@@ -12,6 +12,10 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::dirs_home;
+use crate::git_conflicts::{
+    find_git_dir, git_unmerged_for, side_stage, stage_has_side, unmerged_message,
+    unmerged_stages_for, GitConflictFile,
+};
 
 pub(crate) const MAX_TEXT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_EMBED_BYTES: u64 = 20 * 1024 * 1024;
@@ -1041,6 +1045,10 @@ pub struct GitDiffIndex {
     pub behind: i64,
     pub ahead_of_default: i64,
     pub head_pushed: bool,
+    /// Unmerged files, kept out of `files` and the line counts.
+    pub conflicts: Vec<GitConflictFile>,
+    /// The merge, rebase, cherry-pick or revert git is stopped in the middle of.
+    pub operation: Option<&'static str>,
 }
 
 /// Changed files in the opened folder, with per-file line counts and status.
@@ -1207,11 +1215,9 @@ pub async fn git_discard_all(cwd: String) -> Result<(), String> {
 /// Stage every changed file in the repo.
 #[tauri::command]
 pub async fn git_stage_all(cwd: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        git_checked(&expand_home(&cwd), &["add", "-A", "--", "."])
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || git_stage_all_for(&expand_home(&cwd)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Unstage every staged file.
@@ -2239,7 +2245,7 @@ pub async fn git_blame(cwd: String, relative: String) -> Result<Vec<GitBlameLine
         .map_err(|e| e.to_string())?
 }
 
-fn git_diff_stats_for(root: &Path) -> GitDiffStats {
+pub(crate) fn git_diff_stats_for(root: &Path) -> GitDiffStats {
     if !git_is_work_tree(root) {
         return GitDiffStats::default();
     }
@@ -2261,6 +2267,11 @@ fn git_diff_stats_for(root: &Path) -> GitDiffStats {
         }
     }
     add_untracked_map(root, &mut files);
+    // Conflicted files count as files, but not their combined-diff lines.
+    let conflicts = git_unmerged_for(root);
+    for conflict in &conflicts {
+        files.remove(&conflict.relative);
+    }
     let mut additions = 0i64;
     let mut deletions = 0i64;
     for acc in files.values() {
@@ -2268,7 +2279,7 @@ fn git_diff_stats_for(root: &Path) -> GitDiffStats {
         deletions += acc.deletions;
     }
     GitDiffStats {
-        files: files.len() as i64,
+        files: (files.len() + conflicts.len()) as i64,
         additions,
         deletions,
     }
@@ -2384,6 +2395,12 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
     }
     add_untracked_map(root, &mut files);
     mark_cached_and_unstaged(root, &mut files);
+    // Their combined diffs would otherwise show up as ordinary modified rows,
+    // staged and unstaged at once, with the conflict markers counted as additions.
+    let conflicts = git_unmerged_for(root);
+    for conflict in &conflicts {
+        files.remove(&conflict.relative);
+    }
 
     let mut out = Vec::with_capacity(files.len());
     let mut additions = 0i64;
@@ -2430,6 +2447,8 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
         behind: sync.behind,
         ahead_of_default: sync.ahead_of_default,
         head_pushed: sync.head_pushed,
+        conflicts,
+        operation: git_operation_state_for(root),
     }
 }
 
@@ -2932,7 +2951,32 @@ fn git_commit_file_diff_for(root: &Path, sha: &str, relative: &str) -> Result<Gi
     })
 }
 
-fn git_stage_file_for(root: &Path, relative: &str) -> Result<(), String> {
+/// `git add -A`, except for conflicted files: staging those would mark them
+/// resolved with their conflict markers still in. Pathspec excludes do not
+/// hold back unmerged paths, so with conflicts the other files are named.
+pub(crate) fn git_stage_all_for(root: &Path) -> Result<(), String> {
+    if git_unmerged_for(root).is_empty() {
+        return git_checked(root, &["add", "-A", "--", "."]);
+    }
+    let files = git_diff_files_for(root).files;
+    // Chunked to stay under the command line limit.
+    let mut start = 0;
+    while start < files.len() {
+        let mut end = start;
+        let mut length = 0;
+        while end < files.len() && (end == start || length + files[end].relative.len() < 16_000) {
+            length += files[end].relative.len() + 1;
+            end += 1;
+        }
+        let mut args = vec!["--literal-pathspecs", "add", "-A", "--"];
+        args.extend(files[start..end].iter().map(|file| file.relative.as_str()));
+        git_checked(root, &args)?;
+        start = end;
+    }
+    Ok(())
+}
+
+pub(crate) fn git_stage_file_for(root: &Path, relative: &str) -> Result<(), String> {
     let relative = resolve_repo_path(root, relative)?;
     git_checked(root, &["add", "--", &relative])
 }
@@ -3070,10 +3114,14 @@ fn git_staged_context_for(root: &Path) -> Result<GitStagedContext, String> {
     })
 }
 
-fn git_commit_args(root: &Path, message: &str, extra: &[&str]) -> Result<(), String> {
+pub(crate) fn git_commit_args(root: &Path, message: &str, extra: &[&str]) -> Result<(), String> {
     let message = message.trim();
     if message.is_empty() {
         return Err("Commit message cannot be empty".into());
+    }
+    let conflicts = git_unmerged_for(root);
+    if !conflicts.is_empty() {
+        return Err(unmerged_message(&conflicts));
     }
     let mut args = vec!["commit"];
     args.extend_from_slice(extra);
@@ -4728,11 +4776,11 @@ fn git_blob(root: &Path, spec: &str) -> Option<Vec<u8>> {
     git_output(root, &["cat-file", "-p", spec])
 }
 
-fn git_run(root: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn git_run(root: &Path, args: &[&str]) -> Option<String> {
     git_output(root, args).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+pub(crate) fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let output = git_cmd_for_args(args)
         .arg("--no-pager")
         .arg("-C")
@@ -5215,12 +5263,15 @@ fn git_reset_for(root: &Path, sha: &str, mode: &str) -> Result<(), String> {
 }
 
 fn git_dir_has(root: &Path, name: &str) -> bool {
+    if let Some(dir) = find_git_dir(root) {
+        return dir.join(name).exists();
+    }
     git_stdout(root, &["rev-parse", "--git-path", name])
         .map(|path| root.join(path).exists())
         .unwrap_or(false)
 }
 
-fn git_operation_state_for(root: &Path) -> Option<&'static str> {
+pub(crate) fn git_operation_state_for(root: &Path) -> Option<&'static str> {
     // Rebase first: a rebase that stops on a conflict also leaves CHERRY_PICK_HEAD.
     if git_dir_has(root, "rebase-merge") || git_dir_has(root, "rebase-apply") {
         Some("rebase")
@@ -5235,19 +5286,33 @@ fn git_operation_state_for(root: &Path) -> Option<&'static str> {
     }
 }
 
-fn git_operation_abort_for(root: &Path) -> Result<(), String> {
+pub(crate) fn git_operation_abort_for(root: &Path) -> Result<(), String> {
     match git_operation_state_for(root) {
         Some(operation) => git_checked(root, &[operation, "--abort"]),
         None => Err("No operation in progress".into()),
     }
 }
 
-fn git_operation_continue_for(root: &Path) -> Result<(), String> {
+pub(crate) fn git_operation_continue_for(root: &Path) -> Result<(), String> {
     // `core.editor=true` accepts the prepared message instead of opening an editor.
-    match git_operation_state_for(root) {
-        Some("merge") => git_checked(root, &["-c", "core.editor=true", "commit", "--no-edit"]),
-        Some(operation) => git_checked(root, &["-c", "core.editor=true", operation, "--continue"]),
-        None => Err("No operation in progress".into()),
+    let Some(operation) = git_operation_state_for(root) else {
+        return Err("No operation in progress".into());
+    };
+    let conflicts = git_unmerged_for(root);
+    if !conflicts.is_empty() {
+        return Err(unmerged_message(&conflicts));
+    }
+    let result = match operation {
+        "merge" => git_checked(root, &["-c", "core.editor=true", "commit", "--no-edit"]),
+        _ => git_checked(root, &["-c", "core.editor=true", operation, "--continue"]),
+    };
+    // A rebase (or a multi-commit pick) that reaches a conflicting commit exits
+    // non-zero but is working: the panel then shows the next conflicts.
+    match result {
+        Err(_) if git_operation_state_for(root).is_some() && !git_unmerged_for(root).is_empty() => {
+            Ok(())
+        }
+        other => other,
     }
 }
 
@@ -5364,7 +5429,7 @@ fn git_stash_action_for(root: &Path, action: &str, index: u32) -> Result<(), Str
     git_checked(root, &["stash", action, &format!("stash@{{{index}}}")])
 }
 
-fn git_conflicts_for(root: &Path) -> Vec<String> {
+pub(crate) fn git_conflicts_for(root: &Path) -> Vec<String> {
     git_run(
         root,
         &[
@@ -5384,13 +5449,23 @@ fn git_conflicts_for(root: &Path) -> Vec<String> {
     .collect()
 }
 
-fn git_resolve_conflict_for(root: &Path, relative: &str, side: &str) -> Result<(), String> {
+pub(crate) fn git_resolve_conflict_for(
+    root: &Path,
+    relative: &str,
+    side: &str,
+) -> Result<(), String> {
     let relative = resolve_repo_path(root, relative)?;
-    let flag = match side {
-        "ours" => "--ours",
-        "theirs" => "--theirs",
-        _ => return Err("Invalid side".into()),
-    };
+    let bit = side_stage(side)?;
+    let stages = unmerged_stages_for(root, &relative);
+    if stages == 0 {
+        return Err("This file has no merge conflict".into());
+    }
+    // `checkout --ours/--theirs` fails when that side deleted the file; taking
+    // the deletion is `git rm`.
+    if !stage_has_side(stages, bit) {
+        return git_checked(root, &["rm", "-f", "--", &relative]);
+    }
+    let flag = if side == "ours" { "--ours" } else { "--theirs" };
     git_checked(root, &["checkout", flag, "--", &relative])?;
     git_checked(root, &["add", "--", &relative])
 }
