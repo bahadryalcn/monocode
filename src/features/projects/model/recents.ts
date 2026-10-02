@@ -77,6 +77,16 @@ export function rememberProject(path: string): RecentProject[] {
   return next;
 }
 
+/** Paths in `after` that were not among the project paths in `before`. */
+export function newProjectPaths(
+  before: Iterable<string>,
+  after: readonly string[],
+): string[] {
+  const known = new Set<string>();
+  for (const path of before) known.add(pathKey(path));
+  return after.filter((path) => !known.has(pathKey(path)));
+}
+
 /**
  * Adds projects to the rail without disturbing it: they go after the current
  * ones, newest activity first, stamped with when they were last used rather

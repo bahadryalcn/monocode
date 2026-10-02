@@ -44,6 +44,8 @@ import {
   collectRailProjects,
   isLocalProject,
   loadPinnedProjects,
+  loadRecents,
+  newProjectPaths,
   loadProjectRailOrder,
   projectRailSections,
   sameProjectPath,
@@ -66,6 +68,7 @@ import {
 } from "../../features/workspace/model/tabGroups";
 import {
   loadProjectGroupAssignments,
+  changeProjectGroupMembers,
   loadProjectGroups,
   projectGroupColor,
   projectGroupIdForPath,
@@ -123,7 +126,7 @@ type Props = {
   automationsActive?: boolean;
   onTogglePanel?: () => void;
   onSelectProject: (path: string) => void;
-  onOpenProject: () => void;
+  onOpenProject: () => void | Promise<void>;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   liveAgents?: LiveAgent[];
   activeSessionId?: string;
@@ -213,9 +216,48 @@ export function ProjectRail({
     x: number;
     y: number;
   } | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Scrolls a project's row into view. A row inside a collapsed group is not
+  // rendered, so this does nothing there and never expands anything.
+  const revealProject = (path: string) => {
+    requestAnimationFrame(() => {
+      const root = scrollRef.current;
+      // Never move the list under a drag-reorder in progress.
+      if (!root || root.querySelector("[data-dragging]")) return;
+      for (const row of root.querySelectorAll<HTMLElement>("[data-project-path]")) {
+        if (!sameProjectPath(row.dataset.projectPath ?? "", path)) continue;
+        const reduce = window.matchMedia?.(
+          "(prefers-reduced-motion: reduce)",
+        ).matches;
+        row.scrollIntoView({
+          block: "nearest",
+          behavior: reduce ? "auto" : "smooth",
+        });
+        return;
+      }
+    });
+  };
+  // The folder picker reports nothing back, so compare the remembered projects
+  // before and after: a cancelled pick adds none and changes nothing.
+  const addProjectToGroup = (groupId: string) => {
+    const before = loadRecents().map((item) => item.path);
+    void (async () => {
+      try {
+        await onOpenProject();
+      } catch {
+        return;
+      }
+      const added = newProjectPaths(before, loadRecents().map((item) => item.path));
+      if (added.length === 0) return;
+      changeProjectGroupMembers(groupId, added, []);
+      updateProjectGroup(groupId, (current) => ({ ...current, collapsed: false }));
+      revealProject(added[added.length - 1]);
+    })();
+  };
   const projectMenu = useProjectMenu({
     onRemoveProject,
     onOpenNotificationSettings,
+    onAddProjectToGroup: addProjectToGroup,
     onOpen: () => setInboxMenu(null),
   });
   useEffect(() => {
@@ -231,7 +273,6 @@ export function ProjectRail({
   const notificationProjects = useNotificationProjects([...allProjects.keys()]);
   const menuTrigger = useRef<HTMLElement | null>(null);
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
-  const scrollRef = useRef<HTMLDivElement>(null);
   const groupLogos = useTabGroupLogos();
   const muteStatuses = new Map<string, string | null>();
   for (const project of notificationProjects.projects) {
@@ -285,6 +326,14 @@ export function ProjectRail({
     const next = pinned.filter((path) => allProjects.has(path));
     if (next.length !== pinned.length) savePinnedProjects(next);
   }, [allProjects]);
+
+  // Follow the active project. Adding a project makes it the active one, so a
+  // new row (it lands in "Projects", below every group) is brought into view
+  // too. Keyed on the project, so scrolling by hand is left alone.
+  useEffect(() => {
+    if (!visible || !cwd) return;
+    revealProject(cwd);
+  }, [cwd, visible]);
 
   useEffect(() => {
     if (!projectMenu.isOpen) return;
@@ -1019,6 +1068,7 @@ function ProjectCard({
     <div
       ref={(el) => sortable.setItemRef(item.path, el)}
       data-selected={selected || undefined}
+      data-project-path={item.path}
       className={`reorder-item project-reorder-item group relative flex touch-none items-stretch rounded-md px-2 h-8 ${
         selected
           ? "bg-selection-strong text-content"

@@ -203,6 +203,8 @@ type Point = { x: number; y: number };
 type Options = {
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onOpenNotificationSettings?: (projectPath?: string) => void;
+  /** Offers "Add project to group…" in the group menu. */
+  onAddProjectToGroup?: (groupId: string) => void;
   /** Called when a project or group menu opens, so hosts can close sibling menus. */
   onOpen?: () => void;
 };
@@ -216,6 +218,7 @@ type Options = {
 export function useProjectMenu({
   onRemoveProject,
   onOpenNotificationSettings,
+  onAddProjectToGroup,
   onOpen,
 }: Options) {
   const [projectMenu, setProjectMenu] = useState<
@@ -546,6 +549,15 @@ export function useProjectMenu({
         showActions={false}
         ariaLabel="Project group actions"
         extraItems={[
+          ...(onAddProjectToGroup
+            ? [
+                {
+                  id: "add-project-to-group",
+                  label: "Add project to group…",
+                  icon: FolderPlus,
+                },
+              ]
+            : []),
           ...(group.workspaceFile
             ? [
                 {
@@ -591,6 +603,10 @@ export function useProjectMenu({
           const file = group.workspaceFile;
           if (action === "delete-project-group") {
             return deleteProjectGroup(group.id);
+          }
+          if (action === "add-project-to-group") {
+            onAddProjectToGroup?.(group.id);
+            return;
           }
           if (action === "fetch-all") {
             const assignments = loadProjectGroupAssignments();

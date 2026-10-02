@@ -6,6 +6,7 @@ import {
   loadPinnedProjects,
   loadProjectRailOrder,
   loadRecents,
+  newProjectPaths,
   looksLikeProject,
   projectRailItems,
   projectRailSections,
@@ -224,5 +225,20 @@ describe("archiveProject", () => {
     forgetProject("/tmp/gone");
     expect(loadArchivedProjects()).toEqual([]);
     expect(loadRecents()).toEqual([]);
+  });
+});
+
+describe("newProjectPaths", () => {
+  it("returns only paths that were not known before, ignoring case on drive paths and trailing slashes", () => {
+    expect(
+      newProjectPaths(
+        ["C:/Work/A", "/work/b"],
+        ["c:/work/a", "/work/b/", "/work/c"],
+      ),
+    ).toEqual(["/work/c"]);
+  });
+
+  it("returns nothing when the open was cancelled", () => {
+    expect(newProjectPaths(["/work/a"], ["/work/a"])).toEqual([]);
   });
 });
