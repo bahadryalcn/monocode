@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { read, utils, type WorkBook } from "xlsx";
 import {
   MAX_SHEET_ROWS,
@@ -9,12 +15,18 @@ import {
 } from "../model/documentViewer";
 import { formatInteger } from "../../../shared/lib/numbers";
 import { DocumentMessage } from "./DocumentMessage";
+import { useAnchoredZoom } from "./documentZoom";
+import { ZoomBadge } from "./ZoomBadge";
 
 const ROW_HEIGHT = 24;
 const HEADER_HEIGHT = 24;
 const ROW_HEADER_WIDTH = 56;
 const COLUMN_WIDTH = 120;
+const FONT_SIZE = 12;
+const CELL_PADDING = 8;
 const OVERSCAN = 10;
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 3;
 
 type State =
   | { status: "loading" }
@@ -109,6 +121,29 @@ function SheetGridView({ book, name }: { book: WorkBook; name: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState(0);
+  const empty = grid.columns.length === 0 || grid.rows.length === 0;
+  const { zoom, reset } = useAnchoredZoom(scrollRef, "sheet", {
+    min: MIN_ZOOM,
+    max: MAX_ZOOM,
+    active: !empty,
+  });
+  // The grid is virtualized by row height, so zoom scales the row height, the
+  // column widths and the font together rather than transforming the container.
+  const rowHeight = Math.round(ROW_HEIGHT * zoom);
+  const headerHeight = Math.round(HEADER_HEIGHT * zoom);
+  const rowHeaderWidth = Math.round(ROW_HEADER_WIDTH * zoom);
+  const columnWidth = Math.round(COLUMN_WIDTH * zoom);
+  const cellStyle = {
+    width: columnWidth,
+    lineHeight: `${rowHeight}px`,
+    paddingInline: CELL_PADDING * zoom,
+  };
+
+  // The anchored scroll lands in a layout effect; sync the windowing state
+  // with it so the first painted frame already shows the right rows.
+  useLayoutEffect(() => {
+    if (scrollRef.current) setScrollTop(scrollRef.current.scrollTop);
+  }, [zoom]);
 
   useEffect(() => {
     const element = scrollRef.current;
@@ -123,19 +158,19 @@ function SheetGridView({ book, name }: { book: WorkBook; name: string }) {
     return () => observer.disconnect();
   }, [name]);
 
-  if (grid.columns.length === 0 || grid.rows.length === 0) {
+  if (empty) {
     return <DocumentMessage title="This sheet is empty" />;
   }
 
-  const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+  const first = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
   const last = Math.min(
     grid.rows.length,
-    Math.ceil((scrollTop + viewport) / ROW_HEIGHT) + OVERSCAN,
+    Math.ceil((scrollTop + viewport) / rowHeight) + OVERSCAN,
   );
-  const width = ROW_HEADER_WIDTH + grid.columns.length * COLUMN_WIDTH;
+  const width = rowHeaderWidth + grid.columns.length * columnWidth;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
       {grid.truncated ? (
         <div className="shrink-0 border-b border-stroke bg-content/[0.04] px-3 py-1 text-[11px] text-content/60">
           Showing the first {formatInteger(grid.rows.length)} of{" "}
@@ -147,28 +182,29 @@ function SheetGridView({ book, name }: { book: WorkBook; name: string }) {
       <div
         ref={scrollRef}
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-        className="min-h-0 flex-1 overflow-auto overscroll-contain text-[12px] select-text"
+        className="min-h-0 flex-1 overflow-auto overscroll-contain select-text"
+        style={{ fontSize: FONT_SIZE * zoom }}
       >
         <div
           className="relative"
           style={{
             width,
-            height: HEADER_HEIGHT + grid.rows.length * ROW_HEIGHT,
+            height: headerHeight + grid.rows.length * rowHeight,
           }}
         >
           <div
             className="sticky top-0 z-20 flex border-b border-stroke bg-background-base text-content/55"
-            style={{ height: HEADER_HEIGHT, width }}
+            style={{ height: headerHeight, width, lineHeight: `${rowHeight}px` }}
           >
             <div
               className="sticky left-0 z-10 shrink-0 border-r border-stroke bg-background-base"
-              style={{ width: ROW_HEADER_WIDTH }}
+              style={{ width: rowHeaderWidth }}
             />
             {grid.columns.map((label) => (
               <div
                 key={label}
-                className="shrink-0 border-r border-stroke text-center leading-6"
-                style={{ width: COLUMN_WIDTH }}
+                className="shrink-0 border-r border-stroke text-center"
+                style={{ width: columnWidth }}
               >
                 {label}
               </div>
@@ -181,14 +217,18 @@ function SheetGridView({ book, name }: { book: WorkBook; name: string }) {
                 key={index}
                 className="absolute left-0 flex border-b border-stroke/60"
                 style={{
-                  top: HEADER_HEIGHT + index * ROW_HEIGHT,
-                  height: ROW_HEIGHT,
+                  top: headerHeight + index * rowHeight,
+                  height: rowHeight,
                   width,
                 }}
               >
                 <div
-                  className="sticky left-0 z-10 shrink-0 border-r border-stroke bg-background-base pr-2 text-right leading-6 text-content/55 tabular-nums"
-                  style={{ width: ROW_HEADER_WIDTH }}
+                  className="sticky left-0 z-10 shrink-0 border-r border-stroke bg-background-base text-right text-content/55 tabular-nums"
+                  style={{
+                    width: rowHeaderWidth,
+                    lineHeight: `${rowHeight}px`,
+                    paddingRight: CELL_PADDING * zoom,
+                  }}
                 >
                   {index + 1}
                 </div>
@@ -196,8 +236,8 @@ function SheetGridView({ book, name }: { book: WorkBook; name: string }) {
                   <div
                     key={column}
                     title={cell}
-                    className="shrink-0 truncate border-r border-stroke/60 px-2 leading-6 text-content"
-                    style={{ width: COLUMN_WIDTH }}
+                    className="shrink-0 truncate border-r border-stroke/60 text-content"
+                    style={cellStyle}
                   >
                     {cell}
                   </div>
@@ -207,6 +247,7 @@ function SheetGridView({ book, name }: { book: WorkBook; name: string }) {
           })}
         </div>
       </div>
+      <ZoomBadge zoom={zoom} onReset={reset} />
     </div>
   );
 }

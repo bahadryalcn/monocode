@@ -21,6 +21,7 @@ import {
 } from "../../../platform/tauri/fs";
 import { displayPath } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
+import { useWheelZoom } from "./documentZoom";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 16;
@@ -156,6 +157,18 @@ function ImageView({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+
+  // Ctrl/Cmd + wheel (and pinch) zooms; from "fit" it starts at the shown size.
+  useWheelZoom(scrollRef, (factor) => {
+    const shown = imageRef.current?.getBoundingClientRect().width;
+    setZoom((value) => {
+      const current =
+        value === "fit" ? (natural && shown ? shown / natural.w : 1) : value;
+      return clampZoom(current * factor);
+    });
+  });
 
   useEffect(
     () => () => {
@@ -183,6 +196,7 @@ function ImageView({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div
+        ref={scrollRef}
         className="grid min-h-0 flex-1 place-items-center overflow-auto overscroll-contain p-4"
         style={{
           // A checkerboard so transparent PNGs read as transparent rather than
@@ -194,6 +208,7 @@ function ImageView({
         }}
       >
         <img
+          ref={imageRef}
           src={url}
           alt=""
           draggable={false}

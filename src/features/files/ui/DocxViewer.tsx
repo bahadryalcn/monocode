@@ -1,8 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import mammoth from "mammoth/mammoth.browser";
 import { documentErrorMessage } from "../model/documentViewer";
 import { sanitizeDocumentHtml } from "../model/documentHtml";
 import { DocumentMessage } from "./DocumentMessage";
+import { useAnchoredZoom } from "./documentZoom";
+import { ZoomBadge } from "./ZoomBadge";
+
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 3;
 
 type State =
   | { status: "loading" }
@@ -70,13 +75,27 @@ export default function DocxViewer({ bytes }: { bytes: Uint8Array }) {
   if (!state.html.trim()) {
     return <DocumentMessage title="This document has no readable content" />;
   }
+  return <DocxPages html={state.html} />;
+}
+
+function DocxPages({ html }: { html: string }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { zoom, reset } = useAnchoredZoom(scrollRef, "docx", {
+    min: MIN_ZOOM,
+    max: MAX_ZOOM,
+  });
   return (
-    <div className="h-full overflow-auto overscroll-contain">
-      <div
-        className={DOCUMENT_CLASS}
-        // Sanitized above: no scripts, handlers, remote loads or live links.
-        dangerouslySetInnerHTML={{ __html: state.html }}
-      />
+    <div className="relative h-full">
+      <div ref={scrollRef} className="h-full overflow-auto overscroll-contain">
+        <div
+          className={DOCUMENT_CLASS}
+          // `zoom` scales text, spacing and the page width together.
+          style={{ zoom }}
+          // Sanitized above: no scripts, handlers, remote loads or live links.
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      </div>
+      <ZoomBadge zoom={zoom} onReset={reset} />
     </div>
   );
 }
