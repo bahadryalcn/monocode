@@ -80,6 +80,7 @@ import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview"
 import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
 import { RailAction, RailSearch } from "./RailAction";
+import { LastSessionsSection, type RecentSessionsSource } from "./LastSessionsSection";
 import { DevModeSlot, TabVisitNav } from "./TitleBar";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
 import type { InstalledUpdate } from "../model/updateNotice";
@@ -131,6 +132,7 @@ type Props = {
   liveAgents?: LiveAgent[];
   activeSessionId?: string;
   onSelectAgent?: (sessionId: string) => void;
+  recentSessions?: RecentSessionsSource;
   settingsOpen?: boolean;
   settingsSection?: SettingsSectionId;
   onOpenSettings?: () => void;
@@ -168,6 +170,7 @@ export function ProjectRail({
   liveAgents = [],
   activeSessionId,
   onSelectAgent,
+  recentSessions,
   settingsOpen = false,
   settingsSection = "general",
   onOpenSettings,
@@ -269,6 +272,10 @@ export function ProjectRail({
   const allProjects = useMemo(
     () => collectRailProjects(recents, cwd),
     [cwd, recents],
+  );
+  const railProjectKeys = useMemo(
+    () => new Set(allProjects.keys()),
+    [allProjects],
   );
   const notificationProjects = useNotificationProjects([...allProjects.keys()]);
   const menuTrigger = useRef<HTMLElement | null>(null);
@@ -471,6 +478,28 @@ export function ProjectRail({
             }}
             className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-2"
           >
+            {recentSessions ? (
+              <LastSessionsSection
+                source={recentSessions}
+                projectKeys={railProjectKeys}
+                enabled={visible}
+                activeSessionId={activeSessionId}
+                searchActive={
+                  searchActive ||
+                  inboxActive ||
+                  notesActive ||
+                  automationsActive
+                }
+                onOpenSession={onSelectAgent}
+                onOpenProject={onSelectProject}
+                groupLabels={groupLabels}
+                groupColors={groupColors}
+                groupCustomColors={groupCustomColors}
+                groupLogos={groupLogos}
+                groupMascots={groupMascots}
+              />
+            ) : null}
+
             {sections.pinned.length > 0 ? (
               <ProjectSection
                 label="Pinned"

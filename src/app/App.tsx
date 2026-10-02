@@ -488,6 +488,10 @@ import {
 } from "../features/sessions/ui/TranscriptPool";
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
 import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
+import {
+  liveSessionInfos,
+  sameLiveSessionInfos,
+} from "../features/sessions/model/recentSessions";
 import { useKeepAwake } from "../features/settings/model/keepAwake";
 import { hiddenApprovalNotices } from "../features/notifications/model/approvalToast";
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
@@ -9697,6 +9701,26 @@ function Workspace({
     [onOpenApprovalSession],
   );
 
+  // Sessions for the rail's "Last sessions". Kept referentially stable so the
+  // rail only refetches when a title or status really changed.
+  const liveSessionInfoRef = useRef<ReturnType<typeof liveSessionInfos>>([]);
+  const railLiveSessions = useMemo(() => {
+    const next = liveSessionInfos(sessions, unseenFinishedIds);
+    if (sameLiveSessionInfos(liveSessionInfoRef.current, next)) {
+      return liveSessionInfoRef.current;
+    }
+    liveSessionInfoRef.current = next;
+    return next;
+  }, [sessions, unseenFinishedIds]);
+  const recentSessions = useMemo(
+    () => ({
+      history,
+      live: railLiveSessions,
+      onPin: onPinHistorySession,
+    }),
+    [history, railLiveSessions, onPinHistorySession],
+  );
+
   const nextTitleTabs: TitleTab[] = deckProjectTabs.map((tab) =>
     toTitleTab(tab, sessions, dirtyFiles, unseenFinishedIds),
   );
@@ -10903,6 +10927,7 @@ function Workspace({
               )}
               liveAgents={liveAgents}
               onSelectAgent={onSelectLiveAgent}
+              recentSessions={recentSessions}
               onSelectProject={onSelectProject}
               onOpenProject={pickProject}
               onRemoveProject={onRemoveProject}

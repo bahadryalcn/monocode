@@ -146,6 +146,8 @@ import {
 } from "../../features/files/ui/ExplorerMenu";
 import { FileTree } from "../../features/files/ui/FileTree";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import type { RecentSessionsSource } from "./LastSessionsSection";
+import { formatRelative } from "../../features/sessions/model/recentSessions";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectRail } from "./ProjectRail";
 import { InboxNotificationMenu } from "../../features/inbox/ui/InboxNotificationMenu";
@@ -279,6 +281,7 @@ type Props = {
   busyProjectPaths?: Iterable<string>;
   liveAgents?: LiveAgent[];
   onSelectAgent?: (sessionId: string) => void;
+  recentSessions?: RecentSessionsSource;
   onSelectProject?: (path: string) => void;
   onOpenProject?: () => void;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
@@ -368,6 +371,7 @@ function SidebarComponent({
   busyProjectPaths,
   liveAgents = [],
   onSelectAgent,
+  recentSessions,
   onSelectProject,
   onOpenProject,
   onRemoveProject,
@@ -2164,6 +2168,7 @@ function SidebarComponent({
           liveAgents={liveAgents}
           activeSessionId={activeSessionId}
           onSelectAgent={onSelectAgent}
+          recentSessions={recentSessions}
           canGoBack={canGoBack}
           canGoForward={canGoForward}
           onGoBack={onGoBack}
@@ -3610,27 +3615,4 @@ function TightDiffNumber({ value }: { value: number }) {
 function formatGitLabel(repo?: string, branch?: string): string {
   if (repo && branch) return `${repo}/${branch}`;
   return branch || repo || "";
-}
-
-function formatRelative(value: number, now: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "";
-  const seconds = Math.max(0, Math.round((now - value) / 1000));
-  if (seconds < 60) return "now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    const rest = minutes % 60;
-    return rest ? `${hours}h ${rest}m` : `${hours}h`;
-  }
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d`;
-  try {
-    return new Intl.DateTimeFormat(undefined, {
-      month: "short",
-      day: "numeric",
-    }).format(new Date(value));
-  } catch {
-    return "";
-  }
 }

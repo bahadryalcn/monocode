@@ -388,6 +388,15 @@ pub fn session_list_linked(store: State<'_, SessionStore>) -> Result<Vec<Session
 }
 
 #[tauri::command(async)]
+pub fn session_list_recent(
+    store: State<'_, SessionStore>,
+    limit: i64,
+) -> Result<Vec<SessionSummary>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_recent(&conn, limit).map_err(|e| e.to_string())
+}
+
+#[tauri::command(async)]
 pub fn session_get(
     store: State<'_, SessionStore>,
     session_id: String,
@@ -1770,6 +1779,75 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
     rows.collect()
 }
 
+/// Newest live sessions across every project, plus every pinned one however
+/// old. Read-only and branch-light: it never shells out to git per project.
+fn list_recent(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<SessionSummary>> {
+    let mut rows = recent_rows(conn, true, -1)?;
+    rows.extend(recent_rows(conn, false, limit.clamp(1, 200))?);
+    rows.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(rows)
+}
+
+fn recent_rows(
+    conn: &Connection,
+    pinned: bool,
+    limit: i64,
+) -> rusqlite::Result<Vec<SessionSummary>> {
+    // The covering index answers the whole filter without reading transcripts;
+    // the unscoped search pins it for the same reason.
+    let mut statement = conn.prepare(
+        "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
+                created_at, updated_at, branch, archived, pinned,
+                linked_work_item_json, worktree_cwd, worktree_removed, is_draft,
+                automation_id
+         FROM sessions INDEXED BY sessions_cwd_cover_idx
+         WHERE has_user_message = 1
+           AND archived = 0
+           AND pinned = ?1
+           AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
+           AND id NOT IN (SELECT session_id FROM orchestration_workers)
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![pinned as i64, limit], |row| {
+        let worktree_removed = row.get::<_, i64>(14)? != 0;
+        let branch: Option<String> = row.get(9)?;
+        Ok(SessionSummary {
+            id: row.get(0)?,
+            orchestration_lead_id: None,
+            orchestration: None,
+            cwd: row.get(1)?,
+            harness: row.get(2)?,
+            model: row.get(3)?,
+            runtime_mode: row.get(4)?,
+            title: row.get(5)?,
+            provider_session_id: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            branch: if worktree_removed {
+                None
+            } else {
+                nonempty(branch)
+            },
+            worktree_cwd: row.get(13)?,
+            worktree_removed,
+            repo: None,
+            additions: 0,
+            deletions: 0,
+            archived: row.get::<_, i64>(10)? != 0,
+            pinned: row.get::<_, i64>(11)? != 0,
+            draft: row.get::<_, i64>(15)? != 0,
+            linked_work_item: optional_json(row.get(12)?),
+            automation_id: nonempty(row.get(16)?),
+        })
+    })?;
+    rows.collect()
+}
+
 /// Mirrors the sidebar's notion of a listable session: a transcript that the
 /// user has actually said something in.
 fn has_user_block(blocks: &Value) -> bool {
@@ -2573,6 +2651,48 @@ mod tests {
         assert!(rows.iter().any(|row| row.id == "s1"));
         assert!(rows.iter().any(|row| row.id == "s2"));
         assert!(rows.iter().all(|row| row.linked_work_item.is_some()));
+    }
+
+    #[test]
+    fn list_recent_spans_projects_and_keeps_pinned_and_hides_the_rest() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        for (id, cwd, updated) in [
+            ("old-pinned", "/tmp/a", 1_000),
+            ("oldest", "/tmp/a", 1_500),
+            ("a-new", "/tmp/a", 5_000),
+            ("b-mid", "/tmp/b", 4_000),
+            ("archived", "/tmp/b", 6_000),
+            ("worker", "/tmp/b", 6_500),
+            ("empty", "/tmp/b", 7_000),
+        ] {
+            let mut session = sample(id, cwd, id);
+            session.updated_at = Some(updated);
+            if id == "empty" {
+                session.blocks = json!([]);
+            }
+            upsert_session(&conn, &session).unwrap();
+        }
+        set_pinned(&conn, "old-pinned", true).unwrap();
+        set_archived(&conn, "archived", true).unwrap();
+        save_orchestration(
+            &conn,
+            "a-new",
+            &json!({"status":"active","tasks":[{"id":"t","sessionId":"worker"}]}),
+        )
+        .unwrap();
+
+        let ids = |limit| {
+            list_recent(&conn, limit)
+                .unwrap()
+                .into_iter()
+                .map(|row| row.id)
+                .collect::<Vec<_>>()
+        };
+        // Newest first across projects; the pinned one is always present.
+        assert_eq!(ids(2), ["a-new", "b-mid", "old-pinned"]);
+        assert_eq!(ids(10), ["a-new", "b-mid", "oldest", "old-pinned"]);
+        assert!(list_recent(&conn, 10).unwrap().iter().any(|row| row.pinned));
     }
 
     #[test]

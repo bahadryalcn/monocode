@@ -345,6 +345,14 @@ export async function listLinkedSessions(): Promise<SessionSummary[]> {
   return rows.map(normalizeSummary);
 }
 
+/** Newest sessions across every project, plus all pinned ones. No transcripts. */
+export async function listRecentSessions(
+  limit: number,
+): Promise<SessionSummary[]> {
+  const rows = await invoke<SessionSummary[]>("session_list_recent", { limit });
+  return rows.map(normalizeSummary);
+}
+
 export type SessionSearchHit = {
   kind: "conversation" | "message";
   sessionId: string;
