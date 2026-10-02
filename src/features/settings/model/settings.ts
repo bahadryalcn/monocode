@@ -1247,6 +1247,11 @@ export const KEYBINDINGS: KeybindingRow[] = [
     when: "sessionFocus && !overlay",
   },
   {
+    command: "Session: Toggle Notes Panel",
+    keys: `${MOD}N`,
+    when: "sessionFocus && !overlay",
+  },
+  {
     command: "Session: Previous",
     keys: `${MOD}${SHIFT}↑`,
     when: "!overlay && (!textFocus || emptyComposer)",

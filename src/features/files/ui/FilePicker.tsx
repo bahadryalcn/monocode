@@ -26,6 +26,11 @@ import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { FileTypeIcon } from "./FileTypeIcon";
 import { MatchText } from "../../../shared/ui/MatchText";
 import { MOD, SHIFT } from "../../../platform/tauri/platform";
+import {
+  keybindingShortcutLabel,
+  loadNotesEnabled,
+} from "../../settings/model/settings";
+import { NOTES_PANEL_COMMAND } from "../../notes/notesPanel";
 type Action = {
   id: string;
   label: string;
@@ -37,9 +42,23 @@ export function reloadActionHint(mod = MOD, shift = SHIFT) {
   return `${mod}${shift}R`;
 }
 
-const ACTIONS: Action[] = [
-  { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
-];
+function paletteActions(): Action[] {
+  const notes = loadNotesEnabled()
+    ? [
+        {
+          id: "toggle-notes",
+          label: "Toggle Notes Panel",
+          hint:
+            keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`) ??
+            undefined,
+        },
+      ]
+    : [];
+  return [
+    { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
+    ...notes,
+  ];
+}
 
 type Props = {
   open: boolean;
@@ -89,17 +108,20 @@ export function FilePicker({
   );
   const actionResults = useMemo((): RankedAction[] => {
     if (!paletteMode) return [];
+    const actions = paletteActions();
     if (!actionQuery) {
-      return ACTIONS.map((action) => ({
+      return actions.map((action) => ({
         ...action,
         score: 0,
         positions: [],
       }));
     }
-    return ACTIONS.flatMap((action) => {
-      const hit = fuzzyMatch(actionQuery, action.label);
-      return hit ? [{ ...action, ...hit }] : [];
-    }).sort((a, b) => b.score - a.score);
+    return actions
+      .flatMap((action) => {
+        const hit = fuzzyMatch(actionQuery, action.label);
+        return hit ? [{ ...action, ...hit }] : [];
+      })
+      .sort((a, b) => b.score - a.score);
   }, [actionQuery, paletteMode]);
   const optionCount = paletteMode ? actionResults.length : results.length;
 

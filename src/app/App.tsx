@@ -508,6 +508,10 @@ import { useInputNotifications } from "../features/notifications/hooks/useInputN
 import { useAttentionNotifications } from "../features/notifications/hooks/useAttentionNotifications";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
 import {
+  shouldToggleNotesPanel,
+  toggleNotesPanel,
+} from "../features/notes/notesPanel";
+import {
   adjacentItemId,
   deferUnhandledEscape,
   focusedBusyAgentSessionId,
@@ -4829,6 +4833,37 @@ function Workspace({
     },
     [onArchiveHistorySession],
   );
+
+  const onToggleNotesPanel = useCallback((event: KeyboardEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (
+      !shouldToggleNotesPanel({
+        enabled: loadNotesEnabled(),
+        activeTabId: activeTabIdRef.current,
+        tabs: tabsRef.current,
+        sessions: sessionsRef.current,
+        projectTerminalFocused: projectTerminalFocusedRef.current,
+        surfaceOpen: Boolean(
+          searchViewOpenRef.current ||
+          inboxViewOpenRef.current ||
+          notesViewOpenRef.current ||
+          automationsViewOpenRef.current ||
+          settingsOpenRef.current ||
+          filePickerOpenRef.current ||
+          whatsNewVersionRef.current,
+        ),
+        inSessionArea:
+          !target ||
+          target === document.body ||
+          (!target.closest(".cm-editor, .monocode-terminal") &&
+            Boolean(target.closest("[data-session-drop], [data-notes-panel]"))),
+      })
+    )
+      return;
+    event.preventDefault();
+    event.stopPropagation();
+    toggleNotesPanel();
+  }, []);
 
   const onPinHistorySession = useCallback(
     async (sessionId: string, pinned: boolean) => {
@@ -10313,6 +10348,7 @@ function Workspace({
   const actions = useRef({
     onNew,
     onArchiveFocusedSession,
+    onToggleNotesPanel,
     onCloseOtherTabs,
     onCloseAllTabs,
     onClosePane,
@@ -10344,6 +10380,7 @@ function Workspace({
   actions.current = {
     onNew,
     onArchiveFocusedSession,
+    onToggleNotesPanel,
     onCloseOtherTabs,
     onCloseAllTabs,
     onClosePane,
@@ -10430,6 +10467,11 @@ function Workspace({
         if (cmd === "archive-session") {
           if (e.repeat) return;
           actions.current.onArchiveFocusedSession(e);
+          return;
+        }
+        if (cmd === "toggle-notes") {
+          if (e.repeat) return;
+          actions.current.onToggleNotesPanel(e);
           return;
         }
         const target = e.target instanceof Element ? e.target : null;
@@ -11316,6 +11358,8 @@ function Workspace({
               onOpenFile={onOpenFile}
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
+                else if (id === "toggle-notes" && loadNotesEnabled())
+                  toggleNotesPanel();
               }}
               onClose={() => setFilePickerOpen(false)}
             />

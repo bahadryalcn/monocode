@@ -26,11 +26,13 @@
  *   Previous in tab     cmd-up
  *   Next in tab         cmd-down
  *   Archive session     shift-cmd-a
+ *   Toggle notes panel  cmd-n
  *   Previous project    shift-cmd-left
  *   Next project        shift-cmd-right
  *   Stop focused turn   escape
  */
 
+import { NOTES_PANEL_COMMAND } from "../../notes/notesPanel";
 import type { FocusDir } from "./layout";
 
 export type TabCommand =
@@ -54,6 +56,7 @@ export type TabCommand =
   | "prev-session-in-tab"
   | "next-session-in-tab"
   | "archive-session"
+  | "toggle-notes"
   | "prev-project"
   | "next-project"
   | { activate: number }
@@ -99,6 +102,7 @@ export function tabCommand(e: KeyboardEvent): TabCommand | null {
   }
 
   if (key === "t") return "new";
+  if (key === "n" && !e.repeat) return "toggle-notes";
   if (e.key === "ArrowUp") return "prev-session-in-tab";
   if (e.key === "ArrowDown") return "next-session-in-tab";
   if (key === "w") return "close";
@@ -132,6 +136,7 @@ const TAB_COMMAND_KEYBINDINGS: Record<Exclude<TabCommand, object>, string> = {
   "prev-session-in-tab": "Session: Previous in Current Tab",
   "next-session-in-tab": "Session: Next in Current Tab",
   "archive-session": "Session: Archive",
+  "toggle-notes": NOTES_PANEL_COMMAND,
   "prev-project": "Project: Previous",
   "next-project": "Project: Next",
 };

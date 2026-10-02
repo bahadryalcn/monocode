@@ -1,4 +1,4 @@
-import { ChevronDown, GripVertical, X } from "../../../shared/ui/icons";
+import { ChevronDown, File, GripVertical, X } from "../../../shared/ui/icons";
 import {
   memo,
   useCallback,
@@ -69,6 +69,14 @@ import {
 } from "../model/quoteDraft";
 import { createNote, noteTitle } from "../../notes";
 import {
+  getNotesPanelOpen,
+  NOTES_PANEL_COMMAND,
+  subscribeNotesPanel,
+  toggleNotesPanel,
+} from "../../notes/notesPanel";
+import { SessionNotesPanel } from "../../notes/ui/SessionNotesPanel";
+import {
+  keybindingShortcutLabel,
   loadNotesEnabled,
   subscribeNotesEnabled,
 } from "../../settings/model/settings";
@@ -528,6 +536,24 @@ const LocalSessionPane = memo(function LocalSessionPane({
     loadNotesEnabled,
     () => true,
   );
+  const notesPanelOpen = useSyncExternalStore(
+    subscribeNotesPanel,
+    getNotesPanelOpen,
+    () => false,
+  );
+  // One panel, docked beside the focused pane, so a split never shows two.
+  const showNotesPanel = notesEnabled && notesPanelOpen && visible && focused;
+  const paneRef = useRef<HTMLDivElement>(null);
+  const notesPanelWasShown = useRef(false);
+  useEffect(() => {
+    // Closing the panel from the keyboard hands focus back to the composer.
+    if (notesPanelWasShown.current && !showNotesPanel && visible && focused) {
+      paneRef.current
+        ?.querySelector<HTMLTextAreaElement>("[data-composer-box] textarea")
+        ?.focus();
+    }
+    notesPanelWasShown.current = showNotesPanel;
+  }, [showNotesPanel, visible, focused]);
   const saveNote = useCallback(
     async (text: string) => {
       const sessionTitle = sessionDisplayTitle(session.title, session.harness);
@@ -737,8 +763,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
     </Composer>
   );
 
-  return (
+  const pane = (
     <div
+      ref={paneRef}
       data-session-drop={session.id}
       data-session-empty={isEmpty}
       data-project-chat-background={!!projectBackground}
@@ -1046,6 +1073,26 @@ const LocalSessionPane = memo(function LocalSessionPane({
           />
         ) : null}
       </div>
+    </div>
+  );
+  const notesShortcut = keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`);
+
+  return (
+    <div className="relative flex h-full min-h-0 min-w-0 flex-1">
+      {pane}
+      {showNotesPanel ? (
+        <SessionNotesPanel sessionId={session.id} cwd={session.cwd} />
+      ) : notesEnabled && visible && focused ? (
+        <button
+          type="button"
+          title={`Notes${notesShortcut ? ` (${notesShortcut})` : ""}`}
+          aria-label="Open notes panel"
+          onClick={toggleNotesPanel}
+          className="absolute right-3 top-1.5 z-10 grid size-6 place-items-center rounded-md text-content/35 hover:bg-content/10 hover:text-content"
+        >
+          <File className="size-3.5" strokeWidth={1.75} />
+        </button>
+      ) : null}
     </div>
   );
 });
