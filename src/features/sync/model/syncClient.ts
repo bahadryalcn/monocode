@@ -1,7 +1,7 @@
 import { applyRemoteGroupRecords, captureLocalGroupChanges } from "./syncGroups";
 import { applyRemoteLockRecords, captureLocalLockChanges } from "./syncLock";
 import { applyRemoteProjectRecords, captureLocalProjectChanges, localProjectIdsByPath } from "./syncProjects";
-import { autoAddRemoteProjects } from "./syncRemoteProjects";
+import { adoptLocalProjects, autoAddRemoteProjects } from "./syncRemoteProjects";
 import { canonicalJson } from "./canonicalJson";
 import {
   applyPushResult,
@@ -126,6 +126,7 @@ export async function runSyncCycle(machineId: string, request: SyncRequest): Pro
   }
   // Needs the records just pulled; an unreachable machine is retried later
   // and never fails the cycle.
+  await adoptLocalProjects().catch(() => undefined);
   await autoAddRemoteProjects().catch(() => undefined);
   recordSyncStatus(machineId, {
     state: "ok",

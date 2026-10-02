@@ -4,7 +4,8 @@ import { loadArchivedProjects, loadRecents } from "../../projects/model/recents"
 const AUTO_ADDED_KEY = "monocode.sync.autoAddedRemoteProjects";
 const DISMISSED_KEY = "monocode.sync.dismissedRemoteProjects";
 
-/** Synced project id → the `remote://` rail path sync added for it. */
+/** Synced project id → the rail path sync added for it: a `remote://` path,
+ * or a local folder another desktop had opened through this machine's host. */
 export function loadAutoAdded(): Record<string, string> {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(AUTO_ADDED_KEY) ?? "{}");

@@ -321,4 +321,91 @@ describe("sync over a key-sorting transport", () => {
     expect(host.rev()).toBe(revAfterRemoval);
     expect(revAfterRemoval - revBeforeRemoval).toBeLessThanOrEqual(1);
   });
+
+  it("a folder one desktop opened remotely becomes a local project on the machine that holds it", async () => {
+    const host = fakeHost();
+    const remote = "remote://env-m/Users/me/projects/clinic";
+    const local = "/Users/me/projects/clinic";
+    const opened: string[] = [];
+    const target = (environmentId: string) => ({
+      environmentId,
+      name: environmentId,
+      request: async (method: string, params: unknown) => {
+        const { cwd } = params as { cwd: string };
+        opened.push(`${environmentId} ${method} ${cwd}`);
+        return { id: `host-${cwd}`, cwd, name: "clinic" };
+      },
+    });
+
+    const w = await makeDesktop("machine-w");
+    w.projects.setLocalHostEnvironmentId("env-w");
+    w.remoteProjects.setRemoteOpenTargets([target("env-m")]);
+    w.recents.rememberProject(remote);
+    w.recents.rememberProject("C:/work/tool");
+    w.recents.saveProjectRailOrder([remote, "C:/work/tool"]);
+    w.groups.saveProjectGroups([{ id: "g", name: "Clients", collapsed: false }]);
+    w.groups.saveProjectGroupAssignments({ [pathKey(remote)]: "g" });
+
+    const m = await makeDesktop("machine-m");
+    m.projects.setLocalHostEnvironmentId("env-m");
+    m.remoteProjects.setRemoteOpenTargets([target("env-w")]);
+
+    for (let round = 0; round < 4; round += 1) {
+      await w.cycle(host);
+      await m.cycle(host);
+    }
+    const settledRev = host.rev();
+    const settledOps = host.pushedOps.length;
+    for (let round = 0; round < 3; round += 1) {
+      await w.cycle(host);
+      await m.cycle(host);
+    }
+    expect(host.pushedOps.slice(settledOps)).toEqual([]);
+    expect(host.rev()).toBe(settledRev);
+
+    expect(host.value("projectPath", "name:clinic:env:env-m")).toEqual({
+      archived: false,
+      hostEnvironmentId: "env-m",
+      machineId: "env:env-m",
+      path: local,
+      projectId: "name:clinic",
+    });
+    expect(host.value("projectPath", "name:clinic:machine-m")).toMatchObject({ path: local, hostEnvironmentId: "env-m" });
+    expect(host.value("projectPath", "name:clinic:machine-w")).toBeUndefined();
+
+    // M holds the folder, so it gets a local project in W's group; W's tool is opened remotely.
+    m.use();
+    expect(m.recents.loadRecents().map((item) => item.path).sort()).toEqual([local, "remote://env-w/C:/work/tool"]);
+    expect(m.assignmentFor(local)).toBe("g");
+    expect(m.projects.remoteOnlyProjects()).toEqual([]);
+    const order = m.recents.loadProjectRailOrder();
+    expect(order.indexOf(local)).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf(local)).toBeLessThan(order.indexOf("remote://env-w/C:/work/tool"));
+    expect(opened).toEqual(["env-w projects.open C:/work/tool"]);
+
+    w.use();
+    expect(w.recents.loadRecents().map((item) => item.path).sort()).toEqual(["C:/work/tool", remote]);
+    expect(w.projects.remoteOnlyProjects()).toEqual([]);
+    expect(w.assignmentFor(remote)).toBe("g");
+
+    // Removing it on M is remembered: it is not adopted again, and W keeps its project.
+    m.use();
+    m.recents.forgetProject(local);
+    for (let round = 0; round < 3; round += 1) {
+      await m.cycle(host);
+      await w.cycle(host);
+    }
+    m.use();
+    expect(m.recents.loadRecents().map((item) => item.path)).toEqual(["remote://env-w/C:/work/tool"]);
+    expect(m.projects.remoteOnlyProjects()).toEqual([]);
+    expect(m.projects.locallyAdoptableProjects()).toEqual([]);
+    w.use();
+    expect(w.recents.loadRecents().map((item) => item.path).sort()).toEqual(["C:/work/tool", remote]);
+    expect(w.assignmentFor(remote)).toBe("g");
+    expect(opened).toHaveLength(1);
+    const revAfterRemoval = host.rev();
+    await m.cycle(host);
+    await w.cycle(host);
+    expect(host.rev()).toBe(revAfterRemoval);
+  });
 });

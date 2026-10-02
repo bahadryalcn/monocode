@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyRemoteProjectRecords,
   captureLocalProjectChanges,
+  dedupeProjectPaths,
+  envMachineId,
+  isEnvMachineId,
+  locallyAdoptableProjects,
   localPathKeyForProjectId,
   linkLocalPathToProject,
   localProjectIdsByPath,
@@ -18,7 +22,7 @@ import {
 } from "../../projects/model/projectGroups";
 import { applyPushResult, markPullCompleted, markPulled, takeOutbox } from "./syncPeerState";
 import { localMachineId } from "./syncMachineId";
-import { loadProjectRailOrder, loadRecents, loadPinnedProjects, rememberProject, savePinnedProjects, saveProjectRailOrder } from "../../projects/model/recents";
+import { archiveProject, forgetProject, loadProjectRailOrder, loadRecents, loadPinnedProjects, rememberProject, savePinnedProjects, saveProjectRailOrder } from "../../projects/model/recents";
 
 function mockLocalStorage() {
   const data = new Map<string, string>();
@@ -241,12 +245,63 @@ describe("host environment on projectPath records", () => {
   });
 });
 
+describe("records announced on a host's behalf", () => {
+  beforeEach(mockLocalStorage);
+
+  const record = (projectId: string, machineId: string, path: string, hostEnvironmentId?: string, archived = false) =>
+    ({
+      table: "projectPath",
+      value: { projectId, machineId, path, archived, ...(hostEnvironmentId ? { hostEnvironmentId } : {}) },
+    }) as never;
+
+  it("dedupeProjectPaths keeps one entry per host folder, preferring the owning machine's", () => {
+    const env = { machineId: envMachineId("env-a"), path: "C:/Code/App", hostEnvironmentId: "env-a" };
+    const machine = { machineId: "m2", path: "c:/code/app/", hostEnvironmentId: "env-a" };
+    const other = { machineId: envMachineId("env-b"), path: "C:/Code/App", hostEnvironmentId: "env-b" };
+    const bare = { machineId: "m3", path: "C:/Code/App" };
+    expect(dedupeProjectPaths([env, machine, other, bare])).toEqual([machine, other, bare]);
+    expect(dedupeProjectPaths([machine, env])).toEqual([machine]);
+    expect(isEnvMachineId(env.machineId)).toBe(true);
+    expect(isEnvMachineId("m2")).toBe(false);
+  });
+
+  it("a host connected here but not opened is one placeholder, however many records describe it", () => {
+    applyRemoteProjectRecords(MACHINE, [
+      record("name:app", "env:env-a", "/code/app", "env-a"),
+      record("name:app", "m2", "/code/app", "env-a"),
+      record("name:site", "env:env-a", "/code/site", "env-a"),
+    ]);
+    expect(remoteOnlyProjects()).toEqual([
+      { projectId: "name:app", name: "app", otherPaths: [{ machineId: "m2", path: "/code/app", hostEnvironmentId: "env-a" }] },
+      {
+        projectId: "name:site",
+        name: "site",
+        otherPaths: [{ machineId: "env:env-a", path: "/code/site", hostEnvironmentId: "env-a" }],
+      },
+    ]);
+    expect(locallyAdoptableProjects()).toEqual([]);
+  });
+
+  it("a folder on this machine's own host is adoptable, not a placeholder", () => {
+    setLocalHostEnvironmentId("env-own");
+    applyRemoteProjectRecords(MACHINE, [
+      record("name:clinic", "env:env-own", "/Users/me/projects/clinic", "env-own"),
+      record("name:old", "env:env-own", "/Users/me/projects/old", "env-own", true),
+      record("name:mine", "env:env-own", "/Users/me/projects/mine", "env-own"),
+      record("name:far", "env:env-a", "/code/far", "env-a"),
+    ]);
+    rememberProject("/Users/me/projects/mine");
+    expect(locallyAdoptableProjects()).toEqual([{ projectId: "name:clinic", path: "/Users/me/projects/clinic" }]);
+    expect(remoteOnlyProjects().map((project) => project.projectId)).toEqual(["name:far"]);
+  });
+});
+
 describe("remote:// rail projects", () => {
   beforeEach(mockLocalStorage);
 
   const REMOTE = "remote://env-a/C:/Code/App";
 
-  it("get the id of their folder on the host but never a project or projectPath record", () => {
+  it("get the id of their folder on the host and a projectPath record keyed by that host", () => {
     rememberProject(REMOTE);
     rememberProject("remote://env-a/home/me/Site");
     captureLocalProjectChanges(MACHINE);
@@ -255,7 +310,57 @@ describe("remote:// rail projects", () => {
       [pathKey("remote://env-a/home/me/Site")]: "name:site",
     });
     expect(localPathKeyForProjectId("name:app")).toBe(pathKey(REMOTE));
-    expect(takeOutbox(MACHINE)).toEqual([]);
+    const paths = takeOutbox(MACHINE).filter((op) => op.table === "projectPath");
+    expect(paths.map((op) => op.id).sort()).toEqual(["name:app:env:env-a", "name:site:env:env-a"]);
+    expect(paths.find((op) => op.id === "name:app:env:env-a")?.value).toEqual({
+      projectId: "name:app",
+      machineId: "env:env-a",
+      hostEnvironmentId: "env-a",
+      path: "C:/Code/App",
+      archived: false,
+    });
+    expect(paths.find((op) => op.id === "name:site:env:env-a")?.value).toMatchObject({ path: "/home/me/Site" });
+    captureLocalProjectChanges(MACHINE);
+    expect(takeOutbox(MACHINE).filter((op) => op.table === "projectPath")).toHaveLength(2);
+  });
+
+  it("are not announced when they are on this machine's own host or its machine already announced them", () => {
+    setLocalHostEnvironmentId("env-own");
+    rememberProject("remote://env-own/home/me/self");
+    rememberProject(REMOTE);
+    applyRemoteProjectRecords(MACHINE, [
+      {
+        table: "projectPath",
+        id: "name:app:m2",
+        rev: 1,
+        value: { projectId: "name:app", machineId: "m2", path: "c:/code/app", archived: false, hostEnvironmentId: "env-a" },
+      },
+    ]);
+    captureLocalProjectChanges(MACHINE);
+    expect(takeOutbox(MACHINE).filter((op) => op.table === "projectPath")).toEqual([]);
+  });
+
+  it("carry their archived state in the announcement", () => {
+    rememberProject(REMOTE);
+    archiveProject(REMOTE);
+    captureLocalProjectChanges(MACHINE);
+    expect(takeOutbox(MACHINE).find((op) => op.table === "projectPath")?.value).toMatchObject({ archived: true });
+  });
+
+  it("ignore this desktop's own announcement when it comes back", () => {
+    rememberProject(REMOTE);
+    const own = {
+      table: "projectPath",
+      id: "name:app:env:env-a",
+      rev: 1,
+      value: { projectId: "name:app", machineId: "env:env-a", path: "C:/Code/App", archived: false, hostEnvironmentId: "env-a" },
+    } as const;
+    applyRemoteProjectRecords(MACHINE, [own]);
+    forgetProject(REMOTE);
+    expect(remoteOnlyProjects()).toEqual([]);
+    // From another desktop it is a project this one lacks.
+    applyRemoteProjectRecords(MACHINE, [own]);
+    expect(remoteOnlyProjects().map((project) => project.projectId)).toEqual(["name:app"]);
   });
 
   it("lose the id to a local folder of the same name", () => {

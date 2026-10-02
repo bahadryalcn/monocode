@@ -6,7 +6,13 @@ import {
   rememberProject,
 } from "../../projects/model/recents";
 import { remoteProjectFor } from "../../connections/model/remoteProjects";
-import { applyRemoteProjectRecords, remoteOnlyProjects, type RemoteOnlyProject } from "./syncProjects";
+import {
+  applyRemoteProjectRecords,
+  projectIdForPath,
+  remoteOnlyProjects,
+  setLocalHostEnvironmentId,
+  type RemoteOnlyProject,
+} from "./syncProjects";
 import type { RemoteOpenTarget } from "./syncRemoteProjects";
 
 const PEER = "host-1";
@@ -186,6 +192,76 @@ describe("autoAddRemoteProjects", () => {
     expect(await sync.autoAddRemoteProjects()).toEqual(["remote://env-a/private/code/real-name"]);
     expect(remoteOnlyProjects()).toEqual([]);
     expect(await sync.autoAddRemoteProjects()).toEqual([]);
+  });
+});
+
+describe("adoptLocalProjects", () => {
+  beforeEach(mockLocalStorage);
+
+  const CLINIC = "/Users/me/projects/clinic";
+
+  async function loadWithOwnHost() {
+    const sync = await load();
+    setLocalHostEnvironmentId("env-own");
+    return sync;
+  }
+
+  it("adds a folder on this machine that another desktop opened remotely, once", async () => {
+    const sync = await loadWithOwnHost();
+    const pc = target("env-own");
+    sync.setRemoteOpenTargets([pc.value]);
+    let added = 0;
+    sync.subscribeSyncedProjectsAdded(() => (added += 1));
+    rememberProject("/home/me/mine");
+    applyRemoteProjectRecords(PEER, [
+      pathRecord("name:clinic", "env:env-own", `${CLINIC}/`, "env-own"),
+      pathRecord("name:tool", "env:env-own", "G:\\Projects\\tool", "env-own"),
+    ]);
+
+    expect(await sync.adoptLocalProjects(async () => true)).toEqual([CLINIC, "G:/Projects/tool"]);
+    expect(loadRecents().map((item) => item.path)).toEqual(["/home/me/mine", CLINIC, "G:/Projects/tool"]);
+    expect(added).toBe(1);
+    expect(await sync.adoptLocalProjects(async () => true)).toEqual([]);
+    // Never as a remote project through its own host.
+    expect(await sync.autoAddRemoteProjects()).toEqual([]);
+    expect(pc.calls).toEqual([]);
+
+    forgetProject(CLINIC);
+    expect(await sync.adoptLocalProjects(async () => true)).toEqual([]);
+    expect(loadRecents().map((item) => item.path)).toEqual(["/home/me/mine", "G:/Projects/tool"]);
+  });
+
+  it("skips a folder that does not exist, an archived one, and one already here", async () => {
+    const sync = await loadWithOwnHost();
+    applyRemoteProjectRecords(PEER, [
+      pathRecord("name:clinic", "env:env-own", CLINIC, "env-own"),
+      pathRecord("name:gone", "env:env-own", "/Users/me/projects/gone", "env-own"),
+      pathRecord("name:old", "env:env-own", "/Users/me/projects/old", "env-own"),
+      pathRecord("name:far", "env:env-a", "/code/far", "env-a"),
+    ]);
+    rememberProject("/Users/me/projects/old");
+    archiveProject("/Users/me/projects/old");
+    const asked: string[] = [];
+    const exists = async (path: string) => {
+      asked.push(path);
+      return !path.endsWith("/gone");
+    };
+    expect(await sync.adoptLocalProjects(exists)).toEqual([CLINIC]);
+    expect(asked).toEqual([CLINIC, "/Users/me/projects/gone"]);
+    expect(loadRecents().map((item) => item.path)).toEqual([CLINIC]);
+  });
+
+  it("keeps the announced project id when the folder name differs from it", async () => {
+    const sync = await loadWithOwnHost();
+    applyRemoteProjectRecords(PEER, [pathRecord("name:app", "env:env-own", "/private/real-name", "env-own")]);
+    expect(await sync.adoptLocalProjects(async () => true)).toEqual(["/private/real-name"]);
+    expect(projectIdForPath("/private/real-name")).toBe("name:app");
+  });
+
+  it("does nothing until this machine knows its own host", async () => {
+    const sync = await load();
+    applyRemoteProjectRecords(PEER, [pathRecord("name:clinic", "env:env-own", CLINIC, "env-own")]);
+    expect(await sync.adoptLocalProjects(async () => true)).toEqual([]);
   });
 });
 

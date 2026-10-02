@@ -1,13 +1,22 @@
 import { pathKey } from "../../../shared/lib/paths";
 import { openRemoteProject } from "../../connections/model/remoteProjects";
 import {
+  isLocalProject,
   loadArchivedProjects,
   loadRecents,
+  normalizeProjectPath,
   notifyProjectPathsChanged,
   rememberImportedProjects,
 } from "../../projects/model/recents";
+import { resolveProjectLocation } from "../../../platform/tauri/fs";
 import { markAutoAdded, persistDismissed } from "./syncAutoAdded";
-import { remoteOnlyProjects, type RemoteOnlyProject } from "./syncProjects";
+import {
+  linkLocalPathToProject,
+  locallyAdoptableProjects,
+  projectIdForPath,
+  remoteOnlyProjects,
+  type RemoteOnlyProject,
+} from "./syncProjects";
 
 /** A machine saved on this desktop whose host can open folders for it. */
 export type RemoteOpenTarget = {
@@ -122,6 +131,37 @@ export async function autoAddRemoteProjects(now: number = Date.now()): Promise<s
       fail();
       failedTargets.add(match.target.environmentId);
     }
+  }
+  if (added.length > 0) announce();
+  return added;
+}
+
+async function folderExists(path: string): Promise<boolean> {
+  try {
+    return (await resolveProjectLocation(path)) !== null;
+  } catch {
+    // The check itself is unavailable: add the project rather than hide it.
+    return true;
+  }
+}
+
+/** Puts every synced project whose folder is on this machine, but which only
+ * another desktop has opened (remotely, through this machine's host), on the
+ * rail as a local project. Each project is added at most once: one the user
+ * later removes is remembered as dismissed. Returns the added paths. */
+export async function adoptLocalProjects(
+  exists: (path: string) => Promise<boolean> = folderExists,
+): Promise<string[]> {
+  persistDismissed();
+  const added: string[] = [];
+  for (const project of locallyAdoptableProjects()) {
+    const path = normalizeProjectPath(project.path);
+    if (!isLocalProject(path) || !(await exists(path))) continue;
+    rememberImportedProjects([{ path, lastUsedAt: Date.now() }]);
+    if (!onRail(path)) continue;
+    if (projectIdForPath(path) !== project.projectId) linkLocalPathToProject(path, project.projectId);
+    markAutoAdded(project.projectId, path);
+    added.push(path);
   }
   if (added.length > 0) announce();
   return added;
