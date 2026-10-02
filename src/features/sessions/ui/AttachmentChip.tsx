@@ -23,7 +23,8 @@ export function AttachmentChip({
 }: Props) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const preview = attachmentPreviewSrc(attachment);
-  const image = attachment.kind === "image" && preview;
+  // A gone image has no picture worth showing; it reads as a marked file chip.
+  const image = attachment.kind === "image" && !attachment.missing && preview;
   const label = token ? tokenLabel(token) : null;
   const labelClass = image
     ? "absolute inset-x-0 bottom-0 truncate rounded-b-lg bg-black/60 px-0.5 text-center text-[9px] leading-3.5 text-white"
@@ -90,6 +91,11 @@ export function AttachmentChip({
             <span className="min-w-0 max-w-[140px] truncate text-[11px] leading-none text-content/80">
               {attachment.name}
             </span>
+            {attachment.missing ? (
+              <span className="shrink-0 text-[10px] leading-none text-amber-400">
+                missing
+              </span>
+            ) : null}
           </>
         )}
         {onRemove ? (

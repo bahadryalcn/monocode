@@ -457,7 +457,7 @@ import {
   claimAutoContinue,
   isAutoContinueDue,
 } from "../features/sessions/model/autoContinue";
-import { withoutMissingAttachments } from "../features/sessions/model/queuePersistence";
+import { applyQueuedEdit } from "../features/sessions/model/queuedMessageEdit";
 import { useQueuePersistence } from "../features/sessions/hooks/useQueuePersistence";
 import { isBackgroundOnly } from "../features/sessions/model/activityDock";
 import {
@@ -7797,7 +7797,12 @@ function Workspace({
   );
 
   const onEditQueuedMessage = useCallback(
-    (sessionId: string, messageId: string, text: string) => {
+    (
+      sessionId: string,
+      messageId: string,
+      text: string,
+      attachments: Attachment[],
+    ) => {
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -7805,7 +7810,7 @@ function Workspace({
                 ...session,
                 queuedMessages: session.queuedMessages?.map((message) =>
                   message.id === messageId
-                    ? withoutMissingAttachments(message, text)
+                    ? applyQueuedEdit(message, { text, attachments })
                     : message,
                 ),
                 editingQueuedMessageId: undefined,
