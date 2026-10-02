@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectFile } from "../../../platform/tauri/fs";
-import { listProjectFiles } from "../../../platform/tauri/fs";
+import {
+  listDir,
+  listProjectFiles,
+  statFiles,
+} from "../../../platform/tauri/fs";
 import {
   invalidateProjectFiles,
   loadProjectFiles,
@@ -42,10 +46,14 @@ vi.mock("../../../platform/tauri/fs", async (importOriginal) => {
   return {
     ...actual,
     listProjectFiles: vi.fn(async () => files),
+    listDir: vi.fn(async () => []),
+    statFiles: vi.fn(async () => []),
   };
 });
 
 const list = vi.mocked(listProjectFiles);
+const dir = vi.mocked(listDir);
+const stat = vi.mocked(statFiles);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -60,6 +68,10 @@ describe("resolveOpenablePath", () => {
     invalidateProjectFiles();
     list.mockReset();
     list.mockResolvedValue(files);
+    dir.mockReset();
+    dir.mockResolvedValue([]);
+    stat.mockReset();
+    stat.mockResolvedValue([]);
   });
 
   it("maps a basename-only link to the shortest matching project path", async () => {
@@ -82,6 +94,51 @@ describe("resolveOpenablePath", () => {
     list.mockRejectedValue(new Error("Project scan unavailable"));
     await expect(resolveOpenablePath(cwd, "apps/desktop/src/main.tsx"))
       .resolves.toBe(files[2].path);
+  });
+
+  it("finds a generated file the index leaves out in an ignored folder", async () => {
+    const pdf = `${cwd}/.artifacts/reports/summary.pdf`;
+    const entry = (path: string, isDir: boolean, ignored: boolean) => ({
+      name: path.split("/").pop()!,
+      path,
+      isDir,
+      ignored,
+    });
+    stat.mockResolvedValue([{ path: `${cwd}/summary.pdf`, mtimeMs: null }]);
+    dir.mockImplementation(async (path) => {
+      if (path === cwd)
+        return [
+          entry(`${cwd}/apps`, true, false),
+          entry(`${cwd}/node_modules`, true, true),
+          entry(`${cwd}/.artifacts`, true, true),
+        ];
+      if (path === `${cwd}/.artifacts`)
+        return [entry(`${cwd}/.artifacts/reports`, true, false)];
+      if (path === `${cwd}/.artifacts/reports`) return [entry(pdf, false, false)];
+      throw new Error(`unexpected listing of ${path}`);
+    });
+    await expect(resolveOpenablePath(cwd, "summary.pdf")).resolves.toBe(pdf);
+  });
+
+  it("finds a file created after the index was read", async () => {
+    const created: ProjectFile = {
+      name: "new.ts",
+      path: `${cwd}/lib/new.ts`,
+      relative: "lib/new.ts",
+    };
+    await loadProjectFiles(cwd);
+    list.mockResolvedValue([...files, created]);
+    stat.mockResolvedValue([{ path: `${cwd}/new.ts`, mtimeMs: null }]);
+    await expect(resolveOpenablePath(cwd, "new.ts")).resolves.toBe(created.path);
+  });
+
+  it("keeps an unindexed path that exists", async () => {
+    const ignored = `${cwd}/.artifacts/notes.md`;
+    stat.mockResolvedValue([{ path: ignored, mtimeMs: 5 }]);
+    await expect(resolveOpenablePath(cwd, ".artifacts/notes.md")).resolves.toBe(
+      ignored,
+    );
+    expect(dir).not.toHaveBeenCalled();
   });
 
   it("preserves an exact path even when it is absent from the project index", async () => {
