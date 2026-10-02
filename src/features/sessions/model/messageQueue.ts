@@ -1,5 +1,6 @@
 import { isPreparingHandoff } from "./handoff";
 import type { FollowUpBehavior } from "../../settings/model/settings";
+import { hasMissingAttachment } from "./queuePersistence";
 import type { QueuedMessage, Session, TurnIntent } from "./session";
 
 export function queuedHead(session: Session): QueuedMessage | undefined {
@@ -31,18 +32,34 @@ export function dequeueQueuedMessage(
 }
 
 /**
+ * A queued row was sent: take it out, and let a queue restored after a restart
+ * go back to draining, since the user has just chosen to send from it.
+ */
+export function sentQueuedMessage(session: Session, messageId: string): Session {
+  const next = dequeueQueuedMessage(session, messageId);
+  return next.queueStatus === "restored"
+    ? { ...next, queueStatus: "active" }
+    : next;
+}
+
+/**
  * True when the idle session can send its queued head as a new turn.
- * Busy / paused / resuming / usage-limited / preparing-handoff /
- * editing-the-head all wait.
+ * Busy / paused / resuming / restored / usage-limited / preparing-handoff /
+ * editing-the-head / a head whose attachment is gone all wait.
  */
 export function canDispatchQueuedHead(session: Session): boolean {
   if (session.busy) return false;
   if (session.usageLimit) return false;
-  if (session.queueStatus === "paused" || session.queueStatus === "resuming") {
+  if (
+    session.queueStatus === "paused" ||
+    session.queueStatus === "resuming" ||
+    session.queueStatus === "restored"
+  ) {
     return false;
   }
   const head = queuedHead(session);
   if (!head) return false;
+  if (hasMissingAttachment(head)) return false;
   if (isEditingQueuedHead(session)) return false;
   if (isPreparingHandoff(session)) return false;
   return true;
@@ -57,7 +74,7 @@ export function queuedMessageForSubmit(
   const message = session.queuedMessages?.find(
     (entry) => entry.id === messageId,
   );
-  if (!message) return undefined;
+  if (!message || hasMissingAttachment(message)) return undefined;
   if (mode === "steer") return message;
   if (queuedHead(session)?.id !== messageId) return undefined;
   if (!canDispatchQueuedHead(session)) return undefined;

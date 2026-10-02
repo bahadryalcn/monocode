@@ -658,6 +658,76 @@ pub fn session_set_linked_work_item(
     set_linked_work_item(&conn, &session_id, linked_work_item.as_ref()).map_err(|e| e.to_string())
 }
 
+const SESSION_QUEUE_MAX_BYTES: usize = 8_000_000;
+
+/// Write-through for a session's queued follow-ups. Kept in its own table so a
+/// queue edit never rewrites the transcript, and a transcript save never
+/// touches the queue. An empty queue (`None`) deletes the row.
+#[tauri::command(async)]
+pub fn session_set_queue(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    queue: Option<Value>,
+) -> Result<(), String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    set_session_queue(&conn, &session_id, queue.as_ref())
+}
+
+#[tauri::command(async)]
+pub fn session_get_queue(
+    store: State<'_, SessionStore>,
+    session_id: String,
+) -> Result<Option<Value>, String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    get_session_queue(&conn, &session_id).map_err(|e| e.to_string())
+}
+
+fn set_session_queue(
+    conn: &Connection,
+    session_id: &str,
+    queue: Option<&Value>,
+) -> Result<(), String> {
+    let Some(queue) = queue else {
+        conn.execute(
+            "DELETE FROM session_queues WHERE session_id = ?1",
+            [session_id],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+    if !queue.is_array() {
+        return Err("queue must be an array".into());
+    }
+    let json = serde_json::to_string(queue).map_err(|e| e.to_string())?;
+    if json.len() > SESSION_QUEUE_MAX_BYTES {
+        return Err("queue is too large".into());
+    }
+    conn.execute(
+        "INSERT INTO session_queues (session_id, queue_json, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(session_id) DO UPDATE SET
+           queue_json = excluded.queue_json,
+           updated_at = excluded.updated_at",
+        params![session_id, json, now_millis()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn get_session_queue(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<Value>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT queue_json FROM session_queues WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // A row that no longer parses is dropped rather than failing the load.
+    Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InFlightSession {
@@ -1047,6 +1117,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS worktree_removals (
            path TEXT PRIMARY KEY,
            sessions_json TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS session_queues (
+           session_id TEXT PRIMARY KEY,
+           queue_json TEXT NOT NULL,
+           updated_at INTEGER NOT NULL
          );",
     )?;
     // Compatibility only: earlier Inbox Ask builds saved temporary chats here.
@@ -1990,6 +2065,10 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
         [session_id],
     )?;
     content_search::forget_session(&tx, session_id)?;
+    tx.execute(
+        "DELETE FROM session_queues WHERE session_id = ?1",
+        [session_id],
+    )?;
     tx.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
     tx.commit()
 }
@@ -3175,6 +3254,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(table, 1);
+    }
+
+    #[test]
+    fn session_queue_round_trips_replaces_and_clears() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), None);
+
+        let first = json!([{ "id": "q1", "text": "one", "attachments": [] }]);
+        set_session_queue(&conn, "s1", Some(&first)).unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), Some(first));
+
+        let second = json!([
+            { "id": "q2", "text": "two", "attachments": [] },
+            { "id": "q1", "text": "one", "attachments": [] }
+        ]);
+        set_session_queue(&conn, "s1", Some(&second)).unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), Some(second));
+        assert_eq!(get_session_queue(&conn, "s2").unwrap(), None);
+
+        set_session_queue(&conn, "s1", None).unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), None);
+    }
+
+    #[test]
+    fn session_queue_rejects_non_arrays_and_survives_transcript_saves() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert!(set_session_queue(&conn, "s1", Some(&json!({"id": "q1"}))).is_err());
+
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat")).unwrap();
+        let queue = json!([{ "id": "q1", "text": "later", "attachments": [] }]);
+        set_session_queue(&conn, "s1", Some(&queue)).unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat renamed")).unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), Some(queue));
+    }
+
+    #[test]
+    fn deleting_a_session_drops_its_queue() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "Chat")).unwrap();
+        set_session_queue(&conn, "s1", Some(&json!([{ "id": "q1" }]))).unwrap();
+        delete_session(&conn, "s1").unwrap();
+        assert_eq!(get_session_queue(&conn, "s1").unwrap(), None);
     }
 
     #[test]

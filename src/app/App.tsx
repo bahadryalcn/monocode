@@ -451,7 +451,14 @@ import {
   dequeueQueuedMessage,
   queuedMessageForSubmit,
   resolveFollowUpRoute,
+  sentQueuedMessage,
 } from "../features/sessions/model/messageQueue";
+import {
+  claimAutoContinue,
+  isAutoContinueDue,
+} from "../features/sessions/model/autoContinue";
+import { withoutMissingAttachments } from "../features/sessions/model/queuePersistence";
+import { useQueuePersistence } from "../features/sessions/hooks/useQueuePersistence";
 import { isBackgroundOnly } from "../features/sessions/model/activityDock";
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
@@ -6435,7 +6442,7 @@ function Workspace({
             handoffCard: rawCommand ? s.handoffCard : undefined,
           };
           if (options?.queuedMessageId) {
-            next = dequeueQueuedMessage(next, options.queuedMessageId);
+            next = sentQueuedMessage(next, options.queuedMessageId);
           }
           return appendSteerUser(next, submittedText, visible, cards);
         });
@@ -6654,7 +6661,7 @@ function Workspace({
               };
             }
             if (options?.queuedMessageId) {
-              next = dequeueQueuedMessage(next, options.queuedMessageId);
+              next = sentQueuedMessage(next, options.queuedMessageId);
             }
             if (!live) {
               return {
@@ -7761,6 +7768,8 @@ function Workspace({
     };
   }, [onSubmit, sessions]);
 
+  useQueuePersistence(sessions);
+
   const onDeleteQueuedMessage = useCallback(
     (sessionId: string, messageId: string) => {
       setSessions((prev) =>
@@ -7795,7 +7804,9 @@ function Workspace({
             ? {
                 ...session,
                 queuedMessages: session.queuedMessages?.map((message) =>
-                  message.id === messageId ? { ...message, text } : message,
+                  message.id === messageId
+                    ? withoutMissingAttachments(message, text)
+                    : message,
                 ),
                 editingQueuedMessageId: undefined,
               }
@@ -8672,7 +8683,10 @@ function Workspace({
 
   const autoContinueKey = sessions
     .filter(
-      (session) => canAutoContinue(session) && isLiveHarness(session.harness),
+      (session) =>
+        canAutoContinue(session) &&
+        isLiveHarness(session.harness) &&
+        isAutoContinueDue(session.id),
     )
     .map((session) => session.id)
     .join("\n");
@@ -8688,7 +8702,8 @@ function Workspace({
         if (
           !session ||
           !canAutoContinue(session) ||
-          !isLiveHarness(session.harness)
+          !isLiveHarness(session.harness) ||
+          !claimAutoContinue(id)
         ) {
           continue;
         }

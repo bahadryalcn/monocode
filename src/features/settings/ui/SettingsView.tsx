@@ -338,6 +338,7 @@ import {
   loadDiffViewer,
   loadFileTabMode,
   loadFollowUpBehavior,
+  loadAutoContinueInterrupted,
   loadResumeAtReset,
   loadFormatOnSave,
   loadGridArcadeEnabled,
@@ -361,6 +362,7 @@ import {
   saveDiffViewer,
   saveFileTabMode,
   saveFollowUpBehavior,
+  saveAutoContinueInterrupted,
   saveResumeAtReset,
   saveFormatOnSave,
   saveGridArcadeEnabled,
@@ -1112,6 +1114,7 @@ function ChatPage() {
   const [followUpBehavior, setFollowUpBehavior] =
     useState<FollowUpBehavior>(loadFollowUpBehavior);
   const [resumeAtReset, setResumeAtReset] = useState(loadResumeAtReset);
+  const [autoContinue, setAutoContinue] = useState(loadAutoContinueInterrupted);
   const [modelControls, setModelControls] =
     useState<ModelControls>(loadModelControls);
   const [diffViewer, setDiffViewer] = useState<DiffViewer>(loadDiffViewer);
@@ -1149,6 +1152,11 @@ function ChatPage() {
   const onResumeAtReset = (next: boolean) => {
     saveResumeAtReset(next);
     setResumeAtReset(next);
+  };
+
+  const onAutoContinue = (next: boolean) => {
+    saveAutoContinueInterrupted(next);
+    setAutoContinue(next);
   };
 
   const onModelControls = (next: ModelControls) => {
@@ -1238,6 +1246,17 @@ function ChatPage() {
             label="Resume at reset"
             on={resumeAtReset}
             onChange={onResumeAtReset}
+          />
+        </Row>
+        <Row
+          id="auto-continue-interrupted"
+          label="Automatically continue interrupted turns"
+          description="When MonoCode quit in the middle of a turn and the transcript shows it was cut off, send Continue at the next launch. Turns that finished or are still running are never continued, and nothing is sent when you have queued messages. When off, the chat shows an Interrupted - Continue action instead."
+        >
+          <Toggle
+            label="Automatically continue interrupted turns"
+            on={autoContinue}
+            onChange={onAutoContinue}
           />
         </Row>
         <Row

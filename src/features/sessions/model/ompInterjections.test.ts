@@ -551,7 +551,7 @@ describe("persisted session loading", () => {
       throw new Error(command);
     });
     expect((await getSession(record.id))!.blocks).toEqual(record.blocks);
-    expect(commands).toEqual(["session_get", "omp_session_interjections", "omp_active_assistant_texts"]);
+    expect(commands).toEqual(["session_get", "omp_session_interjections", "omp_active_assistant_texts", "session_get_queue"]);
   });
 
   it("leaves other harnesses and unbound OMP sessions untouched", async () => {
@@ -561,7 +561,7 @@ describe("persisted session loading", () => {
     const unbound = { ...stored(), providerSessionId: undefined };
     mocks.invoke.mockResolvedValue(unbound);
     expect((await getSession(unbound.id))!.blocks).toEqual(unbound.blocks);
-    expect(mocks.invoke.mock.calls.map(call => call[0])).toEqual(["session_get", "session_get"]);
+    expect(mocks.invoke.mock.calls.map(call => call[0])).toEqual(["session_get", "session_get_queue", "session_get", "session_get_queue"]);
   });
 
   it("loads normally when the source command fails", async () => {

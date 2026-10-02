@@ -111,6 +111,13 @@ describe.each([
     undefined,
   ],
   [
+    "monocode.autoContinueInterrupted",
+    settings.loadAutoContinueInterrupted,
+    settings.saveAutoContinueInterrupted,
+    true,
+    undefined,
+  ],
+  [
     "monocode.bodyGlass",
     appearance.loadBodyGlass,
     appearance.saveBodyGlass,

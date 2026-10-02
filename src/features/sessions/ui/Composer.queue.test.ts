@@ -223,3 +223,62 @@ describe("prompt templates in the composer", () => {
     expect(press(textarea, { key: " ", code: "Space" }).defaultPrevented).toBe(false);
   });
 });
+
+describe("a queue restored after a restart", () => {
+  async function renderQueue(
+    queuedMessages: { id: string; text: string; attachments: unknown[] }[],
+    onSteer = vi.fn(),
+  ) {
+    await act(async () =>
+      root.render(
+        createElement(Composer, {
+          focused: true,
+          harness: "claude",
+          model: "m",
+          runtimeMode: "supervised",
+          executionCwd: "/repo",
+          sessionId: "s1",
+          hideProjectPicker: true,
+          hideBranchPicker: true,
+          queuedMessages: queuedMessages as never,
+          queueStatus: "restored",
+          onSteerQueuedMessage: onSteer,
+          onFocus: () => {},
+          onCwdChange: () => {},
+          onModelChange: () => {},
+          onRuntimeModeChange: () => {},
+          onSubmit: () => true,
+        }),
+      ),
+    );
+    return onSteer;
+  }
+
+  it("says how many came back and sends the next one on request", async () => {
+    const onSteer = await renderQueue([
+      { id: "q1", text: "first", attachments: [] },
+      { id: "q2", text: "second", attachments: [] },
+    ]);
+    const card = container.querySelector("[data-message-queue-card]")!;
+    expect(card.textContent).toContain("2 queued messages restored");
+    const send = [...card.querySelectorAll("button")].find((b) => b.textContent === "Send next")!;
+    act(() => send.click());
+    expect(onSteer).toHaveBeenCalledWith("q1");
+  });
+
+  it("holds a message whose attachment is gone", async () => {
+    const onSteer = await renderQueue([
+      {
+        id: "q1",
+        text: "see [file1]",
+        attachments: [{ id: "f", name: "a", mimeType: "text/plain", kind: "file", size: 1, missing: true }],
+      },
+    ]);
+    const card = container.querySelector("[data-message-queue-card]")!;
+    expect(card.textContent).toContain("Attachment missing");
+    const send = [...card.querySelectorAll("button")].find((b) => b.textContent === "Send next")!;
+    expect(send.disabled).toBe(true);
+    act(() => send.click());
+    expect(onSteer).not.toHaveBeenCalled();
+  });
+});

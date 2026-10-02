@@ -47,6 +47,9 @@ import {
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { ActivityDock } from "./ActivityDock";
+import { InterruptedNotice } from "./InterruptedNotice";
+import { isAutoContinueDue } from "../model/autoContinue";
+import { CONTINUE_PROMPT, canAutoContinue } from "../model/inFlight";
 import { SubagentSheet, useSubagentSheet } from "./SubagentSheet";
 import { isBackgroundOnly, type DockAgent } from "../model/activityDock";
 import { requestOpenSubagent, requestViewSubagent } from "./subagentFocus";
@@ -760,6 +763,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
         atEnd={!showJumpToBottom}
         onOpenAgent={openDockAgent}
       />
+      {canAutoContinue(session) && !isAutoContinueDue(session.id) ? (
+        <InterruptedNotice
+          onContinue={() => onSubmit(session.id, CONTINUE_PROMPT, [])}
+        />
+      ) : null}
     </Composer>
   );
 

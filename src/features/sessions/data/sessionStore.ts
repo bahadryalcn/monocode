@@ -5,7 +5,13 @@ import {
 } from "../../../integrations/harness/core/preview";
 import { codexCommandPresentation } from "../../../integrations/harness/providers/codex/codexProtocol";
 import { recoverCursorSubagents } from "../../../integrations/harness/providers/cursor/cursorSubagents";
+import { pathKey } from "../../../shared/lib/paths";
 import { persistableAttachment } from "../model/attachments";
+import {
+  markMissingAttachments,
+  persistableQueue,
+  restoreQueuedMessages,
+} from "../model/queuePersistence";
 import {
   budgetStepOutputs,
   capHeadTail,
@@ -43,6 +49,7 @@ import type {
   Session,
   TaskListMeta,
   PlanBlockMeta,
+  QueuedMessage,
   TurnModel,
   TurnMetrics,
 } from "../model/session";
@@ -462,6 +469,54 @@ export async function searchSessionContent(options: {
 }
 
 export async function getSession(sessionId: string): Promise<Session | null> {
+  const session = await loadStoredSession(sessionId);
+  return session ? withStoredQueue(session) : null;
+}
+
+/**
+ * Queued follow-ups saved with the session. They come back as "restored": the
+ * session is idle after a restart, so the queue waits for the user instead of
+ * sending into a chat nobody has looked at yet.
+ */
+async function withStoredQueue(session: Session): Promise<Session> {
+  try {
+    const raw = await invoke<unknown>("session_get_queue", {
+      sessionId: session.id,
+    });
+    const queue = await markMissingAttachments(
+      restoreQueuedMessages(raw),
+      async (paths) => {
+        const infos = await invoke<{ path: string }[]>("inspect_paths", {
+          paths,
+        });
+        // `inspect_paths` expands `~` and normalizes separators, so match on
+        // what came back rather than on what was sent.
+        const present = new Set(infos.map((info) => pathKey(info.path)));
+        return new Set(paths.filter((path) => present.has(pathKey(path))));
+      },
+    );
+    if (queue.length === 0) return session;
+    return { ...session, queuedMessages: queue, queueStatus: "restored" };
+  } catch {
+    // A queue that cannot be read must not cost the reader the session.
+    return session;
+  }
+}
+
+/** Write the session's queue through to disk; an empty queue removes it. */
+export async function setSessionQueue(
+  sessionId: string,
+  queue: QueuedMessage[] | undefined,
+): Promise<void> {
+  if (!isPersistableId(sessionId) || deletedSessionIds.has(sessionId)) return;
+  const payload = persistableQueue(queue);
+  await enqueueSessionWrite(sessionId, async () => {
+    if (deletedSessionIds.has(sessionId)) return;
+    await invoke<void>("session_set_queue", { sessionId, queue: payload });
+  });
+}
+
+async function loadStoredSession(sessionId: string): Promise<Session | null> {
   const record = await invoke<SessionRecord | null>("session_get", {
     sessionId,
   });

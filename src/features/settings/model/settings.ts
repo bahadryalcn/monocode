@@ -359,6 +359,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "usage limit rate limit continue automatically wait",
   },
   {
+    id: "auto-continue-interrupted",
+    section: "chat",
+    label: "Automatically continue interrupted turns",
+    keywords: "restart quit resume continue where you left off cut off crash",
+  },
+  {
     id: "model-controls",
     section: "chat",
     label: "Model controls",
@@ -1617,4 +1623,22 @@ export function subscribeInlineBlame(onStoreChange: () => void) {
   window.addEventListener(INLINE_BLAME_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(INLINE_BLAME_CHANGE_EVENT, onStoreChange);
+}
+
+const AUTO_CONTINUE_INTERRUPTED_KEY = "monocode.autoContinueInterrupted";
+
+export const AUTO_CONTINUE_INTERRUPTED_DEFAULT = true;
+
+/**
+ * Whether a turn that was cut off when MonoCode quit is continued on its own at
+ * the next launch. Off leaves an "Interrupted - Continue" action on the chat.
+ */
+export function loadAutoContinueInterrupted(): boolean {
+  return (
+    readFlag(AUTO_CONTINUE_INTERRUPTED_KEY) ?? AUTO_CONTINUE_INTERRUPTED_DEFAULT
+  );
+}
+
+export function saveAutoContinueInterrupted(value: boolean) {
+  writeFlag(AUTO_CONTINUE_INTERRUPTED_KEY, value);
 }

@@ -46,6 +46,7 @@ mod skills;
 pub mod ssh_askpass;
 #[cfg(target_os = "windows")]
 mod tray;
+mod turn_probe;
 mod window;
 mod window_transfer;
 #[cfg(windows)]
@@ -519,6 +520,9 @@ pub fn run() {
             session_store::session_set_archived,
             session_store::session_set_pinned,
             session_store::session_set_linked_work_item,
+            session_store::session_set_queue,
+            turn_probe::probe_turn_tail,
+            session_store::session_get_queue,
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,
             session_store::session_take_in_flight,

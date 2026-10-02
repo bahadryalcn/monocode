@@ -263,6 +263,8 @@ export type Attachment = {
   data?: string;
   /** Object URL for in-session thumbnails. Not persisted. */
   previewUrl?: string;
+  /** Restored from a saved queue, and the file (or pasted data) is gone. */
+  missing?: boolean;
 };
 
 export type QueuedMessage = {
@@ -274,7 +276,11 @@ export type QueuedMessage = {
   intent?: TurnIntent;
 };
 
-export type MessageQueueStatus = "active" | "paused" | "resuming";
+/**
+ * "restored": the queue came back from disk after a restart. It waits for the
+ * user (Send next / Steer) instead of draining into a session nobody is watching.
+ */
+export type MessageQueueStatus = "active" | "paused" | "resuming" | "restored";
 
 /** The provider stopped the last turn at a usage limit. */
 export type UsageLimit = {
@@ -441,7 +447,7 @@ export type Session = {
    * Undefined when the provider cannot tell them apart. In-memory only.
    */
   backgroundAgents?: number;
-  /** Follow-ups waiting for current turn. In-memory only. */
+  /** Follow-ups waiting for current turn. Written through to the session store. */
   queuedMessages?: QueuedMessage[];
   /** Paused after user stops current turn; resuming waits for continued turn. */
   queueStatus?: MessageQueueStatus;

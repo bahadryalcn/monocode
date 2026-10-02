@@ -101,6 +101,7 @@ import {
   planUnavailableReason,
   unavailableRuntimeModes,
 } from "../model/session";
+import { hasMissingAttachment } from "../model/queuePersistence";
 import type {
   UserQuestionPrompt,
   UserQuestionReply,
@@ -406,6 +407,7 @@ function MessageQueue({
   }, []);
   if (messages.length === 0) return null;
   const paused = status === "paused";
+  const restored = status === "restored";
 
   const startEdit = (message: QueuedMessage) => {
     setEditingId(message.id);
@@ -446,8 +448,28 @@ function MessageQueue({
             </button>
           </div>
         ) : null}
+        {restored ? (
+          <div className="flex h-7 items-center gap-2 border-b border-stroke text-[12px]">
+            <Pause className="size-3.5" />
+            <span className="min-w-0 flex-1 truncate">
+              {messages.length === 1
+                ? "1 queued message restored"
+                : `${messages.length} queued messages restored`}
+            </span>
+            <button
+              type="button"
+              disabled={hasMissingAttachment(messages[0])}
+              onClick={() => onSteer?.(messages[0].id)}
+              className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content disabled:opacity-30"
+            >
+              <Play className="size-3.5" />
+              Send next
+            </button>
+          </div>
+        ) : null}
         {messages.map((message, index) => {
           const editing = editingId === message.id;
+          const attachmentGone = hasMissingAttachment(message);
           const label =
             message.text.trim() ||
             `${message.attachments.length} attachment${message.attachments.length === 1 ? "" : "s"}`;
@@ -506,10 +528,19 @@ function MessageQueue({
                   <span className="min-w-0 flex-1 truncate text-content/80">
                     {label}
                   </span>
+                  {attachmentGone ? (
+                    <span
+                      className="shrink-0 text-amber-400"
+                      title="An attached file is gone. Edit this message to drop it, or remove the message."
+                    >
+                      Attachment missing
+                    </span>
+                  ) : null}
                   <button
                     type="button"
+                    disabled={attachmentGone}
                     onClick={() => onSteer?.(message.id)}
-                    className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content"
+                    className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content disabled:opacity-30"
                   >
                     <CornerDownRight className="size-3.5" />
                     Steer

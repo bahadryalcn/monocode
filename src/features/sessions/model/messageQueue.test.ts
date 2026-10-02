@@ -7,6 +7,7 @@ import {
   queuedHead,
   queuedMessageForSubmit,
   resolveFollowUpRoute,
+  sentQueuedMessage,
 } from "./messageQueue";
 import { newSession, type QueuedMessage, type Session } from "./session";
 
@@ -216,5 +217,37 @@ describe("resolveFollowUpRoute", () => {
         requested: "queue",
       }),
     ).toBe("steer");
+  });
+});
+
+describe("restored queue", () => {
+  const gone = { id: "f1", name: "a.png", mimeType: "image/png", kind: "image" as const, size: 1, missing: true };
+
+  it("waits for the user instead of draining an idle session", () => {
+    expect(canDispatchQueuedHead(chat({ queueStatus: "restored" }))).toBe(false);
+  });
+
+  it("holds a head whose attachment is gone, for dispatch and steer alike", () => {
+    const session = chat({
+      queuedMessages: [{ ...queued("a", "see [image1]"), attachments: [gone] }, queued("b")],
+    });
+    expect(canDispatchQueuedHead(session)).toBe(false);
+    expect(queuedMessageForSubmit(session, "a", "steer")).toBeUndefined();
+    expect(queuedMessageForSubmit(session, "b", "steer")?.id).toBe("b");
+  });
+
+  it("goes back to draining once a row is sent from it", () => {
+    const sent = sentQueuedMessage(chat({ queueStatus: "restored" }), "a");
+    expect(sent.queueStatus).toBe("active");
+    expect(sent.queuedMessages?.map((message) => message.id)).toEqual(["b"]);
+    expect(canDispatchQueuedHead(sent)).toBe(true);
+  });
+
+  it("does not wake a paused queue when a row is sent", () => {
+    expect(sentQueuedMessage(chat({ queueStatus: "paused" }), "a").queueStatus).toBe("paused");
+  });
+
+  it("removing a restored row keeps the queue waiting", () => {
+    expect(dequeueQueuedMessage(chat({ queueStatus: "restored" }), "a").queueStatus).toBe("restored");
   });
 });

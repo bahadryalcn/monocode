@@ -32,6 +32,7 @@ import {
   loadWorkspaceSnapshot,
   replaceInFlightSessions,
   saveWorkspaceSnapshot,
+  setSessionQueue,
   shouldPersistSession,
   upsertSession,
   type SessionSummary,
@@ -41,6 +42,14 @@ import {
   hydrateWorkspaceSnapshot,
   parseWorkspaceSnapshot,
 } from "../../features/workspace/model/workspaceSnapshot";
+import { probeTurnTail, type TurnTail } from "../../platform/tauri/turnProbe";
+import { markAutoContinueDue } from "../../features/sessions/model/autoContinue";
+import {
+  classifyTurnRecovery,
+  shouldAutoContinue,
+  withFinishedTurn,
+} from "../../features/sessions/model/turnRecovery";
+import { loadAutoContinueInterrupted } from "../../features/settings/model/settings";
 import { loadWindowTransfer } from "./windowTransferBootstrap";
 import type { WindowTransferPayload } from "./windowTransfer";
 import { lastProjectPath, normalizeProjectPath, sameProjectPath } from "../../features/projects/model/recents";
@@ -310,6 +319,15 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
     workspace = workspaceFromResumed(sessions);
   }
 
+  if (workspace) {
+    const recovered = await Promise.all(
+      workspace.sessions.map((session) =>
+        interrupted.has(session.id) ? recoverInterruptedTurn(session) : session,
+      ),
+    );
+    workspace = { ...workspace, sessions: recovered };
+  }
+
   bootingResumed = workspace;
   if (workspace) {
     await Promise.all(
@@ -323,6 +341,66 @@ async function loadResumedWorkspaceOnce(): Promise<ResumedWorkspace | null> {
     );
   }
   return workspace;
+}
+
+/**
+ * Local CLIs cannot outlive MonoCode: on Windows every harness child is in a
+ * kill-on-close job object, and on macOS/Linux each runs in its own process
+ * group that `kill_all` signals at exit (a crash leaves orphans, and the next
+ * launch reaps them). So at launch a chat that was mid-turn has no live
+ * process, and only the transcript can say whether the turn got to finish.
+ * Remote chats never come through here: their host keeps running and the app
+ * re-attaches to its snapshot.
+ */
+const LOCAL_CHILD_LIVENESS = "dead" as const;
+const PROBE_TIMEOUT_MS = 3000;
+
+async function transcriptTail(session: Session): Promise<TurnTail | "unsupported"> {
+  const provider = session.harness;
+  if ((provider !== "claude" && provider !== "codex") || !session.providerSessionId) {
+    return "unsupported";
+  }
+  const probe = probeTurnTail({
+    provider,
+    providerSessionId: session.providerSessionId,
+    cwd: sessionWorkCwd(session),
+    providerAccountId: session.providerAccountId,
+  });
+  const timeout = new Promise<TurnTail>((resolve) =>
+    window.setTimeout(() => resolve({ state: "missing" }), PROBE_TIMEOUT_MS),
+  );
+  return Promise.race([probe, timeout]).catch((): TurnTail => ({ state: "missing" }));
+}
+
+/**
+ * A chat that was mid-turn when MonoCode went away: look at what really
+ * happened before anything is sent. A turn that finished is shown as finished;
+ * only a turn that was cut off may be continued, and only when that is certain.
+ */
+async function recoverInterruptedTurn(session: Session): Promise<Session> {
+  const tail = await transcriptTail(session);
+  const recovery = classifyTurnRecovery({
+    wasInFlight: true,
+    liveness: LOCAL_CHILD_LIVENESS,
+    backgroundWorkAlive: false,
+    transcript: tail === "unsupported" ? tail : tail.state,
+  });
+  if (recovery.state === "finished") {
+    return withFinishedTurn(
+      session,
+      tail === "unsupported" ? undefined : tail.finalText,
+    );
+  }
+  if (
+    shouldAutoContinue({
+      recovery,
+      enabled: loadAutoContinueInterrupted(),
+      queuedCount: session.queuedMessages?.length ?? 0,
+    })
+  ) {
+    markAutoContinueDue(session.id);
+  }
+  return session;
 }
 
 export function bindResumedSessions(sessions: Session[]): void {
@@ -399,6 +477,13 @@ export async function persistQuitState(
         : session;
       await write(upsertSession(payload));
     }),
+  );
+  // The queue hook writes through as it changes; this settles the last edit
+  // before the process goes.
+  await Promise.all(
+    sessions
+      .filter((session) => shouldPersistSession(session) && session.queuedMessages?.length)
+      .map((session) => write(setSessionQueue(session.id, session.queuedMessages))),
   );
   await write(
     saveWorkspaceSnapshot(
