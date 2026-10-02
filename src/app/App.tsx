@@ -1,4 +1,8 @@
 import { linkLocalPathToProject } from "../features/sync/model/syncProjects";
+import {
+  openSyncedProjectRemotely,
+  subscribeSyncedProjectsAdded,
+} from "../features/sync/model/syncRemoteProjects";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -1015,6 +1019,10 @@ function Workspace({
   );
   useEffect(() => startGroupLockWatcher(), []);
   useEffect(() => startAppSync(), []);
+  useEffect(
+    () => subscribeSyncedProjectsAdded(() => setRecents(loadRecents())),
+    [],
+  );
   const [seed] = useState(() => {
     const cwd = lastProjectPath() ?? "~";
     const session = newDefaultSession(cwd);
@@ -5676,12 +5684,23 @@ function Workspace({
 
   const linkRemoteProject = useCallback(
     async (projectId: string, name: string) => {
+      const remote = await openSyncedProjectRemotely(projectId);
+      if (remote.status === "opened") {
+        onSelectProject(remote.key);
+        return;
+      }
+      if (remote.status === "failed") {
+        // Its machine is saved here but did not answer; a local folder is not
+        // what the user asked for, so the row stays and can be clicked again.
+        console.warn("[sync] could not open", name, remote.error);
+        return;
+      }
       const [path] = await pickFolders(`Choose the folder for ${name}`);
       if (!path) return;
       linkLocalPathToProject(path, projectId);
       openProjects([path]);
     },
-    [openProjects],
+    [onSelectProject, openProjects],
   );
 
   /**
@@ -12066,7 +12085,7 @@ function nudgeOpenEditors(event: HarnessEvent, cwd: string) {
       () => nudgeWatchedFiles(resolved.length > 0 ? resolved : undefined),
       150,
     );
-    notifyGitChanged();
+    notifyGitChanged(cwd, "index");
     nudgeWorkspace(cwd);
   }
 }

@@ -62,7 +62,7 @@ export function GitStashSection({ cwd, enabled, hasChanges, onOpenCommit }: Prop
     if (!active) return;
     load();
     window.addEventListener("focus", load);
-    const unsub = subscribeGitChanged(load);
+    const unsub = subscribeGitChanged(load, { refsOnly: true });
     return () => {
       window.removeEventListener("focus", load);
       unsub();

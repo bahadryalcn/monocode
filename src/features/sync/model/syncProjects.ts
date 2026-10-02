@@ -1,18 +1,26 @@
 import { pathKey } from "../../../shared/lib/paths";
+import { parseRemotePath } from "../../connections/model/remoteProjects";
+import {
+  loadProjectGroupAssignments,
+  saveProjectGroupAssignments,
+} from "../../projects/model/projectGroups";
 import {
   isLocalProject,
+  isRemoteProjectPath,
   knownProjectPaths,
   loadArchivedProjects,
   loadPinnedProjects,
   loadProjectRailOrder,
   loadRecents,
+  looksLikeProject,
   normalizeProjectPath,
   notifyProjectPathsChanged,
   savePinnedProjects,
   saveProjectRailOrder,
 } from "../../projects/model/recents";
+import { autoAddedProjectIdFor, dismissedProjectIds } from "./syncAutoAdded";
 import { localMachineId } from "./syncMachineId";
-import { loadPeerState, queueLocalChange } from "./syncPeerState";
+import { hasPulled, knownRecordValue, queueLocalChange } from "./syncPeerState";
 import type {
   SyncProjectPathValue,
   SyncProjectValue,
@@ -23,7 +31,28 @@ import type {
 const PROJECT_ID_KEY = "monocode.sync.localProjectIds.v2";
 const REMOTE_PATHS_KEY = "monocode.sync.remoteProjectPaths";
 const MANUAL_LINKS_KEY = "monocode.sync.manualLinks";
+const HOST_ENVIRONMENT_KEY = "monocode.sync.localHostEnvironmentId";
 const RAIL_LAYOUT_ID = "rail";
+
+/** Records which host serves this machine's filesystem, so another desktop
+ * connected to that host can open this machine's projects remotely. The last
+ * known value is kept while the local host is briefly unreachable. */
+export function setLocalHostEnvironmentId(environmentId: string): void {
+  try {
+    if (localStorage.getItem(HOST_ENVIRONMENT_KEY) !== environmentId)
+      localStorage.setItem(HOST_ENVIRONMENT_KEY, environmentId);
+  } catch {
+    // ignored; paths are pushed without a host until it can be stored
+  }
+}
+
+function localHostEnvironmentId(): string | undefined {
+  try {
+    return localStorage.getItem(HOST_ENVIRONMENT_KEY) || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function loadProjectIds(): Record<string, string> {
   try {
@@ -44,11 +73,21 @@ function saveProjectIds(ids: Record<string, string>): void {
 
 /** A project's id is `name:` + its lowercased folder name, so same-named
  * folders on two machines are the same project (known limitation: two
- * unrelated projects with the same folder name get merged). */
+ * unrelated projects with the same folder name get merged). A `remote://`
+ * rail project is named by its folder on the host, so it is the same project
+ * as that folder on the machine where it is local. */
 function projectIdForPath(path: string): string | undefined {
   const linked = loadManualLinks()[pathKey(path)];
   if (linked) return linked;
-  const name = normalizeProjectPath(path).split("/").pop()?.trim().toLowerCase();
+  let folder = path;
+  if (isRemoteProjectPath(path)) {
+    const added = autoAddedProjectIdFor(path);
+    if (added) return added;
+    const hostPath = parseRemotePath(path)?.hostPath;
+    if (!hostPath) return undefined;
+    folder = hostPath;
+  }
+  const name = normalizeProjectPath(folder).split("/").pop()?.trim().toLowerCase();
   return name ? `name:${name}` : undefined;
 }
 
@@ -77,24 +116,31 @@ export function linkLocalPathToProject(path: string, projectId: string): void {
 export type RemoteOnlyProject = {
   projectId: string;
   name: string;
-  otherPaths: { machineId: string; path: string }[];
+  /** `hostEnvironmentId` is the host serving that machine's files, when it said so. */
+  otherPaths: { machineId: string; path: string; hostEnvironmentId?: string }[];
 };
 
-/** Synced projects another machine has (not archived there) that have no
- * folder on this machine. */
+/** Synced projects another machine has (not archived there) that are not on
+ * this machine's rail or in its archive, neither as a local folder nor as a
+ * remote project, and that the user has not removed after sync added them. */
 export function remoteOnlyProjects(): RemoteOnlyProject[] {
   const local = new Set<string>();
   for (const item of [...loadRecents(), ...loadArchivedProjects()]) {
-    if (!isLocalProject(item.path)) continue;
+    if (!looksLikeProject(item.path)) continue;
     const id = projectIdForPath(item.path);
     if (id) local.add(id);
   }
+  const dismissed = dismissedProjectIds();
   const out: RemoteOnlyProject[] = [];
   for (const [projectId, machines] of Object.entries(loadRemoteProjectPaths())) {
-    if (local.has(projectId) || !machines || typeof machines !== "object") continue;
+    if (local.has(projectId) || dismissed.has(projectId) || !machines || typeof machines !== "object") continue;
     const otherPaths = Object.entries(machines)
       .filter(([, entry]) => entry && !entry.archived && typeof entry.path === "string")
-      .map(([machineId, entry]) => ({ machineId, path: entry.path }));
+      .map(([machineId, entry]) => ({
+        machineId,
+        path: entry.path,
+        ...(entry.hostEnvironmentId ? { hostEnvironmentId: entry.hostEnvironmentId } : {}),
+      }));
     if (otherPaths.length === 0) continue;
     out.push({ projectId, name: projectId.replace(/^name:/, ""), otherPaths });
   }
@@ -103,7 +149,8 @@ export function remoteOnlyProjects(): RemoteOnlyProject[] {
 
 /** This machine's full pathKey→projectId map, for callers (Task 8's
  * assignment capture) that need to turn a `projectGroupAssignments` key
- * into the sync id for that same project. */
+ * into the sync id for that same project. Covers local folders and
+ * `remote://` rail projects; a local folder wins an id both could have. */
 export function localProjectIdsByPath(): Record<string, string> {
   return loadProjectIds();
 }
@@ -134,15 +181,10 @@ function pathsToIds(paths: readonly string[]): string[] {
 }
 
 function lastHostLayout(machineId: string): SyncRailLayoutValue {
-  try {
-    const parsed: unknown = JSON.parse(loadPeerState(machineId).recordValues["railLayout:rail"] ?? "null");
-    const raw = parsed as Partial<SyncRailLayoutValue> | null;
-    const strings = (list: unknown): string[] =>
-      Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : [];
-    return { order: strings(raw?.order), pinned: strings(raw?.pinned) };
-  } catch {
-    return { order: [], pinned: [] };
-  }
+  const raw = knownRecordValue(machineId, "railLayout", RAIL_LAYOUT_ID) as Partial<SyncRailLayoutValue> | null | undefined;
+  const strings = (list: unknown): string[] =>
+    Array.isArray(list) ? list.filter((item): item is string => typeof item === "string") : [];
+  return { order: strings(raw?.order), pinned: strings(raw?.pinned) };
 }
 
 /** Merges the local rail order/pins into the last host layout so that, when
@@ -174,7 +216,10 @@ export function mergeRailLayout(
   return { order, pinned };
 }
 
-type RemoteProjectPaths = Record<string, Record<string, { path: string; archived: boolean }>>;
+type RemoteProjectPaths = Record<
+  string,
+  Record<string, { path: string; archived: boolean; hostEnvironmentId?: string }>
+>;
 
 function loadRemoteProjectPaths(): RemoteProjectPaths {
   try {
@@ -193,18 +238,74 @@ function saveRemoteProjectPaths(value: RemoteProjectPaths): void {
   }
 }
 
+const railOwnedKey = (machineId: string) => `monocode.sync.railOwned:${machineId}`;
+
+/** Ids whose rail slot this machine has already taken over from the peer. */
+function loadRailOwned(machineId: string): Set<string> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(railOwnedKey(machineId)) ?? "[]");
+    return new Set(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveRailOwned(machineId: string, ids: ReadonlySet<string>): void {
+  try {
+    localStorage.setItem(railOwnedKey(machineId), JSON.stringify([...ids]));
+  } catch {
+    // ignored; the ids are adopted again next capture, which is idempotent
+  }
+}
+
+function idsToPaths(ids: readonly string[]): string[] {
+  return ids.flatMap((id) => {
+    const path = localPathForProjectId(id);
+    return path ? [path] : [];
+  });
+}
+
+function applyRailOrder(order: readonly string[]): void {
+  const synced = idsToPaths(order);
+  const included = new Set(synced.map(pathKey));
+  saveProjectRailOrder([...synced, ...loadProjectRailOrder().filter((path) => !included.has(pathKey(path)))]);
+}
+
+/** A project whose id moved to another rail path (a remote project replaced
+ * by a local folder, or back) keeps its group, so the next assignment capture
+ * does not read the move as the user taking it out of the group. */
+function carryAssignments(previous: Record<string, string>, next: Record<string, string>): void {
+  const previousKeyById = new Map(Object.entries(previous).map(([key, id]) => [id, key]));
+  const moved = Object.entries(next).flatMap(([key, id]) => {
+    const oldKey = previousKeyById.get(id);
+    return oldKey && oldKey !== key ? [[oldKey, key] as const] : [];
+  });
+  if (moved.length === 0) return;
+  const assignments = loadProjectGroupAssignments();
+  let changed = false;
+  for (const [oldKey, key] of moved) {
+    if (!assignments[oldKey] || assignments[key]) continue;
+    assignments[key] = assignments[oldKey];
+    changed = true;
+  }
+  if (changed) saveProjectGroupAssignments(assignments);
+}
+
 /** Queues this machine's local-path projects and current rail layout (as
- * project ids) for the given peer. Safe to call often: queueLocalChange
- * drops any op whose value already matches what the host has. */
+ * project ids) for the given peer. `remote://` rail projects get an id (so
+ * their group and rail slot sync) but never a projectPath record: the folder
+ * is not on this machine. Safe to call often: queueLocalChange drops any op
+ * whose value already matches what the host has. */
 export function captureLocalProjectChanges(machineId: string): void {
-  const paths = [
+  const railPaths = [
     ...loadRecents().map((item) => item.path),
     ...loadArchivedProjects().map((item) => item.path),
-  ].filter(isLocalProject);
+  ];
   const archived = new Set(loadArchivedProjects().map((item) => pathKey(item.path)));
+  const hostEnvironmentId = localHostEnvironmentId();
   const owners: Record<string, string> = {};
   const claimed = new Set<string>();
-  for (const path of paths) {
+  for (const path of railPaths.filter(isLocalProject)) {
     const key = pathKey(path);
     if (key in owners) continue;
     const projectId = projectIdForPath(path);
@@ -218,24 +319,56 @@ export function captureLocalProjectChanges(machineId: string): void {
       machineId: localMachineId(),
       path,
       archived: archived.has(key),
+      ...(hostEnvironmentId ? { hostEnvironmentId } : {}),
     };
     queueLocalChange(machineId, "projectPath", `${projectId}:${localMachineId()}`, pathValue);
   }
+  for (const path of railPaths) {
+    if (!isRemoteProjectPath(path) || !looksLikeProject(path)) continue;
+    const key = pathKey(path);
+    if (key in owners) continue;
+    const projectId = projectIdForPath(path);
+    if (!projectId || claimed.has(projectId)) continue;
+    claimed.add(projectId);
+    owners[key] = projectId;
+  }
+  carryAssignments(loadProjectIds(), owners);
   saveProjectIds(owners);
+  // An empty or smaller local layout must not replace a host layout this machine has not read yet.
+  if (!hasPulled(machineId)) return;
+  const host = lastHostLayout(machineId);
+  // A project that just appeared here takes the slot and pin the host already
+  // has for it; only later edits made on this machine count as local changes.
+  const railOwned = loadRailOwned(machineId);
+  const inHost = new Set([...host.order, ...host.pinned]);
+  const adopted = new Set([...claimed].filter((id) => !railOwned.has(id) && inHost.has(id)));
+  const owned = adopted.size > 0 ? new Set([...claimed].filter((id) => !adopted.has(id))) : claimed;
   const layout = mergeRailLayout(
-    lastHostLayout(machineId),
+    host,
     pathsToIds(loadProjectRailOrder()),
     pathsToIds(loadPinnedProjects()),
-    claimed,
+    owned,
   );
+  if (adopted.size > 0) {
+    applyRailOrder(layout.order);
+    const pins = loadPinnedProjects();
+    const pinnedKeys = new Set(pins.map(pathKey));
+    const newPins = idsToPaths(layout.pinned.filter((id) => adopted.has(id))).filter(
+      (path) => !pinnedKeys.has(pathKey(path)),
+    );
+    if (newPins.length > 0) savePinnedProjects([...pins, ...newPins]);
+  }
+  if (claimed.size !== railOwned.size || [...claimed].some((id) => !railOwned.has(id))) {
+    saveRailOwned(machineId, claimed);
+  }
   queueLocalChange(machineId, "railLayout", RAIL_LAYOUT_ID, layout);
 }
 
 /** Applies incoming project/projectPath/railLayout records. Our own path
  * echoed back is a no-op: this machine already has that recents entry. A
- * path from another machine is remembered for later (see
- * `docs/superpowers/specs/2026-10-02-project-group-sync-design.md`) rather
- * than shown, since rendering it needs its own rail-UI work. */
+ * path from another machine is remembered so the rail can offer the project:
+ * opened remotely when its host is connected here, otherwise as a
+ * placeholder to link a local folder to. */
 export function applyRemoteProjectRecords(machineId: string, records: readonly SyncRecord[]): void {
   const remotePaths = loadRemoteProjectPaths();
   let remotePathsChanged = false;
@@ -246,23 +379,23 @@ export function applyRemoteProjectRecords(machineId: string, records: readonly S
       if (value.machineId === localMachineId()) continue;
       remotePaths[value.projectId] = {
         ...remotePaths[value.projectId],
-        [value.machineId]: { path: value.path, archived: value.archived },
+        [value.machineId]: {
+          path: value.path,
+          archived: value.archived,
+          ...(typeof value.hostEnvironmentId === "string" && value.hostEnvironmentId
+            ? { hostEnvironmentId: value.hostEnvironmentId }
+            : {}),
+        },
       };
       remotePathsChanged = true;
     } else if (record.table === "railLayout") {
       const value = record.value as SyncRailLayoutValue | null;
       if (!value) continue;
-      const toPaths = (ids: readonly string[]) =>
-        ids.flatMap((id) => {
-          const path = localPathForProjectId(id);
-          return path ? [path] : [];
-        });
-      const remoteOrder = toPaths(value.order);
-      const included = new Set(remoteOrder.map(pathKey));
-      const localRest = loadProjectRailOrder().filter((path) => !included.has(pathKey(path)));
-      saveProjectRailOrder([...remoteOrder, ...localRest]);
-      const keptPins = loadPinnedProjects().filter((path) => !isLocalProject(path));
-      savePinnedProjects([...toPaths(value.pinned), ...keptPins]);
+      applyRailOrder(value.order);
+      // A remote project sync has no id for keeps its pin: no layout covers it.
+      const ids = loadProjectIds();
+      const keptPins = loadPinnedProjects().filter((path) => !isLocalProject(path) && !ids[pathKey(path)]);
+      savePinnedProjects([...idsToPaths(value.pinned), ...keptPins]);
     }
     // "project" records carry only an id and a creation time, nothing to
     // apply locally beyond the projectPath/railLayout records above.

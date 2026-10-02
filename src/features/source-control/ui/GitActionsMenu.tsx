@@ -65,6 +65,8 @@ type Props = {
   onToggleAutoFetch: () => void;
   changes: RefObject<ChangesActions | null>;
   onStatus: (text: string) => void;
+  /** Names the running action ("Pulling…") beside the header spinner. */
+  onPending?: (text: string | null) => void;
   /** Reload everything after git ran, whether or not it succeeded. */
   onMutated: () => void;
   onOpenCommit: (commit: GitHistoryCommit, pin?: boolean) => void;
@@ -136,6 +138,7 @@ export function GitActionsMenu({
   onToggleAutoFetch,
   changes,
   onStatus,
+  onPending,
   onMutated,
   onOpenCommit,
 }: Props) {
@@ -194,14 +197,23 @@ export function GitActionsMenu({
     });
   }, [actions, autoFetch, branch, branches, busy, data, index, supported]);
 
-  const run = async (work: () => Promise<unknown>, status?: string) => {
+  const run = async (
+    work: () => Promise<unknown>,
+    status?: string,
+    pending?: string,
+  ) => {
     setBusy(GIT_MENU_BUSY);
+    onPending?.(pending ?? null);
     try {
       await work();
       if (status) onStatus(status);
     } catch (error) {
+      // The dialog waits for the user; git is no longer running behind it.
+      onPending?.(null);
+      setBusy(null);
       await message(errorText(error), { title: appName(), kind: "error" });
     } finally {
+      onPending?.(null);
       setBusy(null);
       onMutated();
     }
@@ -317,18 +329,18 @@ export function GitActionsMenu({
     if (commit) return void changes.current?.commit(commit);
     switch (id) {
       case "pull":
-        return run(() => gitPull(cwd), "Pull complete");
+        return run(() => gitPull(cwd), "Pull complete", "Pulling…");
       case "pull-rebase":
-        return run(() => gitPull(cwd, true), "Pull complete");
+        return run(() => gitPull(cwd, true), "Pull complete", "Pulling…");
       case "push":
       case "branch-publish":
-        return run(() => gitPush(cwd), "Push complete");
+        return run(() => gitPush(cwd), "Push complete", "Pushing…");
       case "sync":
-        return run(() => gitSync(cwd), "Sync complete");
+        return run(() => gitSync(cwd), "Sync complete", "Syncing…");
       case "fetch":
-        return run(() => gitFetch(cwd), "Fetch complete");
+        return run(() => gitFetch(cwd), "Fetch complete", "Fetching…");
       case "fetch-prune":
-        return run(() => gitFetch(cwd, true), "Fetch complete");
+        return run(() => gitFetch(cwd, true), "Fetch complete", "Fetching…");
       case "auto-fetch":
         return onToggleAutoFetch();
       case "checkout":

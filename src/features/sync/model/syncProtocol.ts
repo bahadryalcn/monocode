@@ -23,11 +23,14 @@ export type SyncProjectPathValue = {
   machineId: string;
   path: string;
   archived: boolean;
+  /** The host running on that machine, through which its folders can be opened remotely. */
+  hostEnvironmentId?: string;
 };
 export type SyncGroupValue = {
   id: string;
   name: string;
-  collapsed: boolean;
+  /** Per-machine UI state; never sent, only tolerated from older clients. */
+  collapsed?: boolean;
   colorIndex?: number;
   customColor?: string;
   mascot?: string;

@@ -7,7 +7,10 @@ import {
 import type { RemoteMachine } from "../../connections/model/protocol";
 import { subscribeLockRecordChanges } from "../../group-lock/model/groupLock";
 import { subscribeProjectPathsChanged } from "../../projects/model/recents";
-import { recordSyncStatus, startSyncLoop } from "./syncClient";
+import { isLocalSyncMachine } from "../../connections/model/localSync";
+import { isApplyingRemote, recordSyncStatus, startSyncLoop, SYNC_UNSUPPORTED_MESSAGE } from "./syncClient";
+import { setLocalHostEnvironmentId } from "./syncProjects";
+import { setRemoteOpenTargets } from "./syncRemoteProjects";
 
 export function collectSyncMachineIds(machines: readonly RemoteMachine[]): string[] {
   return machines.map((machine) => machine.id);
@@ -18,7 +21,7 @@ export function machineSupportsSync(capabilities: string[] | undefined): boolean
   return !!capabilities?.includes("sync");
 }
 
-export const SYNC_UNSUPPORTED_MESSAGE = "Update the host on this machine";
+export { SYNC_UNSUPPORTED_MESSAGE };
 
 /** Records why a machine is skipped, so the UI can say so instead of showing nothing. */
 export function recordCapabilityStatus(machineId: string, capabilities: string[] | undefined): void {
@@ -62,6 +65,45 @@ export function createDebouncer(run: () => void, delayMs: number) {
   };
 }
 
+/** Forwards a library change event unless sync itself caused it: applying
+ * host records (or capturing) rewrites local storage, and nudging on that
+ * echo would start a new cycle after every cycle. */
+export function createLocalChangeHandler(nudge: () => void): () => void {
+  return () => {
+    if (!isApplyingRemote()) nudge();
+  };
+}
+
+/** Splits the saved machines into this desktop's own host (the one serving
+ * its filesystem) and the machines another desktop's projects can be opened on. */
+export function syncMachineRoles(machines: readonly RemoteMachine[]): {
+  hostEnvironmentId?: string;
+  openable: RemoteMachine[];
+} {
+  const hostEnvironmentId = machines.find(isLocalSyncMachine)?.environmentId;
+  const seen = new Set<string>();
+  const openable = machines.filter((machine) => {
+    if (isLocalSyncMachine(machine) || machine.environmentId === hostEnvironmentId) return false;
+    if (seen.has(machine.environmentId)) return false;
+    seen.add(machine.environmentId);
+    return true;
+  });
+  return { ...(hostEnvironmentId ? { hostEnvironmentId } : {}), openable };
+}
+
+function applyMachineRoles(machines: readonly RemoteMachine[]): void {
+  const { hostEnvironmentId, openable } = syncMachineRoles(machines);
+  if (hostEnvironmentId) setLocalHostEnvironmentId(hostEnvironmentId);
+  setRemoteOpenTargets(
+    openable.map((machine) => ({
+      environmentId: machine.environmentId,
+      name: machine.name,
+      request: (method, params, userInitiated) =>
+        remoteRequest(machine.id, method, params, false, userInitiated),
+    })),
+  );
+}
+
 const lastCapabilityCheck = new Map<string, number>();
 
 async function syncCapableMachines(machines: readonly RemoteMachine[]): Promise<RemoteMachine[]> {
@@ -97,7 +139,11 @@ export function startAppSync(): () => void {
   let stopped = false;
   const refreshMachines = () =>
     invoke<RemoteMachine[]>("remote_machines")
-      .then((value) => syncCapableMachines(Array.isArray(value) ? value : []))
+      .then((value) => {
+        const all = Array.isArray(value) ? value : [];
+        if (!stopped) applyMachineRoles(all);
+        return syncCapableMachines(all);
+      })
       .then((value) => {
         if (!stopped) machines = value;
       })
@@ -113,8 +159,9 @@ export function startAppSync(): () => void {
       if (!stopped) loop.nudge();
     });
   const nudger = createDebouncer(() => loop.nudge(), NUDGE_DEBOUNCE_MS);
-  const unsubscribePaths = subscribeProjectPathsChanged(nudger.trigger);
-  const unsubscribeLock = subscribeLockRecordChanges(nudger.trigger);
+  const onLocalChange = createLocalChangeHandler(nudger.trigger);
+  const unsubscribePaths = subscribeProjectPathsChanged(onLocalChange);
+  const unsubscribeLock = subscribeLockRecordChanges(onLocalChange);
   const interval = setInterval(refreshMachines, 30_000);
   return () => {
     started = false;

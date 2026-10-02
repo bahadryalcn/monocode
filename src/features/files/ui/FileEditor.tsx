@@ -153,6 +153,8 @@ type Props = {
   cwd: string;
   active: boolean;
   showDiff?: boolean;
+  /** The side the Changes panel opened; saves looking it up before the first diff. */
+  changeKind?: GitFileDiffKind;
   navigation?: EditorNavigationRequest | null;
   onDirtyChange: (path: string, dirty: boolean) => void;
   onErrorCountChange?: (path: string, count: number) => void;
@@ -173,11 +175,19 @@ export function FileEditor({
   cwd,
   active,
   showDiff = false,
+  changeKind,
   navigation,
   onDirtyChange,
   onErrorCountChange,
   onOpenFile,
 }: Props) {
+  // The path whose "before" side has been looked up, found or not. Until then
+  // the editor is not drawn: showing it plain first means tearing it down and
+  // building the side-by-side pair a moment later.
+  const [gitSettledPath, setGitSettledPath] = useState<string | null>(null);
+  const changeKindRef = useRef(changeKind);
+  changeKindRef.current = changeKind;
+  const reloadGitRef = useRef<(() => void) | null>(null);
   const [loadState, setLoadState] = useState<LoadState>({ status: "loading" });
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
   const [reloadKey, setReloadKey] = useState(0);
@@ -296,36 +306,68 @@ export function FileEditor({
     let generation = 0;
     setGitBase(null);
 
+    const listed = async () => {
+      const { files } = await gitDiffFiles(cwd);
+      return files.find((entry) => entry.relative === relative);
+    };
+
+    // Until a diff has arrived, a load takes the side the Changes panel named
+    // and asks git for that diff alone. A later reload follows the file:
+    // staging it moves the diff to the staged side instead of leaving an
+    // empty one.
+    let shown = false;
     const load = () => {
       const request = ++generation;
+      const first = !shown;
       void (async () => {
-        const { files } = await gitDiffFiles(cwd);
-        const file = files.find((entry) => entry.relative === relative);
-        // Normalized equality alone cannot distinguish autocrlf from a real change.
-        const kind = file?.staged && !file.unstaged ? "staged" : "unstaged";
+        const opened = changeKindRef.current;
+        let file = first && opened ? undefined : await listed();
+        const kind: GitFileDiffKind =
+          first && opened
+            ? opened
+            : opened === "staged" && file?.staged
+              ? "staged"
+              : opened === "unstaged" && file?.unstaged
+                ? "unstaged"
+                : file?.staged && !file.unstaged
+                  ? "staged"
+                  : "unstaged";
         const diff = await gitFileDiff(cwd, relative, kind);
         if (cancelled || request !== generation) return;
+        shown = true;
         if (diff.binary || diff.tooLarge) {
           setGitBase(null);
+          setGitSettledPath(path);
           return;
         }
         const original = normalizeLineBreaks(diff.original);
+        // Normalized equality alone cannot distinguish autocrlf from a real
+        // change, so only then is git asked whether it lists the file.
+        const eolDiffers =
+          diff.original !== diff.current &&
+          original === normalizeLineBreaks(diff.current);
+        if (eolDiffers && first && opened) {
+          file = await listed();
+          if (cancelled || request !== generation) return;
+        }
         setGitBase({
           path,
           original,
           kind,
           lineEnding: detectLineEnding(diff.original || diff.current),
-          eolOnly:
-            !!(file?.staged || file?.unstaged) &&
-            diff.original !== diff.current &&
-            original === normalizeLineBreaks(diff.current),
+          eolOnly: !!(file?.staged || file?.unstaged) && eolDiffers,
         });
+        setGitSettledPath(path);
       })().catch(() => {
-        if (!cancelled && request === generation) setGitBase(null);
+        if (cancelled || request !== generation) return;
+        shown = true;
+        setGitBase(null);
+        setGitSettledPath(path);
       });
     };
 
     load();
+    reloadGitRef.current = load;
     const onFocus = () => {
       if (!document.hidden) load();
     };
@@ -342,10 +384,11 @@ export function FileEditor({
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
-    const unsubGit = subscribeGitChanged(onGit);
+    const unsubGit = subscribeGitChanged(onGit, { cwd });
     const unsubWatch = watchFile(path, onDisk);
     return () => {
       cancelled = true;
+      reloadGitRef.current = null;
       window.clearTimeout(timer);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
@@ -353,6 +396,14 @@ export function FileEditor({
       unsubWatch();
     };
   }, [cwd, path, reloadFromDisk, showDiff]);
+
+  // Picking the file's other side in the Changes panel reuses this editor.
+  const shownChangeKind = useRef(changeKind);
+  useEffect(() => {
+    if (shownChangeKind.current === changeKind) return;
+    shownChangeKind.current = changeKind;
+    reloadGitRef.current?.();
+  }, [changeKind]);
 
   const gitDiff = gitBase?.path === path ? gitBase : null;
   const gitOriginal = gitDiff?.original ?? null;
@@ -388,7 +439,7 @@ export function FileEditor({
       try {
         await operation;
         await syncWatchedMtime(path);
-        notifyGitChanged();
+        notifyGitChanged(cwd, "index");
         if (generation === saveGeneration.current) {
           setSaveState({ status: "saved" });
         }
@@ -400,7 +451,7 @@ export function FileEditor({
         throw error;
       }
     },
-    [path],
+    [cwd, path],
   );
 
   const stageGit = useCallback(
@@ -419,7 +470,7 @@ export function FileEditor({
           relative,
           restoreLineEnding(contents, gitDiff.lineEnding),
         );
-        notifyGitChanged();
+        notifyGitChanged(cwd, "index");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setSaveState({ status: "error", message });
@@ -456,8 +507,16 @@ export function FileEditor({
     ? path.slice(cwd.length + 1)
     : path;
   const footerBlameReason = useInlineBlameUnavailableReason(cwd, path);
+  const diffRelative = showDiff ? displayPath(path, cwd) : "";
+  const diffPending =
+    showDiff &&
+    !!cwd &&
+    cwd !== "~" &&
+    !!diffRelative &&
+    diffRelative !== path &&
+    gitSettledPath !== path;
 
-  if (loadState.status === "loading") {
+  if (loadState.status === "loading" || diffPending) {
     return (
       <div className="grid h-full place-items-center text-[12px] text-content/45">
         Opening {basename(path)}…
@@ -893,9 +952,12 @@ export function CodeMirrorEditor({
       blameTimer = window.setTimeout(() => void loadBlame(), 120);
     }
     scheduleBlameRef.current = scheduleBlame;
-    const unsubscribeGit = subscribeGitChanged(() => {
-      if (blameOnRef.current && !document.hidden) scheduleBlame();
-    });
+    const unsubscribeGit = subscribeGitChanged(
+      () => {
+        if (blameOnRef.current && !document.hidden) scheduleBlame();
+      },
+      { cwd: gitTargetRef.current.cwd },
+    );
 
     function scheduleAutosave() {
       window.clearTimeout(autosaveTimer);
@@ -1140,7 +1202,7 @@ export function CodeMirrorEditor({
       );
     };
     check();
-    const unsubscribe = subscribeGitChanged(check);
+    const unsubscribe = subscribeGitChanged(check, { cwd });
     return () => {
       cancelled = true;
       unsubscribe();
@@ -1173,7 +1235,7 @@ export function CodeMirrorEditor({
       const saved = (await saveNowRef.current?.()) ?? false;
       if (!saved || dirtyRef.current) throw new Error("Couldn't save the file");
       await gitStageFile(cwd, gitRelative);
-      notifyGitChanged();
+      notifyGitChanged(cwd, "index");
       setHadConflicts(false);
       setMarking({ busy: false, error: null });
     } catch (error: unknown) {

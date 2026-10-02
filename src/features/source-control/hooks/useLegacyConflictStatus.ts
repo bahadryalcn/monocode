@@ -40,7 +40,7 @@ export function useLegacyConflictStatus(cwd: string, active: boolean): LegacyCon
       if (!remote || remotePollDue(cwd)) load();
     }, POLL_MS);
     window.addEventListener("focus", load);
-    const unsubscribe = subscribeGitChanged(load);
+    const unsubscribe = subscribeGitChanged(load, { cwd });
     return () => {
       window.clearInterval(timer);
       window.removeEventListener("focus", load);

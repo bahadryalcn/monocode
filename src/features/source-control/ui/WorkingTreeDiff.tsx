@@ -72,9 +72,17 @@ export function WorkingTreeDiff({
         .then(async (index) => {
           if (disposed || current !== generation) return;
           setFiles(index.files);
-          setDiffs(new Map());
           setError(null);
           const entries = workingTreeDiffEntries(index.files, focusKind);
+          // A refresh keeps each loaded diff on screen until its replacement
+          // arrives; only files that left the list are dropped.
+          const kept = new Set(entries.map((entry) => entry.id));
+          setDiffs((existing) => {
+            if ([...existing.keys()].every((id) => kept.has(id))) {
+              return existing;
+            }
+            return new Map([...existing].filter(([id]) => kept.has(id)));
+          });
           const loadOrder = prioritizeWorkingTreeDiffEntries(
             entries,
             focusPath,
@@ -139,7 +147,7 @@ export function WorkingTreeDiff({
         run();
       });
     };
-    const unsub = subscribeGitChanged(scheduleRun);
+    const unsub = subscribeGitChanged(scheduleRun, { cwd });
     const onFocus = () => {
       if (!document.hidden) scheduleRun();
     };
@@ -226,7 +234,7 @@ export function WorkingTreeDiff({
       setBusyId(id);
       try {
         await gitStageFile(cwd, entry.file.relative);
-        notifyGitChanged();
+        notifyGitChanged(cwd, "index");
       } finally {
         setBusyId(null);
       }
@@ -241,7 +249,7 @@ export function WorkingTreeDiff({
       setBusyId(id);
       try {
         await gitDiscardFile(cwd, entry.file.relative);
-        notifyGitChanged();
+        notifyGitChanged(cwd, "index");
       } finally {
         setBusyId(null);
       }
@@ -267,7 +275,7 @@ export function WorkingTreeDiff({
       setBusyId(id);
       try {
         await gitStageContents(cwd, entry.file.relative, next);
-        notifyGitChanged();
+        notifyGitChanged(cwd, "index");
       } finally {
         setBusyId(null);
       }

@@ -1,9 +1,13 @@
+import { canonicalizeJsonText, canonicalJson } from "./canonicalJson";
 import type { SyncOp, SyncPushResult, SyncRecord, SyncRecordValue, SyncTable } from "./syncProtocol";
 
 type OutboxEntry = { table: SyncTable; id: string; baseRev: number; value: SyncRecordValue | null };
 type PeerState = {
   rev: number;
+  /** A pull from this peer has completed at least once. */
+  pulled: boolean;
   recordRevs: Record<string, number>;
+  /** Canonical JSON per record; entries written by older builds may not be canonical yet. */
   recordValues: Record<string, string>;
   outbox: OutboxEntry[];
 };
@@ -12,7 +16,7 @@ const keyFor = (machineId: string) => `monocode.sync.peer:${machineId}`;
 const recordKey = (table: SyncTable, id: string) => `${table}:${id}`;
 
 function emptyState(): PeerState {
-  return { rev: 0, recordRevs: {}, recordValues: {}, outbox: [] };
+  return { rev: 0, pulled: false, recordRevs: {}, recordValues: {}, outbox: [] };
 }
 
 function load(machineId: string): PeerState {
@@ -20,8 +24,10 @@ function load(machineId: string): PeerState {
     const parsed: unknown = JSON.parse(localStorage.getItem(keyFor(machineId)) ?? "null");
     if (!parsed || typeof parsed !== "object") return emptyState();
     const raw = parsed as Partial<PeerState>;
+    const rev = typeof raw.rev === "number" ? raw.rev : 0;
     return {
-      rev: typeof raw.rev === "number" ? raw.rev : 0,
+      rev,
+      pulled: raw.pulled === true || rev > 0,
       recordRevs: raw.recordRevs && typeof raw.recordRevs === "object" ? raw.recordRevs : {},
       recordValues: raw.recordValues && typeof raw.recordValues === "object" ? raw.recordValues : {},
       outbox: Array.isArray(raw.outbox) ? raw.outbox : [],
@@ -37,6 +43,11 @@ function save(machineId: string, state: PeerState): void {
   } catch {
     // private mode / quota: this peer's sync falls behind until storage frees up
   }
+}
+
+function knownCanonical(state: PeerState, key: string): string | undefined {
+  const stored = state.recordValues[key];
+  return typeof stored === "string" ? canonicalizeJsonText(stored) : undefined;
 }
 
 /** This machine's full cached state for one peer, mainly for tests/debugging. */
@@ -56,6 +67,20 @@ export function setPeerRev(machineId: string, rev: number): void {
   save(machineId, state);
 }
 
+/** Whether this machine has ever completed a pull from the peer. Until it
+ * has, it cannot know what the host holds, so whole-list records (rail
+ * layout, group order) must not be pushed. */
+export function hasPulled(machineId: string): boolean {
+  return load(machineId).pulled;
+}
+
+export function markPullCompleted(machineId: string): void {
+  const state = load(machineId);
+  if (state.pulled) return;
+  state.pulled = true;
+  save(machineId, state);
+}
+
 /**
  * Queues a local edit. A record this peer has never shown us gets baseRev
  * 0; otherwise the last revision we saw for it. A second edit to the same
@@ -70,13 +95,14 @@ export function queueLocalChange(
 ): void {
   const state = load(machineId);
   const key = recordKey(table, id);
-  const json = JSON.stringify(value);
+  const json = canonicalJson(value);
   const index = state.outbox.findIndex((entry) => entry.table === table && entry.id === id);
   if (index === -1) {
-    if (json === state.recordValues[key]) return;
+    if (json === knownCanonical(state, key)) return;
     const baseRev = state.recordRevs[key] ?? 0;
     state.outbox = [...state.outbox, { table, id, baseRev, value }];
   } else {
+    if (canonicalJson(state.outbox[index].value) === json) return;
     state.outbox = state.outbox.map((entry, i) => (i === index ? { ...entry, value } : entry));
   }
   save(machineId, state);
@@ -94,6 +120,17 @@ export function knownRecordIds(machineId: string, table: SyncTable): string[] {
   );
 }
 
+/** The value the host is last known to hold for a record (`undefined` when never seen). */
+export function knownRecordValue(machineId: string, table: SyncTable, id: string): unknown {
+  const stored = load(machineId).recordValues[recordKey(table, id)];
+  if (typeof stored !== "string") return undefined;
+  try {
+    return JSON.parse(stored);
+  } catch {
+    return undefined;
+  }
+}
+
 export function takeOutbox(machineId: string): SyncOp[] {
   return load(machineId).outbox.map(({ table, id, baseRev, value }) => ({ table, id, baseRev, value }));
 }
@@ -104,9 +141,10 @@ export function markPulled(machineId: string, records: readonly SyncRecord[]): v
   const state = load(machineId);
   for (const record of records) {
     state.recordRevs[recordKey(record.table, record.id)] = record.rev;
-    state.recordValues[recordKey(record.table, record.id)] = JSON.stringify(record.value);
+    state.recordValues[recordKey(record.table, record.id)] = canonicalJson(record.value);
     state.rev = Math.max(state.rev, record.rev);
   }
+  state.pulled = true;
   save(machineId, state);
 }
 
@@ -122,10 +160,10 @@ export function applyPushResult(machineId: string, result: SyncPushResult, sent:
     const key = recordKey(entry.table, entry.id);
     const sentOp = sent.find((op) => op.table === entry.table && op.id === entry.id);
     if (!sentOp) continue;
-    const sentJson = JSON.stringify(sentOp.value);
+    const sentJson = canonicalJson(sentOp.value);
     state.outbox = state.outbox.flatMap((item) => {
       if (item.table !== entry.table || item.id !== entry.id) return [item];
-      if (JSON.stringify(item.value) === sentJson) return [];
+      if (canonicalJson(item.value) === sentJson) return [];
       return [{ ...item, baseRev: entry.rev }];
     });
     state.recordRevs[key] = entry.rev;
@@ -137,8 +175,8 @@ export function applyPushResult(machineId: string, result: SyncPushResult, sent:
     const sentOp = sent.find((op) => op.table === entry.table && op.id === entry.id);
     const pending = state.outbox.find((item) => item.table === entry.table && item.id === entry.id);
     state.recordRevs[key] = entry.current.rev;
-    state.recordValues[key] = JSON.stringify(entry.current.value);
-    if (pending && sentOp && JSON.stringify(pending.value) !== JSON.stringify(sentOp.value)) {
+    state.recordValues[key] = canonicalJson(entry.current.value);
+    if (pending && sentOp && canonicalJson(pending.value) !== canonicalJson(sentOp.value)) {
       state.outbox = state.outbox.map((item) => (item === pending ? { ...item, baseRev: entry.current.rev } : item));
       continue;
     }

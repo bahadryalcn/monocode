@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, message as showMessage } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
@@ -43,6 +43,7 @@ import { GitConflictRows } from "./GitConflictRows";
 import { GitOperationBanner } from "./GitOperationBanner";
 import { GitStashSection } from "./GitStashSection";
 import { GitActionsMenu, type ChangesActions } from "./GitActionsMenu";
+import { applyIndexAction, type IndexAction } from "../model/optimisticIndex";
 import { AUTO_FETCH_MS, loadAutoFetch, saveAutoFetch } from "../model/autoFetch";
 import {
   basename,
@@ -64,6 +65,7 @@ import {
   notifyGitChanged,
   subscribeGitChanged,
   type GitChangedFile,
+  type GitChangeScope,
   type GitDiffIndex,
   type GitFileDiffKind,
   type GitHistoryCommit,
@@ -128,6 +130,34 @@ const collapsedDirs = new Set<string>();
 const indexByCwd = new Map<string, GitDiffIndex>();
 const prByCwd = new Map<string, GitPr | null>();
 
+/** Set while this panel announces its own change, which it reloads itself. */
+let announcingOwnChange = false;
+
+function announceGitChange(cwd: string, scope: GitChangeScope) {
+  announcingOwnChange = true;
+  try {
+    notifyGitChanged(cwd, scope);
+  } finally {
+    announcingOwnChange = false;
+  }
+}
+
+const ACTION_LABEL: Record<IndexAction, string> = {
+  stage: "Staging…",
+  unstage: "Unstaging…",
+  discard: "Discarding…",
+};
+
+/** What the header says while `busy` is held and no step named itself. */
+function busyLabel(busy: string): string {
+  if (busy === "commit") return "Committing…";
+  if (busy === "pr") return "Creating pull request…";
+  if (busy === "sync") return "Syncing…";
+  if (busy === "generate") return "Generating message…";
+  if (busy in ACTION_LABEL) return ACTION_LABEL[busy as IndexAction];
+  return "Working…";
+}
+
 type AmendTarget = { branch: string | null; head: string | null };
 
 type Props = {
@@ -156,7 +186,7 @@ export function GitChangesPanel({
   onOpenAllChanges,
   onOpenCommit,
 }: Props) {
-  const { index, reload } = useDiffIndex(cwd, enabled);
+  const { index, reload, showOptimistic } = useDiffIndex(cwd, enabled);
   // Fetch, and the merge status of a host that predates conflict info, need
   // this computer or a host with `git.actions`.
   const gitActions = useRemoteSupports(cwd, GIT_ACTIONS) === true;
@@ -176,6 +206,8 @@ export function GitChangesPanel({
   // mutations ever run against the same checkout at once.
   const [busy, setBusy] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  // The step a running action is on ("Pushing…"), shown beside the spinner.
+  const [pending, setPending] = useState<string | null>(null);
   const [graphHeight, setGraphHeight] = useState(loadGraphPanelHeight);
   const [graphExpanded, setGraphExpanded] = useState(graphOpen);
 
@@ -188,9 +220,9 @@ export function GitChangesPanel({
   const canFetch = gitActions && Boolean(index?.remote);
   const [autoFetch, setAutoFetch] = useState(loadAutoFetch);
 
-  const onMutated = (paths?: string[]) => {
+  const onMutated = (paths?: string[], scope: GitChangeScope = "refs") => {
     reload();
-    notifyGitChanged();
+    announceGitChange(cwd, scope);
     invalidateWatchedFiles(paths);
     window.setTimeout(() => invalidateWatchedFiles(paths), 150);
   };
@@ -203,7 +235,7 @@ export function GitChangesPanel({
       void gitFetch(cwd).then(
         () => {
           reload();
-          notifyGitChanged();
+          announceGitChange(cwd, "refs");
         },
         () => {},
       );
@@ -234,7 +266,20 @@ export function GitChangesPanel({
     >
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-stroke px-3">
         <span className="text-[12px] font-medium text-content">Changes</span>
-        {status ? (
+        {busy ? (
+          <span
+            role="status"
+            className="flex min-w-0 items-center gap-1 text-[11px] text-content/50"
+          >
+            <Loader
+              className="size-3 shrink-0 animate-spin"
+              strokeWidth={1.75}
+            />
+            <span className="min-w-0 truncate">
+              {pending ?? busyLabel(busy)}
+            </span>
+          </span>
+        ) : status ? (
           <span role="status" className="text-[11px] text-content/50">
             {status}
           </span>
@@ -269,6 +314,7 @@ export function GitChangesPanel({
               }}
               changes={changesRef}
               onStatus={setStatus}
+              onPending={setPending}
               onMutated={onMutated}
               onOpenCommit={onOpenCommit}
             />
@@ -295,6 +341,9 @@ export function GitChangesPanel({
         fill
         busy={busy}
         setBusy={setBusy}
+        pending={pending}
+        setPending={setPending}
+        showOptimistic={showOptimistic}
         actionsRef={changesRef}
         onOpenFile={onOpenFile}
         onOpenInEditor={onOpenInEditor}
@@ -356,6 +405,9 @@ function ChangedFiles({
   fill,
   busy,
   setBusy,
+  pending,
+  setPending,
+  showOptimistic,
   actionsRef,
   onOpenFile,
   onOpenInEditor,
@@ -374,12 +426,16 @@ function ChangedFiles({
   fill: boolean;
   busy: string | null;
   setBusy: (value: string | null) => void;
+  pending: string | null;
+  setPending: (value: string | null) => void;
+  /** Shows the index an action is about to produce, ahead of the reload. */
+  showOptimistic: (next: GitDiffIndex) => void;
   /** Filled with the handlers the header menu calls into. */
   actionsRef: RefObject<ChangesActions | null>;
   onOpenFile: (path: string, kind: GitFileDiffKind, pin?: boolean) => void;
   onOpenInEditor?: (path: string, pin?: boolean) => void;
   onOpenAllChanges: (kind: GitFileDiffKind) => void;
-  onMutated: (paths?: string[]) => void;
+  onMutated: (paths?: string[], scope?: GitChangeScope) => void;
 }) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const failure = useRemoteLoadFailure(cwd, "changes");
@@ -489,7 +545,10 @@ function ChangedFiles({
   };
 
   const fail = (error: unknown) => {
-    window.alert(error instanceof Error ? error.message : String(error));
+    const text = error instanceof Error ? error.message : String(error);
+    void showMessage(text, { title: appName(), kind: "error" }).catch(() =>
+      window.alert(text),
+    );
   };
 
   const recordPrActivity = (number = pr?.number) => {
@@ -529,15 +588,20 @@ function ChangedFiles({
       if (!ok) return;
     }
     setBusy(file.relative);
+    setPending(ACTION_LABEL[action]);
+    // The row moves at once; the reload below confirms it or puts it back.
+    if (index) showOptimistic(applyIndexAction(index, action, file.relative));
     try {
       if (action === "stage") await gitStageFile(cwd, file.relative);
       else if (action === "unstage") await gitUnstageFile(cwd, file.relative);
       else await gitDiscardFile(cwd, file.relative);
-      onMutated([file.path]);
+      onMutated([file.path], "index");
     } catch (error) {
+      onMutated([file.path], "index");
       fail(error);
     } finally {
       setBusy(null);
+      setPending(null);
     }
   };
 
@@ -559,14 +623,16 @@ function ChangedFiles({
       if (!ok) return;
     }
     setBusy(action);
+    const discarded =
+      action === "discard" ? unstaged.map((file) => file.path) : undefined;
+    if (index) showOptimistic(applyIndexAction(index, action));
     try {
       if (action === "stage") await gitStageAll(cwd);
       else if (action === "unstage") await gitUnstageAll(cwd);
       else await gitDiscardAll(cwd);
-      onMutated(
-        action === "discard" ? unstaged.map((file) => file.path) : undefined,
-      );
+      onMutated(discarded, "index");
     } catch (error) {
+      onMutated(discarded, "index");
       fail(error);
     } finally {
       setBusy(null);
@@ -656,6 +722,7 @@ function ChangedFiles({
       options?.scope === "all" ||
       (options?.scope === "smart" && !amending && staged.length === 0);
     setBusy(createPr ? "pr" : "commit");
+    setPending("Committing…");
     setMenuOpen(false);
     try {
       if (stageAll) await gitStageAll(cwd);
@@ -663,6 +730,7 @@ function ChangedFiles({
       const text = message.trim() || (await gitHeadMessage(cwd));
       await gitCommit(cwd, text, amending, options?.signoff ?? false);
       if (push || createPr) {
+        setPending("Pushing…");
         await gitPush(cwd);
         recordPrActivity();
       }
@@ -670,6 +738,7 @@ function ChangedFiles({
       setAmendTarget(null);
       onMutated();
       if (createPr) {
+        setPending("Creating pull request…");
         await openCreatedPr();
         reloadPr();
       }
@@ -678,6 +747,7 @@ function ChangedFiles({
       onMutated();
     } finally {
       setBusy(null);
+      setPending(null);
     }
   };
 
@@ -725,7 +795,11 @@ function ChangedFiles({
     if (!(await confirmDefault("pr"))) return;
     setBusy("pr");
     try {
-      if ((index?.ahead ?? 0) > 0) await gitPush(cwd);
+      if ((index?.ahead ?? 0) > 0) {
+        setPending("Pushing…");
+        await gitPush(cwd);
+      }
+      setPending("Creating pull request…");
       await openCreatedPr();
       onMutated();
       reloadPr();
@@ -734,6 +808,7 @@ function ChangedFiles({
       onMutated();
     } finally {
       setBusy(null);
+      setPending(null);
     }
   };
 
@@ -811,8 +886,22 @@ function ChangedFiles({
                 : "bg-content/40 text-background-base"
             }`}
           >
-            <Check className="size-3.5" strokeWidth={2} />
-            {amend ? "Amend Commit" : "Commit"}
+            {busy === "commit" || busy === "pr" ? (
+              <>
+                <Loader
+                  className="size-3.5 shrink-0 animate-spin"
+                  strokeWidth={2}
+                />
+                <span className="min-w-0 truncate">
+                  {pending ?? busyLabel(busy)}
+                </span>
+              </>
+            ) : (
+              <>
+                <Check className="size-3.5" strokeWidth={2} />
+                {amend ? "Amend Commit" : "Commit"}
+              </>
+            )}
           </button>
 
           <button
@@ -1620,9 +1709,20 @@ function ChangeRow({
             ) : null}
           </span>
         </button>
+        {busy ? (
+          <Loader
+            aria-label="Working"
+            className="size-3.5 shrink-0 animate-spin text-content/55"
+            strokeWidth={1.75}
+          />
+        ) : null}
         <div
           className={` shrink-0 items-center ${
-            active ? "flex" : "hidden group-focus-within:flex group-hover:flex"
+            busy
+              ? "hidden"
+              : active
+                ? "flex"
+                : "hidden group-focus-within:flex group-hover:flex"
           }`}
         >
           {kind === "unstaged" ? (
@@ -1712,6 +1812,7 @@ function useDiffIndex(
 ): {
   index: GitDiffIndex | null;
   reload: () => void;
+  showOptimistic: (next: GitDiffIndex) => void;
 } {
   // A remote project keeps its last good index when a load fails; the failure
   // is shown by `ChangedFiles`.
@@ -1720,9 +1821,27 @@ function useDiffIndex(
     cachedIndex(cwd),
   );
   const [nonce, setNonce] = useState(0);
-  const reload = useCallback(() => setNonce((value) => value + 1), []);
   const indexRef = useRef(index);
   indexRef.current = index;
+  // An optimistic index is on screen and its git command may still be
+  // running: a poll that started earlier must not put the old rows back.
+  const holdRef = useRef(false);
+  // The caller of `reload` announces its change itself.
+  const announcedRef = useRef(false);
+  const reload = useCallback(() => {
+    holdRef.current = false;
+    announcedRef.current = true;
+    setNonce((value) => value + 1);
+  }, []);
+  const showOptimistic = useCallback(
+    (next: GitDiffIndex) => {
+      holdRef.current = true;
+      indexByCwd.set(cwd, next);
+      indexRef.current = next;
+      setIndex(next);
+    },
+    [cwd],
+  );
 
   useEffect(() => {
     if (!enabled || !cwd || cwd === "~") {
@@ -1746,9 +1865,11 @@ function useDiffIndex(
       inFlight = true;
       try {
         const next = await gitDiffIndex(cwd);
-        if (cancelled) return;
+        if (cancelled || holdRef.current) return;
         if (remote) reportRemoteLoad(cwd, "changes");
         const prev = indexRef.current;
+        const announced = announcedRef.current;
+        announcedRef.current = false;
         if (sameIndex(prev, next)) return;
         indexByCwd.set(cwd, next);
         indexRef.current = next;
@@ -1761,7 +1882,11 @@ function useDiffIndex(
         if (prev) {
           const paths = changedFilePaths(prev, next);
           invalidateWatchedFiles(paths);
-          notifyGitChanged();
+          // Found by the poll (an agent, a terminal): tell the other git views,
+          // and spare the commit graph when only files moved.
+          if (!announced) {
+            announceGitChange(cwd, sameRefs(prev, next) ? "index" : "refs");
+          }
         }
       } catch (error) {
         if (cancelled) return;
@@ -1790,7 +1915,12 @@ function useDiffIndex(
     }, GIT_POLL_MS);
     window.addEventListener("focus", onResume);
     document.addEventListener("visibilitychange", onResume);
-    const unsubGit = subscribeGitChanged(onResume);
+    const unsubGit = subscribeGitChanged(
+      () => {
+        if (!announcingOwnChange) onResume();
+      },
+      { cwd },
+    );
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -1800,7 +1930,21 @@ function useDiffIndex(
     };
   }, [cwd, enabled, nonce, remote]);
 
-  return { index, reload };
+  return { index, reload, showOptimistic };
+}
+
+/** Whether HEAD, its branch and its upstream counts are unchanged. */
+function sameRefs(prev: GitDiffIndex, next: GitDiffIndex): boolean {
+  return (
+    prev.branch === next.branch &&
+    prev.head === next.head &&
+    prev.upstream === next.upstream &&
+    prev.ahead === next.ahead &&
+    prev.behind === next.behind &&
+    prev.aheadOfDefault === next.aheadOfDefault &&
+    prev.headPushed === next.headPushed &&
+    (prev.operation ?? null) === (next.operation ?? null)
+  );
 }
 
 function cachedIndex(cwd: string | undefined): GitDiffIndex | null {

@@ -85,8 +85,22 @@ export function rememberRemoteProject(
   } catch {
     /* the rail entry still works for this session */
   }
-  window.dispatchEvent(new Event(REMOTE_PROJECTS_CHANGED));
+  if (typeof window !== "undefined")
+    window.dispatchEvent(new Event(REMOTE_PROJECTS_CHANGED));
   return remote;
+}
+
+/** Opens a folder on a machine's host and saves it as a remote project; the
+ * caller adds the returned key to the rail. */
+export async function openRemoteProject(
+  request: (method: string, params: unknown) => Promise<unknown>,
+  environmentId: string,
+  cwd: string,
+): Promise<RemoteProject> {
+  const project = (await request("projects.open", { cwd })) as HostProject;
+  if (!project || typeof project.cwd !== "string" || typeof project.id !== "string")
+    throw new Error("projects.open returned a malformed result");
+  return rememberRemoteProject(environmentId, project);
 }
 
 export function remoteProjectsOn(environmentId: string): RemoteProject[] {

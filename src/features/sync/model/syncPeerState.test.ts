@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   applyPushResult,
   hasPendingOp,
+  hasPulled,
   knownRecordIds,
   loadPeerState,
+  markPullCompleted,
   markPulled,
   peerRev,
   queueLocalChange,
@@ -81,6 +83,51 @@ describe("syncPeerState", () => {
     markPulled(MACHINE, [{ table: "group", id: "g1", rev: 3, value }]);
     queueLocalChange(MACHINE, "group", "g1", { ...value });
     expect(takeOutbox(MACHINE)).toEqual([]);
+  });
+
+  it("treats values that differ only in key order as identical", () => {
+    markPulled(MACHINE, [
+      { table: "railLayout", id: "rail", rev: 3, value: { order: ["a", "b"], pinned: [] } },
+      { table: "lock", id: "lock", rev: 4, value: { record: { v: 1, alg: "x" } } },
+    ]);
+    queueLocalChange(MACHINE, "railLayout", "rail", { pinned: [], order: ["a", "b"] });
+    queueLocalChange(MACHINE, "lock", "lock", { record: { alg: "x", v: 1 } });
+    queueLocalChange(MACHINE, "group", "g1", { id: "g1", name: "A", colorIndex: undefined });
+    expect(takeOutbox(MACHINE).map((op) => op.id)).toEqual(["g1"]);
+    // Array order still matters.
+    queueLocalChange(MACHINE, "railLayout", "rail", { pinned: [], order: ["b", "a"] });
+    expect(takeOutbox(MACHINE).map((op) => op.id)).toEqual(["g1", "rail"]);
+  });
+
+  it("canonicalizes a non-canonical value stored by an older build on read", () => {
+    localStorage.setItem(
+      "monocode.sync.peer:host-1",
+      JSON.stringify({
+        rev: 3,
+        recordRevs: { "group:g1": 3 },
+        recordValues: { "group:g1": '{"name":"A","id":"g1"}' },
+        outbox: [],
+      }),
+    );
+    queueLocalChange(MACHINE, "group", "g1", { id: "g1", name: "A" });
+    expect(takeOutbox(MACHINE)).toEqual([]);
+    expect(hasPulled(MACHINE)).toBe(true);
+  });
+
+  it("clears an in-flight op whose value differs from the sent one only in key order", () => {
+    queueLocalChange(MACHINE, "group", "g1", { id: "g1", name: "A" });
+    const sent = takeOutbox(MACHINE).map((op) => ({ ...op, value: { name: "A", id: "g1" } }));
+    applyPushResult(MACHINE, { rev: 4, applied: [{ table: "group", id: "g1", rev: 4 }], rejected: [] }, sent);
+    expect(takeOutbox(MACHINE)).toEqual([]);
+    expect(loadPeerState(MACHINE).recordValues["group:g1"]).toBe('{"id":"g1","name":"A"}');
+  });
+
+  it("knows whether a pull has ever completed", () => {
+    expect(hasPulled(MACHINE)).toBe(false);
+    queueLocalChange(MACHINE, "group", "g1", { id: "g1", name: "A" });
+    expect(hasPulled(MACHINE)).toBe(false);
+    markPullCompleted(MACHINE);
+    expect(hasPulled(MACHINE)).toBe(true);
   });
 
   it("keeps an edit made while a push was in flight, rebased onto the applied revision", () => {

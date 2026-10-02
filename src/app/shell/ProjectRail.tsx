@@ -94,6 +94,7 @@ import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
 import { RailAction, RailSearch } from "./RailAction";
 import { remoteOnlyProjects, type RemoteOnlyProject } from "../../features/sync/model/syncProjects";
+import { remoteOnlyProjectHint, remoteOpenMatch } from "../../features/sync/model/syncRemoteProjects";
 import { LastSessionsSection, type RecentSessionsSource } from "./LastSessionsSection";
 import { DevModeSlot, TabVisitNav } from "./TitleBar";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
@@ -824,19 +825,26 @@ function ProjectSection({
           />
         ))}
         {onLinkRemote
-          ? remoteOnly?.map((project) => (
-              <button
-                key={project.projectId}
-                type="button"
-                title={`${project.otherPaths.map((other) => other.path).join(", ")} (another machine). Click to link a folder.`}
-                aria-label={`${project.name}, on another machine. Link folder`}
-                onClick={() => void onLinkRemote(project.projectId, project.name)}
-                className="flex h-8 min-w-0 cursor-default items-center gap-2 rounded-md px-2 text-left opacity-40 hover:bg-content/8 hover:opacity-70"
-              >
-                <LinkIcon className="size-4 shrink-0" strokeWidth={1.75} />
-                <span className={nameClassName}>{project.name}</span>
-              </button>
-            ))
+          ? remoteOnly?.map((project) => {
+              const match = remoteOpenMatch(project);
+              return (
+                <button
+                  key={project.projectId}
+                  type="button"
+                  title={remoteOnlyProjectHint(project, match)}
+                  aria-label={
+                    match
+                      ? `${project.name}, on ${match.target.name}. Open there`
+                      : `${project.name}, on another machine. Link folder`
+                  }
+                  onClick={() => void onLinkRemote(project.projectId, project.name)}
+                  className="flex h-8 min-w-0 cursor-default items-center gap-2 rounded-md px-2 text-left opacity-40 hover:bg-content/8 hover:opacity-70"
+                >
+                  <LinkIcon className="size-4 shrink-0" strokeWidth={1.75} />
+                  <span className={nameClassName}>{project.name}</span>
+                </button>
+              );
+            })
           : null}
       </div>
     </div>

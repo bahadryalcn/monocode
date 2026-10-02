@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { canonicalJson } from "../src/features/sync/model/canonicalJson";
 import { SYNC_TABLES } from "../src/features/sync/model/syncProtocol";
 import type {
   SyncOp,
@@ -91,6 +92,8 @@ function isValidOp(op: unknown): op is SyncOp {
  * (optimistic concurrency); an op based on a stale revision is rejected and
  * returned with the record's current value, so the caller can adopt it.
  * Ops for different records in one call are independent of each other.
+ * An op that would not change the stored value is reported as applied at
+ * the record's existing revision, without a write or a revision bump.
  * Malformed ops are skipped (neither applied nor reported) and never throw,
  * so one poisoned op cannot make a whole batch retry forever.
  */
@@ -106,6 +109,15 @@ export function syncPush(db: DatabaseSync, ops: SyncOp[]): SyncPushResult {
         id: op.id,
         current: existing ?? { table: op.table, id: op.id, rev: 0, value: null },
       });
+      continue;
+    }
+    // Compared key-order-insensitively: the desktop transport re-sorts object keys.
+    if (existing && canonicalJson(existing.value) === canonicalJson(op.value)) {
+      applied.push({ table: op.table, id: op.id, rev: existing.rev });
+      continue;
+    }
+    if (!existing && op.value === null) {
+      applied.push({ table: op.table, id: op.id, rev: 0 });
       continue;
     }
     const rev = bumpRev(db);

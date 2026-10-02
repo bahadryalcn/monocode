@@ -858,6 +858,7 @@ fn git_ignored_names(dir: &Path, names: &[&str]) -> Option<HashSet<String>> {
     if names.is_empty() {
         return Some(HashSet::new());
     }
+    let _turn = GIT_SPAWN_GATE.enter();
     let mut child = git_cmd()
         .arg("-C")
         .arg(dir)
@@ -2246,42 +2247,14 @@ pub async fn git_blame(cwd: String, relative: String) -> Result<Vec<GitBlameLine
 }
 
 pub(crate) fn git_diff_stats_for(root: &Path) -> GitDiffStats {
-    if !git_is_work_tree(root) {
+    let Some(changes) = git_changes_for(root) else {
         return GitDiffStats::default();
-    }
-    let mut files: HashMap<String, FileAcc> = HashMap::new();
-    if let Some(text) = git_run(
-        root,
-        &["diff", "--no-ext-diff", "--numstat", "HEAD", "--", "."],
-    ) {
-        add_numstat_map(&text, &mut files);
-    } else {
-        if let Some(text) = git_run(root, &["diff", "--no-ext-diff", "--numstat", "--", "."]) {
-            add_numstat_map(&text, &mut files);
-        }
-        if let Some(text) = git_run(
-            root,
-            &["diff", "--no-ext-diff", "--cached", "--numstat", "--", "."],
-        ) {
-            add_numstat_map(&text, &mut files);
-        }
-    }
-    add_untracked_map(root, &mut files);
+    };
     // Conflicted files count as files, but not their combined-diff lines.
-    let conflicts = git_unmerged_for(root);
-    for conflict in &conflicts {
-        files.remove(&conflict.relative);
-    }
-    let mut additions = 0i64;
-    let mut deletions = 0i64;
-    for acc in files.values() {
-        additions += acc.additions;
-        deletions += acc.deletions;
-    }
     GitDiffStats {
-        files: (files.len() + conflicts.len()) as i64,
-        additions,
-        deletions,
+        files: (changes.files.len() + changes.conflicts.len()) as i64,
+        additions: changes.additions,
+        deletions: changes.deletions,
     }
 }
 
@@ -2289,9 +2262,6 @@ pub(crate) fn git_diff_stats_for(root: &Path) -> GitDiffStats {
 struct FileAcc {
     additions: i64,
     deletions: i64,
-    untracked: bool,
-    staged: bool,
-    unstaged: bool,
 }
 
 pub(crate) fn git_diff_index_for(root: &Path) -> GitDiffIndex {
@@ -2304,142 +2274,27 @@ pub(crate) fn git_diff_files_for(root: &Path) -> GitDiffIndex {
 }
 
 fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
-    let mut files: HashMap<String, FileAcc> = HashMap::new();
-    let mut statuses: HashMap<String, &'static str> = HashMap::new();
-
-    if let Some(text) = git_run(
-        root,
-        &[
-            "diff",
-            "--relative",
-            "--no-ext-diff",
-            "--numstat",
-            "HEAD",
-            "--",
-            ".",
-        ],
-    ) {
-        add_numstat_map(&text, &mut files);
-        if let Some(names) = git_run(
-            root,
-            &[
-                "diff",
-                "--relative",
-                "--no-ext-diff",
-                "--name-status",
-                "--no-renames",
-                "HEAD",
-                "--",
-                ".",
-            ],
-        ) {
-            add_name_status(&names, &mut statuses);
-        }
-    } else {
-        if let Some(text) = git_run(
-            root,
-            &[
-                "diff",
-                "--relative",
-                "--no-ext-diff",
-                "--numstat",
-                "--",
-                ".",
-            ],
-        ) {
-            add_numstat_map(&text, &mut files);
-        }
-        if let Some(text) = git_run(
-            root,
-            &[
-                "diff",
-                "--relative",
-                "--no-ext-diff",
-                "--cached",
-                "--numstat",
-                "--",
-                ".",
-            ],
-        ) {
-            add_numstat_map(&text, &mut files);
-        }
-        if let Some(names) = git_run(
-            root,
-            &[
-                "diff",
-                "--relative",
-                "--no-ext-diff",
-                "--name-status",
-                "--no-renames",
-                "--",
-                ".",
-            ],
-        ) {
-            add_name_status(&names, &mut statuses);
-        }
-        if let Some(names) = git_run(
-            root,
-            &[
-                "diff",
-                "--relative",
-                "--no-ext-diff",
-                "--cached",
-                "--name-status",
-                "--no-renames",
-                "--",
-                ".",
-            ],
-        ) {
-            add_name_status(&names, &mut statuses);
-        }
-    }
-    add_untracked_map(root, &mut files);
-    mark_cached_and_unstaged(root, &mut files);
-    // Their combined diffs would otherwise show up as ordinary modified rows,
-    // staged and unstaged at once, with the conflict markers counted as additions.
-    let conflicts = git_unmerged_for(root);
-    for conflict in &conflicts {
-        files.remove(&conflict.relative);
-    }
-
-    let mut out = Vec::with_capacity(files.len());
-    let mut additions = 0i64;
-    let mut deletions = 0i64;
-    for (relative, acc) in files {
-        additions += acc.additions;
-        deletions += acc.deletions;
-        let abs = root.join(&relative);
-        let status = if acc.untracked {
-            "untracked"
-        } else if let Some(status) = statuses.get(&relative) {
-            *status
-        } else if !abs.exists() {
-            "deleted"
-        } else {
-            "modified"
-        };
-        out.push(GitChangedFile {
-            path: path_to_js(&abs),
-            relative,
-            status: status.to_string(),
-            additions: acc.additions,
-            deletions: acc.deletions,
-            staged: acc.staged,
-            unstaged: acc.untracked || acc.unstaged,
-        });
-    }
-    out.sort_by(|a, b| a.relative.cmp(&b.relative));
+    let Some(changes) = git_changes_for(root) else {
+        return GitDiffIndex::default();
+    };
     let sync = if include_sync {
-        git_sync_for(root)
+        git_sync_for(root, &changes.status)
     } else {
         GitSync::default()
     };
+    let status = changes.status;
     GitDiffIndex {
-        branch: git_branch(root),
-        head: git_stdout(root, &["rev-parse", "HEAD"]),
-        files: out,
-        additions,
-        deletions,
+        // A detached HEAD is named by its short sha.
+        branch: status.head.or_else(|| {
+            status
+                .oid
+                .as_deref()
+                .map(|oid| oid.chars().take(7).collect())
+        }),
+        head: status.oid,
+        files: changes.files,
+        additions: changes.additions,
+        deletions: changes.deletions,
         remote: sync.remote,
         upstream: sync.upstream,
         default_branch: sync.default_branch,
@@ -2447,8 +2302,380 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
         behind: sync.behind,
         ahead_of_default: sync.ahead_of_default,
         head_pushed: sync.head_pushed,
-        conflicts,
+        conflicts: changes.conflicts,
         operation: git_operation_state_for(root),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusKind {
+    /// Tracked, with `x` the index and `y` the working tree column.
+    Changed,
+    Unmerged,
+    Untracked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatusEntry {
+    kind: StatusKind,
+    x: char,
+    y: char,
+    /// Relative to the repository root, as git prints it.
+    path: String,
+}
+
+/// `git status --porcelain=v2 --branch -z`: what the Changes panel needs to
+/// know about HEAD, its upstream and every changed path, from one process.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct StatusSnapshot {
+    /// HEAD's commit; `None` before the first commit.
+    oid: Option<String>,
+    /// The checked-out branch; `None` when HEAD is detached.
+    head: Option<String>,
+    upstream: Option<String>,
+    /// `(ahead, behind)` of the upstream; absent when its ref is gone.
+    ahead_behind: Option<(i64, i64)>,
+    entries: Vec<StatusEntry>,
+}
+
+fn parse_status_v2(text: &str) -> StatusSnapshot {
+    let mut snapshot = StatusSnapshot::default();
+    let mut records = text.split('\0');
+    while let Some(record) = records.next() {
+        if let Some(header) = record.strip_prefix("# ") {
+            let (key, value) = header.split_once(' ').unwrap_or((header, ""));
+            match key {
+                "branch.oid" if value != "(initial)" => snapshot.oid = Some(value.to_string()),
+                "branch.head" if value != "(detached)" => snapshot.head = Some(value.to_string()),
+                "branch.upstream" => snapshot.upstream = Some(value.to_string()),
+                "branch.ab" => {
+                    let mut parts = value.split(' ');
+                    let count = |part: Option<&str>, sign: char| {
+                        part.and_then(|part| part.strip_prefix(sign))
+                            .and_then(|part| part.parse::<i64>().ok())
+                    };
+                    if let (Some(ahead), Some(behind)) =
+                        (count(parts.next(), '+'), count(parts.next(), '-'))
+                    {
+                        snapshot.ahead_behind = Some((ahead, behind));
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        let Some((tag, rest)) = record.split_once(' ') else {
+            continue;
+        };
+        // Fields before the path: `XY sub mH mI mW hH hI` and so on.
+        let (kind, fields) = match tag {
+            "1" => (StatusKind::Changed, 7),
+            "2" => (StatusKind::Changed, 8),
+            "u" => (StatusKind::Unmerged, 9),
+            "?" => (StatusKind::Untracked, 0),
+            _ => continue,
+        };
+        if tag == "2" {
+            // A rename carries its old path as a record of its own.
+            records.next();
+        }
+        let mut parts = rest.splitn(fields + 1, ' ');
+        let mut xy = if fields == 0 {
+            "??"
+        } else {
+            parts.next().unwrap_or("")
+        }
+        .chars();
+        let (Some(x), Some(y)) = (xy.next(), xy.next()) else {
+            continue;
+        };
+        let Some(path) = parts
+            .nth(fields.saturating_sub(1))
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        snapshot.entries.push(StatusEntry {
+            kind,
+            x,
+            y,
+            path: path.to_string(),
+        });
+    }
+    snapshot
+}
+
+/// The conflict kind for an unmerged entry's `XY` (see `conflict_kind`).
+fn unmerged_kind(x: char, y: char) -> &'static str {
+    match (x, y) {
+        ('A', 'A') => "both-added",
+        ('D', 'U') => "deleted-by-us",
+        ('U', 'D') => "deleted-by-them",
+        ('A', 'U') => "added-by-us",
+        ('U', 'A') => "added-by-them",
+        ('D', 'D') => "both-deleted",
+        _ => "both-modified",
+    }
+}
+
+/// `root` relative to its repository's top level (`""` at the top, else
+/// `dir/`). It only changes when a repository is created or removed above
+/// `root`, so it is asked for once; `None` (not cached) outside a repository.
+fn git_prefix_for(root: &Path) -> Option<String> {
+    if let Ok(guard) = GIT_PREFIX_CACHE.lock() {
+        if let Some(prefix) = guard.as_ref().and_then(|cache| cache.get(root)) {
+            return Some(prefix.clone());
+        }
+    }
+    let output = git_output(root, &["rev-parse", "--show-prefix"])?;
+    let prefix = String::from_utf8_lossy(&output)
+        .trim_end_matches(['\r', '\n'])
+        .to_string();
+    if let Ok(mut guard) = GIT_PREFIX_CACHE.lock() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(root.to_path_buf(), prefix.clone());
+    }
+    Some(prefix)
+}
+
+fn forget_git_prefix(root: &Path) {
+    if let Ok(mut guard) = GIT_PREFIX_CACHE.lock() {
+        if let Some(cache) = guard.as_mut() {
+            cache.remove(root);
+        }
+    }
+}
+
+static GIT_PREFIX_CACHE: Mutex<Option<HashMap<PathBuf, String>>> = Mutex::new(None);
+
+struct GitChanges {
+    status: StatusSnapshot,
+    /// Sorted by path. Unmerged files are in `conflicts` instead.
+    files: Vec<GitChangedFile>,
+    additions: i64,
+    deletions: i64,
+    conflicts: Vec<GitConflictFile>,
+}
+
+/// Every changed path under `root` with its line counts: `git status` for the
+/// paths and `git diff --numstat` for the counts. `None` outside a repository.
+fn git_changes_for(root: &Path) -> Option<GitChanges> {
+    git_changes_with(root, true)
+}
+
+/// What the line counts of a `git status` listing depend on: the listing, the
+/// index, and the size and time of each listed file on disk.
+#[derive(PartialEq, Eq)]
+struct NumstatStamp {
+    status: String,
+    index: Option<SystemTime>,
+    files: Vec<Option<(u64, Option<SystemTime>)>>,
+}
+
+fn numstat_stamp(root: &Path, prefix: &str, text: &str, status: &StatusSnapshot) -> NumstatStamp {
+    let modified = |path: PathBuf| std::fs::metadata(path).ok();
+    NumstatStamp {
+        status: text.to_string(),
+        index: find_git_dir(root)
+            .and_then(|dir| modified(dir.join("index")))
+            .and_then(|meta| meta.modified().ok()),
+        files: status
+            .entries
+            .iter()
+            .map(|entry| {
+                let relative = entry.path.strip_prefix(prefix).unwrap_or(&entry.path);
+                modified(root.join(relative)).map(|meta| (meta.len(), meta.modified().ok()))
+            })
+            .collect(),
+    }
+}
+
+type NumstatCached = (NumstatStamp, HashMap<String, FileAcc>);
+
+static GIT_NUMSTAT_CACHE: Mutex<Option<HashMap<PathBuf, NumstatCached>>> = Mutex::new(None);
+
+/// Line counts for the listing `stamp` describes. The poll asks every couple
+/// of seconds and almost always finds the same listing and the same files, so
+/// the counts are kept and `git diff` only runs when something moved.
+fn git_numstat_cached(root: &Path, stamp: NumstatStamp) -> HashMap<String, FileAcc> {
+    if let Ok(guard) = GIT_NUMSTAT_CACHE.lock() {
+        if let Some((cached, counts)) = guard.as_ref().and_then(|cache| cache.get(root)) {
+            if *cached == stamp {
+                return counts.clone();
+            }
+        }
+    }
+    let counts = git_numstat_for(root);
+    if let Ok(mut guard) = GIT_NUMSTAT_CACHE.lock() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(root.to_path_buf(), (stamp, counts.clone()));
+    }
+    counts
+}
+
+fn git_changes_with(root: &Path, retry: bool) -> Option<GitChanges> {
+    let prefix = git_prefix_for(root)?;
+    let text = git_run(
+        root,
+        &[
+            // A rename stays a deletion and an addition, as in the diff views.
+            "-c",
+            "status.renames=false",
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            ".",
+        ],
+    )?;
+    let status = parse_status_v2(&text);
+    let counts = if status.entries.is_empty() {
+        HashMap::new()
+    } else {
+        git_numstat_cached(root, numstat_stamp(root, &prefix, &text, &status))
+    };
+
+    struct Acc {
+        x: char,
+        y: char,
+        untracked: bool,
+    }
+    let mut tracked: std::collections::BTreeMap<String, Acc> = std::collections::BTreeMap::new();
+    let mut conflicts = Vec::new();
+    for entry in &status.entries {
+        let Some(relative) = entry.path.strip_prefix(prefix.as_str()) else {
+            // The repository layout changed under a cached prefix.
+            forget_git_prefix(root);
+            return if retry {
+                git_changes_with(root, false)
+            } else {
+                None
+            };
+        };
+        let relative = path_to_js(Path::new(relative));
+        if relative.is_empty() {
+            continue;
+        }
+        match entry.kind {
+            // Their combined diffs would otherwise show up as ordinary modified
+            // rows, staged and unstaged at once, with the markers counted as additions.
+            StatusKind::Unmerged => conflicts.push(GitConflictFile {
+                path: path_to_js(&root.join(&relative)),
+                relative,
+                kind: unmerged_kind(entry.x, entry.y),
+            }),
+            StatusKind::Changed => {
+                let acc = tracked.entry(relative).or_insert(Acc {
+                    x: '.',
+                    y: '.',
+                    untracked: false,
+                });
+                acc.x = entry.x;
+                acc.y = entry.y;
+            }
+            // A path removed from the index but still on disk is listed twice.
+            StatusKind::Untracked => {
+                tracked
+                    .entry(relative)
+                    .or_insert(Acc {
+                        x: '.',
+                        y: '.',
+                        untracked: false,
+                    })
+                    .untracked = true;
+            }
+        }
+    }
+    conflicts.sort_by(|a, b| a.relative.cmp(&b.relative));
+
+    let mut files = Vec::with_capacity(tracked.len());
+    let mut additions = 0i64;
+    let mut deletions = 0i64;
+    for (relative, acc) in tracked {
+        let abs = root.join(&relative);
+        let mut count = counts.get(&relative).cloned().unwrap_or_default();
+        if acc.untracked && count.additions == 0 {
+            count.additions = text_line_count(&abs);
+        }
+        additions += count.additions;
+        deletions += count.deletions;
+        let status = if acc.untracked {
+            "untracked"
+        } else if acc.y == 'D' || acc.x == 'D' {
+            "deleted"
+        } else if acc.x == 'A' || acc.y == 'A' {
+            "added"
+        } else {
+            "modified"
+        };
+        files.push(GitChangedFile {
+            path: path_to_js(&abs),
+            relative,
+            status: status.to_string(),
+            additions: count.additions,
+            deletions: count.deletions,
+            staged: acc.x != '.',
+            unstaged: acc.untracked || acc.y != '.',
+        });
+    }
+    Some(GitChanges {
+        status,
+        files,
+        additions,
+        deletions,
+        conflicts,
+    })
+}
+
+/// Added and removed lines per path under `root`, working tree against HEAD.
+fn git_numstat_for(root: &Path) -> HashMap<String, FileAcc> {
+    const BASE: [&str; 6] = [
+        "diff",
+        "--relative",
+        "--no-ext-diff",
+        "--no-renames",
+        "--numstat",
+        "-z",
+    ];
+    let run = |extra: &[&str]| {
+        let mut args = BASE.to_vec();
+        args.extend_from_slice(extra);
+        args.extend(["--", "."]);
+        git_run(root, &args)
+    };
+    let mut files = HashMap::new();
+    if let Some(text) = run(&["HEAD"]) {
+        add_numstat_z(&text, &mut files);
+    } else {
+        // No commit yet: everything is in the index or the working tree.
+        for extra in [&[][..], &["--cached"][..]] {
+            if let Some(text) = run(extra) {
+                add_numstat_z(&text, &mut files);
+            }
+        }
+    }
+    files
+}
+
+/// `--numstat -z`: `<added>\t<removed>\t<path>` per NUL record, paths unquoted.
+fn add_numstat_z(text: &str, files: &mut HashMap<String, FileAcc>) {
+    for record in text.split('\0') {
+        let mut parts = record.splitn(3, '\t');
+        let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        if path.is_empty() {
+            continue;
+        }
+        let entry = files.entry(path_to_js(Path::new(path))).or_default();
+        if add != "-" && del != "-" {
+            entry.additions += add.parse::<i64>().unwrap_or(0);
+            entry.deletions += del.parse::<i64>().unwrap_or(0);
+        }
     }
 }
 
@@ -2503,26 +2730,6 @@ fn normalize_diff_path(path: &str) -> String {
 
 const MAX_UNTRACKED_BYTES: u64 = 1024 * 1024;
 
-fn add_untracked_map(root: &Path, files: &mut HashMap<String, FileAcc>) {
-    let Some(stdout) = git_run(
-        root,
-        &["ls-files", "-o", "--exclude-standard", "-z", "--", "."],
-    ) else {
-        return;
-    };
-    for rel in stdout.split('\0') {
-        if rel.is_empty() {
-            continue;
-        }
-        let relative = path_to_js(Path::new(rel));
-        let entry = files.entry(relative.clone()).or_default();
-        entry.untracked = true;
-        if entry.additions == 0 {
-            entry.additions = text_line_count(&root.join(rel));
-        }
-    }
-}
-
 fn text_line_count(path: &Path) -> i64 {
     let Ok(meta) = std::fs::metadata(path) else {
         return 0;
@@ -2548,46 +2755,6 @@ fn text_line_count(path: &Path) -> i64 {
     lines
 }
 
-fn mark_cached_and_unstaged(root: &Path, files: &mut HashMap<String, FileAcc>) {
-    if let Some(names) = git_run(
-        root,
-        &[
-            "diff",
-            "--relative",
-            "--cached",
-            "--name-only",
-            "--no-renames",
-            "--",
-            ".",
-        ],
-    ) {
-        for line in names.lines() {
-            let relative = normalize_diff_path(line);
-            if !relative.is_empty() {
-                files.entry(relative).or_default().staged = true;
-            }
-        }
-    }
-    if let Some(names) = git_run(
-        root,
-        &[
-            "diff",
-            "--relative",
-            "--name-only",
-            "--no-renames",
-            "--",
-            ".",
-        ],
-    ) {
-        for line in names.lines() {
-            let relative = normalize_diff_path(line);
-            if !relative.is_empty() {
-                files.entry(relative).or_default().unstaged = true;
-            }
-        }
-    }
-}
-
 fn git_file_diff_for(root: &Path, relative: &str, staged: bool) -> Result<GitFileDiff, String> {
     let relative = normalize_diff_path(relative);
     if relative.is_empty()
@@ -2602,11 +2769,7 @@ fn git_file_diff_for(root: &Path, relative: &str, staged: bool) -> Result<GitFil
     if !abs.starts_with(root) {
         return Err("Invalid path".into());
     }
-    if !git_is_work_tree(root) {
-        return Err("Not a git repository".into());
-    }
-
-    let prefix = git_stdout(root, &["rev-parse", "--show-prefix"]).unwrap_or_default();
+    let prefix = git_prefix_for(root).ok_or_else(|| "Not a git repository".to_string())?;
     let index_spec = format!(":{prefix}{relative}");
     let (original, current) = if staged {
         let head_spec = format!("HEAD:{prefix}{relative}");
@@ -3012,6 +3175,7 @@ fn git_index_mode(root: &Path, relative: &str) -> Option<String> {
 }
 
 fn git_hash_object(root: &Path, relative: &str, contents: &[u8]) -> Result<String, String> {
+    let _turn = GIT_SPAWN_GATE.enter();
     let mut child = git_cmd()
         .arg("--no-pager")
         .arg("-C")
@@ -3071,14 +3235,31 @@ fn git_discard_file_for(root: &Path, relative: &str) -> Result<(), String> {
 }
 
 fn git_discard_all_for(root: &Path) -> Result<(), String> {
-    let files: Vec<String> = git_diff_index_for(root)
-        .files
-        .into_iter()
-        .filter(|file| file.unstaged)
-        .map(|file| file.relative)
-        .collect();
-    for relative in files {
-        git_discard_file_for(root, &relative)?;
+    let mut tracked = Vec::new();
+    for file in git_diff_files_for(root).files {
+        if !file.unstaged {
+            continue;
+        }
+        if file.status == "untracked" {
+            git_discard_file_for(root, &file.relative)?;
+        } else {
+            tracked.push(file.relative);
+        }
+    }
+    // One `restore` per batch instead of two processes per file; chunked to
+    // stay under the command line limit.
+    let mut start = 0;
+    while start < tracked.len() {
+        let mut end = start;
+        let mut length = 0;
+        while end < tracked.len() && (end == start || length + tracked[end].len() < 16_000) {
+            length += tracked[end].len() + 1;
+            end += 1;
+        }
+        let mut args = vec!["--literal-pathspecs", "restore", "--worktree", "--"];
+        args.extend(tracked[start..end].iter().map(String::as_str));
+        git_checked(root, &args)?;
+        start = end;
     }
     Ok(())
 }
@@ -4723,39 +4904,255 @@ pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, S
     Ok(relative)
 }
 
-fn git_cmd() -> Command {
+/// Git for Windows puts a launcher (`cmd\git.exe`) on PATH that sets up the
+/// environment and then starts the real `mingw64\bin\git.exe`: two processes
+/// per call, about twice the cost. The panels run git constantly, so the real
+/// binary is resolved once and given the directories the launcher would add.
+struct DirectGit {
+    exe: PathBuf,
+    path: std::ffi::OsString,
+    msystem: &'static str,
+}
+
+/// The real git binary behind the launcher found in `dirs`, with the tool
+/// directories it expects on PATH. `None` for any other layout.
+fn direct_git_from(
+    dirs: impl IntoIterator<Item = PathBuf>,
+    is_file: impl Fn(&Path) -> bool,
+) -> Option<(PathBuf, Vec<PathBuf>, &'static str)> {
+    let launcher_dir = dirs.into_iter().find(|dir| is_file(&dir.join("git.exe")))?;
+    if !launcher_dir
+        .file_name()?
+        .to_str()?
+        .eq_ignore_ascii_case("cmd")
+    {
+        return None;
+    }
+    let base = launcher_dir.parent()?;
+    [
+        ("mingw64", "MINGW64"),
+        ("clangarm64", "CLANGARM64"),
+        ("mingw32", "MINGW32"),
+    ]
+    .into_iter()
+    .find_map(|(arch, msystem)| {
+        let bin = base.join(arch).join("bin");
+        let exe = bin.join("git.exe");
+        is_file(&exe).then(|| (exe, vec![bin, base.join("usr").join("bin")], msystem))
+    })
+}
+
+fn direct_git() -> Option<&'static DirectGit> {
+    static DIRECT_GIT: std::sync::OnceLock<Option<DirectGit>> = std::sync::OnceLock::new();
+    DIRECT_GIT
+        .get_or_init(|| {
+            if !cfg!(windows) {
+                return None;
+            }
+            let inherited = std::env::var_os("PATH")?;
+            let (exe, mut dirs, msystem) =
+                direct_git_from(std::env::split_paths(&inherited), |path| path.is_file())?;
+            dirs.extend(std::env::split_paths(&inherited));
+            Some(DirectGit {
+                exe,
+                path: std::env::join_paths(dirs).ok()?,
+                msystem,
+            })
+        })
+        .as_ref()
+}
+
+/// `git` as found on PATH: on Windows the launcher, which prepares the
+/// environment hooks, signers and credential helpers run in.
+fn git_launcher_cmd() -> Command {
     let mut cmd = Command::new("git");
     crate::hide_window_console(&mut cmd);
     cmd
 }
 
+fn git_cmd() -> Command {
+    let Some(direct) = direct_git() else {
+        return git_launcher_cmd();
+    };
+    let mut cmd = Command::new(&direct.exe);
+    cmd.env("PATH", &direct.path);
+    if std::env::var_os("MSYSTEM").is_none() {
+        cmd.env("MSYSTEM", direct.msystem);
+    }
+    crate::hide_window_console(&mut cmd);
+    cmd
+}
+
 fn git_cmd_for_args_with_path(args: &[&str], gui_path: impl FnOnce() -> String) -> Command {
-    let mut cmd = git_cmd();
     if matches!(
         args.first().copied(),
         Some("commit" | "push" | "pull" | "fetch" | "clone")
     ) {
         // Signers, hooks, credential helpers, and git-lfs may need the login-shell PATH.
+        let mut cmd = git_launcher_cmd();
         cmd.env("PATH", gui_path());
+        return cmd;
     }
-    cmd
+    git_cmd()
+}
+
+/// How long a push, pull or fetch may run before it is stopped. A stuck
+/// credential helper would otherwise hold the Changes panel busy for good.
+const GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn git_is_network_command(args: &[&str]) -> bool {
+    matches!(args.first().copied(), Some("push" | "pull" | "fetch"))
+}
+
+/// `Command::output` with a deadline: the child is killed when it passes.
+fn output_with_timeout(
+    cmd: &mut Command,
+    timeout: Duration,
+) -> std::io::Result<std::process::Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // Drained on their own threads so a chatty child cannot fill a pipe and stall.
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "git did not finish within {} minutes and was stopped",
+                    timeout.as_secs() / 60
+                ),
+            ));
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 fn git_cmd_for_args(args: &[&str]) -> Command {
     git_cmd_for_args_with_path(args, crate::harness::gui_search_path)
 }
 
+/// How long a git process is given to get going before the next may start.
+const GIT_STARTUP_WINDOW: Duration = Duration::from_millis(200);
+
+/// Lets one git process start at a time.
+///
+/// Process creation is hooked by security software on many Windows machines,
+/// and there two processes created at the same moment can leave one of them
+/// waiting about five seconds before it runs at all (measured with `cmd /c
+/// exit` as much as with git). The panels ask for git from several threads at
+/// once, so their processes are started one after another instead. A claim
+/// lapses after `GIT_STARTUP_WINDOW`: a push or a long diff holds nobody up.
+struct GitSpawnGate {
+    holder: Mutex<Option<(u64, Instant)>>,
+    freed: std::sync::Condvar,
+    next: std::sync::atomic::AtomicU64,
+}
+
+static GIT_SPAWN_GATE: GitSpawnGate = GitSpawnGate {
+    holder: Mutex::new(None),
+    freed: std::sync::Condvar::new(),
+    next: std::sync::atomic::AtomicU64::new(0),
+};
+
+struct GitSpawnTurn(Option<(&'static GitSpawnGate, u64)>);
+
+impl GitSpawnGate {
+    /// A turn at the shared gate; free of charge where creation does not stall.
+    fn enter(&'static self) -> GitSpawnTurn {
+        if cfg!(windows) {
+            self.wait_turn()
+        } else {
+            GitSpawnTurn(None)
+        }
+    }
+
+    fn wait_turn(&'static self) -> GitSpawnTurn {
+        let Ok(mut holder) = self.holder.lock() else {
+            return GitSpawnTurn(None);
+        };
+        while let Some((_, since)) = *holder {
+            let Some(left) = GIT_STARTUP_WINDOW.checked_sub(since.elapsed()) else {
+                break;
+            };
+            holder = match self.freed.wait_timeout(holder, left) {
+                Ok((holder, _)) => holder,
+                Err(_) => return GitSpawnTurn(None),
+            };
+        }
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        *holder = Some((id, Instant::now()));
+        GitSpawnTurn(Some((self, id)))
+    }
+}
+
+impl Drop for GitSpawnTurn {
+    fn drop(&mut self) {
+        let Some((gate, id)) = self.0 else { return };
+        if let Ok(mut holder) = gate.holder.lock() {
+            // A lapsed claim may already belong to the next process.
+            if matches!(*holder, Some((held, _)) if held == id) {
+                *holder = None;
+                gate.freed.notify_one();
+            }
+        }
+    }
+}
+
+/// `Command::output` for git, taking a turn at the spawn gate.
+fn git_cmd_output(cmd: &mut Command) -> std::io::Result<std::process::Output> {
+    let _turn = GIT_SPAWN_GATE.enter();
+    cmd.output()
+}
+
 pub(crate) fn git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
     let mut cmd = git_cmd_for_args(args);
-    let output = cmd
-        .arg("--no-pager")
+    cmd.arg("--no-pager")
         .arg("-C")
         .arg(root)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| e.to_string())?;
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let _turn = GIT_SPAWN_GATE.enter();
+    let output = if git_is_network_command(args) {
+        output_with_timeout(&mut cmd, GIT_NETWORK_TIMEOUT)
+    } else {
+        cmd.output()
+    }
+    .map_err(|e| e.to_string())?;
     if output.status.success() {
         return Ok(());
     }
@@ -4781,15 +5178,16 @@ pub(crate) fn git_run(root: &Path, args: &[&str]) -> Option<String> {
 }
 
 pub(crate) fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let output = git_cmd_for_args(args)
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .ok()?;
+    let output = git_cmd_output(
+        git_cmd_for_args(args)
+            .arg("--no-pager")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )
+    .ok()?;
     if git_status_ok(&output.status, args) {
         return Some(output.stdout);
     }
@@ -4816,7 +5214,8 @@ pub(crate) fn git_output_capped(
     max_bytes: usize,
     cancel: Option<&AtomicBool>,
 ) -> Option<(Vec<u8>, bool)> {
-    let mut child = git_cmd()
+    let mut child = git_cmd();
+    let child = child
         .arg("--no-pager")
         .arg("-C")
         .arg(root)
@@ -4825,9 +5224,9 @@ pub(crate) fn git_output_capped(
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    let _turn = GIT_SPAWN_GATE.enter();
+    let mut child = child.spawn().ok()?;
     let Some(mut stdout) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();
@@ -4933,31 +5332,45 @@ fn git_is_work_tree(root: &Path) -> bool {
 }
 
 fn git_branches_for(root: &Path) -> GitBranches {
-    if !git_is_work_tree(root) {
+    // One listing names both kinds of ref and marks the checked-out branch:
+    // the branch pickers reload this after every commit or checkout.
+    let Some(listing) = git_run(
+        root,
+        &[
+            "for-each-ref",
+            "--format=%(refname)\t%(HEAD)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    ) else {
         return GitBranches::default();
-    }
-
-    let current_branch = git_head_branch(root);
-    let head_sha = git_stdout(root, &["rev-parse", "--short", "HEAD"]);
+    };
+    // No marked branch: HEAD is detached, or on a branch with no commit yet.
+    let current_branch = listing
+        .lines()
+        .find_map(|line| {
+            let (refname, head) = line.trim().split_once('\t')?;
+            (head.trim() == "*")
+                .then(|| refname.strip_prefix("refs/heads/"))
+                .flatten()
+                .map(str::to_string)
+        })
+        .or_else(|| git_head_branch(root));
+    // Only a detached HEAD needs its sha.
+    let head_sha = if current_branch.is_none() {
+        git_stdout(root, &["rev-parse", "--short", "HEAD"])
+    } else {
+        None
+    };
     let detached = current_branch.is_none() && head_sha.is_some();
     let current = current_branch.clone().or(head_sha);
 
     let mut branches = Vec::new();
     let mut local_names = HashSet::new();
-    if let Some(text) = git_run(
-        root,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)\t%(HEAD)",
-            "refs/heads",
-        ],
-    ) {
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            let (name, head) = line.split_once('\t').unwrap_or((line, ""));
+    let mut remote_refs = Vec::new();
+    for line in listing.lines() {
+        let (refname, head) = line.trim().split_once('\t').unwrap_or((line.trim(), ""));
+        if let Some(name) = refname.strip_prefix("refs/heads/") {
             if name.is_empty() {
                 continue;
             }
@@ -4967,6 +5380,8 @@ fn git_branches_for(root: &Path) -> GitBranches {
                 current: head.trim() == "*",
                 remote: None,
             });
+        } else if let Some(full) = refname.strip_prefix("refs/remotes/") {
+            remote_refs.push(full);
         }
     }
 
@@ -4981,30 +5396,21 @@ fn git_branches_for(root: &Path) -> GitBranches {
         }
     }
 
-    if let Some(text) = git_run(
-        root,
-        &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
-    ) {
-        for line in text.lines() {
-            let full = line.trim();
-            if full.is_empty() {
-                continue;
-            }
-            let Some((remote, name)) = full.split_once('/') else {
-                continue;
-            };
-            if remote.is_empty() || name.is_empty() || name == "HEAD" || name.ends_with("/HEAD") {
-                continue;
-            }
-            if local_names.contains(name) {
-                continue;
-            }
-            branches.push(GitBranchEntry {
-                name: name.to_string(),
-                current: false,
-                remote: Some(remote.to_string()),
-            });
+    for full in remote_refs {
+        let Some((remote, name)) = full.split_once('/') else {
+            continue;
+        };
+        if remote.is_empty() || name.is_empty() || name == "HEAD" || name.ends_with("/HEAD") {
+            continue;
         }
+        if local_names.contains(name) {
+            continue;
+        }
+        branches.push(GitBranchEntry {
+            name: name.to_string(),
+            current: false,
+            remote: Some(remote.to_string()),
+        });
     }
 
     branches.sort_by(|a, b| {
@@ -5567,14 +5973,15 @@ fn git_branch_name(root: &Path, name: &str) -> Result<String, String> {
     if name.is_empty() {
         return Err("Branch name cannot be empty".into());
     }
-    let output = git_cmd()
-        .arg("-C")
-        .arg(root)
-        .args(["check-ref-format", "--branch", name])
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| e.to_string())?;
+    let output = git_cmd_output(
+        git_cmd()
+            .arg("-C")
+            .arg(root)
+            .args(["check-ref-format", "--branch", name])
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )
+    .map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(format!("'{name}' is not a valid branch name"));
     }
@@ -5589,7 +5996,7 @@ fn git_origin_repo(root: &Path) -> Option<String> {
     git_url_repo_name(&git_stdout(root, &["remote", "get-url", "origin"])?)
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct GitSync {
     remote: Option<String>,
     upstream: Option<String>,
@@ -5600,16 +6007,106 @@ struct GitSync {
     head_pushed: bool,
 }
 
-fn git_sync_for(root: &Path) -> GitSync {
+/// Everything `git_sync_uncached` depends on: HEAD and its upstream as `git
+/// status` reported them, and when the remote-tracking refs last changed.
+#[derive(Clone, PartialEq, Eq)]
+struct GitSyncKey {
+    oid: Option<String>,
+    head: Option<String>,
+    upstream: Option<String>,
+    ahead_behind: Option<(i64, i64)>,
+    refs: GitRefsStamp,
+}
+
+/// Modification times of what a fetch, push or remote edit writes, plus the
+/// count and newest time of the loose remote-tracking refs.
+type GitRefsStamp = Option<([Option<SystemTime>; 3], usize, Option<SystemTime>)>;
+
+fn git_refs_stamp(root: &Path) -> GitRefsStamp {
+    let git_dir = find_git_dir(root)?;
+    // A linked worktree keeps refs and config in the main repository.
+    let common = std::fs::read_to_string(git_dir.join("commondir"))
+        .ok()
+        .map(|text| git_dir.join(text.trim()))
+        .unwrap_or_else(|| git_dir.clone());
+    let modified = |path: PathBuf| {
+        std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .ok()
+    };
+    let mut count = 0usize;
+    let mut newest = None;
+    let mut pending = vec![common.join("refs").join("remotes")];
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                pending.push(entry.path());
+                continue;
+            }
+            count += 1;
+            newest = newest.max(meta.modified().ok());
+        }
+    }
+    Some((
+        [
+            modified(common.join("packed-refs")),
+            modified(common.join("config")),
+            modified(git_dir.join("FETCH_HEAD")),
+        ],
+        count,
+        newest,
+    ))
+}
+
+/// The remote lookups cost four to six git processes and their answer only
+/// moves with HEAD or the remote-tracking refs, so the 2 s index poll reuses
+/// it. The age limit covers a ref change the stamp cannot see.
+const GIT_SYNC_TTL: Duration = Duration::from_secs(60);
+
+type GitSyncCached = (Instant, GitSyncKey, GitSync);
+
+static GIT_SYNC_CACHE: Mutex<Option<HashMap<PathBuf, GitSyncCached>>> = Mutex::new(None);
+
+fn git_sync_for(root: &Path, status: &StatusSnapshot) -> GitSync {
+    let key = GitSyncKey {
+        oid: status.oid.clone(),
+        head: status.head.clone(),
+        upstream: status.upstream.clone(),
+        ahead_behind: status.ahead_behind,
+        refs: git_refs_stamp(root),
+    };
+    if let Ok(guard) = GIT_SYNC_CACHE.lock() {
+        if let Some((at, cached, sync)) = guard.as_ref().and_then(|cache| cache.get(root)) {
+            if *cached == key && at.elapsed() < GIT_SYNC_TTL {
+                return sync.clone();
+            }
+        }
+    }
+    let sync = git_sync_uncached(root, status);
+    if let Ok(mut guard) = GIT_SYNC_CACHE.lock() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(root.to_path_buf(), (Instant::now(), key, sync.clone()));
+    }
+    sync
+}
+
+fn git_sync_uncached(root: &Path, status: &StatusSnapshot) -> GitSync {
     let remote = git_remote_name(root);
-    let upstream = git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]);
+    // `git status` names a configured upstream even after its ref is deleted,
+    // and then reports no ahead/behind counts for it.
+    let upstream = status.ahead_behind.and_then(|_| status.upstream.clone());
     let default_branch = git_default_branch(root, remote.as_deref());
     let default_ref = match (&remote, &default_branch) {
         (Some(remote), Some(branch)) => Some(format!("{remote}/{branch}")),
         _ => None,
     };
-    let (ahead, behind) = if upstream.is_some() {
-        git_ahead_behind(root, "@{upstream}")
+    let (ahead, behind) = if let Some(counts) = status.ahead_behind {
+        counts
     } else if let Some(base) = default_ref.as_deref() {
         git_ahead_behind(root, base)
     } else {
@@ -5706,7 +6203,7 @@ fn git_ahead_behind(root: &Path, base: &str) -> (i64, i64) {
 }
 
 fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
-    let output = git_cmd().arg("-C").arg(root).args(args).output().ok()?;
+    let output = git_cmd_output(git_cmd().arg("-C").arg(root).args(args)).ok()?;
     if !output.status.success() {
         return None;
     }
@@ -7761,6 +8258,138 @@ mod tests {
     }
 
     #[test]
+    fn status_v2_reads_branch_headers_and_entries() {
+        let text = [
+            "# branch.oid 1111111111111111111111111111111111111111",
+            "# branch.head main",
+            "# branch.upstream origin/main",
+            "# branch.ab +2 -3",
+            "1 .M N... 100644 100644 100644 aaaa bbbb src/with space.rs",
+            "1 A. N... 000000 100644 100644 0000 cccc new.rs",
+            "2 R. N... 100644 100644 100644 aaaa aaaa R100 moved.rs",
+            "old name.rs",
+            "u UU N... 100644 100644 100644 100644 aaaa bbbb cccc both.rs",
+            "? notes/çay.txt",
+            "",
+        ]
+        .join("\0");
+        let status = parse_status_v2(&text);
+        assert_eq!(
+            status.oid.as_deref(),
+            Some("1111111111111111111111111111111111111111")
+        );
+        assert_eq!(status.head.as_deref(), Some("main"));
+        assert_eq!(status.upstream.as_deref(), Some("origin/main"));
+        assert_eq!(status.ahead_behind, Some((2, 3)));
+        let seen: Vec<(StatusKind, char, char, &str)> = status
+            .entries
+            .iter()
+            .map(|entry| (entry.kind, entry.x, entry.y, entry.path.as_str()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (StatusKind::Changed, '.', 'M', "src/with space.rs"),
+                (StatusKind::Changed, 'A', '.', "new.rs"),
+                (StatusKind::Changed, 'R', '.', "moved.rs"),
+                (StatusKind::Unmerged, 'U', 'U', "both.rs"),
+                (StatusKind::Untracked, '?', '?', "notes/çay.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn status_v2_reads_an_unborn_or_detached_head() {
+        let unborn = parse_status_v2("# branch.oid (initial)\0# branch.head main\0");
+        assert_eq!(unborn.oid, None);
+        assert_eq!(unborn.head.as_deref(), Some("main"));
+        assert_eq!(unborn.ahead_behind, None);
+
+        let detached = parse_status_v2("# branch.oid abcdef0123\0# branch.head (detached)\0");
+        assert_eq!(detached.oid.as_deref(), Some("abcdef0123"));
+        assert_eq!(detached.head, None);
+    }
+
+    #[test]
+    fn git_diff_index_before_the_first_commit() {
+        let dir = tmp("git-diff-unborn");
+        if !init_git(&dir.0, "main", None) {
+            return;
+        }
+        std::fs::write(dir.0.join("staged.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.0.join("loose.txt"), "one\n").unwrap();
+        assert!(git(&dir.0, &["add", "staged.txt"]));
+
+        let index = git_diff_index_for(&dir.0);
+        assert_eq!(index.branch.as_deref(), Some("main"));
+        assert_eq!(index.head, None);
+        let seen: Vec<(&str, &str, i64, bool, bool)> = index
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.relative.as_str(),
+                    file.status.as_str(),
+                    file.additions,
+                    file.staged,
+                    file.unstaged,
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("loose.txt", "untracked", 1, false, true),
+                ("staged.txt", "added", 2, true, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn git_diff_index_reports_deletions_and_non_ascii_paths() {
+        let dir = tmp("git-diff-kinds");
+        if !init_git_commit(
+            &dir.0,
+            &[
+                ("gone.txt", "a\nb\n"),
+                ("çay.txt", "bir\n"),
+                ("kept.txt", "x\n"),
+            ],
+        ) {
+            return;
+        }
+        std::fs::remove_file(dir.0.join("gone.txt")).unwrap();
+        std::fs::write(dir.0.join("çay.txt"), "bir\niki\n").unwrap();
+        // Removed from the index only: still on disk, so it reads as untracked.
+        assert!(git(&dir.0, &["rm", "--cached", "-q", "kept.txt"]));
+
+        let index = git_diff_index_for(&dir.0);
+        let seen: Vec<(&str, &str, i64, i64, bool, bool)> = index
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.relative.as_str(),
+                    file.status.as_str(),
+                    file.additions,
+                    file.deletions,
+                    file.staged,
+                    file.unstaged,
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("gone.txt", "deleted", 0, 2, false, true),
+                ("kept.txt", "untracked", 1, 1, true, true),
+                ("çay.txt", "modified", 1, 0, false, true),
+            ]
+        );
+        assert_eq!(git_diff_stats_for(&dir.0).files, 3);
+    }
+
+    #[test]
     fn git_diff_stats_are_zero_outside_a_repo() {
         let dir = tmp("git-diff-none");
         std::fs::write(dir.0.join("notes.txt"), "hello\n").unwrap();
@@ -9504,6 +10133,9 @@ mod tests {
         assert!(!head.is_empty());
     }
 
+    // Windows may run the real binary directly, with the launcher's tool
+    // directories added in front of the inherited PATH.
+    #[cfg(not(windows))]
     #[test]
     fn read_only_git_cmd_uses_inherited_path() {
         assert!(!git_cmd()
@@ -9517,10 +10149,61 @@ mod tests {
             let cmd = git_cmd_for_args_with_path(&[action], || {
                 panic!("read-only git must not resolve the login-shell PATH")
             });
-            assert!(!cmd
-                .get_envs()
-                .any(|(key, _)| key == std::ffi::OsStr::new("PATH")));
+            assert!(
+                cfg!(windows)
+                    || !cmd
+                        .get_envs()
+                        .any(|(key, _)| key == std::ffi::OsStr::new("PATH"))
+            );
         }
+    }
+
+    #[test]
+    fn direct_git_is_the_binary_behind_the_windows_launcher() {
+        let files = [
+            PathBuf::from("C:/Git/cmd/git.exe"),
+            PathBuf::from("C:/Git/mingw64/bin/git.exe"),
+        ];
+        let is_file = |path: &Path| files.iter().any(|file| file == path);
+        let (exe, dirs, msystem) = direct_git_from(
+            [PathBuf::from("C:/Windows"), PathBuf::from("C:/Git/cmd")],
+            is_file,
+        )
+        .unwrap();
+        assert_eq!(exe, PathBuf::from("C:/Git/mingw64/bin/git.exe"));
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("C:/Git/mingw64/bin"),
+                PathBuf::from("C:/Git/usr/bin")
+            ]
+        );
+        assert_eq!(msystem, "MINGW64");
+    }
+
+    #[test]
+    fn direct_git_is_not_guessed_for_other_layouts() {
+        // A shim directory (scoop, a package manager) is not the launcher.
+        let shim = PathBuf::from("C:/scoop/shims/git.exe");
+        assert!(direct_git_from([PathBuf::from("C:/scoop/shims")], |path| path == shim).is_none());
+        assert!(direct_git_from([PathBuf::from("C:/Windows")], |_| false).is_none());
+    }
+
+    #[test]
+    fn output_with_timeout_stops_a_command_that_overruns() {
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = Command::new("ping");
+            cmd.args(["-n", "30", "127.0.0.1"]);
+            cmd
+        } else {
+            let mut cmd = Command::new("sleep");
+            cmd.arg("30");
+            cmd
+        };
+        let started = Instant::now();
+        let error = output_with_timeout(&mut cmd, Duration::from_millis(200)).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
@@ -10203,5 +10886,38 @@ mod tests {
         assert_eq!(blame[1].sha, second);
         assert_eq!(blame[1].author, "MonoCode");
         assert!(git_blame_for(&dir.0, "../outside.txt").is_err());
+    }
+}
+
+#[cfg(test)]
+mod spawn_gate_tests {
+    use super::*;
+
+    #[test]
+    fn spawn_gate_hands_over_when_a_turn_ends_or_lapses() {
+        // A gate of its own: the shared one is busy with the other tests.
+        let gate: &'static GitSpawnGate = Box::leak(Box::new(GitSpawnGate {
+            holder: Mutex::new(None),
+            freed: std::sync::Condvar::new(),
+            next: std::sync::atomic::AtomicU64::new(0),
+        }));
+        let first = gate.wait_turn();
+        let started = Instant::now();
+        let waiter = thread::spawn(move || {
+            let _turn = gate.wait_turn();
+            started.elapsed()
+        });
+        thread::sleep(Duration::from_millis(40));
+        drop(first);
+        // Freed well before the window would have lapsed on its own.
+        let waited = waiter.join().unwrap();
+        assert!(waited >= Duration::from_millis(30));
+        assert!(waited < GIT_STARTUP_WINDOW);
+
+        // A turn that is still held (a long push) stops blocking after the window.
+        let _held = gate.wait_turn();
+        let started = Instant::now();
+        let _next = gate.wait_turn();
+        assert!(started.elapsed() >= GIT_STARTUP_WINDOW - Duration::from_millis(20));
     }
 }

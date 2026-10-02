@@ -405,7 +405,7 @@ function useGitHistory(
     };
     window.addEventListener("focus", onResume);
     document.addEventListener("visibilitychange", onResume);
-    const unsub = subscribeGitChanged(load);
+    const unsub = subscribeGitChanged(load, { refsOnly: true });
     return () => {
       window.removeEventListener("focus", onResume);
       document.removeEventListener("visibilitychange", onResume);

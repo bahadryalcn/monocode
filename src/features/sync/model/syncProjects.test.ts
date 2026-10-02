@@ -7,8 +7,16 @@ import {
   localProjectIdsByPath,
   mergeRailLayout,
   remoteOnlyProjects,
+  setLocalHostEnvironmentId,
 } from "./syncProjects";
-import { markPulled, takeOutbox } from "./syncPeerState";
+import { markAutoAdded } from "./syncAutoAdded";
+import { pathKey } from "../../../shared/lib/paths";
+import {
+  loadProjectGroupAssignments,
+  saveProjectGroupAssignments,
+  saveProjectGroups,
+} from "../../projects/model/projectGroups";
+import { applyPushResult, markPullCompleted, markPulled, takeOutbox } from "./syncPeerState";
 import { localMachineId } from "./syncMachineId";
 import { loadProjectRailOrder, loadRecents, loadPinnedProjects, rememberProject, savePinnedProjects, saveProjectRailOrder } from "../../projects/model/recents";
 
@@ -41,6 +49,10 @@ describe("syncProjects", () => {
   it("captures the rail order as a railLayout op", () => {
     rememberProject("/home/me/code/app");
     saveProjectRailOrder(["/home/me/code/app"]);
+    captureLocalProjectChanges(MACHINE);
+    // Not before the first pull: the host may hold a richer layout.
+    expect(takeOutbox(MACHINE).some((op) => op.table === "railLayout")).toBe(false);
+    markPullCompleted(MACHINE);
     captureLocalProjectChanges(MACHINE);
     const layout = takeOutbox(MACHINE).find((op) => op.table === "railLayout");
     const id = Object.values(localProjectIdsByPath())[0];
@@ -177,5 +189,145 @@ describe("remote-only projects and manual links", () => {
     captureLocalProjectChanges(MACHINE);
     const pathOp = takeOutbox(MACHINE).find((op) => op.table === "projectPath");
     expect(pathOp?.value).toMatchObject({ projectId: "name:site", path: "/home/me/code/website" });
+  });
+});
+
+describe("host environment on projectPath records", () => {
+  beforeEach(mockLocalStorage);
+
+  const pathOps = () => takeOutbox(MACHINE).filter((op) => op.table === "projectPath");
+  const settle = () => {
+    const sent = takeOutbox(MACHINE);
+    applyPushResult(
+      MACHINE,
+      { rev: sent.length, applied: sent.map((op, i) => ({ table: op.table, id: op.id, rev: i + 1 })), rejected: [] },
+      sent,
+    );
+  };
+
+  it("omits the host while unknown and re-pushes the path once it is known or changes", () => {
+    rememberProject("/home/me/code/app");
+    captureLocalProjectChanges(MACHINE);
+    expect(pathOps()[0].value).not.toHaveProperty("hostEnvironmentId");
+    settle();
+
+    setLocalHostEnvironmentId("env-1");
+    captureLocalProjectChanges(MACHINE);
+    expect(pathOps()[0].value).toMatchObject({ path: "/home/me/code/app", hostEnvironmentId: "env-1" });
+    settle();
+    captureLocalProjectChanges(MACHINE);
+    expect(pathOps()).toEqual([]);
+
+    setLocalHostEnvironmentId("env-2");
+    captureLocalProjectChanges(MACHINE);
+    expect(pathOps()[0].value).toMatchObject({ hostEnvironmentId: "env-2" });
+  });
+
+  it("remembers another machine's host with its path", () => {
+    applyRemoteProjectRecords(MACHINE, [
+      { table: "projectPath", id: "a", rev: 1, value: { projectId: "name:site", machineId: "m2", path: "C:/x/site", archived: false, hostEnvironmentId: "env-2" } },
+      { table: "projectPath", id: "b", rev: 2, value: { projectId: "name:site", machineId: "m3", path: "/y/site", archived: false } },
+    ]);
+    expect(remoteOnlyProjects()).toEqual([
+      {
+        projectId: "name:site",
+        name: "site",
+        otherPaths: [
+          { machineId: "m2", path: "C:/x/site", hostEnvironmentId: "env-2" },
+          { machineId: "m3", path: "/y/site" },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("remote:// rail projects", () => {
+  beforeEach(mockLocalStorage);
+
+  const REMOTE = "remote://env-a/C:/Code/App";
+
+  it("get the id of their folder on the host but never a project or projectPath record", () => {
+    rememberProject(REMOTE);
+    rememberProject("remote://env-a/home/me/Site");
+    captureLocalProjectChanges(MACHINE);
+    expect(localProjectIdsByPath()).toEqual({
+      [pathKey(REMOTE)]: "name:app",
+      [pathKey("remote://env-a/home/me/Site")]: "name:site",
+    });
+    expect(localPathKeyForProjectId("name:app")).toBe(pathKey(REMOTE));
+    expect(takeOutbox(MACHINE)).toEqual([]);
+  });
+
+  it("lose the id to a local folder of the same name", () => {
+    rememberProject(REMOTE);
+    rememberProject("/home/me/code/app");
+    captureLocalProjectChanges(MACHINE);
+    expect(localProjectIdsByPath()).toEqual({ [pathKey("/home/me/code/app")]: "name:app" });
+    expect(takeOutbox(MACHINE).find((op) => op.table === "projectPath")?.value).toMatchObject({
+      path: "/home/me/code/app",
+    });
+  });
+
+  it("use the project they were auto-added for, whatever the host calls the folder", () => {
+    rememberProject("remote://env-a/private/real");
+    markAutoAdded("name:app", "remote://env-a/private/real");
+    captureLocalProjectChanges(MACHINE);
+    expect(localProjectIdsByPath()).toEqual({ [pathKey("remote://env-a/private/real")]: "name:app" });
+  });
+
+  it("are not listed as missing here", () => {
+    const remote = (projectId: string, path: string) =>
+      ({ table: "projectPath", value: { projectId, machineId: "m2", path, archived: false } }) as never;
+    applyRemoteProjectRecords(MACHINE, [remote("name:app", "C:/Code/App"), remote("name:site", "C:/Code/site")]);
+    rememberProject(REMOTE);
+    expect(remoteOnlyProjects().map((project) => project.projectId)).toEqual(["name:site"]);
+  });
+
+  it("take the rail slot and pin the host has for them, then sync later edits", () => {
+    rememberProject("/home/me/code/mine");
+    saveProjectRailOrder(["/home/me/code/mine"]);
+    markPulled(MACHINE, [
+      { table: "railLayout", id: "rail", rev: 1, value: { order: ["name:app", "name:other"], pinned: ["name:app"] } },
+    ]);
+    captureLocalProjectChanges(MACHINE);
+    takeOutbox(MACHINE);
+
+    rememberProject(REMOTE);
+    saveProjectRailOrder(["/home/me/code/mine", REMOTE]);
+    captureLocalProjectChanges(MACHINE);
+    const layout = () => takeOutbox(MACHINE).find((op) => op.table === "railLayout")?.value;
+    expect(layout()).toEqual({ order: ["name:app", "name:other", "name:mine"], pinned: ["name:app"] });
+    expect(loadProjectRailOrder()).toEqual([REMOTE, "/home/me/code/mine"]);
+    expect(loadPinnedProjects()).toEqual([REMOTE]);
+
+    // Nothing changed locally since: the same layout again.
+    captureLocalProjectChanges(MACHINE);
+    expect(layout()).toEqual({ order: ["name:app", "name:other", "name:mine"], pinned: ["name:app"] });
+
+    savePinnedProjects([]);
+    captureLocalProjectChanges(MACHINE);
+    expect(layout()).toEqual({ order: ["name:app", "name:other", "name:mine"], pinned: [] });
+  });
+
+  it("follow an incoming layout, while remote projects without an id keep their pin", () => {
+    rememberProject(REMOTE);
+    rememberProject("/home/me/code/mine");
+    captureLocalProjectChanges(MACHINE);
+    savePinnedProjects([REMOTE, "remote://box/unknown"]);
+    applyRemoteProjectRecords(MACHINE, [
+      { table: "railLayout", id: "rail", rev: 1, value: { order: ["name:app", "name:mine"], pinned: ["name:mine"] } },
+    ]);
+    expect(loadProjectRailOrder()).toEqual([REMOTE, "/home/me/code/mine"]);
+    expect(loadPinnedProjects()).toEqual(["/home/me/code/mine", "remote://box/unknown"]);
+  });
+
+  it("hand their group to a local folder that takes over the id", () => {
+    saveProjectGroups([{ id: "g1", name: "Work", collapsed: false }]);
+    rememberProject(REMOTE);
+    saveProjectGroupAssignments({ [pathKey(REMOTE)]: "g1" });
+    captureLocalProjectChanges(MACHINE);
+    rememberProject("/home/me/code/app");
+    captureLocalProjectChanges(MACHINE);
+    expect(loadProjectGroupAssignments()[pathKey("/home/me/code/app")]).toBe("g1");
   });
 });

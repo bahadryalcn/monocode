@@ -1,6 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CYCLE_INTERVAL_MS,
+  MIN_CYCLE_SPACING_MS,
+  SYNC_UNSUPPORTED_MESSAGE,
   getSyncStatus,
+  recordSyncStatus,
   runSyncCycle,
   startSyncLoop,
   subscribeSyncMerged,
@@ -34,13 +38,13 @@ describe("runSyncCycle", () => {
       if (method === "sync.push") {
         expect(params.ops).toEqual(
           expect.arrayContaining([
-            { table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "Mine", collapsed: false } },
+            { table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "Mine" } },
           ]),
         );
         return { rev: 5, applied: [{ table: "group", id: "g1", rev: 5 }], rejected: [] };
       }
       if (method === "sync.pull") {
-        expect(params.sinceRev).toBe(0);
+        if (params.sinceRev !== 0) return { rev: 6, records: [] };
         return {
           rev: 6,
           records: [{ table: "group", id: "g2", rev: 6, value: { id: "g2", name: "Theirs", collapsed: false } }],
@@ -52,7 +56,12 @@ describe("runSyncCycle", () => {
     await runSyncCycle(MACHINE, request);
 
     expect(request).toHaveBeenCalledWith("sync.push", { ops: expect.any(Array) });
-    expect(request).toHaveBeenCalledWith("sync.pull", { sinceRev: 0 });
+    // First contact pulls before pushing, then pulls again after the push.
+    expect(request.mock.calls.map(([method, params]) => `${method}:${params.sinceRev ?? ""}`)).toEqual([
+      "sync.pull:0",
+      "sync.push:",
+      "sync.pull:6",
+    ]);
     expect(loadProjectGroups().map((g) => g.id).sort()).toEqual(["g1", "g2"]);
     expect(peerRev(MACHINE)).toBe(6);
   });
@@ -192,6 +201,79 @@ describe("sync status", () => {
     const loop = startSyncLoop(() => ["st-now"], () => request);
     await syncNow("st-now");
     expect(getSyncStatus("st-now").state).toBe("ok");
+    loop.stop();
+  });
+
+  it("syncNow marks a machine the loop does not sync as unsupported, replacing a stale error", async () => {
+    recordSyncStatus("st-gone", { state: "error", lastError: "Machine is unreachable" });
+    const request = vi.fn(async () => ({ rev: 1, records: [] }));
+    const loop = startSyncLoop(() => [], () => request);
+    await syncNow();
+    await syncNow("st-gone");
+    loop.stop();
+    expect(getSyncStatus("st-gone")).toMatchObject({ state: "unsupported", lastError: SYNC_UNSUPPORTED_MESSAGE });
+    expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe("sync loop pacing", () => {
+  beforeEach(() => {
+    mockLocalStorage();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps cycles at least 3 s apart, collapses nudges into one trailing run, and idles at 30 s", async () => {
+    const request = async () => ({ rev: 1, records: [], applied: [], rejected: [] });
+    const cycles = vi.fn(() => ["pace-1"]);
+    const loop = startSyncLoop(cycles, () => request);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cycles).toHaveBeenCalledTimes(1);
+
+    loop.nudge();
+    loop.nudge();
+    loop.nudge();
+    await vi.advanceTimersByTimeAsync(MIN_CYCLE_SPACING_MS - 1);
+    expect(cycles).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(cycles).toHaveBeenCalledTimes(2);
+
+    // No nudge: nothing until the 30 s poll.
+    await vi.advanceTimersByTimeAsync(CYCLE_INTERVAL_MS - MIN_CYCLE_SPACING_MS - 1);
+    expect(cycles).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(cycles).toHaveBeenCalledTimes(3);
+    expect(CYCLE_INTERVAL_MS).toBe(30_000);
+    expect(MIN_CYCLE_SPACING_MS).toBe(3_000);
+
+    loop.nudge();
+    loop.stop();
+    await vi.advanceTimersByTimeAsync(CYCLE_INTERVAL_MS * 2);
+    expect(cycles).toHaveBeenCalledTimes(3);
+  });
+
+  it("a nudge during a running cycle schedules exactly one trailing run after the spacing", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const request = async () => {
+      await gate;
+      return { rev: 1, records: [], applied: [], rejected: [] };
+    };
+    const cycles = vi.fn(() => ["pace-2"]);
+    const loop = startSyncLoop(cycles, () => request);
+    await vi.advanceTimersByTimeAsync(10);
+    loop.nudge();
+    loop.nudge();
+    expect(cycles).toHaveBeenCalledTimes(1);
+    release();
+    await vi.advanceTimersByTimeAsync(MIN_CYCLE_SPACING_MS - 1);
+    expect(cycles).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(cycles).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(MIN_CYCLE_SPACING_MS * 2);
+    expect(cycles).toHaveBeenCalledTimes(2);
     loop.stop();
   });
 });

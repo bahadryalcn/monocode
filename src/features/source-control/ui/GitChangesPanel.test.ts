@@ -56,11 +56,14 @@ vi.mock("../../inbox/model/inboxSelfActivity", () => ({
 
 import { GitChangesPanel } from "./GitChangesPanel";
 import {
+  gitCommit,
   gitDiffIndex,
   gitPrCreate,
   gitPull,
   gitPush,
   gitRangeContext,
+  gitStageFile,
+  notifyGitChanged,
 } from "../../../platform/tauri/fs";
 import {
   generateCommitMessage,
@@ -207,6 +210,106 @@ async function openBranchMenu() {
   await act(async () => {});
   return document.querySelector<HTMLButtonElement>('[role="menuitem"]')!;
 }
+
+describe("GitChangesPanel action feedback", () => {
+  const changed = (staged: boolean) => ({
+    path: "/repo-feedback/change.ts",
+    relative: "change.ts",
+    status: "modified",
+    additions: 1,
+    deletions: 0,
+    staged,
+    unstaged: !staged,
+  });
+  const sections = () =>
+    [...container.querySelectorAll("button > span.uppercase")]
+      .map((title) => title.textContent ?? "")
+      .filter((title) => title.endsWith("Changes"));
+  const statusText = () =>
+    container.querySelector('header [role="status"]')?.textContent ?? null;
+
+  it("moves a file to Staged Changes before git has answered", async () => {
+    const cwd = "/repo-feedback";
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [changed(false)] }));
+    let finishStage!: () => void;
+    vi.mocked(gitStageFile).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishStage = resolve)),
+    );
+    vi.mocked(notifyGitChanged).mockClear();
+    await renderPanel(cwd);
+    expect(sections()).toEqual(["Changes"]);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Stage Changes"]')!
+        .click();
+    });
+    expect(gitStageFile).toHaveBeenCalledWith(cwd, "change.ts");
+    expect(sections()).toEqual(["Staged Changes"]);
+    expect(statusText()).toBe("Staging…");
+    expect(container.querySelector('[aria-label="Working"]')).not.toBeNull();
+
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [changed(true)] }));
+    await act(async () => finishStage());
+    await act(async () => {});
+    expect(sections()).toEqual(["Staged Changes"]);
+    expect(statusText()).toBeNull();
+    expect(container.querySelector('[aria-label="Working"]')).toBeNull();
+    // One announcement, limited to this checkout's changed files.
+    expect(vi.mocked(notifyGitChanged).mock.calls).toEqual([[cwd, "index"]]);
+  });
+
+  it("puts the file back when staging fails", async () => {
+    const cwd = "/repo-feedback-failed";
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [changed(false)] }));
+    vi.mocked(gitStageFile).mockRejectedValueOnce(new Error("index.lock exists"));
+    vi.stubGlobal("alert", vi.fn());
+    await renderPanel(cwd);
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Stage Changes"]')!
+        .click();
+    });
+    await act(async () => {});
+    expect(sections()).toEqual(["Changes"]);
+    expect(statusText()).toBeNull();
+  });
+
+  it("names the step on the commit button while it runs", async () => {
+    const cwd = "/repo-feedback-commit";
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [changed(true)] }));
+    let finishCommit!: () => void;
+    vi.mocked(gitCommit).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (finishCommit = resolve)),
+    );
+    await renderPanel(cwd);
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      const setValue = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!;
+      setValue.call(textarea, "Fix it");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const commitButton = () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+        (candidate) =>
+          /^(Commit|Committing…)$/.test(candidate.textContent?.trim() ?? ""),
+      )!;
+    expect(commitButton().textContent?.trim()).toBe("Commit");
+
+    await act(async () => commitButton().click());
+    expect(commitButton().textContent?.trim()).toBe("Committing…");
+    expect(statusText()).toBe("Committing…");
+
+    await act(async () => finishCommit());
+    await act(async () => {});
+    expect(commitButton().textContent?.trim()).toBe("Commit");
+    expect(statusText()).toBeNull();
+  });
+});
 
 describe("GitChangesPanel pull action", () => {
   it("disables Pull when the branch has no upstream", async () => {

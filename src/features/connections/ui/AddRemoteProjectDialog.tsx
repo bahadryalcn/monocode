@@ -9,8 +9,8 @@ import {
   useRemoteMachines,
 } from "../model/connections";
 import { remoteProjectMachines } from "../model/localSync";
-import { rememberRemoteProject } from "../model/remoteProjects";
-import type { HostDirectory, HostProject } from "../model/protocol";
+import { openRemoteProject } from "../model/remoteProjects";
+import type { HostDirectory } from "../model/protocol";
 
 /** Adds a project whose folder is on a connected machine. Sessions in it run
  * on that machine; the project otherwise behaves like any other in the rail. */
@@ -96,15 +96,12 @@ export function AddRemoteProjectDialog({
     setLoading(false);
     setError("");
     try {
-      const project = await remoteRequest<HostProject>(
-        machine.id,
-        "projects.open",
-        { cwd: path.trim() },
-        false,
-        true,
+      const project = await openRemoteProject(
+        (method, params) => remoteRequest(machine.id, method, params, false, true),
+        machine.environmentId,
+        path.trim(),
       );
-      if (alive.current && version === requestVersion.current)
-        onOpen(rememberRemoteProject(machine.environmentId, project).key);
+      if (alive.current && version === requestVersion.current) onOpen(project.key);
     } catch (reason) {
       if (alive.current && version === requestVersion.current) setError(String(reason).replace(/^Error: /, ""));
     } finally {

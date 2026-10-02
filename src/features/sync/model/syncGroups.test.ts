@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { applyRemoteGroupRecords, captureLocalGroupChanges } from "./syncGroups";
 import { captureLocalProjectChanges, localProjectIdsByPath } from "./syncProjects";
 import { rememberProject } from "../../projects/model/recents";
-import { applyPushResult, markPulled, takeOutbox } from "./syncPeerState";
+import { applyPushResult, markPullCompleted, markPulled, takeOutbox } from "./syncPeerState";
 import {
   loadProjectGroupAssignments,
   loadProjectGroups,
@@ -32,8 +32,30 @@ describe("syncGroups", () => {
     captureLocalGroupChanges(MACHINE);
     const ops = takeOutbox(MACHINE);
     expect(ops).toContainEqual(
-      expect.objectContaining({ table: "group", id: "g1", value: { id: "g1", name: "Work", collapsed: false } }),
+      expect.objectContaining({ table: "group", id: "g1", value: { id: "g1", name: "Work" } }),
     );
+  });
+
+  it("never sends collapsed and keeps this machine's own collapsed state on apply", () => {
+    saveProjectGroups([{ id: "g1", name: "Work", collapsed: true }]);
+    captureLocalGroupChanges(MACHINE);
+    expect(takeOutbox(MACHINE).find((op) => op.table === "group")?.value).not.toHaveProperty("collapsed");
+    applyRemoteGroupRecords(MACHINE, [
+      { table: "group", id: "g1", rev: 2, value: { id: "g1", name: "Renamed", collapsed: false } },
+      { table: "group", id: "g2", rev: 3, value: { id: "g2", name: "New", collapsed: true } },
+    ]);
+    expect(loadProjectGroups()).toEqual([
+      { id: "g1", name: "Renamed", collapsed: true },
+      { id: "g2", name: "New", collapsed: false },
+    ]);
+  });
+
+  it("flipping collapsed locally queues nothing", () => {
+    saveProjectGroups([{ id: "g1", name: "Work", collapsed: false }]);
+    markPulled(MACHINE, [{ table: "group", id: "g1", rev: 1, value: { name: "Work", id: "g1" } }]);
+    saveProjectGroups([{ id: "g1", name: "Work", collapsed: true }]);
+    captureLocalGroupChanges(MACHINE);
+    expect(takeOutbox(MACHINE).some((op) => op.table === "group")).toBe(false);
   });
 
   it("applying a remote group record adds it locally", () => {
@@ -84,11 +106,51 @@ describe("syncGroups", () => {
     expect(JSON.parse(localStorage.getItem("monocode.projectGroupAssignments") ?? "{}")).toEqual({});
   });
 
-  it("emits a null assignment op for an unassigned project", () => {
+  it("never tombstones an assignment this machine has not itself had", () => {
     captureLocalGroupChanges(MACHINE, { "/home/me/app": "proj-1" });
-    expect(takeOutbox(MACHINE)).toContainEqual(
-      expect.objectContaining({ table: "assignment", id: "proj-1", value: null }),
+    expect(takeOutbox(MACHINE).some((op) => op.table === "assignment")).toBe(false);
+    // Another machine's assignment, known from the host but for a group not present here.
+    markPulled(MACHINE, [
+      { table: "assignment", id: "proj-1", rev: 4, value: { projectId: "proj-1", groupId: "far" } },
+    ]);
+    captureLocalGroupChanges(MACHINE, { "/home/me/app": "proj-1" });
+    expect(takeOutbox(MACHINE).some((op) => op.table === "assignment")).toBe(false);
+  });
+
+  it("tombstones an assignment that was assigned here, is known to the host, and was removed here", () => {
+    saveProjectGroups([{ id: "g1", name: "Work", collapsed: false }]);
+    saveProjectGroupAssignments({ "/home/me/app": "g1" });
+    const ids = { "/home/me/app": "proj-1" };
+    captureLocalGroupChanges(MACHINE, ids);
+    const sent = takeOutbox(MACHINE);
+    applyPushResult(
+      MACHINE,
+      { rev: 2, applied: sent.map((op) => ({ table: op.table, id: op.id, rev: 2 })), rejected: [] },
+      sent,
     );
+    saveProjectGroupAssignments({});
+    captureLocalGroupChanges(MACHINE, ids);
+    expect(takeOutbox(MACHINE).find((op) => op.table === "assignment")).toMatchObject({
+      id: "proj-1",
+      baseRev: 2,
+      value: null,
+    });
+  });
+
+  it("adopts a host assignment that arrived before this machine had the folder", () => {
+    saveProjectGroups([{ id: "g1", name: "Work", collapsed: false }]);
+    markPulled(MACHINE, [
+      { table: "assignment", id: "proj-1", rev: 2, value: { projectId: "proj-1", groupId: "g1" } },
+    ]);
+    captureLocalGroupChanges(MACHINE, { "/home/me/app": "proj-1" });
+    expect(loadProjectGroupAssignments()).toEqual({ "/home/me/app": "g1" });
+    expect(takeOutbox(MACHINE).some((op) => op.table === "assignment")).toBe(false);
+  });
+
+  it("does not push a group order before the first pull", () => {
+    saveProjectGroups([{ id: "g1", name: "A", collapsed: false }]);
+    captureLocalGroupChanges(MACHINE);
+    expect(takeOutbox(MACHINE).some((op) => op.table === "groupOrder")).toBe(false);
   });
 
   it("applies an assignment record when the project id resolves to a local path", () => {
@@ -148,6 +210,7 @@ describe("syncGroups", () => {
       { id: "g1", name: "A", collapsed: false },
       { id: "g2", name: "B", collapsed: false },
     ]);
+    markPullCompleted(MACHINE);
     captureLocalGroupChanges(MACHINE);
     const op = takeOutbox(MACHINE).find((o) => o.table === "groupOrder");
     expect(op).toMatchObject({ id: "groups", value: { order: ["g1", "g2"] } });
