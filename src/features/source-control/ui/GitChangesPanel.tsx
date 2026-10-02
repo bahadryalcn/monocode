@@ -446,6 +446,14 @@ function ChangedFiles({
   const menuRef = useRef<HTMLDivElement>(null);
   const messageRef = useRef<HTMLTextAreaElement>(null);
   const generateAbortRef = useRef<AbortController | null>(null);
+  // Generating reads the changes without touching the index, so it does not
+  // take `busy` and files can be staged while it runs.
+  const [generating, setGenerating] = useState(false);
+  const fileActions = useRef({
+    tail: Promise.resolve(),
+    size: 0,
+    paths: [] as string[],
+  });
   const [message, setMessage] = useState("");
   const [amendTarget, setAmendTarget] = useState<AmendTarget | null>(null);
   const amend = amendTarget !== null;
@@ -472,11 +480,14 @@ function ChangedFiles({
     !!index?.branch &&
     !!index.defaultBranch &&
     index.branch === index.defaultBranch;
-  const canGenerate = files.length > 0 && !busy && !isRemoteProjectPath(cwd);
+  const committing = busy === "commit" || busy === "pr";
+  const canGenerate =
+    files.length > 0 && !committing && !isRemoteProjectPath(cwd);
   const canCommit =
     (staged.length > 0 || amend) &&
     message.trim().length > 0 &&
     !busy &&
+    !generating &&
     !blockedMessage;
   const canCreatePr =
     hasRemote &&
@@ -499,7 +510,9 @@ function ChangedFiles({
     canCommit && hasRemote && !diverged && (!amend || !index?.headPushed);
   const canCommitPushPr = canCommitPush && !hasOpenPr && !onDefault;
   // Any change allows typing, so the menu's Commit All can use the message too.
-  const canEditMessage = (files.length > 0 || amend) && !busy;
+  // Staging a file must not take the box away from someone typing in it.
+  const canEditMessage =
+    (files.length > 0 || amend) && !committing && !generating;
 
   useEffect(() => {
     if (!amendTarget) return;
@@ -527,10 +540,10 @@ function ChangedFiles({
       if (generateAbortRef.current) {
         generateAbortRef.current.abort();
         generateAbortRef.current = null;
-        setBusy(null);
+        setGenerating(false);
       }
     },
-    [cwd, setBusy],
+    [cwd],
   );
 
   useEffect(() => {
@@ -579,7 +592,9 @@ function ChangedFiles({
     file: GitChangedFile,
     action: "stage" | "unstage" | "discard",
   ) => {
-    if (busy) return;
+    const queue = fileActions.current;
+    // File actions queue behind each other; any other action holds them off.
+    if (busy && queue.size === 0) return;
     if (action === "discard") {
       const name = basename(file.relative);
       const untracked = file.status === "untracked";
@@ -591,22 +606,30 @@ function ChangedFiles({
       );
       if (!ok) return;
     }
+    queue.size += 1;
+    queue.paths.push(file.path);
     setBusy(file.relative);
     setPending(ACTION_LABEL[action]);
     // The row moves at once; the reload below confirms it or puts it back.
     if (index) showOptimistic(applyIndexAction(index, action, file.relative));
-    try {
-      if (action === "stage") await gitStageFile(cwd, file.relative);
-      else if (action === "unstage") await gitUnstageFile(cwd, file.relative);
-      else await gitDiscardFile(cwd, file.relative);
-      onMutated([file.path], "index");
-    } catch (error) {
-      onMutated([file.path], "index");
-      fail(error);
-    } finally {
-      setBusy(null);
-      setPending(null);
-    }
+    // One git command at a time: two would fight over the index lock.
+    const task = queue.tail.then(async () => {
+      try {
+        if (action === "stage") await gitStageFile(cwd, file.relative);
+        else if (action === "unstage") await gitUnstageFile(cwd, file.relative);
+        else await gitDiscardFile(cwd, file.relative);
+      } catch (error) {
+        fail(error);
+      }
+    });
+    queue.tail = task;
+    await task;
+    queue.size -= 1;
+    if (queue.size > 0) return;
+    // Reloading earlier would put back the rows of actions still queued.
+    onMutated(queue.paths.splice(0), "index");
+    setBusy(null);
+    setPending(null);
   };
 
   const runAll = async (action: "stage" | "unstage" | "discard") => {
@@ -647,7 +670,7 @@ function ChangedFiles({
     if (!canGenerate || generateAbortRef.current) return;
     const controller = new AbortController();
     generateAbortRef.current = controller;
-    setBusy("generate");
+    setGenerating(true);
     try {
       const generated = await generateCommitMessage(
         cwd,
@@ -660,7 +683,7 @@ function ChangedFiles({
     } finally {
       if (generateAbortRef.current === controller) {
         generateAbortRef.current = null;
-        setBusy(null);
+        setGenerating(false);
       }
     }
   };
@@ -668,7 +691,7 @@ function ChangedFiles({
   const cancelGenerate = () => {
     generateAbortRef.current?.abort();
     generateAbortRef.current = null;
-    setBusy(null);
+    setGenerating(false);
   };
 
   const toggleAmend = async () => {
@@ -851,22 +874,22 @@ function ChangedFiles({
           <button
             type="button"
             title={
-              busy === "generate"
+              generating
                 ? "Cancel commit message generation"
                 : "Generate commit message"
             }
             aria-label={
-              busy === "generate"
+              generating
                 ? "Cancel commit message generation"
                 : "Generate commit message"
             }
-            disabled={busy !== "generate" && !canGenerate}
+            disabled={!generating && !canGenerate}
             onClick={() =>
-              busy === "generate" ? cancelGenerate() : void generate()
+              generating ? cancelGenerate() : void generate()
             }
             className="group absolute top-1 right-1 grid size-5 place-items-center rounded-md bg-content/10 text-content hover:bg-content/20 hover:text-content disabled:opacity-40"
           >
-            {busy === "generate" ? (
+            {generating ? (
               <>
                 <Loader
                   className="size-3.5 animate-spin group-hover:hidden group-focus-visible:hidden"

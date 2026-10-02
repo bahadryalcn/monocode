@@ -496,10 +496,7 @@ import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   usageLimitResumeDue,
 } from "../features/sessions/model/usageLimit";
-import {
-  fetchClaudeRateLimits,
-  fetchCodexRateLimits,
-} from "../features/providers/model/rateLimitsFetch";
+import { loadFreshRateLimits } from "../features/providers/model/rateLimitsCache";
 import { exhaustedWindowResetAt } from "../features/providers/model/rateLimits";
 import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
@@ -8431,15 +8428,16 @@ function Workspace({
       const limit = session.usageLimit;
       if (!limit || limit.resetsAt != null) continue;
       if (usageResetLookups.current.has(limit)) continue;
-      const fetchLimits =
-        session.harness === "claude"
-          ? fetchClaudeRateLimits
-          : session.harness === "codex"
-            ? fetchCodexRateLimits
-            : undefined;
-      if (!fetchLimits) continue;
+      const provider = session.harness;
+      if (provider !== "claude" && provider !== "codex") continue;
       usageResetLookups.current.add(limit);
-      void fetchLimits(session.providerAccountId).then((limits) => {
+      // Through the shared cache: several sessions hitting the limit at once
+      // must not each ask the provider, which rate-limits this request.
+      void loadFreshRateLimits(
+        provider,
+        session.providerAccountId,
+        60_000,
+      ).then((limits) => {
         const resetsAt = exhaustedWindowResetAt(limits);
         if (resetsAt == null) return;
         setSessions((prev) =>
