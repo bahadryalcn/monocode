@@ -28,6 +28,7 @@ import {
   turnMetricsFromResult,
   buildClaudeSpawnArgs,
   buildClaudeUserMessage,
+  claudeInitCommands,
   buildControlRequest,
   buildControlResponse,
   claudeSettingsKey,
@@ -74,6 +75,7 @@ import {
   type ClaudeControlRequest,
 } from "./claudeProtocol";
 import { isAgentToolName } from "../../core/preview";
+import { reportSessionCommands } from "../../core/reportedCommands";
 import { joinStreamText, snapshotRemainder } from "../../core/streamText";
 import {
   questionPromptTitle,
@@ -832,7 +834,10 @@ function handleLine(sessionId: string, live: Live, line: string): void {
       stringField(rec, "subtype") === "initialized")
   ) {
     markInitialized(live);
-    if (stringField(rec, "subtype") === "init") noteClaudeTurnStarted(live);
+    if (stringField(rec, "subtype") === "init") {
+      reportSessionCommands(sessionId, claudeInitCommands(rec));
+      noteClaudeTurnStarted(live);
+    }
   }
 
   if (type === "control_response") {

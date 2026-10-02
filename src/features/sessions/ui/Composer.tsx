@@ -114,6 +114,7 @@ import {
 } from "../../../shared/lib/draftRestore";
 import {
   createBlankSkill,
+  dollarTokenAt,
   rankSkills,
   hasNativeCommands,
   isNativeCommandPrompt,
@@ -169,6 +170,7 @@ import {
   type NoteComposerCard,
 } from "../../notes";
 import { resolveTabGroupLogo } from "../../workspace/model/tabGroups";
+import { useCliCommands } from "./useCliCommands";
 import { useComposerSkills } from "./useComposerSkills";
 import { Popover } from "../../../shared/ui/Popover";
 import { UsageLimitNotice } from "./UsageLimitNotice";
@@ -765,6 +767,36 @@ export function Composer({
     () => promptTemplates.map(templateSkill),
     [promptTemplates],
   );
+  // The CLI's own commands never replace a MonoCode command or a skill that
+  // MonoCode already lists under the same name.
+  const takenNames = useMemo(
+    () =>
+      new Set([
+        ...[
+          PLAN_COMMAND,
+          COMPACT_COMMAND,
+          SESSION_FOLDER_COMMAND,
+          MCP_COMMAND,
+          OPERATOR_COMMAND,
+          ORCHESTRATOR_COMMAND,
+          DRAFT_COMMAND,
+          BTW_COMMAND,
+          RESUME_COMMAND,
+        ].map((command) => command.name),
+        "mono",
+        "monocode",
+        ...skills.map((skill) => skill.name),
+      ]),
+    [skills],
+  );
+  const cliCommands = useCliCommands({
+    harness,
+    localCwd,
+    sessionId,
+    menuOpen: pickerOpen && !remote,
+    taken: takenNames,
+    files: skills,
+  });
   const slashItems = useMemo(
     () => [
       ...(remote
@@ -799,6 +831,7 @@ export function Composer({
                     skill.name !== RESUME_COMMAND.name &&
                     skill.name !== BTW_COMMAND.name)),
             ),
+            ...cliCommands.slashCommands,
           ]),
       ...templateItems,
     ],
@@ -806,6 +839,7 @@ export function Composer({
       harness,
       templateItems,
       skills,
+      cliCommands.slashCommands,
       remote,
       remoteFeatures?.plan,
       hideTopBar,
@@ -817,7 +851,11 @@ export function Composer({
   const skillLimit = hasNativeCommands(harness)
     ? Number.POSITIVE_INFINITY
     : undefined;
-  const rankedSkills = rankSkills(slashItems, slash?.query ?? "", skillLimit);
+  const rankedSkills = rankSkills(
+    slash?.trigger === "$" ? cliCommands.dollarSkills : slashItems,
+    slash?.query ?? "",
+    slash?.trigger === "$" ? undefined : skillLimit,
+  );
   const sessionDirsHarness =
     harness === "claude" || harness === "codex" || harness === "antigravity";
   const showSessionDirs =
@@ -1241,7 +1279,15 @@ export function Composer({
     if (historyRef.current?.text === el.value) return;
     const cursor = el.selectionStart ?? 0;
     const token = slashTokenAt(el.value, cursor, hasNativeCommands(harness));
-    setSlash(token);
+    // `$name` opens only while some Codex skill matches, so `$HOME` stays text.
+    const dollar = token ? null : dollarTokenAt(el.value, cursor);
+    setSlash(
+      token ??
+        (dollar &&
+        rankSkills(cliCommands.dollarSkills, dollar.query, 1).length > 0
+          ? dollar
+          : null),
+    );
     setMention(token ? null : mentionTokenAt(el.value, cursor));
   };
 
@@ -2359,6 +2405,8 @@ export function Composer({
           <div className="absolute inset-x-0 bottom-full z-30 mb-1">
             <SkillPicker
               skills={rankedSkills}
+              prefix={slash?.trigger ?? "/"}
+              showCreate={slash?.trigger !== "$"}
               query={slash?.query ?? ""}
               active={skillActive}
               creating={creatingSkill}

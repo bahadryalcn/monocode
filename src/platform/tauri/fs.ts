@@ -192,6 +192,18 @@ export function listSkills(
   });
 }
 
+export type ClaudeCommandEntry = {
+  name: string;
+  description: string;
+  argumentHint: string;
+  scope: "project" | "user" | "plugin";
+};
+
+/** Claude Code custom slash commands on disk (name, description, hint only). */
+export function listClaudeCommands(cwd: string): Promise<ClaudeCommandEntry[]> {
+  return invoke<ClaudeCommandEntry[]>("list_claude_commands", { cwd });
+}
+
 export function listProjectFiles(cwd: string): Promise<ProjectFile[]> {
   return invoke<ProjectFile[]>("list_project_files", { cwd });
 }

@@ -18,6 +18,8 @@ import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 
 type Props = {
   skills: Skill[];
+  /** What a row starts with: `/` for commands, `$` for Codex skills. */
+  prefix?: "/" | "$";
   query: string;
   active: number;
   creating: boolean;
@@ -35,6 +37,7 @@ type Props = {
 
 export function SkillPicker({
   skills,
+  prefix = "/",
   query,
   active,
   creating,
@@ -71,6 +74,7 @@ export function SkillPicker({
         <>
           <SkillList
             skills={skills}
+            prefix={prefix}
             query={query}
             active={active}
             compact={compact}
@@ -96,6 +100,7 @@ export function SkillPicker({
 
 function SkillList({
   skills,
+  prefix,
   query,
   active,
   compact,
@@ -103,6 +108,7 @@ function SkillList({
   onPick,
 }: {
   skills: Skill[];
+  prefix: "/" | "$";
   query: string;
   active: number;
   compact?: boolean;
@@ -181,7 +187,7 @@ function SkillList({
           >
             <span className="flex min-w-0 w-full items-baseline gap-2">
               <span className="truncate text-[13px]">
-                /{skill.invocation}
+                {prefix}{skill.invocation}
               </span>
               <span className="shrink-0 text-[10px] uppercase tracking-wide text-content/40">
                 {scopeLabel(skill)}

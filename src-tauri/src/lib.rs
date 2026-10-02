@@ -5,6 +5,7 @@ mod automations;
 mod azure_devops;
 mod chat_background;
 mod checkpoint;
+mod claude_commands;
 mod control;
 pub mod control_cli;
 mod cursor_store;
@@ -451,6 +452,7 @@ pub fn run() {
             fs::claude_shell_commands,
             fs::write_text_file,
             skills::list_skills,
+            claude_commands::list_claude_commands,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
