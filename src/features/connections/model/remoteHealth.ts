@@ -5,6 +5,12 @@ import {
   unreachablePollDelay,
   type RemoteFailure,
 } from "./remoteFailure";
+import {
+  INITIAL_CONNECTION,
+  reduceConnection,
+  type RemoteConnectionEvent,
+  type RemoteConnectionState,
+} from "./remoteConnection";
 import { parseRemotePath } from "./remoteProjects";
 
 /** What the views of a remote project last learned about its machine. Each view
@@ -16,6 +22,8 @@ import { parseRemotePath } from "./remoteProjects";
 const failures = new Map<string, RemoteFailure>();
 /** Machines whose last requests failed to connect, and when. */
 const unreachable = new Map<string, { count: number; at: number }>();
+/** One connection state per machine, fed by the outcome of every load. */
+const connections = new Map<string, RemoteConnectionState>();
 const changeListeners = new Set<() => void>();
 const recoveredListeners = new Set<() => void>();
 
@@ -23,10 +31,39 @@ const environmentOf = (cwd: string) => parseRemotePath(cwd)?.environmentId;
 const keyFor = (environmentId: string, source: string) => `${environmentId}\n${source}`;
 const emit = () => changeListeners.forEach((listener) => listener());
 
+/** Applies one event to a machine's connection state. Listeners hear about it
+ * only when what the user sees changed, not for every successful poll. */
+export function applyRemoteConnection(environmentId: string, event: RemoteConnectionEvent): void {
+  const previous = connections.get(environmentId) ?? INITIAL_CONNECTION;
+  const next = reduceConnection(previous, event);
+  if (next === previous) return;
+  connections.set(environmentId, next);
+  if (next.status !== previous.status || next.error !== previous.error) emit();
+}
+
+/** Records one outcome of a request to a machine, from a view that has no cwd. */
+export function recordRemoteConnection(environmentId: string, error?: unknown): void {
+  applyRemoteConnection(
+    environmentId,
+    error === undefined
+      ? { type: "ok", at: Date.now() }
+      : { type: "failure", error, at: Date.now() },
+  );
+}
+
+export function listRemoteConnections(): [string, RemoteConnectionState][] {
+  return [...connections];
+}
+
+export function readRemoteConnection(environmentId: string): RemoteConnectionState {
+  return connections.get(environmentId) ?? INITIAL_CONNECTION;
+}
+
 /** Records one load: `error` undefined means it succeeded. */
 export function reportRemoteLoad(cwd: string, source: string, error?: unknown): void {
   const environmentId = environmentOf(cwd);
   if (!environmentId) return;
+  recordRemoteConnection(environmentId, error);
   const key = keyFor(environmentId, source);
   if (error === undefined) {
     const wasUnreachable = unreachable.delete(environmentId);
@@ -63,8 +100,10 @@ export function reportRemoteConnection(cwd: string, source: string, error?: unkn
 }
 
 /** The machine answered again: drop what we showed about it being down and let
- * every view reload now. Also called after a reconnect. */
-export function notifyRemoteRecovered(): void {
+ * every view reload now. Also called after a reconnect or a host update, with
+ * the machine's environment when it is known. */
+export function notifyRemoteRecovered(environmentId?: string): void {
+  if (environmentId) applyRemoteConnection(environmentId, { type: "recovered", at: Date.now() });
   unreachable.clear();
   for (const [key, failure] of [...failures])
     if (failure.kind === "unreachable") failures.delete(key);
@@ -94,7 +133,7 @@ export function subscribeRemoteRecovered(listener: () => void): () => void {
   return () => recoveredListeners.delete(listener);
 }
 
-function subscribeChanges(listener: () => void): () => void {
+export function subscribeChanges(listener: () => void): () => void {
   changeListeners.add(listener);
   return () => changeListeners.delete(listener);
 }
@@ -110,4 +149,5 @@ export function useRemoteLoadFailure(cwd: string, source: string): RemoteFailure
 export function resetRemoteHealth(): void {
   failures.clear();
   unreachable.clear();
+  connections.clear();
 }

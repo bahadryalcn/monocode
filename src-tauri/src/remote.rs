@@ -308,6 +308,7 @@ pub fn remote_request(
     machine_id: String,
     method: String,
     params: Value,
+    fresh: Option<bool>,
 ) -> Result<Value, String> {
     if !supported_remote_method(&method) {
         return Err("Unsupported remote operation".into());
@@ -323,6 +324,11 @@ pub fn remote_request(
             .ok_or("Machine is no longer connected")?
     };
     let tunnel_lease = if let Some(target) = &machine.ssh {
+        // A reconnect the user asked for must not be answered with the last
+        // failed attempt's cached error.
+        if fresh == Some(true) {
+            state.tunnels.forget_failure(&machine.id);
+        }
         Some(state.tunnels.endpoint(&machine.id, target)?)
     } else {
         None

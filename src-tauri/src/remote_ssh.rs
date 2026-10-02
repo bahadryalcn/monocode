@@ -601,6 +601,14 @@ impl Tunnels {
             }
         }
     }
+    /// Lets the next request start a tunnel at once instead of repeating the
+    /// error of a recent failed attempt.
+    pub fn forget_failure(&self, id: &str) {
+        let Some(slot) = self.slots().get(id).cloned() else {
+            return;
+        };
+        slot.lock().unwrap_or_else(PoisonError::into_inner).failure = None;
+    }
     pub fn invalidate(&self, id: &str, lease: &TunnelLease) {
         let Some(slot) = self.slots().get(id).cloned() else {
             return;
@@ -695,6 +703,20 @@ mod tests {
             },
         );
         assert!(newer.lock().unwrap().failure.is_none());
+    }
+    #[test]
+    fn a_requested_reconnect_forgets_the_cached_failure() {
+        let tunnels = Tunnels::default();
+        let slot = Arc::new(Mutex::new(Slot {
+            tunnel: None,
+            failure: Some((Instant::now(), "SSH connection failed".into())),
+            generation: 1,
+        }));
+        tunnels.slots().insert("host".into(), slot.clone());
+        tunnels.forget_failure("other");
+        assert!(slot.lock().unwrap().failure.is_some());
+        tunnels.forget_failure("host");
+        assert!(slot.lock().unwrap().failure.is_none());
     }
     // scripts/test-remote-ssh.py creates an isolated sshd, host and keypair.
     // This test uses the production tunnel lifecycle and shell transport.

@@ -11,7 +11,7 @@ import {
   type SessionSyncResponse,
 } from "./protocol";
 import { remoteProjectFor } from "./remoteProjects";
-import { notifyRemoteRecovered } from "./remoteHealth";
+import { notifyRemoteRecovered, recordRemoteConnection } from "./remoteHealth";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
 
 const CHANGE = "monocode:remote-machines";
@@ -213,12 +213,21 @@ export const clearPendingRemoteCommand = (
 ) =>
   localStorage.removeItem(`${pendingPrefix(project, environment)}${commandId}`);
 
+/** `fresh` makes a dropped SSH tunnel be restarted now instead of answering
+ * with the error of an attempt that failed moments ago; for a reconnect the
+ * user asked for. */
 export function remoteRequest<T>(
   machineId: string,
   method: string,
   params: unknown = {},
+  fresh = false,
 ): Promise<T> {
-  return invoke<T>("remote_request", { machineId, method, params });
+  return invoke<T>("remote_request", {
+    machineId,
+    method,
+    params,
+    ...(fresh ? { fresh } : {}),
+  });
 }
 
 /** Reads one sync, assembling it from bounded pieces when the host chunks it. */
@@ -360,14 +369,17 @@ const statusWatchers = new Map<
 >();
 
 /** Records whether a machine answered its latest request, for every view
- * that shows its connection state. */
-export function reportRemoteMachineStatus(machineId: string, online: boolean) {
+ * that shows its connection state. `error` is why it did not. */
+export function reportRemoteMachineStatus(machineId: string, online: boolean, error?: unknown) {
+  const environmentId = cachedMachines.find((entry) => entry.id === machineId)?.environmentId;
+  if (environmentId)
+    recordRemoteConnection(environmentId, online ? undefined : (error ?? "Machine is unreachable"));
   const wasOffline = machineOnline.get(machineId) === false;
   if (machineOnline.get(machineId) === online) return;
   machineOnline.set(machineId, online);
   window.dispatchEvent(new Event(STATUS));
   // Views that gave up on this machine reload as soon as it answers again.
-  if (online && wasOffline) notifyRemoteRecovered();
+  if (online && wasOffline) notifyRemoteRecovered(environmentId);
 }
 
 function watchMachineStatus(machineId: string): () => void {
@@ -388,9 +400,9 @@ function watchMachineStatus(machineId: string): () => void {
         if (host?.environmentId) recordRemoteCapabilities(host.environmentId, host.capabilities);
         failures = 0;
         reportRemoteMachineStatus(machineId, true);
-      } catch {
+      } catch (reason) {
         failures = Math.min(4, failures + 1);
-        reportRemoteMachineStatus(machineId, false);
+        reportRemoteMachineStatus(machineId, false, reason);
       }
       if (statusWatchers.get(machineId) === watcher)
         watcher.timer = setTimeout(

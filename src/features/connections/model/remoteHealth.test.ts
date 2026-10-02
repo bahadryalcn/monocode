@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   notifyRemoteRecovered,
+  readRemoteConnection,
   remotePollDue,
   reportRemoteLoad,
   resetRemoteHealth,
@@ -66,4 +67,21 @@ it("never records or slows local projects", () => {
   reportRemoteLoad("/Users/me/repo", "changes", down);
   expect(remotePollDue("/Users/me/repo")).toBe(true);
   expect(remotePollDue(project)).toBe(true);
+});
+
+it("keeps one connection status per machine, fed by every view's loads", () => {
+  expect(readRemoteConnection("env").status).toBe("connecting");
+  reportRemoteLoad(project, "files");
+  expect(readRemoteConnection("env").status).toBe("connected");
+  reportRemoteLoad(project, "changes", down);
+  expect(readRemoteConnection("env")).toMatchObject({ status: "unreachable" });
+  expect(readRemoteConnection("other").status).toBe("connecting");
+  reportRemoteLoad(project, "graph");
+  expect(readRemoteConnection("env").status).toBe("connected");
+  // A host that is too old stays flagged until it is reconnected or updated.
+  reportRemoteLoad(project, "changes", "Host rejected request: Unsupported workspace command");
+  reportRemoteLoad(project, "files");
+  expect(readRemoteConnection("env").status).toBe("outdated-host");
+  notifyRemoteRecovered("env");
+  expect(readRemoteConnection("env").status).toBe("connected");
 });

@@ -84,6 +84,9 @@ export type ComposerTurnOptions = {
   resendEdited?: boolean;
   /** Restore an edited prompt when the resend rejects asynchronously. */
   onResendRejected?: (recovery: EditedResendRejection) => void;
+  /** Put the message back in the composer when the host could not take it after
+   * the composer let it go. Returns whether it was restored. */
+  onSendRejected?: () => boolean;
   /** Promote an existing unsent transcript block instead of appending a turn. */
   draftBlockId?: string;
   /** Queue this message behind a running turn instead of following the follow-up setting. */

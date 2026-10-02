@@ -13,6 +13,7 @@ import { rememberRemoteProject } from "../model/remoteProjects";
 import { preloadRemoteSession } from "./RemoteSession";
 import { rememberRemoteSession, remoteSessionFor } from "../model/connections";
 import "../model/remoteCommands";
+import { resetRemoteHealth } from "../model/remoteHealth";
 import type {
   HostCommand,
   HostDescriptor,
@@ -122,6 +123,9 @@ let currentBranch: string;
 let createdBranch: string | undefined;
 let createdWorktree: string | undefined;
 let deletedSessions: string[];
+/** While set, every request to the machine fails with this error. */
+let machineDown: string | undefined;
+const unreachable = "Machine is unreachable. Check the host and SSH tunnel, then reconnect.";
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -137,6 +141,8 @@ beforeEach(() => {
   createdBranch = undefined;
   createdWorktree = undefined;
   deletedSessions = [];
+  machineDown = undefined;
+  resetRemoteHealth();
   catalog = { models: { codex: [gpt] }, errors: {} };
   providers = ["codex"];
   projectKey = rememberRemoteProject("env", {
@@ -148,6 +154,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command, input) => {
     if (command === "remote_machines") return [machine];
     if (command !== "remote_request") return undefined;
+    if (machineDown) throw machineDown;
     const { method, params } = input as {
       method: string;
       params: HostCommand & { sessionId?: string };
@@ -986,6 +993,81 @@ it("keeps a saved model's effort editable when the host catalog fails", async ()
     model: "codex:gpt-test",
     modelSettings: { reasoningEffort: "low" },
   });
+});
+
+it("explains a dropped connection above the session and reconnects from there", async () => {
+  machineDown = unreachable;
+  await render();
+  expect(container.textContent).toContain("Can’t reach Home server");
+  expect(container.textContent).toContain("The machine did not answer");
+  expect(container.querySelector("textarea")).not.toBeNull();
+  const reconnect = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Reconnect",
+  )!;
+  machineDown = undefined;
+  await act(async () => reconnect.click());
+  await settle();
+  await settle();
+  expect(container.textContent).not.toContain("Can’t reach Home server");
+});
+
+it("puts the message back in the composer when Send cannot reconnect", async () => {
+  dispatch({
+    type: "create",
+    commandId: "existing-session",
+    projectId: "project",
+    harness: "codex",
+    model: gpt.id,
+    runtimeMode: "supervised",
+  });
+  host = {
+    ...host!,
+    session: {
+      ...host!.session,
+      blocks: [{ id: "old-message", role: "user", text: "Earlier message" }],
+    },
+  };
+  commands = [];
+  rememberRemoteSession("shell", "host-session");
+  machineDown = unreachable;
+  await render();
+  await type("Fix the tests");
+  expect(byLabel("Send")!.title).toContain("Can’t reach Home server");
+  await act(async () => byLabel("Send")!.click());
+  await settle();
+  await settle();
+  expect(container.querySelector("textarea")!.value).toBe("Fix the tests");
+  expect(commands).toHaveLength(0);
+  expect(container.textContent).toContain("Can’t reach Home server");
+});
+
+it("keeps a first message visible, with Try again, when Send cannot reconnect", async () => {
+  machineDown = unreachable;
+  await render();
+  await type("Fix the tests");
+  await act(async () => byLabel("Send")!.click());
+  await settle();
+  await settle();
+  expect(commands).toHaveLength(0);
+  expect(container.querySelector("ol[aria-label='Transcript']")?.textContent).toContain(
+    "Fix the tests",
+  );
+  expect(container.textContent).toContain("Couldn’t send the message on Home server");
+  expect(
+    [...container.querySelectorAll("button")].some((button) => button.textContent === "Try again"),
+  ).toBe(true);
+});
+
+it("reconnects first and then sends when Send is pressed while disconnected", async () => {
+  machineDown = unreachable;
+  await render();
+  await type("Fix the tests");
+  machineDown = undefined;
+  await act(async () => byLabel("Send")!.click());
+  for (let i = 0; i < 4; i++) await settle();
+  expect(commands.map((command) => command.type)).toEqual(["create", "send"]);
+  expect(commands[1]).toMatchObject({ text: "Fix the tests" });
+  expect(container.querySelector("textarea")!.value).toBe("");
 });
 
 it("asks to connect the machine when it is not set up on this computer", async () => {

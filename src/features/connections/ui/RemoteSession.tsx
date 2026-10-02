@@ -38,6 +38,10 @@ import {
   savePendingRemoteCommand,
   useRemoteMachines,
 } from "../model/connections";
+import { blocksSending, sendAfterReconnect } from "../model/remoteConnection";
+import { reportRemoteConnection, subscribeRemoteRecovered } from "../model/remoteHealth";
+import { useRemoteConnection } from "../model/useRemoteConnection";
+import { RemoteConnectionBanner } from "./RemoteConnectionBanner";
 import { parseRemotePath, remotePath, remoteProjectFor, type RemoteProject } from "../model/remoteProjects";
 import {
   carryModelSettings,
@@ -65,6 +69,7 @@ export type RemoteSessionOverrides = Partial<SessionPaneProps> & {
   remoteFeatures: { attachments: boolean; plan: boolean; draft: boolean };
   remoteSessionLoading: boolean;
   remoteSessionStarted: boolean;
+  sendBlockedReason?: string;
   allowedModelHarnesses: readonly HarnessId[];
 };
 
@@ -202,6 +207,7 @@ function ConnectedRemoteSession({
     cachedDescriptors.get(machine.id),
   );
   const [online, setOnline] = useState(false);
+  const connection = useRemoteConnection(project.key);
   const [error, setError] = useState("");
   const [sessionId, setSessionId] = useState(() => remoteSessionFor(shell.id));
   const boundSession = useRef(sessionId);
@@ -404,7 +410,7 @@ function ConnectedRemoteSession({
       } catch (reason) {
         if (stale()) return;
         setOnline(false);
-        reportRemoteMachineStatus(machine.id, false);
+        reportRemoteMachineStatus(machine.id, false, reason);
         described = false;
         failed++;
       }
@@ -434,6 +440,17 @@ function ConnectedRemoteSession({
     visible,
     onSnapshot,
   ]);
+
+  // When the machine comes back, the poll starts again at once instead of
+  // waiting out its back-off, and re-attaches this session from its snapshot.
+  useEffect(
+    () =>
+      subscribeRemoteRecovered(() => {
+        setRefresh((value) => value + 1);
+        setCatalogRefresh((value) => value + 1);
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!descriptor) return;
@@ -616,6 +633,7 @@ function ConnectedRemoteSession({
       setRefresh((value) => value + 1);
       return receipt;
     } catch (reason) {
+      reportRemoteConnection(project.key, "session", reason);
       if (!alive.current || version !== bindingVersion.current) return undefined;
       const message = String(reason);
       if (message.includes("Host rejected request:")) {
@@ -847,36 +865,9 @@ function ConnectedRemoteSession({
           ...(planBlockId ? { planBlockId } : {}),
         };
 
-  const submit = (
-    text: string,
-    attachments: Attachment[] = [],
-    options?: ComposerTurnOptions,
-    asDraft = false,
-    planBlockId?: string,
-  ): boolean => {
-    if (
-      !online ||
-      sending ||
-      preparingRef.current ||
-      pending ||
-      busy ||
-      (!text.trim() && !attachments.length)
-    )
-      return false;
-    const intent =
-      options?.intent === "plan" || options?.intent === "build"
-        ? options.intent
-        : "default";
-    const turn = optimisticTurn(
-      text,
-      attachments,
-      intent,
-      asDraft,
-      options?.draftBlockId,
-      planBlockId,
-    );
-    preparingRef.current = true;
-    setStarting(turn);
+  // Starts a turn whose optimistic bubble is already in `starting`. Gives up,
+  // clearing it, when the session cannot take a message now.
+  const launch = (turn: OptimisticTurn): boolean => {
     if (!hostSession) {
       if (sessionId || !draft.model) {
         preparingRef.current = false;
@@ -886,7 +877,7 @@ function ConnectedRemoteSession({
       void startSession(turn);
       return true;
     }
-    if (changes) {
+    if (changes || hostSession.busy || pending || sendingRef.current) {
       preparingRef.current = false;
       setStarting(undefined);
       return false;
@@ -908,7 +899,86 @@ function ConnectedRemoteSession({
       });
     return true;
   };
+  const launchRef = useRef(launch);
+  launchRef.current = launch;
+  const onlineRef = useRef(online);
+  onlineRef.current = online;
+  const onlineWaiters = useRef(new Set<() => void>());
+  useEffect(() => {
+    if (!online) return;
+    onlineWaiters.current.forEach((wake) => wake());
+    onlineWaiters.current.clear();
+  }, [online]);
+  /** Resolves once the poll has reached the machine, or false after a while. */
+  const whenOnline = () =>
+    onlineRef.current
+      ? Promise.resolve(true)
+      : new Promise<boolean>((resolve) => {
+          const wake = () => {
+            clearTimeout(timer);
+            resolve(true);
+          };
+          const timer = setTimeout(() => {
+            onlineWaiters.current.delete(wake);
+            resolve(false);
+          }, 10_000);
+          onlineWaiters.current.add(wake);
+        });
+  // Send while the machine is out of reach: reconnect first, then send. The
+  // composer has let go of the message, so when that fails it goes back there
+  // (or stays here as a failed message with Try again); it is never dropped.
+  const sendWhenConnected = async (turn: OptimisticTurn, options?: ComposerTurnOptions) => {
+    const version = bindingVersion.current;
+    const outcome = await sendAfterReconnect({
+      status: connection.status,
+      reconnect: () => connection.reconnect(),
+      ready: whenOnline,
+      send: () => alive.current && version === bindingVersion.current && launchRef.current(turn),
+    });
+    if (outcome.sent || !alive.current || version !== bindingVersion.current) return;
+    preparingRef.current = false;
+    // The connection banner already says why a reconnect failed.
+    if (outcome.failure === "offline") setError(outcome.error ?? "");
+    if (options?.onSendRejected?.())
+      setStarting((current) => (current?.commandId === turn.commandId ? undefined : current));
+    else setStarting({ ...turn, failed: true });
+  };
 
+  const submit = (
+    text: string,
+    attachments: Attachment[] = [],
+    options?: ComposerTurnOptions,
+    asDraft = false,
+    planBlockId?: string,
+  ): boolean => {
+    if (
+      sending ||
+      preparingRef.current ||
+      pending ||
+      busy ||
+      (!text.trim() && !attachments.length)
+    )
+      return false;
+    const intent =
+      options?.intent === "plan" || options?.intent === "build"
+        ? options.intent
+        : "default";
+    const turn = optimisticTurn(
+      text,
+      attachments,
+      intent,
+      asDraft,
+      options?.draftBlockId,
+      planBlockId,
+    );
+    preparingRef.current = true;
+    setStarting(turn);
+    if (!online) {
+      void sendWhenConnected(turn, options);
+      return true;
+    }
+    return launch(turn);
+  };
 
   const modelSource = useMemo<ModelSource>(() => {
     const models = (harness: HarnessId) =>
@@ -994,7 +1064,7 @@ function ConnectedRemoteSession({
             role: "user",
             text: pending.type === "send" ? pending.text : "/compact",
           }
-        : startingActive && starting
+        : (startingActive || (starting?.failed && !starting.draft)) && starting
           ? {
               id: starting.commandId,
               role: "user",
@@ -1202,6 +1272,11 @@ function ConnectedRemoteSession({
     },
     remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     remoteSessionStarted: !!sessionId,
+    sendBlockedReason: blocksSending(connection.status)
+      ? connection.status === "needs-auth"
+        ? `${machine.name} needs you to sign in first. Use “Sign in and reconnect” above.`
+        : `Can’t reach ${machine.name}. Send reconnects first.`
+      : undefined,
     allowedModelHarnesses: hostSession
       ? [hostSession.harness]
       : providers.length
@@ -1288,6 +1363,7 @@ function ConnectedRemoteSession({
   return (
     <ModelSourceContext.Provider value={modelSource}>
       <div className="relative flex h-full min-h-0 flex-col">
+        <RemoteConnectionBanner cwd={project.key} stale={!!hostSession} />
         {notice ? (
           <div
             role={error ? "alert" : "status"}

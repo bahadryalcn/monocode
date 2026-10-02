@@ -91,7 +91,7 @@ export function ConnectionsSettings() {
             }));
             refreshRemoteMachines();
             // Views that were waiting on this machine reload now.
-            notifyRemoteRecovered();
+            notifyRemoteRecovered(next.machine.environmentId);
           }
           return;
         }

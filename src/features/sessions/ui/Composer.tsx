@@ -271,6 +271,8 @@ type Props = {
   /** Keeps local file mentions, skills, and app modes off for host sessions. */
   remoteSession?: boolean;
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
+  /** Why Send cannot reach its destination right now; Send stays usable and tries again. */
+  sendBlockedReason?: string;
   context?: ContextUsage;
   sessionUsage?: SessionUsage;
   compactSupported?: boolean;
@@ -573,6 +575,7 @@ export function Composer({
   hideBranchPicker = false,
   hideTopBar = false,
   remoteSession = false,
+  sendBlockedReason,
   remoteFeatures,
   context,
   sessionUsage,
@@ -1921,6 +1924,20 @@ export function Composer({
             : orchestrationSelected || orchestratorCommand.matched
               ? "orchestrate"
               : "default",
+        // A host session may take the message only after a reconnect, and
+        // gives it back here if that fails.
+        ...(remote
+          ? {
+              onSendRejected: () => {
+                // Only into an empty composer: never over what was typed since.
+                if (!ref.current || ref.current.value || attachmentsRef.current.length)
+                  return false;
+                restoreDraft(text, files, resendBorrowedAttachmentIds);
+                setSelectedMcp(resendSelectedMcp);
+                return true;
+              },
+            }
+          : {}),
         ...(resendEdited
           ? {
               resendEdited: true,
@@ -3008,6 +3025,7 @@ export function Composer({
                 hasValue={hasValue && !worktreeRemoved}
                 allowBusySubmit={allowBusySubmit}
                 label={draftActive ? "Save draft" : "Send"}
+                blockedReason={sendBlockedReason}
                 onSend={() => submit(ref.current?.value ?? "")}
                 onQueue={
                   queueShortcutApplies({
@@ -3161,6 +3179,7 @@ export function ComposerAction({
   hasValue,
   allowBusySubmit = true,
   label = "Send",
+  blockedReason,
   onSend,
   onQueue,
   queueShortcut,
@@ -3171,6 +3190,8 @@ export function ComposerAction({
   hasValue: boolean;
   allowBusySubmit?: boolean;
   label?: string;
+  /** Shown instead of the label while Send cannot reach its destination. */
+  blockedReason?: string;
   onSend: () => void;
   /** Queue the message behind the running turn; only offered while one runs. */
   onQueue?: () => void;
@@ -3238,11 +3259,13 @@ export function ComposerAction({
   return (
     <button
       type="button"
-      title={label}
-      aria-label={label}
+      title={blockedReason ?? label}
+      aria-label={blockedReason ? `${label}. ${blockedReason}` : label}
       disabled={!hasValue}
       onClick={onSend}
-      className="composer-send primary-action grid size-6.5 place-items-center rounded-md disabled:cursor-default"
+      className={`composer-send primary-action grid size-6.5 place-items-center rounded-md disabled:cursor-default ${
+        blockedReason ? "opacity-50" : ""
+      }`}
     >
       <ArrowUp className="size-3.5" strokeWidth={2.25} />
     </button>

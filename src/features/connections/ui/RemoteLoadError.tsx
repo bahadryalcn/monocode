@@ -1,11 +1,8 @@
-import { useMemo } from "react";
-import {
-  OPEN_CONNECTIONS_EVENT,
-  requestMachineReconnect,
-  useRemoteMachines,
-} from "../model/connections";
+import { useState } from "react";
+import { Loader } from "../../../shared/ui/icons";
+import { OPEN_CONNECTIONS_EVENT } from "../model/connections";
 import type { RemoteFailure } from "../model/remoteFailure";
-import { parseRemotePath } from "../model/remoteProjects";
+import { useRemoteConnection } from "../model/useRemoteConnection";
 
 const ACTION =
   "shrink-0 rounded-md bg-content/8 px-2 py-0.5 text-[11px] text-content/80 hover:bg-content/15 hover:text-content disabled:opacity-40";
@@ -24,12 +21,8 @@ export function RemoteLoadError({
   stale?: boolean;
   onRetry?: () => void;
 }) {
-  const environmentId = parseRemotePath(cwd)?.environmentId;
-  const { machines } = useRemoteMachines(!!environmentId);
-  const machine = useMemo(
-    () => machines.find((entry) => entry.environmentId === environmentId),
-    [machines, environmentId],
-  );
+  const { machine, status, reconnecting, reconnect } = useRemoteConnection(cwd);
+  const [reconnectError, setReconnectError] = useState("");
   const name = machine?.name ?? "this machine";
   const title =
     failure.kind === "unreachable"
@@ -37,6 +30,13 @@ export function RemoteLoadError({
       : failure.kind === "outdated"
         ? `MonoCode Host on ${name} needs an update`
         : "Couldn’t load from the machine";
+  const needsAuth = status === "needs-auth";
+  const startReconnect = () => {
+    setReconnectError("");
+    void reconnect({ signIn: true }).then((result) => {
+      if (!result.ok) setReconnectError(result.error);
+    });
+  };
   const openConnections = () => window.dispatchEvent(new Event(OPEN_CONNECTIONS_EVENT));
   return (
     <div
@@ -45,16 +45,25 @@ export function RemoteLoadError({
     >
       <p className="font-medium text-content">{title}</p>
       <p className="break-words text-content/60">{failure.message}</p>
+      {reconnectError && reconnectError !== failure.message ? (
+        <p className="break-words text-content/60">Reconnecting failed: {reconnectError}</p>
+      ) : null}
       {stale ? <p className="text-content/45">Showing what was last loaded.</p> : null}
       <div className="mt-0.5 flex flex-wrap gap-1.5">
-        {failure.kind === "unreachable" && machine?.ssh ? (
-          <button type="button" className={ACTION} onClick={() => requestMachineReconnect(machine.id)}>
-            Reconnect
+        {failure.kind === "unreachable" && machine ? (
+          <button
+            type="button"
+            className={`${ACTION} inline-flex items-center gap-1`}
+            disabled={reconnecting}
+            onClick={startReconnect}
+          >
+            {reconnecting ? <Loader className="size-3 animate-spin" aria-hidden="true" /> : null}
+            {reconnecting ? "Reconnecting…" : needsAuth ? "Sign in and reconnect" : "Reconnect"}
           </button>
         ) : null}
         {failure.kind === "unreachable" || failure.kind === "outdated" ? (
           <button type="button" className={ACTION} onClick={openConnections}>
-            Open Connections
+            Connection settings
           </button>
         ) : null}
         {failure.kind === "other" && onRetry ? (

@@ -604,6 +604,7 @@ import {
 import { buildRemotePlan, remoteSessionActions } from "../features/connections/model/remoteSessionActions";
 import { remoteSessionState } from "../features/connections/model/remoteSessionState";
 import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
+import { reconnectRemoteMachine } from "../features/connections/model/remoteReconnect";
 import type { HostSession } from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
 import { SessionImportHost } from "../features/sessions/ui/SessionImportHost";
@@ -11378,7 +11379,10 @@ function Workspace({
               onOpenFile={onOpenFile}
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
-                else if (id === "toggle-notes" && loadNotesEnabled())
+                else if (id === "reconnect-remote") {
+                  const remote = remoteProjectFor(filesCwd);
+                  if (remote) void reconnectRemoteMachine(remote.environmentId, { signIn: true });
+                } else if (id === "toggle-notes" && loadNotesEnabled())
                   toggleNotesPanel();
               }}
               onClose={() => setFilePickerOpen(false)}

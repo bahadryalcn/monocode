@@ -87,6 +87,8 @@ import {
   notificationMuteStatus,
 } from "../../features/notifications/ui/notificationMuteActions";
 import { useProjectNotificationPreferences } from "../../features/notifications/hooks/useProjectNotificationPreferences";
+import { reconnectRemoteMachine } from "../../features/connections/model/remoteReconnect";
+import { remoteProjectFor } from "../../features/connections/model/remoteProjects";
 import { useNotificationProjects } from "../../features/notifications/hooks/useNotificationProjects";
 import { updateNotificationPreferences } from "../../features/notifications/model/notificationPreferences";
 import type { ExplorerMenuItem } from "../../features/files/ui/ExplorerMenu";
@@ -105,6 +107,7 @@ function projectMenuExtraItems(
   externalEditors: ExternalEditor[] | null,
   projectGroups: ProjectGroup[],
   canAddDirs: boolean,
+  canReconnect: boolean,
   currentProjectGroupId?: string,
 ): TabGroupMenuExtraItem[] {
   const groupSubmenu: ExplorerMenuItem[] = [
@@ -138,6 +141,9 @@ function projectMenuExtraItems(
     },
     ...(canAddDirs
       ? [{ id: "additional-dirs", label: "Additional folders…", icon: FolderPlus }]
+      : []),
+    ...(canReconnect
+      ? [{ id: "reconnect-machine", label: "Reconnect machine", icon: RefreshCw }]
       : []),
     pinned
       ? { id: "unpin", label: "Unpin project", icon: PinOff }
@@ -400,6 +406,9 @@ export function useProjectMenu({
       return false;
     } else if (action === "notifications-settings") {
       onOpenNotificationSettings?.(path);
+    } else if (action === "reconnect-machine") {
+      const remote = remoteProjectFor(path);
+      if (remote) void reconnectRemoteMachine(remote.environmentId, { signIn: true });
     } else if (action === "pin" || action === "unpin") {
       toggleProjectPin(path);
     } else if (action === "background") {
@@ -481,6 +490,7 @@ export function useProjectMenu({
           externalEditors,
           loadProjectGroups(),
           isLocalProject(projectMenu.path),
+          Boolean(remoteProjectFor(projectMenu.path)),
           projectGroupIdForPath(
             projectMenu.path,
             loadProjectGroupAssignments(),

@@ -101,6 +101,8 @@ import {
   useRemoteMachines,
 } from "../../features/connections/model/connections";
 import { remoteProjectFor } from "../../features/connections/model/remoteProjects";
+import { connectionIndicator } from "../../features/connections/model/remoteConnection";
+import { useRemoteConnection } from "../../features/connections/model/useRemoteConnection";
 import { useProjectMenu } from "./useProjectMenu";
 import { GroupGitPopover } from "../../features/projects/ui/GroupGitPopover";
 import { OPEN_PROJECT_CHANGES_EVENT, summarizeGroupGit } from "../../features/projects/model/groupGit";
@@ -1066,16 +1068,17 @@ function ProjectCard({
   const machine = remote
     ? machines.find((entry) => entry.environmentId === remote.environmentId)
     : undefined;
-  const online = useRemoteMachineOnline(machine?.id);
+  // Keeps the machine checked while its row is on screen; the shared
+  // connection status below is what the row shows.
+  useRemoteMachineOnline(machine?.id);
+  const remoteConnection = useRemoteConnection(item.path);
+  const indicator = connectionIndicator(remoteConnection, remoteConnection.reconnecting);
+  const reconnectable = !!machine && indicator.tone === "down";
   const connection = !remote
     ? ""
     : !machine
       ? "Machine not connected on this computer"
-      : online === undefined
-        ? "Connecting"
-        : online
-          ? "Connected"
-          : "Reconnecting";
+      : indicator.label;
   const cardTitle = projectCardTitle(
     remote
       ? `${remote.cwd} on ${machine?.name ?? "another machine"} (${connection})`
@@ -1172,15 +1175,33 @@ function ProjectCard({
         ) : null}
         {remote ? (
           <span
-            role="img"
-            aria-label={connection}
-            className="relative grid size-4 shrink-0 place-items-center text-content/45"
+            role={reconnectable ? "button" : "img"}
+            aria-label={reconnectable ? `${connection} Reconnect machine` : connection}
+            title={reconnectable ? `${connection}
+Click to reconnect` : undefined}
+            data-no-drag={reconnectable ? "" : undefined}
+            onPointerDown={reconnectable ? (event) => event.stopPropagation() : undefined}
+            onClick={
+              reconnectable
+                ? (event) => {
+                    event.stopPropagation();
+                    void remoteConnection.reconnect({ signIn: true });
+                  }
+                : undefined
+            }
+            className={`relative grid size-4 shrink-0 place-items-center text-content/45 ${
+              reconnectable ? "cursor-pointer hover:text-content" : ""
+            }`}
           >
             <Internet className="size-3" strokeWidth={1.75} aria-hidden="true" />
             <span
               aria-hidden="true"
               className={`absolute right-0 bottom-0 size-1.5 rounded-full ring-1 ring-background-base ${
-                online ? "bg-emerald-400" : "bg-content/35"
+                indicator.tone === "connected"
+                  ? "bg-emerald-400"
+                  : indicator.tone === "connecting"
+                    ? "bg-amber-400"
+                    : "bg-red-400"
               }`}
             />
           </span>

@@ -242,6 +242,8 @@ type Props = SessionPaneProps & {
   /** An opened host conversation whose transcript has not arrived yet. */
   remoteSessionLoading?: boolean;
   remoteSessionStarted?: boolean;
+  /** Why a message to the host cannot be delivered now; Send still tries to reconnect. */
+  sendBlockedReason?: string;
   allowedModelHarnesses?: readonly HarnessId[];
 };
 
@@ -268,6 +270,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   remoteFeatures,
   remoteSessionLoading = false,
   remoteSessionStarted = false,
+  sendBlockedReason,
   allowedModelHarnesses,
   session,
   reviewUndoLocked = false,
@@ -606,6 +609,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
     <Composer
       key={session.id}
       remoteSession={remoteSession}
+      sendBlockedReason={sendBlockedReason}
       remoteFeatures={remoteFeatures}
       allowedModelHarnesses={allowedModelHarnesses}
       enabled={visible}

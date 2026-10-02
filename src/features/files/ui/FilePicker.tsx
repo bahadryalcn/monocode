@@ -19,6 +19,7 @@ import {
 import { LAYER } from "../../../shared/lib/layers";
 import { fuzzyMatch, type FuzzyHit } from "../../../shared/lib/fuzzy";
 import {
+  isRemoteProjectPath,
   looksLikeProject,
 } from "../../projects/model/recents";
 import type { OpenFileFn } from "../../search/model/search";
@@ -42,7 +43,7 @@ export function reloadActionHint(mod = MOD, shift = SHIFT) {
   return `${mod}${shift}R`;
 }
 
-function paletteActions(): Action[] {
+function paletteActions(cwd: string): Action[] {
   const notes = loadNotesEnabled()
     ? [
         {
@@ -56,6 +57,9 @@ function paletteActions(): Action[] {
     : [];
   return [
     { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
+    ...(isRemoteProjectPath(cwd)
+      ? [{ id: "reconnect-remote", label: "Reconnect Remote Machine" }]
+      : []),
     ...notes,
   ];
 }
@@ -108,7 +112,7 @@ export function FilePicker({
   );
   const actionResults = useMemo((): RankedAction[] => {
     if (!paletteMode) return [];
-    const actions = paletteActions();
+    const actions = paletteActions(cwd);
     if (!actionQuery) {
       return actions.map((action) => ({
         ...action,
@@ -122,7 +126,7 @@ export function FilePicker({
         return hit ? [{ ...action, ...hit }] : [];
       })
       .sort((a, b) => b.score - a.score);
-  }, [actionQuery, paletteMode]);
+  }, [actionQuery, paletteMode, cwd]);
   const optionCount = paletteMode ? actionResults.length : results.length;
 
   useEffect(() => {
