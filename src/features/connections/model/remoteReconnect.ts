@@ -6,12 +6,19 @@ import {
   requestMachineReconnect,
 } from "./connections";
 import {
+  loadRemoteAutoReconnect,
+  subscribeRemoteAutoReconnect,
+} from "../../settings/model/settings";
+import {
   autoRetryDelay,
+  blocksSending,
+  needsSignIn,
   sanitizeConnectionError,
   shouldAutoRetry,
   type ReconnectOutcome,
 } from "./remoteConnection";
 import { remoteErrorText } from "./remoteFailure";
+import { watchTunnelExits } from "./remoteTunnelEvents";
 import {
   listRemoteConnections,
   notifyRemoteRecovered,
@@ -88,7 +95,7 @@ export async function reconnectRemoteMachine(
   setReconnecting(environmentId, true);
   try {
     const result = await attempt(environmentId, true);
-    if (!result.ok && options.signIn && readRemoteConnection(environmentId).status === "needs-auth") {
+    if (!result.ok && options.signIn && needsSignIn(readRemoteConnection(environmentId).status)) {
       const machine = knownRemoteMachine(environmentId);
       if (machine?.ssh) requestMachineReconnect(machine.id);
     }
@@ -108,7 +115,7 @@ let stopRecovery: (() => void) | undefined;
 function schedule() {
   const now = Date.now();
   for (const [environmentId, state] of listRemoteConnections()) {
-    const wanted = shouldAutoRetry(state.status, hiddenSince, now);
+    const wanted = shouldAutoRetry(state.status, hiddenSince, now, loadRemoteAutoReconnect());
     const pending = retries.get(environmentId);
     if (!wanted) {
       if (pending) clearTimeout(pending);
@@ -130,10 +137,13 @@ async function retry(environmentId: string, force: boolean) {
   retries.delete(environmentId);
   const status = readRemoteConnection(environmentId).status;
   // Focus and network changes also re-check a machine waiting for sign-in: the
-  // key may have been fixed outside the app. They never open a prompt.
-  const allowed = force
-    ? status === "unreachable" || status === "needs-auth"
-    : shouldAutoRetry(status, hiddenSince, Date.now());
+  // key may have been fixed outside the app. They never open a prompt. With
+  // automatic reconnecting off, nothing here runs.
+  const allowed =
+    loadRemoteAutoReconnect() &&
+    (force
+      ? blocksSending(status)
+      : shouldAutoRetry(status, hiddenSince, Date.now()));
   if (!allowed || attempts.has(environmentId)) return;
   retryCounts.set(environmentId, (retryCounts.get(environmentId) ?? 0) + 1);
   await attempt(environmentId, false);
@@ -147,7 +157,8 @@ function retryNow() {
 /** Starts retrying dropped machines in the background, once per app run: after
  * 2, 5, 15 and 30 seconds, then every minute, and at once when the window
  * regains focus or the network returns. Machines that need a password are left
- * for the user to reconnect. */
+ * for the user to reconnect. Also starts listening for tunnels that drop. None
+ * of the retrying happens while "Automatically reconnect" is off. */
 export function startRemoteAutoRecovery(): () => void {
   if (stopRecovery) return stopRecovery;
   const onVisibility = () => {
@@ -156,6 +167,13 @@ export function startRemoteAutoRecovery(): () => void {
     schedule();
   };
   const unsubscribe = subscribeChanges(schedule);
+  // Turning the setting on tries machines that are down at once; turning it off
+  // cancels the timers that are waiting.
+  const unsubscribeSetting = subscribeRemoteAutoReconnect(() => {
+    if (loadRemoteAutoReconnect()) retryNow();
+    schedule();
+  });
+  const stopTunnelWatch = watchTunnelExits();
   window.addEventListener("focus", retryNow);
   window.addEventListener("online", retryNow);
   document.addEventListener("visibilitychange", onVisibility);
@@ -163,6 +181,8 @@ export function startRemoteAutoRecovery(): () => void {
   schedule();
   stopRecovery = () => {
     unsubscribe();
+    unsubscribeSetting();
+    stopTunnelWatch();
     window.removeEventListener("focus", retryNow);
     window.removeEventListener("online", retryNow);
     document.removeEventListener("visibilitychange", onVisibility);

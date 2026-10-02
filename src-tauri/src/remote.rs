@@ -8,7 +8,10 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// Sent to every window when a machine's SSH process ends on its own.
+const TUNNEL_EXIT_EVENT: &str = "remote://tunnel-exit";
 
 #[derive(Default)]
 pub struct RemoteConnections {
@@ -18,6 +21,12 @@ pub struct RemoteConnections {
 }
 
 impl RemoteConnections {
+    /// Has the renderer told when a machine's SSH tunnel drops.
+    pub fn emit_tunnel_exits(&self, app: AppHandle) {
+        self.tunnels.set_exit_sink(Arc::new(move |exit| {
+            let _ = app.emit(TUNNEL_EXIT_EVENT, exit);
+        }));
+    }
     pub fn shutdown(&self) {
         if let Ok(jobs) = self.jobs.lock() {
             for job in jobs.values() {
@@ -309,6 +318,7 @@ pub fn remote_request(
     method: String,
     params: Value,
     fresh: Option<bool>,
+    allow_connect: Option<bool>,
 ) -> Result<Value, String> {
     if !supported_remote_method(&method) {
         return Err("Unsupported remote operation".into());
@@ -329,7 +339,15 @@ pub fn remote_request(
         if fresh == Some(true) {
             state.tunnels.forget_failure(&machine.id);
         }
-        Some(state.tunnels.endpoint(&machine.id, target)?)
+        // Background polls pass `false` while automatic reconnect is off, so
+        // they never spawn ssh; everything else may start a missing tunnel.
+        // A reconnect the user asked for always may.
+        let allow = fresh == Some(true) || allow_connect != Some(false);
+        Some(
+            state
+                .tunnels
+                .endpoint(&machine.id, &machine.environment_id, target, allow)?,
+        )
     } else {
         None
     };
@@ -344,6 +362,19 @@ pub fn remote_request(
         &method,
         params,
     );
+    // The tunnel accepted the connection but the machine refused it onward.
+    let response = match response {
+        Err(error)
+            if error.starts_with("The host request did not complete")
+                && state.tunnels.take_host_refusal(&machine.id) =>
+        {
+            Err(
+                "Host is not running on the machine. Start MonoCode Host there, then reconnect."
+                    .to_string(),
+            )
+        }
+        other => other,
+    };
     if response
         .as_ref()
         .err()
@@ -568,7 +599,9 @@ fn start_ssh_job(
             machines.retain(|m| m.id != machine.id);
             machines.push(machine.clone());
             write(&path, &machines)?;
-            state.tunnels.insert(machine.id.clone(), tunnel);
+            state
+                .tunnels
+                .insert(machine.id.clone(), &machine.environment_id, tunnel);
             Ok(machine.public())
         });
     });

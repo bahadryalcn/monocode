@@ -348,6 +348,7 @@ import {
   loadKeepAwakeEnabled,
   loadKeepAwakeHoldAfter,
   loadKeepAwakeScreen,
+  loadRemoteAutoReconnect,
   loadLiveAgentsEnabled,
   loadModelControls,
   loadNotesEnabled,
@@ -369,6 +370,7 @@ import {
   saveKeepAwakeEnabled,
   saveKeepAwakeHoldAfter,
   saveKeepAwakeScreen,
+  saveRemoteAutoReconnect,
   saveLiveAgentsEnabled,
   saveModelControls,
   saveNotesEnabled,
@@ -379,6 +381,7 @@ import {
   subscribeKeepAwakeEnabled,
   subscribeKeepAwakeHoldAfter,
   subscribeKeepAwakeScreen,
+  subscribeRemoteAutoReconnect,
   subscribeKeybindings,
   type KeybindingOverride,
   saveTabAnimationsEnabled,
@@ -611,7 +614,12 @@ export function SettingsView({
               {section === "general" ? (
                 <GeneralPage onOpenWhatsNew={onOpenWhatsNew} />
               ) : null}
-              {section === "connections" ? <ConnectionsSettings /> : null}
+              {section === "connections" ? (
+                <>
+                  <ConnectionsSettings />
+                  <RemoteReconnectGroup />
+                </>
+              ) : null}
               {section === "appearance" ? (
                 <AppearancePage appearance={appearance} />
               ) : null}
@@ -5022,6 +5030,31 @@ function NotificationsBlocked() {
         </button>
       ) : null}
     </span>
+  );
+}
+
+function RemoteReconnectGroup() {
+  const on = useSyncExternalStore(
+    subscribeRemoteAutoReconnect,
+    loadRemoteAutoReconnect,
+    () => true,
+  );
+  return (
+    <div className="pt-8">
+      <Group title="Connection recovery">
+        <Row
+          id="remote-auto-reconnect"
+          label="Automatically reconnect to remote machines"
+          description="Retry a machine that stopped answering, in the background and when this window regains focus or the network returns. Turn it off to reconnect only with Reconnect, when you send a message, or when you open a remote project."
+        >
+          <Toggle
+            label="Automatically reconnect to remote machines"
+            on={on}
+            onChange={saveRemoteAutoReconnect}
+          />
+        </Row>
+      </Group>
+    </div>
   );
 }
 

@@ -238,6 +238,8 @@ pub fn run() {
         .manage(window_transfer::WindowTransferState::new())
         .setup(|app| {
             harness::reap_orphaned_harness_processes();
+            app.state::<remote::RemoteConnections>()
+                .emit_tunnel_exits(app.handle().clone());
             session_store::init(app.handle())?;
             control::init(app.handle())?;
             reminders::init(app.handle());

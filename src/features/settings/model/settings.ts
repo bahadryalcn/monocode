@@ -164,6 +164,12 @@ export type SettingsEntry = {
 export const SETTINGS_INDEX: SettingsEntry[] = [
   { id: "remote-machines", section: "connections", label: "Your machines", keywords: "ssh remote connect host server environment" },
   {
+    id: "remote-auto-reconnect",
+    section: "connections",
+    label: "Automatically reconnect to remote machines",
+    keywords: "ssh remote retry reconnect drop tunnel offline background",
+  },
+  {
     id: "mcp-servers",
     section: "mcp",
     label: "MCP servers",
@@ -939,6 +945,39 @@ export function saveKeepAwakeHoldAfter(value: KeepAwakeHoldAfter): void {
         detail: value,
       }),
     );
+}
+
+const REMOTE_AUTO_RECONNECT_KEY = "monocode.remoteAutoReconnect";
+export const REMOTE_AUTO_RECONNECT_DEFAULT = true;
+export const REMOTE_AUTO_RECONNECT_CHANGE_EVENT =
+  "monocode:remote-auto-reconnect-change";
+
+/** Whether dropped remote machines are retried in the background. */
+export function loadRemoteAutoReconnect(): boolean {
+  return readFlag(REMOTE_AUTO_RECONNECT_KEY) ?? REMOTE_AUTO_RECONNECT_DEFAULT;
+}
+
+export function saveRemoteAutoReconnect(value: boolean): void {
+  writeFlag(REMOTE_AUTO_RECONNECT_KEY, value);
+  if (typeof window !== "undefined")
+    window.dispatchEvent(
+      new CustomEvent<boolean>(REMOTE_AUTO_RECONNECT_CHANGE_EVENT, {
+        detail: value,
+      }),
+    );
+}
+
+export function subscribeRemoteAutoReconnect(onChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === REMOTE_AUTO_RECONNECT_KEY || event.key === null) onChange();
+  };
+  window.addEventListener(REMOTE_AUTO_RECONNECT_CHANGE_EVENT, onChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(REMOTE_AUTO_RECONNECT_CHANGE_EVENT, onChange);
+    window.removeEventListener("storage", onStorage);
+  };
 }
 
 const KEEP_AWAKE_SCREEN_KEY = "monocode.keepAwakeScreen";

@@ -20,8 +20,10 @@ vi.mock("./connections", () => ({
   requestMachineReconnect: requestReconnect,
 }));
 
+import { saveRemoteAutoReconnect } from "../../settings/model/settings";
 import { reconnectRemoteMachine, startRemoteAutoRecovery } from "./remoteReconnect";
 import {
+  applyRemoteConnection,
   readRemoteConnection,
   recordRemoteConnection,
   resetRemoteHealth,
@@ -33,6 +35,7 @@ const denied = "SSH connection failed: Permission denied (publickey).";
 let stop: () => void;
 
 beforeEach(() => {
+  localStorage.clear();
   vi.useFakeTimers();
   vi.setSystemTime(0);
   resetRemoteHealth();
@@ -98,6 +101,73 @@ describe("automatic recovery", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(readRemoteConnection("env").status).toBe("connected");
     expect(requestReconnect).not.toHaveBeenCalled();
+  });
+});
+
+describe("with automatic reconnecting turned off", () => {
+  it("makes no timer, focus, network or visibility retries", async () => {
+    saveRemoteAutoReconnect(false);
+    request.mockRejectedValue(down);
+    recordRemoteConnection("env", down);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("online"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request).not.toHaveBeenCalled();
+    expect(readRemoteConnection("env").status).toBe("unreachable");
+  });
+
+  it("still reconnects when the user asks", async () => {
+    saveRemoteAutoReconnect(false);
+    recordRemoteConnection("env", down);
+    request.mockResolvedValue({});
+    expect(await reconnectRemoteMachine("env")).toEqual({ ok: true });
+    expect(request).toHaveBeenCalledWith("m1", "environment.describe", {}, true);
+    expect(readRemoteConnection("env").status).toBe("connected");
+  });
+
+  it("cancels waiting retries when switched off, and resumes at once when switched on", async () => {
+    request.mockRejectedValue(down);
+    recordRemoteConnection("env", down);
+    await vi.advanceTimersByTimeAsync(1_000);
+    saveRemoteAutoReconnect(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(request).not.toHaveBeenCalled();
+    // Turning it back on tries the machine that is down now, not after a wait.
+    saveRemoteAutoReconnect(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(request).toHaveBeenCalledTimes(1);
+    // ...and the schedule continues from there.
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-checks a machine waiting for sign-in once when switched on, without prompting", async () => {
+    saveRemoteAutoReconnect(false);
+    recordRemoteConnection("env", denied);
+    request.mockRejectedValue(denied);
+    saveRemoteAutoReconnect(true);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(requestReconnect).not.toHaveBeenCalled();
+  });
+});
+
+describe("a dropped tunnel", () => {
+  it("starts the retry schedule once, without waiting for a request to fail", async () => {
+    request.mockRejectedValue(down);
+    recordRemoteConnection("env");
+    applyRemoteConnection("env", { type: "tunnel-exit", exitCode: 255, stderr: "Timeout, server mini not responding.", at: 0 });
+    expect(readRemoteConnection("env").status).toBe("unreachable");
+    // A request failing just after the drop adds neither a state change nor a second timer.
+    recordRemoteConnection("env", down);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(request).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -164,6 +164,14 @@ impl Job {
 }
 
 fn command(target: &SshTarget, interactive: bool) -> Command {
+    command_with_keepalive(target, interactive, 15)
+}
+
+/// ssh uses the first value it gets for an option and command-line `-o` beats
+/// `~/.ssh/config`, so these settings hold whatever the user's config says.
+/// `keepalive` seconds, three missed replies in a row, end a link that went
+/// quiet (sleeping machine, dropped network) instead of leaving ssh hanging.
+fn command_with_keepalive(target: &SshTarget, interactive: bool, keepalive: u32) -> Command {
     let mut command = Command::new("ssh");
     command.args([
         "-T",
@@ -172,7 +180,7 @@ fn command(target: &SshTarget, interactive: bool) -> Command {
         "-o",
         "ConnectionAttempts=1",
         "-o",
-        "ServerAliveInterval=15",
+        &format!("ServerAliveInterval={keepalive}"),
         "-o",
         "ServerAliveCountMax=3",
         "-o",
@@ -205,8 +213,10 @@ fn command(target: &SshTarget, interactive: bool) -> Command {
     if let Some(port) = target.port {
         command.args(["-p", &port.to_string()]);
     }
+    // Untranslated messages: failures are classified by their wording.
     command
         .env("LC_ALL", "C")
+        .env("LANG", "C")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -431,27 +441,234 @@ pub fn pairing_script(platform: HostPlatform, name: &str) -> String {
     }
 }
 
+/// Seconds between ssh's keepalive probes on a tunnel; three unanswered probes
+/// end the link, so a silent network is noticed in about 15 seconds.
+const TUNNEL_KEEPALIVE_SECS: u32 = 5;
+/// How often a tunnel's ssh process is checked for having exited.
+const WATCH_INTERVAL: Duration = Duration::from_millis(250);
+
+/// A tunnel whose ssh process ended without the app closing it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelExit {
+    pub environment_id: String,
+    /// `None` when ssh was killed by a signal.
+    pub exit_code: Option<i32>,
+    /// The last lines ssh printed, without anything secret.
+    pub stderr: String,
+}
+pub type ExitSink = Arc<dyn Fn(TunnelExit) + Send + Sync>;
+
+/// The last few lines of ssh's stderr, bounded and free of control characters
+/// and of anything that looks like a credential.
+fn stderr_tail(text: &str) -> String {
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| {
+            line.chars()
+                .filter(|c| !c.is_control())
+                .take(200)
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            !line.is_empty()
+                && !["bearer ", "token=", "password=", "passphrase="]
+                    .iter()
+                    .any(|secret| lower.contains(secret))
+        })
+        .collect();
+    lines[lines.len().saturating_sub(5)..].join("\n")
+}
+
+/// ssh's complaint about the forwarded port: the tunnel works, but nothing
+/// listens on the machine's host port.
+fn host_refused(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        line.contains("open failed: connect failed")
+            && line.to_ascii_lowercase().contains("refused")
+    })
+}
+
+/// `(host, port)` that `ssh -G` resolved for a target, or `None` when the
+/// connection goes through a proxy, where that address is not the one dialled.
+fn parse_ssh_config_dump(output: &str) -> Option<(String, u16)> {
+    let (mut host, mut port) = (None, None);
+    for line in output.lines() {
+        let Some((key, value)) = line.split_once(' ') else {
+            continue;
+        };
+        let value = value.trim();
+        match key {
+            "hostname" => host = Some(value.to_string()),
+            "port" => port = value.parse().ok(),
+            "proxycommand" | "proxyjump" if !value.eq_ignore_ascii_case("none") => return None,
+            _ => {}
+        }
+    }
+    Some((host?, port?))
+}
+
+/// Whether the SSH server's own address accepts a TCP connection: a check
+/// that does not depend on ssh's wording. `None` when the address is unknown.
+/// Reads the user's config through `ssh -G`, which never connects.
+fn ssh_server_reachable(target: &SshTarget) -> Option<bool> {
+    let mut command = Command::new("ssh");
+    command.arg("-G");
+    if let Some(port) = target.port {
+        command.args(["-p", &port.to_string()]);
+    }
+    command
+        .args(["--", &target.target])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command.output().ok().filter(|o| o.status.success())?;
+    let (host, port) = parse_ssh_config_dump(&String::from_utf8_lossy(&output.stdout))?;
+    Some(tcp_reachable(&host, port, Duration::from_secs(3)))
+}
+
+fn tcp_reachable(host: &str, port: u16, timeout: Duration) -> bool {
+    use std::net::ToSocketAddrs;
+    (host, port)
+        .to_socket_addrs()
+        .is_ok_and(|mut addrs| addrs.any(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok()))
+}
+
+/// What the renderer reads to classify a failed start: ssh's exit status and
+/// whether the server's port answered, next to ssh's own words.
+fn failure_tag(exit: Option<i32>, reachable: Option<bool>) -> String {
+    let mut parts = Vec::new();
+    if let Some(code) = exit {
+        parts.push(format!("exit {code}"));
+    }
+    match reachable {
+        Some(true) => parts.push("host reachable".into()),
+        Some(false) => parts.push("host unreachable".into()),
+        None => {}
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    }
+}
+
+/// Gives ssh's last words time to arrive after it exits.
+fn wait_for_stderr(done: &AtomicBool) {
+    for _ in 0..25 {
+        if done.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 pub struct Tunnel {
-    child: Child,
+    child: Arc<Mutex<Child>>,
     pub port: u16,
     stderr: Arc<Mutex<String>>,
+    /// Set once ssh's stderr has been read to its end.
+    stderr_done: Arc<AtomicBool>,
+    /// Set when the app closes the tunnel on purpose, or when its unexpected
+    /// exit has been reported: either way nothing more is reported.
+    settled: Arc<AtomicBool>,
 }
 impl Drop for Tunnel {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.settled.store(true, Ordering::SeqCst);
+        let mut child = self.child();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 impl Tunnel {
-    fn alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+    fn child(&self) -> std::sync::MutexGuard<'_, Child> {
+        self.child.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    fn alive(&self) -> bool {
+        matches!(self.child().try_wait(), Ok(None))
+    }
+    /// Takes over a running ssh and collects what it prints to stderr.
+    fn adopt(mut child: Child, port: u16) -> Self {
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let stderr_done = Arc::new(AtomicBool::new(false));
+        if let Some(mut reader) = child.stderr.take() {
+            let (errors, done) = (stderr.clone(), stderr_done.clone());
+            std::thread::spawn(move || {
+                let mut buffer = [0; 2048];
+                while let Ok(count) = reader.read(&mut buffer) {
+                    if count == 0 {
+                        break;
+                    }
+                    let mut errors = errors.lock().unwrap();
+                    if errors.len() < 8192 {
+                        errors.push_str(&String::from_utf8_lossy(&buffer[..count]));
+                    }
+                }
+                done.store(true, Ordering::SeqCst);
+            });
+        } else {
+            stderr_done.store(true, Ordering::SeqCst);
+        }
+        Self {
+            child: Arc::new(Mutex::new(child)),
+            port,
+            stderr,
+            stderr_done,
+            settled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    /// Reports through `sink`, once, if ssh exits on its own. A tunnel dropped
+    /// by the app (disconnect, quit, replacement) is never reported. The thread
+    /// ends with the tunnel.
+    fn watch(&self, environment_id: String, sink: ExitSink) {
+        let (child, stderr) = (self.child.clone(), self.stderr.clone());
+        let (stderr_done, settled) = (self.stderr_done.clone(), self.settled.clone());
+        std::thread::spawn(move || loop {
+            if settled.load(Ordering::SeqCst) {
+                return;
+            }
+            let status = child
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .try_wait();
+            match status {
+                Ok(None) => std::thread::sleep(WATCH_INTERVAL),
+                Ok(Some(status)) => {
+                    wait_for_stderr(&stderr_done);
+                    if !settled.swap(true, Ordering::SeqCst) {
+                        let text = stderr.lock().unwrap_or_else(PoisonError::into_inner);
+                        sink(TunnelExit {
+                            environment_id,
+                            exit_code: status.code(),
+                            stderr: stderr_tail(&text),
+                        });
+                    }
+                    return;
+                }
+                Err(_) => return,
+            }
+        });
     }
     pub fn start(
         target: &SshTarget,
         job: Option<&Arc<Job>>,
         askpass: Option<&Askpass>,
     ) -> Result<Self, String> {
-        Self::start_with_command(target, job, askpass, command(target, askpass.is_some()))
+        Self::start_with_command(
+            target,
+            job,
+            askpass,
+            command_with_keepalive(target, askpass.is_some(), TUNNEL_KEEPALIVE_SECS),
+        )
     }
 
     fn start_with_command(
@@ -474,37 +691,33 @@ impl Tunnel {
         ]);
         command.stdin(Stdio::null()).stdout(Stdio::null());
         drop(listener);
-        let mut child = command
+        let child = command
             .spawn()
             .map_err(|e| format!("Could not start OpenSSH: {e}"))?;
-        let mut reader = child.stderr.take().unwrap();
-        let stderr = Arc::new(Mutex::new(String::new()));
-        let errors = stderr.clone();
-        std::thread::spawn(move || {
-            let mut buffer = [0; 2048];
-            while let Ok(count) = reader.read(&mut buffer) {
-                if count == 0 {
-                    break;
-                }
-                let mut errors = errors.lock().unwrap();
-                if errors.len() < 8192 {
-                    errors.push_str(&String::from_utf8_lossy(&buffer[..count]));
-                }
-            }
-        });
-        let mut tunnel = Self {
-            child,
-            port,
-            stderr,
-        };
+        let tunnel = Self::adopt(child, port);
         let deadline = Instant::now() + Duration::from_secs(if job.is_some() { 150 } else { 20 });
         loop {
             if job.is_some_and(|j| j.cancelled.load(Ordering::Relaxed)) {
                 return Err("Connection cancelled".into());
             }
             if !tunnel.alive() {
+                let exit = tunnel
+                    .child()
+                    .try_wait()
+                    .ok()
+                    .flatten()
+                    .and_then(|status| status.code());
+                // Exit 255 is ssh's own failure; whether the server answers on
+                // its port tells a dead network from a refused sign-in.
+                let reachable = if exit == Some(255) {
+                    ssh_server_reachable(target)
+                } else {
+                    None
+                };
+                wait_for_stderr(&tunnel.stderr_done);
                 return Err(format!(
-                    "SSH connection failed: {}. Open Settings → Connections and reconnect to check access.",
+                    "SSH connection failed{}: {}. Open Settings → Connections and reconnect to check access.",
+                    failure_tag(exit, reachable),
                     tunnel.stderr.lock().unwrap().trim()
                 ));
             }
@@ -517,10 +730,7 @@ impl Tunnel {
                 return Ok(tunnel);
             }
             if Instant::now() >= deadline {
-                return Err(
-                    "SSH timed out. Open Settings → Connections and reconnect to authenticate."
-                        .into(),
-                );
+                return Err("SSH timed out connecting to the machine.".into());
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -545,12 +755,31 @@ pub struct TunnelLease {
 #[derive(Default)]
 pub struct Tunnels {
     slots: Mutex<HashMap<String, Arc<Mutex<Slot>>>>,
+    /// Told when a tunnel's ssh exits by itself; unset in tests that do not care.
+    exit_sink: Mutex<Option<ExitSink>>,
 }
 impl Tunnels {
     fn slots(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Mutex<Slot>>>> {
         self.slots.lock().unwrap_or_else(PoisonError::into_inner)
     }
-    pub fn insert(&self, id: String, tunnel: Tunnel) {
+    pub fn set_exit_sink(&self, sink: ExitSink) {
+        *self
+            .exit_sink
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(sink);
+    }
+    fn watch(&self, environment_id: &str, tunnel: &Tunnel) {
+        let sink = self
+            .exit_sink
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(sink) = sink {
+            tunnel.watch(environment_id.into(), sink);
+        }
+    }
+    pub fn insert(&self, id: String, environment_id: &str, tunnel: Tunnel) {
+        self.watch(environment_id, &tunnel);
         // A fresh slot never waits for a reconnect in progress; that attempt's
         // tunnel is dropped with the replaced slot.
         let slot = Slot {
@@ -565,7 +794,16 @@ impl Tunnels {
         let old = self.slots().remove(id);
         drop(old);
     }
-    pub fn endpoint(&self, id: &str, target: &SshTarget) -> Result<TunnelLease, String> {
+    /// The tunnel to a machine, started if it is down. With `allow_connect`
+    /// off (a background poll while automatic reconnect is off) a missing
+    /// tunnel is an immediate error: no ssh is spawned.
+    pub fn endpoint(
+        &self,
+        id: &str,
+        environment_id: &str,
+        target: &SshTarget,
+        allow_connect: bool,
+    ) -> Result<TunnelLease, String> {
         let slot = self.slots().entry(id.into()).or_default().clone();
         let mut current = slot.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(tunnel) = current.tunnel.as_mut() {
@@ -578,6 +816,11 @@ impl Tunnels {
             }
         }
         current.tunnel = None;
+        if !allow_connect {
+            return Err(
+                "Machine is unreachable. Automatic reconnect is off; reconnect it yourself.".into(),
+            );
+        }
         if let Some((when, error)) = &current.failure {
             if when.elapsed() < Duration::from_secs(10) {
                 return Err(error.clone());
@@ -585,6 +828,7 @@ impl Tunnels {
         }
         match Tunnel::start(target, None, None) {
             Ok(tunnel) => {
+                self.watch(environment_id, &tunnel);
                 let endpoint = format!("http://127.0.0.1:{}", tunnel.port);
                 current.failure = None;
                 current.generation = current.generation.wrapping_add(1);
@@ -600,6 +844,24 @@ impl Tunnels {
                 Err(error)
             }
         }
+    }
+    /// Whether ssh reported, since the last time this was asked, that the
+    /// machine refused the forwarded connection: the tunnel is fine, but no
+    /// host is listening. Reading clears the report so it is not reused.
+    pub fn take_host_refusal(&self, id: &str) -> bool {
+        let Some(slot) = self.slots().get(id).cloned() else {
+            return false;
+        };
+        let current = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(tunnel) = current.tunnel.as_ref() else {
+            return false;
+        };
+        let mut text = tunnel.stderr.lock().unwrap_or_else(PoisonError::into_inner);
+        let refused = host_refused(&text);
+        if refused {
+            text.clear();
+        }
+        refused
     }
     /// Lets the next request start a tunnel at once instead of repeating the
     /// error of a recent failed attempt.
@@ -783,6 +1045,205 @@ mod tests {
             // A client disappearing must not kill the independently owned host.
             assert!(TcpStream::connect(("127.0.0.1", target.remote_port)).is_ok());
         }
+    }
+    /// A harmless stand-in for ssh: prints `boom` to stderr and exits with 3.
+    fn short_lived_child() -> Child {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "echo boom 1>&2 & exit 3"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "echo boom >&2; exit 3"]);
+            command
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+    /// A stand-in that keeps running until it is killed.
+    fn long_lived_child() -> Child {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("ping");
+            command.args(["-n", "30", "127.0.0.1"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sleep");
+            command.arg("30");
+            command
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+    fn exit_events() -> (Tunnels, std::sync::mpsc::Receiver<TunnelExit>) {
+        let tunnels = Tunnels::default();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let sender = Mutex::new(sender);
+        tunnels.set_exit_sink(Arc::new(move |exit| {
+            let _ = sender.lock().unwrap().send(exit);
+        }));
+        (tunnels, receiver)
+    }
+    #[test]
+    fn an_unexpected_ssh_exit_is_reported_once_with_its_status_and_last_words() {
+        let (tunnels, events) = exit_events();
+        tunnels.insert("m".into(), "env", Tunnel::adopt(short_lived_child(), 1));
+        let exit = events.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(exit.environment_id, "env");
+        assert_eq!(exit.exit_code, Some(3));
+        assert_eq!(exit.stderr, "boom");
+        // Dropping the dead tunnel afterwards says nothing more.
+        tunnels.remove("m");
+        assert!(events.recv_timeout(Duration::from_millis(700)).is_err());
+    }
+    #[test]
+    fn closing_replacing_or_clearing_a_tunnel_on_purpose_reports_nothing() {
+        let (tunnels, events) = exit_events();
+        tunnels.insert("m".into(), "env", Tunnel::adopt(long_lived_child(), 1));
+        // Replacement by a fresh tunnel, then a disconnect, then app quit.
+        tunnels.insert("m".into(), "env", Tunnel::adopt(long_lived_child(), 2));
+        tunnels.remove("m");
+        tunnels.insert("n".into(), "env", Tunnel::adopt(long_lived_child(), 3));
+        tunnels.clear();
+        assert!(events.recv_timeout(Duration::from_millis(900)).is_err());
+    }
+    #[test]
+    fn a_missing_tunnel_is_not_started_when_connecting_is_not_allowed() {
+        let tunnels = Tunnels::default();
+        let target = SshTarget {
+            target: "nowhere.invalid".into(),
+            port: None,
+            remote_port: 3774,
+        };
+        let started = Instant::now();
+        let error = tunnels
+            .endpoint("m", "env", &target, false)
+            .err()
+            .expect("no tunnel exists");
+        assert!(error.starts_with("Machine is unreachable. Automatic reconnect is off"));
+        assert!(started.elapsed() < Duration::from_secs(1), "spawned ssh");
+        // Nothing is cached, so a user-initiated attempt is not answered with it.
+        let slot = tunnels.slots().get("m").unwrap().clone();
+        assert!(slot.lock().unwrap().failure.is_none());
+    }
+    #[test]
+    fn tunnels_use_fast_keepalives_without_blocking_interactive_auth() {
+        let target = SshTarget {
+            target: "me@host".into(),
+            port: Some(2222),
+            remote_port: 3774,
+        };
+        let args = |command: &Command| -> Vec<String> {
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect()
+        };
+        let tunnel = args(&command_with_keepalive(
+            &target,
+            false,
+            TUNNEL_KEEPALIVE_SECS,
+        ));
+        for option in [
+            "ServerAliveInterval=5",
+            "ServerAliveCountMax=3",
+            "ExitOnForwardFailure=yes",
+            "ConnectTimeout=15",
+            "BatchMode=yes",
+        ] {
+            assert!(tunnel.contains(&option.to_string()), "{option}");
+        }
+        // Setup commands keep the slower probes; an interactive attempt may prompt.
+        let setup = args(&command(&target, true));
+        assert!(setup.contains(&"ServerAliveInterval=15".to_string()));
+        assert!(setup.contains(&"BatchMode=no".to_string()));
+        let probe = command(&target, false);
+        let env = |name: &str| {
+            probe
+                .get_envs()
+                .find(|(key, _)| *key == name)
+                .and_then(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(env("LC_ALL").as_deref(), Some("C"));
+        assert_eq!(env("LANG").as_deref(), Some("C"));
+    }
+    #[test]
+    fn ssh_stderr_is_reduced_to_a_few_safe_lines() {
+        let noisy = "one\ntwo\x07\nBearer abc.def\nthree\nfour\nfive\nsix\nPASSWORD=hunter2\n";
+        assert_eq!(stderr_tail(noisy), "two\nthree\nfour\nfive\nsix");
+        assert_eq!(stderr_tail(&"x".repeat(500)).len(), 200);
+        assert_eq!(stderr_tail(""), "");
+    }
+    #[test]
+    fn a_refused_forward_is_told_from_a_dead_tunnel() {
+        assert!(host_refused(
+            "channel 2: open failed: connect failed: Connection refused\n"
+        ));
+        assert!(host_refused(
+            "channel 0: open failed: connect failed: No connection could be made because the target machine actively refused it.\n"
+        ));
+        assert!(!host_refused(
+            "ssh: connect to host mini port 22: Connection refused\n"
+        ));
+        assert!(!host_refused(""));
+        let tunnels = Tunnels::default();
+        let tunnel = Tunnel::adopt(long_lived_child(), 1);
+        tunnel
+            .stderr
+            .lock()
+            .unwrap()
+            .push_str("channel 3: open failed: connect failed: Connection refused\n");
+        tunnels.insert("m".into(), "env", tunnel);
+        assert!(tunnels.take_host_refusal("m"));
+        assert!(!tunnels.take_host_refusal("m"), "a report is used once");
+        assert!(!tunnels.take_host_refusal("other"));
+    }
+    #[test]
+    fn ssh_config_dumps_give_the_address_ssh_would_dial() {
+        let dump = "user me\nhostname 10.0.0.7\nport 2200\nidentityfile ~/.ssh/id_ed25519\n";
+        assert_eq!(parse_ssh_config_dump(dump), Some(("10.0.0.7".into(), 2200)));
+        assert_eq!(
+            parse_ssh_config_dump("hostname a\nport 22\nproxycommand none\nproxyjump none\n"),
+            Some(("a".into(), 22))
+        );
+        for proxied in ["proxyjump bastion", "proxycommand nc %h %p"] {
+            assert_eq!(
+                parse_ssh_config_dump(&format!("hostname a\nport 22\n{proxied}\n")),
+                None
+            );
+        }
+        assert_eq!(parse_ssh_config_dump("hostname a\n"), None);
+        assert_eq!(parse_ssh_config_dump(""), None);
+    }
+    #[test]
+    fn tcp_reachability_and_failure_tags() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(tcp_reachable("127.0.0.1", port, Duration::from_secs(2)));
+        drop(listener);
+        assert!(!tcp_reachable("127.0.0.1", port, Duration::from_secs(2)));
+        assert_eq!(
+            failure_tag(Some(255), Some(true)),
+            " (exit 255, host reachable)"
+        );
+        assert_eq!(
+            failure_tag(Some(255), Some(false)),
+            " (exit 255, host unreachable)"
+        );
+        assert_eq!(failure_tag(None, None), "");
     }
     #[test]
     fn ssh_targets_cannot_inject_options_or_shell_commands() {

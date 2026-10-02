@@ -38,7 +38,7 @@ import {
   savePendingRemoteCommand,
   useRemoteMachines,
 } from "../model/connections";
-import { blocksSending, sendAfterReconnect } from "../model/remoteConnection";
+import { blocksSending, needsSignIn, sendAfterReconnect } from "../model/remoteConnection";
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import {
   nextRemoteQueuedMessage,
@@ -599,6 +599,8 @@ function ConnectedRemoteSession({
         machine.id,
         "commands.dispatch",
         command,
+        false,
+        true,
       );
       if (command.type === "create") {
         const next = pendingRemoteFollowup(project.key, machine.environmentId, command.commandId);
@@ -1365,7 +1367,7 @@ function ConnectedRemoteSession({
     remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     remoteSessionStarted: !!sessionId,
     sendBlockedReason: blocksSending(connection.status)
-      ? connection.status === "needs-auth"
+      ? needsSignIn(connection.status)
         ? `${machine.name} needs you to sign in first. Use “Sign in and reconnect” above.`
         : `Can’t reach ${machine.name}. Send reconnects first.`
       : undefined,

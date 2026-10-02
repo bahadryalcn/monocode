@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Loader } from "../../../shared/ui/icons";
 import { OPEN_CONNECTIONS_EVENT } from "../model/connections";
+import { needsSignIn } from "../model/remoteConnection";
 import type { RemoteFailure } from "../model/remoteFailure";
 import { useRemoteConnection } from "../model/useRemoteConnection";
 
@@ -30,7 +31,7 @@ export function RemoteLoadError({
       : failure.kind === "outdated"
         ? `MonoCode Host on ${name} needs an update`
         : "Couldn’t load from the machine";
-  const needsAuth = status === "needs-auth";
+  const needsAuth = needsSignIn(status);
   const startReconnect = () => {
     setReconnectError("");
     void reconnect({ signIn: true }).then((result) => {

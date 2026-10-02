@@ -11,7 +11,9 @@ import {
   type SessionSyncResponse,
 } from "./protocol";
 import { remoteProjectFor } from "./remoteProjects";
-import { notifyRemoteRecovered, recordRemoteConnection } from "./remoteHealth";
+import { blocksSending } from "./remoteConnection";
+import { notifyRemoteRecovered, readRemoteConnection, recordRemoteConnection } from "./remoteHealth";
+import { loadRemoteAutoReconnect } from "../../settings/model/settings";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
 
 const CHANGE = "monocode:remote-machines";
@@ -213,20 +215,38 @@ export const clearPendingRemoteCommand = (
 ) =>
   localStorage.removeItem(`${pendingPrefix(project, environment)}${commandId}`);
 
+/** Whether a request may start a missing SSH tunnel. Always, unless the user
+ * turned automatic reconnecting off: then only what the user did (`fresh`, or
+ * `userInitiated`) may reconnect a machine already known to be down, and
+ * background polls fail fast instead. A machine not known to be down (nothing
+ * has failed yet, such as at startup) is still connected on first use. */
+export function mayStartTunnel(
+  machineId: string,
+  fresh: boolean,
+  userInitiated: boolean,
+): boolean {
+  if (fresh || userInitiated || loadRemoteAutoReconnect()) return true;
+  const environmentId = cachedMachines.find((entry) => entry.id === machineId)?.environmentId;
+  return !environmentId || !blocksSending(readRemoteConnection(environmentId).status);
+}
+
 /** `fresh` makes a dropped SSH tunnel be restarted now instead of answering
  * with the error of an attempt that failed moments ago; for a reconnect the
- * user asked for. */
+ * user asked for. `userInitiated` marks a request that exists because the user
+ * acted (sending, opening a project), as opposed to a background poll. */
 export function remoteRequest<T>(
   machineId: string,
   method: string,
   params: unknown = {},
   fresh = false,
+  userInitiated = false,
 ): Promise<T> {
   return invoke<T>("remote_request", {
     machineId,
     method,
     params,
     ...(fresh ? { fresh } : {}),
+    ...(mayStartTunnel(machineId, fresh, userInitiated) ? {} : { allowConnect: false }),
   });
 }
 

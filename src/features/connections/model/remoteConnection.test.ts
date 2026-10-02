@@ -15,7 +15,7 @@ import {
 const down = "Machine is unreachable. Check the host and SSH tunnel, then reconnect.";
 const denied =
   "SSH connection failed: user@host: Permission denied (publickey). Open Settings → Connections and reconnect to check access.";
-const timedOut = "SSH timed out. Open Settings → Connections and reconnect to authenticate.";
+const timedOut = "SSH timed out connecting to the machine.";
 
 describe("connectionOutcome", () => {
   it("tells a silent machine from one that needs a sign-in", () => {
@@ -24,8 +24,22 @@ describe("connectionOutcome", () => {
       "unreachable",
     );
     expect(connectionOutcome(denied).status).toBe("needs-auth");
-    expect(connectionOutcome(timedOut).status).toBe("needs-auth");
+    // Background attempts never prompt (BatchMode), so a timeout is the network.
+    expect(connectionOutcome(timedOut).status).toBe("unreachable");
     expect(connectionOutcome("SSH connection failed: Host key verification failed.").status).toBe(
+      "host-key",
+    );
+    expect(connectionOutcome("Host is not running on the machine. Start it.").status).toBe(
+      "host-not-running",
+    );
+  });
+
+  it("uses ssh's exit status and the port check the desktop sends along", () => {
+    const tagged = (tag: string, stderr: string) => `SSH connection failed (${tag}): ${stderr}. Open Settings`;
+    expect(connectionOutcome(tagged("exit 255, host reachable", "")).status).toBe("needs-auth");
+    expect(connectionOutcome(tagged("exit 255, host unreachable", "")).status).toBe("unreachable");
+    expect(connectionOutcome(tagged("exit 255", "mystery")).status).toBe("unreachable");
+    expect(connectionOutcome(tagged("exit 255, host unreachable", "Permission denied (publickey).")).status).toBe(
       "needs-auth",
     );
   });
@@ -43,7 +57,7 @@ describe("connectionOutcome", () => {
     expect(connectionOutcome(down).error).toBe(
       "The machine did not answer. It may be off, asleep or offline.",
     );
-    expect(connectionOutcome(denied).error).toMatch(/password, passphrase/);
+    expect(connectionOutcome(denied).error).toMatch(/password or key/);
     const leaky = connectionOutcome(
       "SSH connection failed: ssh -T -o BatchMode=yes -i /home/me/key host. Bearer abc.def-123 token=hunter2",
     ).error!;
@@ -82,6 +96,25 @@ describe("reduceConnection", () => {
     expect(reduceConnection(state, fail(down, 5))).toBe(state);
   });
 
+  it("shows a dropped tunnel at once, and one drop is one change", () => {
+    let state = reduceConnection(INITIAL_CONNECTION, ok(100));
+    const exit = { type: "tunnel-exit", exitCode: 255, stderr: "Timeout, server mini not responding.", at: 200 } as const;
+    state = reduceConnection(state, exit);
+    expect(state).toMatchObject({ status: "unreachable", lastSeen: 100 });
+    expect(state.error).toMatch(/dropped.*not responding/);
+    // The request that fails next only says "did not answer": nothing changes.
+    expect(reduceConnection(state, fail(down, 250))).toBe(state);
+    expect(reduceConnection(state, exit)).toBe(state);
+    // A drop that needs the user says so.
+    const signIn = reduceConnection(state, { ...exit, stderr: "user@mini: Permission denied (publickey)." });
+    expect(signIn.status).toBe("needs-auth");
+  });
+
+  it("ignores a late tunnel exit once the machine waits for the user", () => {
+    const waiting = reduceConnection(INITIAL_CONNECTION, fail(denied));
+    expect(reduceConnection(waiting, { type: "tunnel-exit", stderr: "", at: 1 })).toBe(waiting);
+  });
+
   it("counts a machine's own error as an answer", () => {
     const state = reduceConnection(INITIAL_CONNECTION, fail(down));
     expect(reduceConnection(state, fail("Host rejected request: nope", 9)).status).toBe("connected");
@@ -108,8 +141,15 @@ describe("automatic retry rule", () => {
 
   it("only retries a silent machine, never one that needs a password", () => {
     expect(shouldAutoRetry("unreachable", undefined, 0)).toBe(true);
-    for (const status of ["needs-auth", "connected", "connecting", "outdated-host"] as const)
+    expect(shouldAutoRetry("host-not-running", undefined, 0)).toBe(true);
+    for (const status of ["needs-auth", "host-key", "connected", "connecting", "outdated-host"] as const)
       expect(shouldAutoRetry(status, undefined, 0)).toBe(false);
+  });
+
+  it("never retries when automatic reconnecting is off", () => {
+    expect(shouldAutoRetry("unreachable", undefined, 0, false)).toBe(false);
+    expect(shouldAutoRetry("host-not-running", undefined, 0, false)).toBe(false);
+    expect(shouldAutoRetry("unreachable", undefined, 0, true)).toBe(true);
   });
 
   it("stops after the window has been hidden for ten minutes", () => {
@@ -179,6 +219,8 @@ describe("indicators", () => {
   it("blocks sending only when messages cannot get through", () => {
     expect(blocksSending("unreachable")).toBe(true);
     expect(blocksSending("needs-auth")).toBe(true);
+    expect(blocksSending("host-key")).toBe(true);
+    expect(blocksSending("host-not-running")).toBe(true);
     expect(blocksSending("outdated-host")).toBe(false);
     expect(blocksSending("connecting")).toBe(false);
   });

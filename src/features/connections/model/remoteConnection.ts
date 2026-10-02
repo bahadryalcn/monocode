@@ -1,4 +1,5 @@
 import { classifyRemoteError, remoteErrorText } from "./remoteFailure";
+import { classifySshFailure, parseSshStartFailure } from "./sshFailure";
 
 /** What this computer last learned about one remote machine, from the outcome
  * of every request any view made to it. */
@@ -9,8 +10,12 @@ export type RemoteConnectionStatus =
   | "connecting"
   /** The machine or its SSH tunnel did not answer. */
   | "unreachable"
-  /** SSH needs a password, passphrase or host-key decision a background attempt cannot give. */
+  /** SSH needs a password or passphrase a background attempt cannot give. */
   | "needs-auth"
+  /** The machine's host key is unknown, changed or unusable; only the user can decide. */
+  | "host-key"
+  /** SSH works, but MonoCode Host is not listening on the machine. */
+  | "host-not-running"
   /** The host answered, but is too old for something the app asked. */
   | "outdated-host";
 
@@ -27,13 +32,10 @@ export const INITIAL_CONNECTION: RemoteConnectionState = { status: "connecting" 
 export type RemoteConnectionEvent =
   | { type: "ok"; at: number }
   | { type: "failure"; error: unknown; at: number }
+  /** The SSH process behind the machine's tunnel ended by itself. */
+  | { type: "tunnel-exit"; exitCode?: number | null; stderr: string; at: number }
   /** A reconnect worked, or Update Host finished: forget any problem. */
   | { type: "recovered"; at: number };
-
-/** SSH stderr and messages from `remote_ssh.rs` that a saved key could not
- * satisfy, so only the user can fix it. */
-const NEEDS_AUTH =
-  /Permission denied|Host key verification failed|reconnect to authenticate|passphrase|authentication failed|no more authentication methods|Too many authentication failures/i;
 
 /** Takes anything secret or machine-sized out of an error before it is shown:
  * bearer tokens, key=value credentials and whole `ssh …` command lines. */
@@ -50,31 +52,56 @@ export function sanitizeConnectionError(text: string): string {
 
 /** A short reason for a status, for banners and tooltips. */
 export function connectionReason(status: RemoteConnectionStatus, raw: string): string {
-  if (status === "needs-auth")
-    return "SSH needs your password, passphrase or approval of the host key.";
   if (status === "outdated-host") return "MonoCode Host on the machine needs an update.";
+  if (status === "host-not-running")
+    return "The machine is reachable, but MonoCode Host is not running there. Start it, then reconnect.";
   if (/Machine is unreachable/i.test(raw)) return "The machine did not answer. It may be off, asleep or offline.";
   if (/no longer connected|isn.t connected on this computer|Connect this project.s machine/i.test(raw))
     return "This machine is not connected on this computer.";
   if (/SSH connection failed/i.test(raw)) {
-    const detail = sanitizeConnectionError(raw.replace(/^.*?SSH connection failed:\s*/i, ""));
+    const detail = sanitizeConnectionError(raw.replace(/^.*?SSH connection failed[^:]*:\s*/i, ""));
     return detail ? `SSH could not connect: ${detail}` : "SSH could not connect.";
   }
   return sanitizeConnectionError(raw) || "The machine did not answer.";
 }
 
 /** Which status a failed request means. `connected` when the machine itself
- * answered, even if with an error of its own. */
+ * answered, even if with an error of its own. `specific` is false for the bare
+ * "did not answer" that every failed request ends in, which must not replace a
+ * more precise reason that is already known. */
 export function connectionOutcome(error: unknown): {
   status: RemoteConnectionStatus;
   error?: string;
+  specific?: boolean;
 } {
   const failure = classifyRemoteError(error);
   if (failure.kind === "outdated")
     return { status: "outdated-host", error: connectionReason("outdated-host", failure.message) };
   if (failure.kind !== "unreachable") return { status: "connected" };
-  const status = NEEDS_AUTH.test(remoteErrorText(error)) ? "needs-auth" : "unreachable";
-  return { status, error: connectionReason(status, failure.message) };
+  const text = remoteErrorText(error);
+  if (/Host is not running on the machine/i.test(text))
+    return { status: "host-not-running", error: connectionReason("host-not-running", text), specific: true };
+  const start = parseSshStartFailure(text);
+  if (start) {
+    const { kind, hint } = classifySshFailure(start);
+    if (kind !== "unreachable") return { status: kind, error: hint, specific: true };
+  }
+  return {
+    status: "unreachable",
+    error: connectionReason("unreachable", failure.message),
+    specific: !/Machine is unreachable/i.test(text),
+  };
+}
+
+/** What a tunnel that died tells about the machine. */
+function tunnelExitOutcome(event: { exitCode?: number | null; stderr: string }) {
+  const { kind, hint } = classifySshFailure(event);
+  if (kind !== "unreachable") return { status: kind, error: hint };
+  const detail = sanitizeConnectionError(event.stderr.split("\n").filter(Boolean).pop() ?? "");
+  return {
+    status: "unreachable" as const,
+    error: detail ? `The SSH connection dropped: ${detail}` : "The SSH connection dropped.",
+  };
 }
 
 /** The state after one event. Returns the same object when nothing changed. */
@@ -93,8 +120,17 @@ export function reduceConnection(
     case "failure": {
       const outcome = connectionOutcome(event.error);
       if (outcome.status === "connected") return reduceConnection(state, { type: "ok", at: event.at });
-      if (state.status === outcome.status && state.error === outcome.error) return state;
+      const sameReason = state.error === outcome.error || (!!state.error && !outcome.specific);
+      if (state.status === outcome.status && sameReason) return state;
       return { status: outcome.status, error: outcome.error, lastSeen: state.lastSeen };
+    }
+    case "tunnel-exit": {
+      // A state that already waits for the user stays as it is.
+      if (!["connected", "connecting", "outdated-host", "unreachable"].includes(state.status))
+        return state;
+      const outcome = tunnelExitOutcome(event);
+      if (state.status === outcome.status && state.error === outcome.error) return state;
+      return { ...outcome, lastSeen: state.lastSeen };
     }
   }
 }
@@ -110,19 +146,29 @@ export function autoRetryDelay(attempt: number): number {
 }
 
 /** Whether to try again without asking the user: only a machine that did not
- * answer, never one that needs a password, and not for a window nobody looks at. */
+ * answer (or whose host is not running yet), never one that needs a password or
+ * a host-key decision, not for a window nobody looks at, and not at all when
+ * the user turned automatic reconnecting off. */
 export function shouldAutoRetry(
   status: RemoteConnectionStatus,
   hiddenSince: number | undefined,
   now: number,
+  enabled = true,
 ): boolean {
-  if (status !== "unreachable") return false;
+  if (!enabled || (status !== "unreachable" && status !== "host-not-running")) return false;
   return hiddenSince === undefined || now - hiddenSince <= HIDDEN_RETRY_LIMIT_MS;
 }
 
 /** Whether a message cannot reach the machine right now. */
 export const blocksSending = (status: RemoteConnectionStatus) =>
-  status === "unreachable" || status === "needs-auth";
+  status === "unreachable" ||
+  status === "needs-auth" ||
+  status === "host-key" ||
+  status === "host-not-running";
+
+/** Whether only a sign-in, answered in Connections settings, can fix it. */
+export const needsSignIn = (status: RemoteConnectionStatus) =>
+  status === "needs-auth" || status === "host-key";
 
 /** How a project row marks its machine: a dot colour and a tooltip. `down`
  * rows can be clicked to reconnect. */
