@@ -9,6 +9,7 @@ import { projectKey } from "../../shared/lib/paths";
 import { saveTabGroupMascot } from "../../features/workspace/model/tabGroups";
 import { needsProviderLogin } from "../../features/providers/model/accountUsage";
 import { UsageProviderChip } from "./UsageProviderChip";
+import { saveShowRemainingUsage } from "../../features/settings/model/displayPrefs";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => null),
@@ -162,6 +163,29 @@ describe("UsageProviderChip", () => {
     expect(weeklyBar?.getAttribute("aria-valuenow")).toBe("19");
     expect(weeklyBar?.querySelector("span")?.getAttribute("style")).toBe(
       "width: 19%;",
+    );
+  });
+
+  it("fills bars with used capacity when remaining usage is turned off", async () => {
+    saveShowRemainingUsage(false);
+    act(() =>
+      root.render(
+        createElement(UsageProviderChip, { limits: codexLimits(), now }),
+      ),
+    );
+
+    const trigger = button("Codex usage details");
+    expect(trigger.querySelector(".w-8 > span")?.getAttribute("style")).toBe(
+      "width: 81%;",
+    );
+    await act(async () => trigger.click());
+
+    const weeklyBar = document.querySelector(
+      '[role="dialog"] [aria-label="Weekly limit used"]',
+    );
+    expect(weeklyBar?.getAttribute("aria-valuenow")).toBe("81");
+    expect(weeklyBar?.querySelector("span")?.getAttribute("style")).toBe(
+      "width: 81%;",
     );
   });
 

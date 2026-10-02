@@ -7,7 +7,9 @@ use tauri::AppHandle;
 
 use crate::dirs_home;
 
-#[derive(Serialize, Default, Debug, PartialEq)]
+const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
+
+#[derive(Serialize, Default, Debug, PartialEq, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAccountIdentity {
     pub email: Option<String>,
@@ -16,8 +18,10 @@ pub struct ProviderAccountIdentity {
     pub organization: Option<String>,
 }
 
-/// Read the signed-in identity a provider CLI already cached on disk, so
-/// no token is sent anywhere. Returns `None` when the profile is not signed in.
+/// Read the signed-in identity of an account profile. Claude is asked who the
+/// stored token belongs to (the token only goes to Anthropic); the identity
+/// the CLI cached on disk is the offline fallback. Returns `None` when the
+/// profile is not signed in.
 #[tauri::command]
 pub async fn provider_account_identity(
     app: AppHandle,
@@ -60,11 +64,87 @@ fn capitalize(value: &str) -> String {
 }
 
 fn claude_identity(dir: Option<PathBuf>) -> Option<ProviderAccountIdentity> {
+    let creds = crate::rate_limits::read_claude_credentials(dir.as_deref());
+    if let Some(creds) = &creds {
+        if let Some(live) = live_claude_identity(&dir, creds) {
+            return Some(live);
+        }
+    }
     let path = match dir {
         Some(dir) => dir.join(".claude.json"),
         None => home()?.join(".claude.json"),
     };
-    parse_claude_identity(&read_json(&path)?)
+    let cached = read_json(&path).and_then(|config| parse_claude_identity(&config));
+    reconcile_cached_identity(cached, creds.and_then(|creds| creds.subscription_type))
+}
+
+/// Ask Anthropic who owns the token. `.claude.json` keeps the identity of an
+/// earlier sign-in when the credentials are replaced without rewriting it, so
+/// the cache alone can name the wrong account.
+fn live_claude_identity(
+    dir: &Option<PathBuf>,
+    creds: &crate::rate_limits::ClaudeCredentials,
+) -> Option<ProviderAccountIdentity> {
+    // One entry per profile; a new token (re-login or refresh) replaces it.
+    static KNOWN: std::sync::Mutex<Vec<(Option<PathBuf>, String, ProviderAccountIdentity)>> =
+        std::sync::Mutex::new(Vec::new());
+    let lock = || KNOWN.lock().unwrap_or_else(|error| error.into_inner());
+
+    if let Some((_, _, identity)) = lock()
+        .iter()
+        .find(|(known_dir, token, _)| known_dir == dir && *token == creds.access_token)
+    {
+        return Some(identity.clone());
+    }
+    if crate::rate_limits::claude_token_expired(creds) {
+        return None;
+    }
+    let body = crate::rate_limits::claude_oauth_get(CLAUDE_PROFILE_URL, &creds.access_token)
+        .ok()?
+        .into_string()
+        .ok()?;
+    let identity = parse_claude_profile(&serde_json::from_str(&body).ok()?)?;
+    let mut known = lock();
+    known.retain(|(known_dir, _, _)| known_dir != dir);
+    known.push((dir.clone(), creds.access_token.clone(), identity.clone()));
+    Some(identity)
+}
+
+/// Parse the `/api/oauth/profile` response.
+fn parse_claude_profile(profile: &Value) -> Option<ProviderAccountIdentity> {
+    let account = profile.get("account")?;
+    let organization = profile.get("organization");
+    Some(ProviderAccountIdentity {
+        email: text(account, "email"),
+        name: text(account, "display_name").or_else(|| text(account, "full_name")),
+        plan: organization
+            .and_then(|org| text(org, "organization_type"))
+            .map(|kind| capitalize(kind.strip_prefix("claude_").unwrap_or(&kind))),
+        organization: organization.and_then(|org| text(org, "name")),
+    })
+}
+
+/// A cached identity whose plan disagrees with the token's plan belongs to a
+/// different sign-in; keep only what the token itself states.
+fn reconcile_cached_identity(
+    cached: Option<ProviderAccountIdentity>,
+    token_plan: Option<String>,
+) -> Option<ProviderAccountIdentity> {
+    let token_plan = token_plan.map(|plan| capitalize(&plan));
+    match (&cached, &token_plan) {
+        (Some(identity), Some(plan))
+            if identity
+                .plan
+                .as_ref()
+                .is_some_and(|cached_plan| !cached_plan.eq_ignore_ascii_case(plan)) =>
+        {
+            Some(ProviderAccountIdentity {
+                plan: token_plan,
+                ..Default::default()
+            })
+        }
+        _ => cached,
+    }
 }
 
 /// Parse the `oauthAccount` block Claude Code writes to `.claude.json`.
@@ -183,6 +263,31 @@ mod tests {
     #[test]
     fn claude_without_oauth_account_is_signed_out() {
         assert_eq!(parse_claude_identity(&json!({ "numStartups": 3 })), None);
+    }
+
+    #[test]
+    fn claude_reads_live_profile() {
+        let profile = json!({
+            "account": { "email": "ada@example.com", "display_name": "Ada" },
+            "organization": { "name": "Acme", "organization_type": "claude_max" }
+        });
+        assert_eq!(
+            parse_claude_profile(&profile),
+            identity(Some("ada@example.com"), Some("Ada"), Some("Max"), Some("Acme"))
+        );
+        assert_eq!(parse_claude_profile(&json!({ "error": "nope" })), None);
+    }
+
+    #[test]
+    fn cached_identity_of_another_plan_is_not_trusted() {
+        let cached = || identity(Some("ada@acme.com"), Some("Ada"), Some("Team"), Some("Acme"));
+        assert_eq!(
+            reconcile_cached_identity(cached(), Some("max".into())),
+            identity(None, None, Some("Max"), None)
+        );
+        assert_eq!(reconcile_cached_identity(cached(), Some("team".into())), cached());
+        assert_eq!(reconcile_cached_identity(cached(), None), cached());
+        assert_eq!(reconcile_cached_identity(None, Some("max".into())), None);
     }
 
     #[test]

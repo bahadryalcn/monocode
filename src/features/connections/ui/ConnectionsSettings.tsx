@@ -20,6 +20,7 @@ import {
   hostnameSuggestion,
   parseMachineDraft,
 } from "../model/machineEdit";
+import { isLocalSyncMachine } from "../model/localSync";
 import { notifyRemoteRecovered } from "../model/remoteHealth";
 import {
   REMOTE_PROVIDERS,
@@ -373,7 +374,9 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                     {machine.name}
                   </div>
                   <div className="mt-1 truncate text-[12px] text-content/45">
-                    {machine.ssh
+                    {isLocalSyncMachine(machine)
+                      ? "Syncs projects and groups with the MonoCode on this computer"
+                      : machine.ssh
                       ? `SSH · ${machine.ssh.target}${machine.ssh.port ? ` · port ${machine.ssh.port}` : ""}`
                       : machine.endpoint}
                   </div>
@@ -439,11 +442,19 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                   <p className="text-[13px] font-medium text-content">
                     Remove {machine.name} from this desktop?
                   </p>
-                  <p>
-                    This closes this desktop’s connection to the machine. It
-                    does not stop the host, and its sessions keep running and
-                    stay on that machine. You can add it again later.
-                  </p>
+                  {isLocalSyncMachine(machine) ? (
+                    <p>
+                      Removing this stops syncing projects and groups with the
+                      MonoCode on this computer. It is created again
+                      automatically the next time MonoCode starts.
+                    </p>
+                  ) : (
+                    <p>
+                      This closes this desktop’s connection to the machine. It
+                      does not stop the host, and its sessions keep running and
+                      stay on that machine. You can add it again later.
+                    </p>
+                  )}
                   <p>
                     Removing alone leaves this desktop’s credential valid on the
                     host. Revoke access to invalidate it first; the machine must

@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { newSession, type HarnessId } from "./session";
 import {
   MODELS,
+  catalogModelsFor,
   coerceModelPickerTab,
+  isModelEnabled,
+  modelsFor,
+  resetDisabledModels,
+  saveModelEnabled,
   defaultModelId,
   defaultSessionChoice,
   encodeModelLaunchId,
@@ -376,6 +381,62 @@ describe("picker provider visibility", () => {
     expect(showProviderInModelPicker("pi", false, false)).toBe(true);
     expect(showProviderInModelPicker("pi", false, true)).toBe(false);
     expect(showProviderInModelPicker("pi", true, true)).toBe(true);
+  });
+});
+
+describe("models turned off in settings", () => {
+  beforeEach(() => {
+    mockLocalStorage();
+    resetHarnessModelOverlays();
+    resetDisabledModels();
+  });
+  afterEach(() => {
+    mockLocalStorage();
+    resetDisabledModels();
+  });
+
+  it("leaves a turned-off model out of the offered list and the default", () => {
+    expect(defaultModelId("claude")).toBe("claude:sonnet-5");
+    saveModelEnabled("claude:sonnet-5", false);
+
+    expect(isModelEnabled("claude:sonnet-5")).toBe(false);
+    expect(modelsFor("claude").map((model) => model.id)).not.toContain(
+      "claude:sonnet-5",
+    );
+    expect(catalogModelsFor("claude").map((model) => model.id)).toContain(
+      "claude:sonnet-5",
+    );
+    expect(defaultModelId("claude")).not.toBe("claude:sonnet-5");
+    expect(resolveModel("claude").id).not.toBe("claude:sonnet-5");
+
+    saveModelEnabled("claude:sonnet-5", true);
+    expect(defaultModelId("claude")).toBe("claude:sonnet-5");
+  });
+
+  it("does not start new conversations on a turned-off saved default", () => {
+    saveLastModelChoice("claude", "claude:sonnet-5");
+    saveRecentModelChoice("claude", "claude:sonnet-5");
+    setProjectDefaultProvider("/repo", "claude", "claude:sonnet-5");
+    saveModelEnabled("claude:sonnet-5", false);
+
+    expect(preferredModelId("claude")).not.toBe("claude:sonnet-5");
+    expect(defaultSessionChoice("/repo").model).not.toBe("claude:sonnet-5");
+    expect(loadRecentModelChoices()).toEqual([]);
+  });
+
+  it("still resolves a turned-off model for a conversation that uses it", () => {
+    saveModelEnabled("claude:sonnet-5", false);
+    expect(resolveModel("claude", "claude:sonnet-5").id).toBe(
+      "claude:sonnet-5",
+    );
+    expect(nativeModelId("claude:sonnet-5")).toBe("claude-sonnet-5");
+  });
+
+  it("keeps the full list when every model of a provider is turned off", () => {
+    for (const model of catalogModelsFor("grok")) {
+      saveModelEnabled(model.id, false);
+    }
+    expect(modelsFor("grok")).toEqual(catalogModelsFor("grok"));
   });
 });
 

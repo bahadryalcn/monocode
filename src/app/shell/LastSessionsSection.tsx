@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Check,
   ChevronDown,
-  ChevronRight,
   Internet,
   Pin,
   PinOff,
@@ -54,13 +53,50 @@ export type RecentSessionsSource = {
   onPin: (sessionId: string, pinned: boolean) => Promise<void>;
 };
 
-type Appearance = {
+export type Appearance = {
   groupLabels: Record<string, string>;
   groupColors: Record<string, number>;
   groupCustomColors: Record<string, string>;
   groupLogos: ReturnType<typeof useTabGroupLogos>;
   groupMascots: Record<string, string>;
 };
+
+/** Builds the rows a "Last sessions" list shows, for the rail section and the compact rail's popover alike. */
+export function useLastSessionsRows({
+  source,
+  projectKeys,
+  enabled,
+}: {
+  source: RecentSessionsSource;
+  projectKeys: ReadonlySet<string>;
+  enabled: boolean;
+}) {
+  const [prefs, setPrefs] = useState(loadRecentSessionsPrefs);
+  const { rows: stored, refresh } = useRecentSessions(
+    source.history,
+    source.live,
+    enabled,
+  );
+  const rows = useMemo(
+    () =>
+      buildRecentSessions({
+        stored,
+        live: source.live,
+        projectKeys,
+        limit: prefs.count,
+        now: Date.now(),
+      }),
+    [stored, source.live, projectKeys, prefs.count],
+  );
+  const update = (next: RecentSessionsPrefs) => {
+    setPrefs(next);
+    saveRecentSessionsPrefs(next);
+  };
+  const togglePin = (row: RecentSessionRow) => {
+    void source.onPin(row.id, !row.pinned).then(refresh);
+  };
+  return { prefs, update, rows, hasRows: rows.length > 0, togglePin, refresh };
+}
 
 const STATUS_LABEL: Record<RecentSessionStatus, string> = {
   working: "Working",
@@ -102,44 +138,16 @@ export function LastSessionsSection({
   /** Reports whether the section is on screen: it has nothing to show without sessions. */
   onShownChange?: (shown: boolean) => void;
 } & Appearance) {
-  const [prefs, setPrefs] = useState(loadRecentSessionsPrefs);
-  const [menu, setMenu] = useState<{
-    x: number;
-    y: number;
-    row: RecentSessionRow;
-  } | null>(null);
-  const { rows: stored, refresh } = useRecentSessions(
-    source.history,
-    source.live,
+  const { prefs, update, rows, hasRows, togglePin } = useLastSessionsRows({
+    source,
+    projectKeys,
     enabled,
-  );
-  const rows = useMemo(
-    () =>
-      buildRecentSessions({
-        stored,
-        live: source.live,
-        projectKeys,
-        limit: prefs.count,
-        now: Date.now(),
-      }),
-    [stored, source.live, projectKeys, prefs.count],
-  );
-  const hasRows = rows.length > 0;
+  });
   useEffect(() => {
     onShownChange?.(hasRows);
     return () => onShownChange?.(false);
   }, [hasRows, onShownChange]);
   if (!hasRows) return null;
-
-  const update = (next: RecentSessionsPrefs) => {
-    setPrefs(next);
-    saveRecentSessionsPrefs(next);
-  };
-  const togglePin = (row: RecentSessionRow) => {
-    void source.onPin(row.id, !row.pinned).then(refresh);
-  };
-  const now = Date.now();
-  const menuRow = menu?.row;
 
   return (
     <div ref={drag?.setRef} className="reorder-item rail-reorder-block mb-2 shrink-0">
@@ -156,11 +164,12 @@ export function LastSessionsSection({
             drag ? "cursor-grab" : ""
           }`}
         >
-          {prefs.collapsed ? (
-            <ChevronRight className="size-3 shrink-0" strokeWidth={1.75} />
-          ) : (
-            <ChevronDown className="size-3 shrink-0" strokeWidth={1.75} />
-          )}
+          <ChevronDown
+            className={`size-3.5 shrink-0 transition-transform duration-150 ${
+              prefs.collapsed ? "-rotate-90" : ""
+            }`}
+            strokeWidth={1.75}
+          />
           <span className="truncate">Last sessions</span>
         </button>
         {prefs.collapsed ? null : (
@@ -174,27 +183,68 @@ export function LastSessionsSection({
         ) : null}
       </div>
       {prefs.collapsed ? null : (
-        <div
-          role="list"
-          aria-label="Last sessions"
-          className={`max-h-[min(20rem,35vh)] flex-col gap-px overflow-y-auto px-2 ${
-            drag?.folded ? "hidden" : "flex"
-          }`}
-        >
-          {rows.map((row) => (
-            <SessionRow
-              key={row.id}
-              row={row}
-              now={now}
-              selected={!searchActive && row.id === activeSessionId}
-              onOpen={() => onOpenSession?.(row.id)}
-              onTogglePin={() => togglePin(row)}
-              onOpenMenu={(x, y) => setMenu({ x, y, row })}
-              {...appearance}
-            />
-          ))}
-        </div>
+        <LastSessionsRows
+          rows={rows}
+          activeSessionId={activeSessionId}
+          searchActive={searchActive}
+          onOpenSession={onOpenSession}
+          onOpenProject={onOpenProject}
+          onTogglePin={togglePin}
+          className={`max-h-[min(20rem,35vh)] ${drag?.folded ? "hidden" : "flex"}`}
+          {...appearance}
+        />
       )}
+    </div>
+  );
+}
+
+/** The rows of a "Last sessions" list and their context menu; shared by the rail section and the compact rail's popover. */
+export function LastSessionsRows({
+  rows,
+  activeSessionId,
+  searchActive,
+  onOpenSession,
+  onOpenProject,
+  onTogglePin,
+  className,
+  ...appearance
+}: {
+  rows: RecentSessionRow[];
+  activeSessionId?: string;
+  searchActive: boolean;
+  onOpenSession?: (sessionId: string) => void;
+  onOpenProject: (path: string) => void;
+  onTogglePin: (row: RecentSessionRow) => void;
+  className?: string;
+} & Appearance) {
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    row: RecentSessionRow;
+  } | null>(null);
+  const now = Date.now();
+  const menuRow = menu?.row;
+
+  return (
+    <>
+      <div
+        role="list"
+        aria-label="Last sessions"
+        className={`flex-col gap-px overflow-y-auto px-2 ${className ?? ""}`}
+      >
+        {rows.map((row) => (
+          <SessionRow
+            key={row.id}
+            row={row}
+            now={now}
+            selected={!searchActive && row.id === activeSessionId}
+            onOpen={() => onOpenSession?.(row.id)}
+            onTogglePin={() => onTogglePin(row)}
+            onOpenMenu={(x, y) => setMenu({ x, y, row })}
+            {...appearance}
+          />
+        ))}
+      </div>
       {menu && menuRow ? (
         <ExplorerMenu
           x={menu.x}
@@ -216,13 +266,13 @@ export function LastSessionsSection({
           onPick={(id) => {
             setMenu(null);
             if (id === "open") onOpenSession?.(menuRow.id);
-            else if (id === "pin") togglePin(menuRow);
+            else if (id === "pin") onTogglePin(menuRow);
             else if (id === "project") onOpenProject(menuRow.cwd);
           }}
           onClose={() => setMenu(null)}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 

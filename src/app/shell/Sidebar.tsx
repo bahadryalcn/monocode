@@ -1,4 +1,10 @@
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
+import {
+  type WorktreeFocus,
+  inWorktreeFocus,
+  useWorktreeFocus,
+} from "../../features/source-control/model/worktreeFocus";
+import { SidebarWorktreeSwitcher } from "../../features/source-control/ui/SidebarWorktreeSwitcher";
 import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/OrchestrationSidebarAgents";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -39,6 +45,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import {
   loadSidebarTabOrder,
@@ -122,7 +129,14 @@ import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
 import type { SettingsSectionId } from "../../features/settings/model/settings";
 import type { InstalledUpdate } from "../model/updateNotice";
-import { TAB_GROUP_COLORS } from "../../features/workspace/model/tabGroups";
+import {
+  loadTabGroupColors,
+  loadTabGroupCustomColors,
+  loadTabGroupLabels,
+  loadTabGroupMascots,
+  TAB_GROUP_COLORS,
+} from "../../features/workspace/model/tabGroups";
+import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useGitFileStatuses } from "../../features/source-control/hooks/useGitFileStatuses";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
@@ -148,7 +162,11 @@ import {
 } from "../../features/files/ui/ExplorerMenu";
 import { FileTree } from "../../features/files/ui/FileTree";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
-import type { RecentSessionsSource } from "./LastSessionsSection";
+import {
+  LastSessionsRows,
+  useLastSessionsRows,
+  type RecentSessionsSource,
+} from "./LastSessionsSection";
 import { formatRelative } from "../../features/sessions/model/recentSessions";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectRail } from "./ProjectRail";
@@ -221,6 +239,11 @@ type Props = {
   gitCwd?: string;
   /** Branch identity shown for a worktree whose folder has a temporary name. */
   explorerRootLabel?: string;
+  /** Open tabs per worktree path key, for the worktree switcher. */
+  worktreeTabStats?: ReadonlyMap<string, { tabs: number; busy: boolean }>;
+  onSelectWorkspace?: (focus?: WorktreeFocus) => void;
+  workspaceSwitchPending?: boolean;
+  workspaceSwitchError?: string;
   open: boolean;
   sessions: SessionSummary[];
   busySessionIds: Set<string>;
@@ -286,6 +309,7 @@ type Props = {
   recentSessions?: RecentSessionsSource;
   onSelectProject?: (path: string) => void;
   onOpenProject?: () => void;
+  onLinkRemoteProject?: (projectId: string, name: string) => void | Promise<void>;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onNew?: () => string | void;
   onNewTerminal?: () => void;
@@ -325,6 +349,10 @@ function SidebarComponent({
   cwd,
   gitCwd,
   explorerRootLabel,
+  worktreeTabStats,
+  onSelectWorkspace,
+  workspaceSwitchPending,
+  workspaceSwitchError,
   open,
   sessions,
   busySessionIds,
@@ -378,6 +406,7 @@ function SidebarComponent({
   recentSessions,
   onSelectProject,
   onOpenProject,
+  onLinkRemoteProject,
   onRemoveProject,
   onNew,
   onSearch,
@@ -612,11 +641,16 @@ function SidebarComponent({
   const pendingFirstLoad = remoteProject
     ? !!remote.machine && !remote.loaded && projectSessions.length === 0
     : pending && sessions.length === 0;
+  const worktreeFocus = useWorktreeFocus(cwd);
+  const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   const listedSessions = mergeFolderSessionSummaries(
     projectSessions,
     remoteProject ? [] : openSessions,
     sessionFolders,
-  ).filter((session) => !session.orchestrationLeadId);
+  ).filter(
+    (session) =>
+      !session.orchestrationLeadId && inWorktreeFocus(session, focusedWorktree),
+  );
   const visibleSessions = [
     ...filterSessionsByQuery(
       filterSessionsByStatus(
@@ -1604,9 +1638,21 @@ function SidebarComponent({
             className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5"
             data-tauri-drag-region="deep"
           >
-            <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
-              Workspace
-            </span>
+            <div className="flex min-w-0 flex-1 items-center">
+              {!remoteProject && cwd && cwd !== "~" ? (
+                <SidebarWorktreeSwitcher
+                  cwd={cwd}
+                  tabStats={worktreeTabStats}
+                  onSelect={onSelectWorkspace}
+                  pending={workspaceSwitchPending}
+                  switchError={workspaceSwitchError}
+                />
+              ) : (
+                <span className="min-w-0 truncate text-sm font-medium leading-tight">
+                  Workspace
+                </span>
+              )}
+            </div>
             <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNew} />
           </div>
           <div
@@ -2164,6 +2210,9 @@ function SidebarComponent({
           onTogglePanel={onToggleProjectRail}
           onLeaveActive={onGoBack}
           titleBarAbove={titleBarAbove}
+          recentSessions={recentSessions}
+          activeSessionId={activeSessionId}
+          onSelectAgent={onSelectAgent}
         />
       ) : null}
       {railMounted.current && onSelectProject && onOpenProject ? (
@@ -2193,6 +2242,7 @@ function SidebarComponent({
           onTogglePanel={onToggleProjectRail}
           onSelectProject={onSelectProject}
           onOpenProject={onOpenProject}
+          onLinkRemoteProject={onLinkRemoteProject}
           onRemoveProject={onRemoveProject}
           settingsOpen={settingsOpen}
           settingsSection={settingsSection}
@@ -2405,6 +2455,9 @@ function CompactProjectRail({
   onTogglePanel,
   onLeaveActive,
   titleBarAbove,
+  recentSessions,
+  activeSessionId,
+  onSelectAgent,
 }: {
   cwd: string;
   recents: RecentProject[];
@@ -2432,6 +2485,9 @@ function CompactProjectRail({
   onTogglePanel?: () => void;
   onLeaveActive?: () => void;
   titleBarAbove: boolean;
+  recentSessions?: RecentSessionsSource;
+  activeSessionId?: string;
+  onSelectAgent?: (sessionId: string) => void;
 }) {
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
     null,
@@ -2485,6 +2541,17 @@ function CompactProjectRail({
             onOpenProject={onOpenProject}
             onRemoveProject={onRemoveProject}
             onOpenNotificationSettings={onOpenNotificationSettings}
+          />
+        ) : null}
+        {recentSessions && onSelectProject ? (
+          <CompactLastSessionsAction
+            cwd={cwd}
+            recents={recents}
+            source={recentSessions}
+            activeSessionId={activeSessionId}
+            searchActive={searchActive}
+            onOpenSession={onSelectAgent}
+            onOpenProject={onSelectProject}
           />
         ) : null}
         <div
@@ -2571,6 +2638,7 @@ function CompactRailAction({
   dot = false,
   onClick,
   onOpenContextMenu,
+  ref,
 }: {
   label: string;
   icon: typeof PanelLeft;
@@ -2579,9 +2647,11 @@ function CompactRailAction({
   dot?: boolean;
   onClick?: () => void;
   onOpenContextMenu?: (x: number, y: number) => void;
+  ref?: Ref<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={ref}
       type="button"
       role={tab ? "tab" : undefined}
       title={label}
@@ -2633,6 +2703,88 @@ function CompactRailAction({
         />
       ) : null}
     </button>
+  );
+}
+
+/** The compact rail's own way into "Last sessions": a button that opens the list in a popover, since there's no room for the full section. */
+function CompactLastSessionsAction({
+  cwd,
+  recents,
+  source,
+  activeSessionId,
+  searchActive,
+  onOpenSession,
+  onOpenProject,
+}: {
+  cwd: string;
+  recents: RecentProject[];
+  source: RecentSessionsSource;
+  activeSessionId?: string;
+  searchActive: boolean;
+  onOpenSession?: (sessionId: string) => void;
+  onOpenProject: (path: string) => void;
+}) {
+  const projectKeys = useMemo(
+    () => new Set(collectRailProjects(recents, cwd).keys()),
+    [recents, cwd],
+  );
+  const { rows, hasRows, togglePin } = useLastSessionsRows({
+    source,
+    projectKeys,
+    enabled: true,
+  });
+  const [groupLabels] = useState(loadTabGroupLabels);
+  const [groupColors] = useState(loadTabGroupColors);
+  const [groupCustomColors] = useState(loadTabGroupCustomColors);
+  const [groupMascots] = useState(loadTabGroupMascots);
+  const groupLogos = useTabGroupLogos();
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  if (!hasRows) return null;
+
+  return (
+    <>
+      <CompactRailAction
+        ref={anchor}
+        label="Last sessions"
+        icon={Clock}
+        active={open}
+        onClick={() => setOpen((value) => !value)}
+      />
+      {open ? (
+        <Popover
+          anchor={anchor}
+          side="right"
+          align="start"
+          width={280}
+          onDismiss={() => setOpen(false)}
+          role="menu"
+          aria-label="Last sessions"
+          className="p-1"
+        >
+          <LastSessionsRows
+            rows={rows}
+            activeSessionId={activeSessionId}
+            searchActive={searchActive}
+            onOpenSession={(sessionId) => {
+              setOpen(false);
+              onOpenSession?.(sessionId);
+            }}
+            onOpenProject={(path) => {
+              setOpen(false);
+              onOpenProject(path);
+            }}
+            onTogglePin={togglePin}
+            className="flex max-h-80"
+            groupLabels={groupLabels}
+            groupColors={groupColors}
+            groupCustomColors={groupCustomColors}
+            groupLogos={groupLogos}
+            groupMascots={groupMascots}
+          />
+        </Popover>
+      ) : null}
+    </>
   );
 }
 

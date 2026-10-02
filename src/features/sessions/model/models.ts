@@ -220,6 +220,7 @@ const LAST_MODEL_KEY = "monocode.lastModel";
 const LAST_MODEL_SETTINGS_KEY = "monocode.lastModelSettings";
 const DEFAULT_MODELS_KEY = "monocode.defaultModels";
 const RECENT_MODELS_KEY = "monocode.recentModels";
+const DISABLED_MODELS_KEY = "monocode.disabledModels";
 const RECENT_MODEL_LIMIT = 6;
 
 export type ModelPickerTab = "favorites" | HarnessId;
@@ -252,6 +253,7 @@ const listeners = new Set<() => void>();
 function emit() {
   catalogVersion += 1;
   baseByHarness = null;
+  enabledByHarness = {};
   indexById = null;
   allCache = null;
   for (const listener of listeners) listener();
@@ -291,7 +293,9 @@ export function resetHarnessModelOverlays() {
 }
 
 export function defaultModelId(harness: HarnessId): string {
-  return overlayDefaults[harness] ?? DEFAULT_MODEL_ID[harness];
+  const id = overlayDefaults[harness] ?? DEFAULT_MODEL_ID[harness];
+  if (!id || isModelEnabled(id)) return id;
+  return pickDefaultId(harness, modelsFor(harness));
 }
 
 // `modelsFor`/`findModel` sit in render bodies (every session card, every
@@ -312,12 +316,83 @@ function baseModelsFor(harness: HarnessId): AgentModel[] {
   return baseByHarness[harness] ?? EMPTY_MODELS;
 }
 
-export function modelsFor(harness: HarnessId): AgentModel[] {
+/** Every model the harness reports, including ones the user turned off. */
+export function catalogModelsFor(harness: HarnessId): AgentModel[] {
   return overlays[harness] ?? baseModelsFor(harness);
 }
 
+let enabledByHarness: Partial<Record<HarnessId, AgentModel[]>> = {};
+
+/**
+ * Models offered for new work: the catalog minus the ones turned off in
+ * Settings. A harness with everything turned off keeps its full list, since an
+ * empty list means "no catalog yet" to callers.
+ */
+export function modelsFor(harness: HarnessId): AgentModel[] {
+  const cached = enabledByHarness[harness];
+  if (cached) return cached;
+  const catalog = catalogModelsFor(harness);
+  const disabled = disabledModels();
+  const enabled =
+    disabled.size === 0
+      ? catalog
+      : catalog.filter((model) => !disabled.has(model.id));
+  return (enabledByHarness[harness] = enabled.length > 0 ? enabled : catalog);
+}
+
+let disabledCache: Set<string> | null = null;
+
+function disabledModels(): Set<string> {
+  if (disabledCache) return disabledCache;
+  let ids: string[] = [];
+  try {
+    const parsed: unknown = JSON.parse(
+      localStorage.getItem(DISABLED_MODELS_KEY) ?? "[]",
+    );
+    if (Array.isArray(parsed)) {
+      ids = parsed.filter((id): id is string => typeof id === "string");
+    }
+  } catch {
+    // private mode / malformed value
+  }
+  return (disabledCache = new Set(ids));
+}
+
+export function isModelEnabled(id: string): boolean {
+  return !disabledModels().has(id);
+}
+
+export function saveModelEnabled(id: string, enabled: boolean) {
+  const next = new Set(disabledModels());
+  if (enabled) next.delete(id);
+  else next.add(id);
+  try {
+    localStorage.setItem(DISABLED_MODELS_KEY, JSON.stringify([...next]));
+  } catch {
+    // private mode / quota
+  }
+  disabledCache = next;
+  emit();
+}
+
+/** Test seam. */
+export function resetDisabledModels() {
+  disabledCache = null;
+  emit();
+}
+
+// Another window (Settings, quick composer) may change the list.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== DISABLED_MODELS_KEY) return;
+    disabledCache = null;
+    emit();
+  });
+}
+
+/** Includes turned-off models so existing conversations still resolve theirs. */
 export function allModels(): AgentModel[] {
-  return (allCache ??= HARNESS_ORDER.flatMap(modelsFor));
+  return (allCache ??= HARNESS_ORDER.flatMap(catalogModelsFor));
 }
 
 export function findModel(id: string): AgentModel | undefined {
@@ -349,7 +424,7 @@ function lookupModel(id: string): AgentModel | undefined {
 }
 
 export function resolveModel(harness: HarnessId, id?: string): AgentModel {
-  const available = modelsFor(harness);
+  const available = catalogModelsFor(harness);
   if (id) {
     const exact = findModel(id);
     if (exact && exact.harness === harness) return exact;
@@ -439,7 +514,9 @@ export function resolveModel(harness: HarnessId, id?: string): AgentModel {
     };
   }
   const fallbackId = defaultModelId(harness);
-  return (fallbackId ? findModel(fallbackId) : undefined) ?? available[0];
+  return (
+    (fallbackId ? findModel(fallbackId) : undefined) ?? modelsFor(harness)[0]
+  );
 }
 
 /** Catalog-reported context window for a model id, when known. */
@@ -511,7 +588,7 @@ export function mergeModelSettings(
   model: AgentModel,
   current?: Record<string, string>,
 ): Record<string, string> {
-  if (modelsFor(model.harness).length === 0) return { ...current };
+  if (catalogModelsFor(model.harness).length === 0) return { ...current };
   const next = defaultModelSettings(model);
   if (!current) return next;
   for (const setting of model.settings ?? []) {
@@ -564,7 +641,7 @@ export function preferredModelSettings(
   model: AgentModel,
   current?: Record<string, string>,
 ): Record<string, string> {
-  if (modelsFor(model.harness).length === 0) return { ...current };
+  if (catalogModelsFor(model.harness).length === 0) return { ...current };
   return mergeModelSettings(model, {
     ...current,
     ...loadLastModelSettings(),
@@ -781,10 +858,17 @@ export function saveDefaultModel(harness: HarnessId, model: string) {
 /** User-picked model for a provider, else the catalog default. */
 export function preferredModelId(harness: HarnessId): string {
   const saved = loadDefaultModels()[harness];
-  if (saved) return saved;
+  if (saved && isEnabledChoice(harness, saved)) return saved;
   const last = loadLastModelChoice();
-  if (last?.harness === harness) return last.model;
+  if (last?.harness === harness && isEnabledChoice(harness, last.model)) {
+    return last.model;
+  }
   return defaultModelId(harness);
+}
+
+/** False when a saved model id points at a model turned off in Settings. */
+export function isEnabledChoice(harness: HarnessId, model: string): boolean {
+  return isModelEnabled(resolveModel(harness, model).id);
 }
 
 /**
@@ -817,8 +901,10 @@ export function defaultSessionChoice(cwd?: string): LastModelChoice {
     project.defaultHarness ?? last?.harness ?? "cursor",
   );
   const model =
-    project.models?.[harness] ??
-    (project.defaultHarness === harness ? project.defaultModel : undefined) ??
+    [
+      project.models?.[harness],
+      project.defaultHarness === harness ? project.defaultModel : undefined,
+    ].find((id) => id && isEnabledChoice(harness, id)) ??
     preferredModelId(harness);
   return { harness, model };
 }
@@ -875,6 +961,7 @@ export function loadRecentModelChoices(): LastModelChoice[] {
         continue;
       }
       const choice = item as LastModelChoice;
+      if (!isEnabledChoice(choice.harness, choice.model)) continue;
       const key = `${choice.harness}\0${choice.model}`;
       if (seen.has(key)) continue;
       seen.add(key);

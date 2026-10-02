@@ -198,9 +198,13 @@ import {
 import { refreshHarnessCatalogs } from "../../../integrations/harness/core/registry";
 import { loginHarness } from "../../../integrations/harness/core/auth";
 import {
+  catalogModelsFor,
   defaultModelId,
   firstEnabledHarness,
   getModelSnapshot,
+  isEnabledChoice,
+  isModelEnabled,
+  saveModelEnabled,
   loadDefaultModels,
   loadHiddenPickerProviders,
   loadLastModelChoice,
@@ -258,6 +262,12 @@ import {
   useProviderAccountIdentities,
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
+import {
+  saveMaskEmails,
+  saveShowRemainingUsage,
+  useMaskEmails,
+  useShowRemainingUsage,
+} from "../model/displayPrefs";
 import {
   checkInstalledHarnessVersions,
   getHarnessUpdateSnapshot,
@@ -3462,6 +3472,7 @@ function ProvidersPage({
   return (
     <>
       <ProviderAccountsSettings />
+      <UsageDisplaySettings />
       <ProviderUsageSettings />
       <UsageOverview />
 
@@ -3523,6 +3534,8 @@ function ProvidersPage({
         })}
       </Group>
 
+      <EnabledModelsGroup />
+
       <HarnessUpdatesGroup />
 
       <Group title="Advanced">
@@ -3539,6 +3552,66 @@ function ProvidersPage({
         </Row>
       </Group>
     </>
+  );
+}
+
+/** Per-model switches: a model turned off is never offered or picked by default. */
+function EnabledModelsGroup() {
+  const harnesses = HARNESSES.filter(
+    (harness) =>
+      isHarnessAvailable(harness) && catalogModelsFor(harness).length > 0,
+  );
+  const [selected, setSelected] = useState<HarnessId | null>(null);
+  const harness =
+    selected && harnesses.includes(selected) ? selected : harnesses[0];
+  if (!harness) return null;
+
+  const models = catalogModelsFor(harness);
+  const enabledCount = models.filter((model) => isModelEnabled(model.id)).length;
+
+  return (
+    <Group
+      id="enabled-models"
+      title="Models"
+      description="Turn off models you do not want. A model that is off is left out of every model picker and is never chosen for a new conversation; if it was a default, the provider's next available model is used instead. Conversations already using it keep it."
+      action={
+        <Select
+          label="Provider"
+          value={harness}
+          options={harnesses.map((id) => ({
+            value: id,
+            label: HARNESS_TITLE[id],
+            icon: <HarnessIcon harness={id} className="size-3.5 shrink-0" />,
+          }))}
+          onChange={(next) => setSelected(next as HarnessId)}
+        />
+      }
+    >
+      <div className="max-h-[420px] overflow-y-auto">
+        {models.map((model) => {
+          const on = isModelEnabled(model.id);
+          return (
+            <Row
+              key={model.id}
+              label={model.name}
+              description={
+                [model.provider?.name, model.nativeId]
+                  .filter(Boolean)
+                  .join(" · ") || undefined
+              }
+            >
+              <Toggle
+                label={`Use ${model.name}`}
+                on={on}
+                onChange={(next) => saveModelEnabled(model.id, next)}
+                // The last model stays on so the provider keeps a default.
+                disabled={on && enabledCount <= 1}
+              />
+            </Row>
+          );
+        })}
+      </div>
+    </Group>
   );
 }
 
@@ -3691,6 +3764,37 @@ function HarnessUpdateSettingsRow({
         <Check className="size-4 text-emerald-400" aria-hidden />
       ) : null}
     </Row>
+  );
+}
+
+function UsageDisplaySettings() {
+  const showRemainingUsage = useShowRemainingUsage();
+  const maskEmails = useMaskEmails();
+  return (
+    <Group title="Usage and privacy">
+      <Row
+        id="show-remaining-usage"
+        label="Show remaining usage"
+        description="Fill usage meters with what is left in each limit instead of what has been used."
+      >
+        <Toggle
+          label="Show remaining usage"
+          on={showRemainingUsage}
+          onChange={saveShowRemainingUsage}
+        />
+      </Row>
+      <Row
+        id="mask-emails"
+        label="Mask account emails"
+        description="Blur account emails in Settings and the usage popover until you click one, so they stay out of screenshots."
+      >
+        <Toggle
+          label="Mask account emails"
+          on={maskEmails}
+          onChange={saveMaskEmails}
+        />
+      </Row>
+    </Group>
   );
 }
 
@@ -4518,7 +4622,14 @@ function ProviderRow({
   const models = modelsFor(harness);
   const available = isHarnessAvailable(harness);
   const current =
-    models.length > 0 ? resolveModel(harness, selectedModel) : null;
+    models.length > 0
+      ? resolveModel(
+          harness,
+          isEnabledChoice(harness, selectedModel)
+            ? selectedModel
+            : defaultModelId(harness),
+        )
+      : null;
 
   useEffect(() => {
     if (!available || models.length > 0) return;

@@ -813,4 +813,78 @@ describe("remote host API", () => {
     ).resolves.toBe("A branch switch is already in progress");
     expect((await run("git_reset", { sha: head, mode: "soft" })).error).toBeUndefined();
   });
+
+  it("accepts sync pushes and pulls, rejecting a stale push", async () => {
+    const s = await setup();
+    const pushed = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "Work", collapsed: false } }],
+    });
+    expect(pushed.value.result.applied).toEqual([{ table: "group", id: "g1", rev: pushed.value.result.rev }]);
+
+    const pulled = await s.call("sync.pull", { sinceRev: 0 });
+    expect(pulled.value.result.records).toEqual([
+      { table: "group", id: "g1", rev: pushed.value.result.rev, value: { id: "g1", name: "Work", collapsed: false } },
+    ]);
+
+    const stale = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "Renamed", collapsed: false } }],
+    });
+    expect(stale.value.result.applied).toEqual([]);
+    expect(stale.value.result.rejected).toHaveLength(1);
+  });
+
+  it("skips a malformed sync op without failing the rest of the push", async () => {
+    const s = await setup();
+    const pushed = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g9", baseRev: 0, value: { id: "g9", name: "Kept", collapsed: false } }, null],
+    });
+    expect(pushed.status).toBe(200);
+    expect(pushed.value.result.applied).toHaveLength(1);
+    expect(pushed.value.result.rejected).toEqual([]);
+
+    const pulled = await s.call("sync.pull", { sinceRev: 0 });
+    expect(JSON.stringify(pulled.value.result.records)).toContain("g9");
+  });
+
+  it("advertises the sync capability", async () => {
+    const s = await setup();
+    const described = await s.call("environment.describe");
+    expect(described.value.result.capabilities).toContain("sync");
+  });
+
+  it("two desktops converge on the same group after a disconnect with edits on both sides", async () => {
+    const s = await setup();
+    // Desktop A pushes a new group.
+    const a = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "From A", collapsed: false } }],
+    });
+    expect(a.value.result.rejected).toEqual([]);
+
+    // Desktop B, still at revision 0, pulls and catches up.
+    const bPull = await s.call("sync.pull", { sinceRev: 0 });
+    expect(bPull.value.result.records).toHaveLength(1);
+    const bRev = bPull.value.result.rev;
+
+    // Both edit the same group while "disconnected" from each other (each
+    // still believes the revision it last pulled).
+    const bPush = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: bRev, value: { id: "g1", name: "From B", collapsed: false } }],
+    });
+    expect(bPush.value.result.applied).toHaveLength(1);
+
+    // A, still at the revision from its own first push, tries to edit too —
+    // this is the "concurrent edit" case: A's base revision is now stale.
+    const aRetry = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: a.value.result.applied[0].rev, value: { id: "g1", name: "From A again", collapsed: false } }],
+    });
+    expect(aRetry.value.result.rejected).toHaveLength(1);
+    const winning = aRetry.value.result.rejected[0].current;
+
+    // Both sides pull and land on the same value: whichever write actually
+    // reached the host last (B's).
+    const finalPull = await s.call("sync.pull", { sinceRev: 0 });
+    const finalGroup = finalPull.value.result.records.find((r: any) => r.id === "g1");
+    expect(finalGroup.value).toEqual(winning.value);
+    expect(finalGroup.value.name).toBe("From B");
+  });
 });

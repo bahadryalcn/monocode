@@ -19,6 +19,7 @@ mod inbox_media;
 mod jira;
 mod keep_awake;
 mod linear;
+mod local_host;
 mod link_preview;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -270,6 +271,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             remote::remote_machines,
             remote::remote_connect,
+            local_host::local_host_connect,
             remote::remote_disconnect,
             remote::remote_request,
             remote::remote_ssh_begin,

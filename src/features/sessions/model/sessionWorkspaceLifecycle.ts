@@ -26,6 +26,7 @@ export function removeSessionFromWorkspace({
   sessionId,
   activeTabId,
   scope,
+  worktreeOf,
   createReplacement,
   canCloseTab = () => true,
 }: {
@@ -34,6 +35,9 @@ export function removeSessionFromWorkspace({
   sessionId: string;
   activeTabId: string;
   scope: WorkspaceTabCloseScope;
+  /** When given, the tab that takes over also has to share the closing
+   * tab's worktree. */
+  worktreeOf?: (tab: WorkspaceTab) => string | null;
   createReplacement: (seed: Session | undefined) => Session;
   /** Preserve file panes changed while an asynchronous close was pending. */
   canCloseTab?: (tab: WorkspaceTab) => boolean;
@@ -74,6 +78,7 @@ export function removeSessionFromWorkspace({
       sessions,
       closingTabId: tab.id,
       scope,
+      worktreeOf,
     });
     if (closePlan.action === "close") {
       nextTabs = nextTabs.filter((entry) => entry.id !== tab.id);

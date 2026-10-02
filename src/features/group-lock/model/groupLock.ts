@@ -29,7 +29,11 @@ import {
   parseUnlockedIds,
   type GroupLockSettings,
 } from "./lockSettings";
-import { createPasswordRecord, verifyPassword } from "./passwordRecord";
+import {
+  createPasswordRecord,
+  verifyPassword,
+  type PasswordRecord,
+} from "./passwordRecord";
 
 /**
  * The app lock for project groups. One password, many groups.
@@ -167,10 +171,40 @@ function dispatch(action: LockAction) {
 }
 
 function saveSettings(next: GroupLockSettings) {
+  const recordChanged = JSON.stringify(settings.record) !== JSON.stringify(next.record);
   settings = next;
   writeItem(SETTINGS_KEY, JSON.stringify(next));
   persistUnlocked();
   invalidate();
+  if (recordChanged && !applyingRemoteLock) {
+    for (const listener of lockRecordListeners) listener(next.record);
+  }
+}
+
+const lockRecordListeners = new Set<(record: PasswordRecord | null) => void>();
+let applyingRemoteLock = false;
+
+export function subscribeLockRecordChanges(
+  listener: (record: PasswordRecord | null) => void,
+): () => void {
+  lockRecordListeners.add(listener);
+  return () => lockRecordListeners.delete(listener);
+}
+
+/** Applies a password record (or its absence) learned from a peer, without
+ * re-announcing it as a local change. Clearing the record also drops every
+ * group's unlocked-in-memory state, same as `clearPassword` does when the
+ * password is removed here directly; it does not touch any group's
+ * `lockable` flag (that is a `ProjectGroup` field, synced separately). */
+export function applyRemoteLockRecord(record: PasswordRecord | null): void {
+  if (JSON.stringify(settings.record) === JSON.stringify(record)) return;
+  applyingRemoteLock = true;
+  try {
+    if (!record) unlocked = new Set();
+    saveSettings({ ...settings, record });
+  } finally {
+    applyingRemoteLock = false;
+  }
 }
 
 // ---- attempts --------------------------------------------------------------

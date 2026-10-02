@@ -5,7 +5,7 @@ import type {
   ProviderAccountProvider,
 } from "./providerAccounts";
 
-/** Identity the provider CLI cached on disk after sign-in. */
+/** Who the profile is signed in as; the CLI's on-disk cache when offline. */
 export type ProviderAccountIdentity = {
   email?: string | null;
   name?: string | null;

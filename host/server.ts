@@ -17,6 +17,8 @@ import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
 import { SyncTransfers } from "./sync-transfer";
+import { syncPull, syncPush } from "./sync";
+import type { SyncOp } from "../src/features/sync/model/syncProtocol";
 import { browseHostDirectories } from "./browse";
 import {
   createHostBranch,
@@ -290,6 +292,7 @@ export function createHostServer(
                 "attachments.read",
                 "sessions.draft",
                 "sessions.plan",
+                "sync",
               ],
             };
             break;
@@ -408,6 +411,16 @@ export function createHostServer(
           case "commands.dispatch":
             result = engine.command(params);
             break;
+          case "sync.pull": {
+            const sinceRev = Number.isSafeInteger(params.sinceRev) ? Number(params.sinceRev) : 0;
+            result = syncPull(engine.store.db, sinceRev);
+            break;
+          }
+          case "sync.push": {
+            if (!Array.isArray(params.ops)) throw new Error("Invalid sync ops");
+            result = engine.store.transaction(() => syncPush(engine.store.db, params.ops as SyncOp[]));
+            break;
+          }
           case "attachments.upload":
             result = writeAttachmentChunk(engine.store, params);
             break;

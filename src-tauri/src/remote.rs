@@ -60,11 +60,11 @@ struct StoredMachine {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Machine {
-    id: String,
-    name: String,
-    endpoint: String,
-    environment_id: String,
-    ssh: Option<SshTarget>,
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) endpoint: String,
+    pub(crate) environment_id: String,
+    pub(crate) ssh: Option<SshTarget>,
 }
 
 impl StoredMachine {
@@ -503,6 +503,8 @@ fn supported_remote_method(method: &str) -> bool {
             | "git.index"
             | "git.fileDiff"
             | "git.action"
+            | "sync.pull"
+            | "sync.push"
     )
 }
 
@@ -801,6 +803,8 @@ mod tests {
             "git.worktreeCreate",
             "attachments.upload",
             "attachments.read",
+            "sync.pull",
+            "sync.push",
         ] {
             assert!(supported_remote_method(method), "{method}");
         }

@@ -8,6 +8,7 @@ import {
   GitBranch,
   Internet,
   Inbox,
+  Link as LinkIcon,
   Lock,
   LockOpen,
   MoreHorizontal,
@@ -92,6 +93,7 @@ import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview"
 import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
 import { RailAction, RailSearch } from "./RailAction";
+import { remoteOnlyProjects, type RemoteOnlyProject } from "../../features/sync/model/syncProjects";
 import { LastSessionsSection, type RecentSessionsSource } from "./LastSessionsSection";
 import { DevModeSlot, TabVisitNav } from "./TitleBar";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
@@ -154,6 +156,8 @@ type Props = {
   onTogglePanel?: () => void;
   onSelectProject: (path: string) => void;
   onOpenProject: () => void | Promise<void>;
+  /** Lets the user pick this machine's folder for a project only another machine has. */
+  onLinkRemoteProject?: (projectId: string, name: string) => void | Promise<void>;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   liveAgents?: LiveAgent[];
   activeSessionId?: string;
@@ -192,6 +196,7 @@ export function ProjectRail({
   onTogglePanel,
   onSelectProject,
   onOpenProject,
+  onLinkRemoteProject,
   onRemoveProject,
   liveAgents = [],
   activeSessionId,
@@ -227,8 +232,10 @@ export function ProjectRail({
   const [projectGroupAssignments, setProjectGroupAssignments] = useState(
     loadProjectGroupAssignments,
   );
+  const [remoteOnly, setRemoteOnly] = useState<RemoteOnlyProject[]>(remoteOnlyProjects);
   useEffect(() => {
     const reload = () => {
+      setRemoteOnly(remoteOnlyProjects());
       setRailOrder(loadProjectRailOrder());
       setPinnedPaths(loadPinnedProjects());
       setGroupLabels(loadTabGroupLabels());
@@ -569,6 +576,8 @@ export function ProjectRail({
             : undefined
         }
         onAdd={onOpenProject}
+        remoteOnly={remoteOnly}
+        onLinkRemote={onLinkRemoteProject}
         cwd={cwd}
         busy={busy}
         statsEnabled={visible}
@@ -737,6 +746,8 @@ function ProjectSection({
   muteStatuses,
   emptyLabel,
   onAdd,
+  remoteOnly,
+  onLinkRemote,
   cwd,
   busy,
   statsEnabled,
@@ -759,6 +770,8 @@ function ProjectSection({
   muteStatuses: ReadonlyMap<string, string | null>;
   emptyLabel?: string;
   onAdd?: () => void;
+  remoteOnly?: readonly RemoteOnlyProject[];
+  onLinkRemote?: (projectId: string, name: string) => void | Promise<void>;
   cwd: string;
   busy: Set<string>;
   statsEnabled: boolean;
@@ -810,6 +823,21 @@ function ProjectSection({
             groupMascots={groupMascots}
           />
         ))}
+        {onLinkRemote
+          ? remoteOnly?.map((project) => (
+              <button
+                key={project.projectId}
+                type="button"
+                title={`${project.otherPaths.map((other) => other.path).join(", ")} (another machine). Click to link a folder.`}
+                aria-label={`${project.name}, on another machine. Link folder`}
+                onClick={() => void onLinkRemote(project.projectId, project.name)}
+                className="flex h-8 min-w-0 cursor-default items-center gap-2 rounded-md px-2 text-left opacity-40 hover:bg-content/8 hover:opacity-70"
+              >
+                <LinkIcon className="size-4 shrink-0" strokeWidth={1.75} />
+                <span className={nameClassName}>{project.name}</span>
+              </button>
+            ))
+          : null}
       </div>
     </div>
   );

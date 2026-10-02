@@ -8,6 +8,7 @@ import {
   remoteRequest,
   useRemoteMachines,
 } from "../model/connections";
+import { remoteProjectMachines } from "../model/localSync";
 import { rememberRemoteProject } from "../model/remoteProjects";
 import type { HostDirectory, HostProject } from "../model/protocol";
 
@@ -21,7 +22,8 @@ export function AddRemoteProjectDialog({
   /** Receives the new project's rail key. */
   onOpen: (key: string) => void;
 }) {
-  const { machines, loaded } = useRemoteMachines();
+  const { machines: allMachines, loaded } = useRemoteMachines();
+  const machines = remoteProjectMachines(allMachines);
   const [machineId, setMachineId] = useState<string>();
   const machine =
     machines.find((entry) => entry.id === machineId) ?? machines[0];
