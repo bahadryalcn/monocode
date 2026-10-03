@@ -8,6 +8,7 @@ import {
   GitBranch,
   Internet,
   Inbox,
+  Link as LinkIcon,
   Lock,
   LockOpen,
   MoreHorizontal,
@@ -18,6 +19,7 @@ import {
   Search,
   Settings,
   Zap,
+  DashboardSquare,
 } from "../../shared/ui/icons";
 import {
   Fragment,
@@ -92,6 +94,8 @@ import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview"
 import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
 import { RailAction, RailSearch } from "./RailAction";
+import { remoteOnlyProjects, type RemoteOnlyProject } from "../../features/sync/model/syncProjects";
+import { remoteOnlyProjectHint, remoteOpenMatch } from "../../features/sync/model/syncRemoteProjects";
 import { LastSessionsSection, type RecentSessionsSource } from "./LastSessionsSection";
 import { DevModeSlot, TabVisitNav } from "./TitleBar";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
@@ -150,10 +154,14 @@ type Props = {
   onOpenNotes?: () => void;
   notesActive?: boolean;
   onOpenAutomations?: () => void;
+  onOpenTasks?: () => void;
   automationsActive?: boolean;
+  tasksActive?: boolean;
   onTogglePanel?: () => void;
   onSelectProject: (path: string) => void;
   onOpenProject: () => void | Promise<void>;
+  /** Lets the user pick this machine's folder for a project only another machine has. */
+  onOpenSyncedProject?: (projectId: string, name: string) => void | Promise<void>;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   liveAgents?: LiveAgent[];
   activeSessionId?: string;
@@ -188,10 +196,13 @@ export function ProjectRail({
   onOpenNotes,
   notesActive = false,
   onOpenAutomations,
+  onOpenTasks,
   automationsActive = false,
+  tasksActive = false,
   onTogglePanel,
   onSelectProject,
   onOpenProject,
+  onOpenSyncedProject,
   onRemoveProject,
   liveAgents = [],
   activeSessionId,
@@ -227,8 +238,10 @@ export function ProjectRail({
   const [projectGroupAssignments, setProjectGroupAssignments] = useState(
     loadProjectGroupAssignments,
   );
+  const [remoteOnly, setRemoteOnly] = useState<RemoteOnlyProject[]>(remoteOnlyProjects);
   useEffect(() => {
     const reload = () => {
+      setRemoteOnly(remoteOnlyProjects());
       setRailOrder(loadProjectRailOrder());
       setPinnedPaths(loadPinnedProjects());
       setGroupLabels(loadTabGroupLabels());
@@ -461,7 +474,11 @@ export function ProjectRail({
   if (projectGroups.length > 0) shownSections.add("groups");
   const rail = useRailSections(shownSections);
   const searchOrPageActive =
-    searchActive || inboxActive || notesActive || automationsActive;
+    searchActive ||
+    inboxActive ||
+    notesActive ||
+    automationsActive ||
+    tasksActive;
   const sectionNodes: Record<RailSectionId, ReactNode> = {
     "last-sessions": recentSessions ? (
       <LastSessionsSection
@@ -569,6 +586,8 @@ export function ProjectRail({
             : undefined
         }
         onAdd={onOpenProject}
+        remoteOnly={remoteOnly}
+        onOpenSynced={onOpenSyncedProject}
         cwd={cwd}
         busy={busy}
         statsEnabled={visible}
@@ -660,6 +679,13 @@ export function ProjectRail({
               active={automationsActive}
               ariaLabel="Automations"
             />
+            <RailAction
+              label="Tasks"
+              icon={DashboardSquare}
+              onClick={onOpenTasks}
+              active={tasksActive}
+              ariaLabel="Tasks"
+            />
           </div>
 
           <div
@@ -737,6 +763,8 @@ function ProjectSection({
   muteStatuses,
   emptyLabel,
   onAdd,
+  remoteOnly,
+  onOpenSynced,
   cwd,
   busy,
   statsEnabled,
@@ -759,6 +787,8 @@ function ProjectSection({
   muteStatuses: ReadonlyMap<string, string | null>;
   emptyLabel?: string;
   onAdd?: () => void;
+  remoteOnly?: readonly RemoteOnlyProject[];
+  onOpenSynced?: (projectId: string, name: string) => void | Promise<void>;
   cwd: string;
   busy: Set<string>;
   statsEnabled: boolean;
@@ -810,6 +840,28 @@ function ProjectSection({
             groupMascots={groupMascots}
           />
         ))}
+        {onOpenSynced
+          ? remoteOnly?.map((project) => {
+              const match = remoteOpenMatch(project);
+              return (
+                <button
+                  key={project.projectId}
+                  type="button"
+                  title={remoteOnlyProjectHint(project, match)}
+                  aria-label={
+                    match
+                      ? `${project.name}, on ${match.target.name}. Open there`
+                      : `${project.name}, on a machine that is not connected`
+                  }
+                  onClick={() => void onOpenSynced(project.projectId, project.name)}
+                  className="flex h-8 min-w-0 cursor-default items-center gap-2 rounded-md px-2 text-left opacity-40 hover:bg-content/8 hover:opacity-70"
+                >
+                  <LinkIcon className="size-4 shrink-0" strokeWidth={1.75} />
+                  <span className={nameClassName}>{project.name}</span>
+                </button>
+              );
+            })
+          : null}
       </div>
     </div>
   );

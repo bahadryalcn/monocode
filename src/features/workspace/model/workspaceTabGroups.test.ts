@@ -23,7 +23,11 @@ import {
   workspaceTabProject,
   focusedWorkspaceTabCwd,
   workspaceTabCwd,
+  tabInWorktree,
+  keepsWorkspaceTab,
+  workspaceTabWorktree,
 } from "./workspaceTabGroups";
+import { REMOTE_PROJECT_PREFIX } from "../../projects/model/recents";
 
 function session(id: string, cwd: string): Session {
   return {
@@ -620,5 +624,121 @@ describe("replaceGroupInTabOrder", () => {
       "c",
       "d",
     ]);
+  });
+});
+
+describe("worktree tab scope", () => {
+  const main = session("main", "/repo");
+  const feature = { ...session("feature", "/repo"), worktreeCwd: "/trees/a" };
+  const sessions = [main, feature];
+
+  it("places a session tab in its working copy", () => {
+    expect(workspaceTabWorktree(tab("t1", "main"), sessions)).toBe("/repo");
+    expect(workspaceTabWorktree(tab("t2", "feature"), sessions)).toBe(
+      "/trees/a",
+    );
+  });
+
+  it("shows a tab only in its own worktree", () => {
+    expect(tabInWorktree(tab("t1", "main"), sessions, "/repo")).toBe(true);
+    expect(tabInWorktree(tab("t1", "main"), sessions, "/trees/a")).toBe(false);
+    expect(tabInWorktree(tab("t2", "feature"), sessions, "/trees/a")).toBe(
+      true,
+    );
+  });
+
+  it("shows tabs without a working copy everywhere", () => {
+    expect(tabInWorktree(tab("t3", "unknown"), sessions, "/trees/a")).toBe(
+      true,
+    );
+  });
+});
+
+describe("workspaceTabWorktree", () => {
+  const main = session("main", "/repo");
+  const feature = { ...session("feature", "/repo"), worktreeCwd: "/trees/a" };
+  const sessions = [main, feature];
+
+  it("uses the session's working copy", () => {
+    expect(workspaceTabWorktree(tab("t1", "main"), sessions)).toBe("/repo");
+    expect(workspaceTabWorktree(tab("t2", "feature"), sessions)).toBe(
+      "/trees/a",
+    );
+  });
+
+  it("scopes tabs to one worktree and keeps unowned tabs everywhere", () => {
+    expect(tabInWorktree(tab("t1", "main"), sessions, "/repo")).toBe(true);
+    expect(tabInWorktree(tab("t2", "feature"), sessions, "/repo")).toBe(false);
+    expect(tabInWorktree(tab("t2", "feature"), sessions, "/trees/a")).toBe(
+      true,
+    );
+    expect(tabInWorktree(tab("t3", "unknown"), sessions, "/trees/a")).toBe(
+      true,
+    );
+  });
+
+  it("closes to a tab in the same worktree, or keeps the last one", () => {
+    const other = { ...session("other", "/repo"), worktreeCwd: "/trees/a" };
+    const all = [main, feature, other];
+    const tabs = [tab("t1", "main"), tab("t2", "feature"), tab("t3", "other")];
+    const worktreeOf = (entry: WorkspaceTab) => workspaceTabWorktree(entry, all);
+    expect(
+      planWorkspaceTabClose({
+        tabs,
+        sessions: all,
+        closingTabId: "t2",
+        scope: "project",
+        worktreeOf,
+      }),
+    ).toEqual({ action: "close", nextActiveTabId: "t3" });
+    expect(
+      planWorkspaceTabClose({
+        tabs,
+        sessions: all,
+        closingTabId: "t1",
+        scope: "project",
+        worktreeOf,
+      }),
+    ).toEqual({ action: "keep" });
+  });
+});
+
+describe("keepsWorkspaceTab", () => {
+  const main = session("main", "/repo");
+  const feature = { ...session("feature", "/repo"), worktreeCwd: "/trees/a" };
+  const remote = session("remote", `${REMOTE_PROJECT_PREFIX}host/repo`);
+  const sessions = [main, feature, remote];
+  const none = () => false;
+
+  it("keeps tabs of the project's default workspace", () => {
+    expect(keepsWorkspaceTab(tab("t1", "main"), sessions, "/repo", none)).toBe(
+      true,
+    );
+  });
+
+  it("keeps tabs with no workspace and tabs of remote projects", () => {
+    expect(keepsWorkspaceTab(tab("t1", "main"), sessions, null, none)).toBe(
+      true,
+    );
+    expect(
+      keepsWorkspaceTab(tab("t3", "remote"), sessions, "/elsewhere", none),
+    ).toBe(true);
+  });
+
+  it("drops a tab that belongs to another worktree's workspace", () => {
+    expect(
+      keepsWorkspaceTab(tab("t2", "feature"), sessions, "/trees/a", none),
+    ).toBe(false);
+  });
+
+  it("keeps another worktree's tab while it holds an unsent draft or queue", () => {
+    expect(
+      keepsWorkspaceTab(
+        tab("t2", "feature"),
+        sessions,
+        "/trees/a",
+        (id) => id === "feature",
+      ),
+    ).toBe(true);
   });
 });

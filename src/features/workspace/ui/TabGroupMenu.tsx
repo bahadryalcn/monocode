@@ -63,6 +63,8 @@ type Props = {
   /** Key the fallback mascot is hashed from — same one the icon uses. */
   mascotProject: string;
   onRename: (groupId: string, label: string) => void;
+  /** Why a changed name cannot be saved, or null. A rejected name is not saved and keeps the menu open. */
+  validateName?: (name: string) => string | null;
   onColorChange: (groupId: string, colorIndex: number | null) => void;
   onCustomColorChange: (groupId: string, color: string) => void;
   onMascotChange: (groupId: string, name: string | null) => void;
@@ -134,6 +136,7 @@ export function TabGroupMenu({
   mascotName,
   mascotProject,
   onRename,
+  validateName,
   onColorChange,
   onCustomColorChange,
   onMascotChange,
@@ -181,15 +184,22 @@ export function TabGroupMenu({
 
   const shownMascot = projectMascot(mascotProject, mascotName).name;
 
+  const trimmedName = name.trim();
+  const nameError =
+    validateName && trimmedName !== label.trim()
+      ? validateName(trimmedName)
+      : null;
+
   const commitName = () => {
-    onRename(groupId, name.trim());
+    if (nameError) return false;
+    onRename(groupId, trimmedName);
+    return true;
   };
 
   const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter" && e.target === input.current) {
       e.preventDefault();
-      commitName();
-      onClose();
+      if (commitName()) onClose();
     }
   };
 
@@ -230,10 +240,16 @@ export function TabGroupMenu({
           ref={input}
           value={name}
           onChange={(e) => setName(e.target.value)}
-          onBlur={commitName}
+          onBlur={() => void commitName()}
           aria-label="Group name"
+          aria-invalid={nameError ? true : undefined}
           className="mb-2 w-full rounded-lg border border-content/10 bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none ring-accent/40 focus:ring-1"
         />
+        {nameError ? (
+          <p role="alert" className="-mt-1 mb-2 px-0.5 text-xs leading-snug text-red-400">
+            {nameError}
+          </p>
+        ) : null}
 
         {logoProject ? (
           <div className="mb-2 flex items-center gap-2 px-0.5">

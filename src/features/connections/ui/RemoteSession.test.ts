@@ -185,7 +185,12 @@ beforeEach(() => {
         environmentId: "env",
         name: "home",
         providers,
-        capabilities: ["attachments.upload", "sessions.plan", "sessions.draft"],
+        capabilities: [
+          "attachments.upload",
+          "sessions.plan",
+          "sessions.draft",
+          ...(shellSupported ? ["sessions.shell"] : []),
+        ],
       };
     if (method === "models.list") {
       if (catalog instanceof Error) throw catalog.message;
@@ -286,6 +291,9 @@ afterEach(() => {
   localStorage.clear();
 });
 
+/** Whether the host in a test advertises `!command` support. */
+let shellSupported = false;
+
 /** A minimal host engine: persists commands the way the real one does. */
 function dispatch(command: HostCommand) {
   commands.push(command);
@@ -330,6 +338,23 @@ function dispatch(command: HostCommand) {
           ),
           { id: command.commandId, role: "user", text: command.text },
           { id: `${command.commandId}-reply`, role: "assistant", text: "Done" },
+        ],
+      },
+    };
+  } else if (host && command.type === "shell") {
+    host = {
+      ...host,
+      revision: host.revision + 1,
+      session: {
+        ...host.session,
+        blocks: [
+          ...host.session.blocks,
+          {
+            id: command.commandId,
+            role: "system",
+            text: "",
+            shell: { command: command.line, output: "on host", exitCode: 0 },
+          },
         ],
       },
     };
@@ -1228,6 +1253,50 @@ const openRunningChat = () => {
 };
 const whenStopShown = () =>
   vi.waitFor(() => expect(byLabel("Stop")).not.toBeNull(), { timeout: 4_000 });
+
+slow("runs a !command on the host instead of sending it as a message, even mid-turn", async () => {
+  shellSupported = true;
+  try {
+    openRunningChat();
+    await render();
+    await whenStopShown();
+    await type("!git status");
+    await act(async () => {
+      container.querySelector("textarea")!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    await vi.waitFor(() => expect(commands).toHaveLength(1), { timeout: 4_000 });
+    expect(commands[0]).toMatchObject({
+      type: "shell",
+      sessionId: "host-session",
+      line: "git status",
+    });
+    expect(queueCard()).toBeNull();
+    expect(container.querySelector("textarea")!.value).toBe("");
+    // The host's block reaches the transcript with the next sync.
+    await vi.waitFor(
+      () =>
+        expect(
+          container.querySelectorAll("ol[aria-label='Transcript'] li"),
+        ).toHaveLength(3),
+      { timeout: 4_000 },
+    );
+  } finally {
+    shellSupported = false;
+  }
+});
+
+slow("keeps a !command in the composer when the host is too old to run it", async () => {
+  openExistingChat();
+  await render();
+  await send("!git status");
+  expect(commands).toHaveLength(0);
+  expect(container.querySelector("textarea")!.value).toBe("!git status");
+  expect(container.textContent).toContain("Update MonoCode Host");
+  // The draft is remembered across mounts; leave the composer empty.
+  await type("");
+});
 
 slow("queues a message sent during a host turn and sends it when the turn ends", async () => {
   openRunningChat();

@@ -21,6 +21,7 @@ import {
 } from "../model/workingTreeDiff";
 import { stageChunkText } from "../../files/editor/editorGit";
 import { LINE_DIFF_CONFIG } from "../model/lineDiff";
+import { confirmDiscardFile } from "../model/gitConfirmation";
 import { UnifiedDiffView, type UnifiedDiffFileModel } from "./UnifiedDiffView";
 
 type Props = {
@@ -51,10 +52,56 @@ export function WorkingTreeDiff({
   const [diffs, setDiffs] = useState<Map<string, LoadedDiff>>(new Map());
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const mutationQueue = useRef(Promise.resolve());
+  const pendingIds = useRef(new Set<string>());
+  const mutationContext = useRef({ cwd, active: true });
+  useEffect(() => {
+    const context = { cwd, active: true };
+    mutationContext.current = context;
+    setBusyId(null);
+    setMutationError(null);
+    return () => {
+      context.active = false;
+    };
+  }, [cwd]);
+
+  const enqueueMutation = useCallback(
+    (id: string, action: () => Promise<boolean | void>) => {
+      const context = mutationContext.current;
+      const key = `${cwd}\0${id}`;
+      if (pendingIds.current.has(key)) return;
+      pendingIds.current.add(key);
+      const task = mutationQueue.current
+        .then(async () => {
+          if (!context.active) return;
+          setBusyId(id);
+          setMutationError(null);
+          try {
+            if ((await action()) !== false) notifyGitChanged(cwd, "index");
+          } catch (caught) {
+            if (context.active)
+              setMutationError(
+                caught instanceof Error ? caught.message : String(caught),
+              );
+          } finally {
+            if (context.active) setBusyId(null);
+          }
+        })
+        .finally(() => {
+          pendingIds.current.delete(key);
+        });
+      mutationQueue.current = task;
+      return task;
+    },
+    [cwd],
+  );
   const diffsRef = useRef(diffs);
   diffsRef.current = diffs;
 
   useEffect(() => {
+    setError(null);
     if (!cwd || cwd === "~") {
       setFiles([]);
       setDiffs(new Map());
@@ -68,13 +115,22 @@ export function WorkingTreeDiff({
 
     const run = () => {
       const current = ++generation;
+      setError(null);
       void gitDiffFiles(cwd)
         .then(async (index) => {
           if (disposed || current !== generation) return;
           setFiles(index.files);
-          setDiffs(new Map());
           setError(null);
           const entries = workingTreeDiffEntries(index.files, focusKind);
+          // A refresh keeps each loaded diff on screen until its replacement
+          // arrives; only files that left the list are dropped.
+          const kept = new Set(entries.map((entry) => entry.id));
+          setDiffs((existing) => {
+            if ([...existing.keys()].every((id) => kept.has(id))) {
+              return existing;
+            }
+            return new Map([...existing].filter(([id]) => kept.has(id)));
+          });
           const loadOrder = prioritizeWorkingTreeDiffEntries(
             entries,
             focusPath,
@@ -139,7 +195,7 @@ export function WorkingTreeDiff({
         run();
       });
     };
-    const unsub = subscribeGitChanged(scheduleRun);
+    const unsub = subscribeGitChanged(scheduleRun, { cwd });
     const onFocus = () => {
       if (!document.hidden) scheduleRun();
     };
@@ -152,7 +208,7 @@ export function WorkingTreeDiff({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
-  }, [cwd, focusKind]);
+  }, [cwd, focusKind, retry]);
 
   // A review opened from the Changes or Staged Changes section shows only that side.
   const entries = useMemo(
@@ -223,30 +279,21 @@ export function WorkingTreeDiff({
     async (id: string) => {
       const entry = entries.find((candidate) => candidate.id === id);
       if (!entry || entry.kind !== "unstaged") return;
-      setBusyId(id);
-      try {
-        await gitStageFile(cwd, entry.file.relative);
-        notifyGitChanged();
-      } finally {
-        setBusyId(null);
-      }
+      await enqueueMutation(id, () => gitStageFile(cwd, entry.file.relative));
     },
-    [cwd, entries],
+    [cwd, entries, enqueueMutation],
   );
 
   const onDiscardFile = useCallback(
     async (id: string) => {
       const entry = entries.find((candidate) => candidate.id === id);
       if (!entry || entry.kind !== "unstaged") return;
-      setBusyId(id);
-      try {
+      await enqueueMutation(id, async () => {
+        if (!(await confirmDiscardFile(entry.file))) return false;
         await gitDiscardFile(cwd, entry.file.relative);
-        notifyGitChanged();
-      } finally {
-        setBusyId(null);
-      }
+      });
     },
-    [cwd, entries],
+    [cwd, entries, enqueueMutation],
   );
 
   const onStageHunk = useCallback(
@@ -254,7 +301,7 @@ export function WorkingTreeDiff({
       const entry = entries.find((candidate) => candidate.id === id);
       if (!entry || entry.kind !== "unstaged") return;
       const loaded = diffsRef.current.get(id);
-      if (!loaded) return;
+      if (!loaded || loaded.error || loaded.binary || loaded.tooLarge) return;
       // Same diff the view used to produce `pos`, so the same hunk is staged.
       const next = stageChunkText(
         loaded.original,
@@ -264,15 +311,11 @@ export function WorkingTreeDiff({
         LINE_DIFF_CONFIG,
       );
       if (next == null) return;
-      setBusyId(id);
-      try {
-        await gitStageContents(cwd, entry.file.relative, next);
-        notifyGitChanged();
-      } finally {
-        setBusyId(null);
-      }
+      await enqueueMutation(id, () =>
+        gitStageContents(cwd, entry.file.relative, next),
+      );
     },
-    [cwd, entries],
+    [cwd, entries, enqueueMutation],
   );
 
   if (!cwd || cwd === "~") {
@@ -288,6 +331,13 @@ export function WorkingTreeDiff({
         <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
         <p className="text-[13px] text-content">Couldn’t load changes</p>
         <p className="mt-1 text-[12px] text-content/50">{error}</p>
+        <button
+          type="button"
+          onClick={() => setRetry((value) => value + 1)}
+          className="mt-3 text-[13px] text-content"
+        >
+          Retry
+        </button>
       </div>
     );
   }
@@ -300,16 +350,23 @@ export function WorkingTreeDiff({
   }
 
   return (
-    <UnifiedDiffView
-      files={models}
-      fileCount={focusKind ? entries.length : files.length}
-      focusId={focusId}
-      focusRequest={focusRequest}
-      busyId={busyId}
-      totals={totals}
-      onStageFile={onStageFile}
-      onDiscardFile={onDiscardFile}
-      onStageHunk={onStageHunk}
-    />
+    <div className="flex h-full min-h-0 flex-col">
+      {mutationError && (
+        <p role="alert" className="shrink-0 px-3 py-2 text-[12px] text-red-400">
+          {mutationError}
+        </p>
+      )}
+      <UnifiedDiffView
+        files={models}
+        fileCount={focusKind ? entries.length : files.length}
+        focusId={focusId}
+        focusRequest={focusRequest}
+        busyId={busyId}
+        totals={totals}
+        onStageFile={onStageFile}
+        onDiscardFile={onDiscardFile}
+        onStageHunk={onStageHunk}
+      />
+    </div>
   );
 }

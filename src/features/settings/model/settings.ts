@@ -22,6 +22,7 @@ export type SettingsSectionId =
   | "connections"
   | "appearance"
   | "keybindings"
+  | "terminal"
   | "chat"
   | "providers"
   | "mcp"
@@ -81,6 +82,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "Every shortcut the workspace handles, from the app menu and the key handler.",
     keywords: "shortcut hotkey keyboard binding",
+  },
+  {
+    id: "terminal",
+    group: "app",
+    label: "Terminal",
+    description:
+      "The shell new terminals open in and `!commands` from the composer run in.",
+    keywords:
+      "shell profile bash git bash powershell pwsh cmd command prompt wsl zsh fish default",
   },
   {
     id: "chat",
@@ -171,6 +181,12 @@ export type SettingsEntry = {
 };
 
 export const SETTINGS_INDEX: SettingsEntry[] = [
+  {
+    id: "terminal-default-profile",
+    section: "terminal",
+    label: "Default terminal profile",
+    keywords: "shell bash git bash powershell pwsh cmd wsl zsh default ! command",
+  },
   {
     id: "group-lock-password",
     section: "groupLock",
@@ -436,6 +452,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "codex opencode cursor grok pi omp fx hermes antigravity binary path",
   },
   {
+    id: "enabled-models",
+    section: "providers",
+    label: "Models",
+    keywords: "model enable disable hide turn off sonnet opus haiku gpt default",
+  },
+  {
     id: "harness-updates",
     section: "providers",
     label: "CLI updates",
@@ -448,6 +470,18 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Provider accounts",
     keywords:
       "account sign in login rename remove delete credentials profile usage limit quota exhausted",
+  },
+  {
+    id: "show-remaining-usage",
+    section: "providers",
+    label: "Show remaining usage",
+    keywords: "usage limit meter bar left used quota percent",
+  },
+  {
+    id: "mask-emails",
+    section: "providers",
+    label: "Mask account emails",
+    keywords: "email privacy blur hide screenshot account",
   },
   {
     id: "provider-usage",

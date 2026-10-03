@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Loader } from "../../../shared/ui/icons";
 import {
   sessionCheckpointFileDiff,
@@ -30,8 +30,12 @@ export function SessionChangesDiff({ cwd, sessionId, focusPath }: Props) {
   const [files, setFiles] = useState<CheckpointFile[] | null>(null);
   const [diffs, setDiffs] = useState<Map<string, LoadedDiff>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  const focusPathRef = useRef(focusPath);
+  focusPathRef.current = focusPath;
 
   useEffect(() => {
+    setError(null);
     if (!cwd || cwd === "~" || !sessionId) {
       setFiles([]);
       setDiffs(new Map());
@@ -42,6 +46,7 @@ export function SessionChangesDiff({ cwd, sessionId, focusPath }: Props) {
     let generation = 0;
     const run = () => {
       const current = ++generation;
+      setError(null);
       setFiles(null);
       setDiffs(new Map());
       void sessionCheckpointStatus(sessionId, cwd)
@@ -49,10 +54,17 @@ export function SessionChangesDiff({ cwd, sessionId, focusPath }: Props) {
           if (disposed || current !== generation) return;
           setFiles(status.files);
           setError(null);
+          const pendingFiles = [...status.files];
           await forEachConcurrent(
-            prioritizeFile(status.files, focusPath),
+            status.files,
             DIFF_LOAD_CONCURRENCY,
-            async (file) => {
+            async () => {
+              // Reorder only work that has not started when focus changes.
+              const file = prioritizeFile(
+                pendingFiles,
+                focusPathRef.current,
+              )[0];
+              pendingFiles.splice(pendingFiles.indexOf(file), 1);
               let loaded: LoadedDiff;
               try {
                 const diff = await sessionCheckpointFileDiff(
@@ -102,7 +114,7 @@ export function SessionChangesDiff({ cwd, sessionId, focusPath }: Props) {
       disposed = true;
       unsubscribe();
     };
-  }, [cwd, focusPath, sessionId]);
+  }, [cwd, sessionId, retry]);
 
   const models = useMemo<UnifiedDiffFileModel[]>(() => {
     if (!files) return [];
@@ -156,8 +168,17 @@ export function SessionChangesDiff({ cwd, sessionId, focusPath }: Props) {
     return (
       <div className="grid h-full place-items-center p-6 text-center">
         <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
-        <p className="text-[13px] text-content">Couldn’t load session changes</p>
+        <p className="text-[13px] text-content">
+          Couldn’t load session changes
+        </p>
         <p className="mt-1 text-[12px] text-content/50">{error}</p>
+        <button
+          type="button"
+          onClick={() => setRetry((value) => value + 1)}
+          className="mt-3 text-[13px] text-content"
+        >
+          Retry
+        </button>
       </div>
     );
   }

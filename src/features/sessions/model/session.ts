@@ -1,6 +1,7 @@
 import { stripAttachmentTokens } from "./attachmentTokens";
 import { dropContextWindow, type ContextUsage } from "./contextUsage";
 import type { SessionUsage } from "./sessionUsage";
+import type { ShellRun } from "./shellRun";
 import type { UserQuestionPrompt } from "./userQuestion";
 import type { HandoffComposerCard } from "./handoff";
 import type { InboxComposerCard } from "../../inbox/model/githubTasks";
@@ -378,6 +379,8 @@ export type Block = {
   ciContext?: string;
   /** Mid-turn interjection chrome; system blocks only. Body lives in text. */
   interjection?: InterjectionMeta;
+  /** A `!command` the user ran from the composer; system blocks only. */
+  shell?: ShellRun;
   /**
    * A system row the reader must not miss — an error or an interruption —
    * rather than turn chrome like a status ping. Never folds into the trail.
@@ -502,6 +505,8 @@ export type Session = {
    * In-memory; request ids do not survive restarts.
    */
   pendingQuestion?: UserQuestionPrompt;
+  /** The local host is running a turn for this session for another computer; Send is held. In-memory. */
+  continuingElsewhere?: boolean;
 };
 
 export type PendingHarnessSwitch = {

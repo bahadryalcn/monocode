@@ -23,6 +23,7 @@ import {
   getModelSnapshot,
   getPickerVisibilitySnapshot,
   isEffortSettingId,
+  isModelEnabled,
   loadFavoriteModels,
   loadRecentModelChoices,
   saveFavoriteModels,
@@ -378,7 +379,9 @@ export function ModelPicker({
             .map((id) => source.find(id))
             .filter(
               (item): item is AgentModel =>
-                item != null && pickerHarnesses.includes(item.harness),
+                item != null &&
+                pickerHarnesses.includes(item.harness) &&
+                isModelEnabled(item.id),
             )
         : source.modelsFor(visibleTab);
     if (!needle) return pool;

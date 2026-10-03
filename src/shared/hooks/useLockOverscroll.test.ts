@@ -25,6 +25,39 @@ function sized(el: HTMLElement, sizes: Record<string, number>) {
 }
 
 describe("useLockOverscroll wheel guard", () => {
+  it.each([
+    { scrollTop: 100, scrollLeft: 0, deltaX: -1, deltaY: 40 },
+    { scrollTop: 0, scrollLeft: 100, deltaX: 40, deltaY: -1 },
+  ])(
+    "preserves diagonal gestures with room on either axis",
+    ({ scrollTop, scrollLeft, deltaX, deltaY }) => {
+      const sizes = box({ scrollTop, scrollLeft, scrollWidth: 800 });
+      expect(atScrollEdge(sizes, { deltaX, deltaY })).toBe(false);
+      const scroller = sized(document.createElement("div"), sizes);
+      const detach = lockOverscroll(scroller);
+      const wheel = new WheelEvent("wheel", {
+        deltaX,
+        deltaY,
+        cancelable: true,
+      });
+      scroller.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(false);
+      detach();
+    },
+  );
+
+  it.each(["ctrlKey", "shiftKey"])(
+    "leaves %s wheel gestures to the browser",
+    (modifier) => {
+      const scroller = sized(document.createElement("div"), box());
+      const detach = lockOverscroll(scroller);
+      const wheel = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
+      Object.defineProperty(wheel, modifier, { value: true });
+      scroller.dispatchEvent(wheel);
+      expect(wheel.defaultPrevented).toBe(false);
+      detach();
+    },
+  );
   it.each(["svg", "path"])(
     "allows scrolling a nested container through an SVG %s target",
     (tag) => {

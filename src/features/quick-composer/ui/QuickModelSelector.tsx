@@ -14,6 +14,7 @@ import {
   findModel,
   getModelSnapshot,
   getPickerVisibilitySnapshot,
+  isModelEnabled,
   loadFavoriteModels,
   modelEffortSetting,
   modelsFor,
@@ -87,7 +88,9 @@ export function QuickModelSelector({
           .map(findModel)
           .filter(
             (item): item is AgentModel =>
-              !!item && providers.includes(item.harness),
+              !!item &&
+              providers.includes(item.harness) &&
+              isModelEnabled(item.id),
           )
       : modelsFor(visibleTab);
   const models = filterQuickModels(pool, query);

@@ -129,7 +129,7 @@ function start(entry: Entry) {
   };
   window.addEventListener("focus", entry.onResume);
   document.addEventListener("visibilitychange", entry.onResume);
-  entry.unsubscribeGit = subscribeGitChanged(entry.onResume);
+  entry.unsubscribeGit = subscribeGitChanged(entry.onResume, { cwd: entry.cwd });
   // The explorer's own remote refresh fires this every few seconds; skip it
   // while the machine is unreachable.
   entry.unsubscribeDirs = subscribeDirsChanged(() => {

@@ -10,13 +10,22 @@ import { promisify } from "node:util";
 import {
   HOST_PROTOCOL_VERSION,
   type HostModelCatalog,
+  type HostSession,
   type RemoteProvider,
+  type SessionSync,
 } from "../src/features/connections/model/protocol";
-import { HostEngine } from "./engine";
+import { HostEngine, parseCommand } from "./engine";
+import { HostAutomations } from "./automations";
+import { HostTasks } from "./tasks";
+import { HostGoals } from "./goals";
+import { DesktopSessions } from "./desktopSessions";
+import { withOverlay } from "./desktopLive";
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
 import { SyncTransfers } from "./sync-transfer";
+import { syncPull, syncPush } from "./sync";
+import type { SyncOp } from "../src/features/sync/model/syncProtocol";
 import { browseHostDirectories } from "./browse";
 import {
   createHostBranch,
@@ -51,6 +60,7 @@ import { discoverFxModels } from "../src/integrations/harness/providers/fx/fxCat
 import { discoverHermesModels } from "../src/integrations/harness/providers/hermes/hermesCatalog";
 import { discoverAntigravityModels } from "../src/integrations/harness/providers/antigravity/antigravityCatalog";
 import { setHarnessModels, type AgentModel } from "../src/features/sessions/model/models";
+import { listShellProfiles, setChosenProfile } from "./shellProfiles";
 import {
   resolveAntigravityBinary,
   resolveClaudeBinary,
@@ -127,11 +137,154 @@ async function providerBinaries(providers: RemoteProvider[]): Promise<string> {
   return binaries.join("\n");
 }
 
+/** Run id watchers use for a turn the desktop app is running. */
+const DESKTOP_RUN_ID = "desktop";
+const MAX_DESKTOP_VIEWS = 32;
+
 export function createHostServer(
   engine: HostEngine,
   providers: RemoteProvider[],
   lifecycle?: (request: IncomingMessage, response: ServerResponse) => void,
+  automations = new HostAutomations(engine.store, engine),
+  tasks = new HostTasks(engine.store, engine),
+  desktop = new DesktopSessions(),
+  goals = new HostGoals(engine.store, engine, tasks),
 ) {
+  const inHost = (id: string) => {
+    try {
+      engine.store.session(id);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  /** A desktop-only session on this machine, matched to a registered project. */
+  const desktopSnapshot = (id: string) => {
+    if (!id || inHost(id)) return undefined;
+    const cwd = desktop.projectCwd(id);
+    const project = cwd
+      ? engine.store.projects().find((p) => desktop.samePath(p.cwd, cwd))
+      : undefined;
+    const snapshot = project && desktop.snapshot(id, project.id);
+    return snapshot && providers.includes(snapshot.session.harness as RemoteProvider)
+      ? snapshot
+      : undefined;
+  };
+  const adopt = (id: string) => {
+    const snapshot = desktopSnapshot(id);
+    if (snapshot) engine.adoptSession(snapshot);
+    else refresh(id);
+  };
+  /** Pulls turns the desktop app ran in an adopted session since. */
+  const refresh = (
+    id: string,
+    known?: { updatedAt: number; running: boolean },
+  ) => {
+    let current;
+    try {
+      current = engine.store.session(id);
+    } catch {
+      return;
+    }
+    if (!current.desktop) return;
+    const stamp = known ?? desktop.stamp(id);
+    if (!stamp) return;
+    if (stamp.running)
+      throw new Error(
+        "This session is running in MonoCode on that computer. Wait for it to finish.",
+      );
+    if (stamp.updatedAt <= current.desktop.updatedAt) return;
+    const snapshot = desktop.snapshot(id, current.projectId);
+    if (snapshot) engine.refreshFromDesktop(snapshot);
+  };
+  /** Where watchers of `id` should look: the desktop app's copy for a
+   * desktop-only session, or for an adopted one the app is running a turn in. */
+  const desktopWatch = (id: string) => {
+    if (!id) return undefined;
+    let hosted: HostSession | undefined;
+    try {
+      hosted = engine.store.session(id);
+    } catch {
+      /* desktop-only */
+    }
+    if (hosted && !hosted.desktop) return undefined;
+    const stamp = desktop.stamp(id);
+    if (!stamp) return undefined;
+    if (hosted && (!stamp.running || hosted.status === "running")) return undefined;
+    const overlay = desktop.live.overlay(id);
+    return {
+      projectId: hosted?.projectId,
+      running: stamp.running,
+      revision: Math.max(stamp.updatedAt, overlay?.changedAt ?? 0),
+    };
+  };
+  /** The desktop copy with its live prompts; a running one carries a run id
+   * so watchers can stop it and answer its prompts. */
+  const desktopView = (id: string, projectId?: string): HostSession | undefined => {
+    const snapshot = projectId ? desktop.snapshot(id, projectId) : desktopSnapshot(id);
+    if (!snapshot) return undefined;
+    const overlay = desktop.live.overlay(id);
+    return {
+      ...snapshot,
+      revision: Math.max(snapshot.revision, overlay?.changedAt ?? 0),
+      ...(snapshot.status === "running" ? { runId: DESKTOP_RUN_ID } : {}),
+      session: withOverlay(snapshot.session, overlay),
+    };
+  };
+  /** Per-block change revisions of watched desktop copies, so a watcher
+   * fetches only what changed, as for the host's own sessions. */
+  const views = new Map<
+    string,
+    { revision: number; first: number; revs: Map<string, number>; json: Map<string, string> }
+  >();
+  const desktopSync = (view: HostSession, client?: number): SessionSync => {
+    const id = view.session.id;
+    let entry = views.get(id);
+    if (!entry || entry.revision !== view.revision) {
+      const revs = new Map<string, number>();
+      const json = new Map<string, string>();
+      for (const block of view.session.blocks) {
+        const text = JSON.stringify(block);
+        json.set(block.id, text);
+        revs.set(
+          block.id,
+          entry && entry.json.get(block.id) === text
+            ? entry.revs.get(block.id)!
+            : view.revision,
+        );
+      }
+      entry = { revision: view.revision, first: entry?.first ?? view.revision, revs, json };
+      views.delete(id);
+      views.set(id, entry);
+      if (views.size > MAX_DESKTOP_VIEWS) views.delete(views.keys().next().value!);
+    }
+    if (client === view.revision) return { kind: "unchanged", revision: client };
+    if (client === undefined || client < entry.first || client > view.revision)
+      return { kind: "snapshot", value: view };
+    const {
+      session: { blocks, ...session },
+      ...rest
+    } = view;
+    const revs = entry.revs;
+    return {
+      kind: "delta",
+      base: client,
+      value: { ...rest, session },
+      blockIds: blocks.map((block) => block.id),
+      blocks: blocks.filter((block) => (revs.get(block.id) ?? view.revision) > client),
+    };
+  };
+  /** Like `refresh`, for reads: a running desktop turn just isn't pulled yet. */
+  const catchUp = (
+    id: string,
+    known?: { updatedAt: number; running: boolean },
+  ) => {
+    try {
+      refresh(id, known);
+    } catch {
+      /* the desktop is mid-turn; serve the host copy */
+    }
+  };
   const catalogs = new Map<
     string,
     { binaries: string; probed: number; catalog: Promise<HostModelCatalog> }
@@ -290,6 +443,14 @@ export function createHostServer(
                 "attachments.read",
                 "sessions.draft",
                 "sessions.plan",
+                "sessions.shell",
+                "shell.profiles",
+                "sessions.desktop",
+                "sessions.desktopLive",
+                "sync",
+                "automations",
+                "tasks",
+                "goals",
               ],
             };
             break;
@@ -302,13 +463,45 @@ export function createHostServer(
           case "projects.open":
             result = await engine.openProject(String(params.cwd ?? ""));
             break;
+          case "shell.profiles":
+            result = listShellProfiles();
+            break;
+          case "shell.setProfile":
+            setChosenProfile(
+              typeof params.profile === "string" && params.profile.trim()
+                ? params.profile.trim()
+                : null,
+            );
+            result = listShellProfiles();
+            break;
           case "models.list":
             result = await models(params.projectId);
             break;
           case "sessions.list": {
             const projectId = String(params.projectId ?? "");
             const project = engine.store.project(projectId);
-            const summaries = engine.store.summaries(projectId);
+            const local = desktop.list(project.cwd, projectId, providers);
+            const stamps = new Map(local.map((session) => [session.id, session]));
+            for (const adopted of engine.store.adopted()) {
+              const stamp = stamps.get(adopted.id);
+              if (adopted.projectId === projectId && stamp)
+                catchUp(adopted.id, {
+                  updatedAt: stamp.updatedAt,
+                  running: stamp.status === "running",
+                });
+            }
+            // An adopted session the desktop app is running a turn in.
+            const own = engine.store.summaries(projectId).map((session) =>
+              session.status !== "running" &&
+              stamps.get(session.id)?.status === "running"
+                ? { ...session, status: "running" as const }
+                : session,
+            );
+            const known = new Set(own.map((session) => session.id));
+            const summaries = [
+              ...own,
+              ...local.filter((session) => !known.has(session.id)),
+            ].sort((a, b) => b.updatedAt - a.updatedAt);
             const paths = [...new Set(summaries.map((session) => session.cwd ?? project.cwd))];
             const branches = new Map(await Promise.all(paths.map(async (cwd) => {
               const branch = await exec("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
@@ -327,6 +520,7 @@ export function createHostServer(
           }
           case "sessions.update": {
             const sessionId = String(params.sessionId ?? "");
+            adopt(sessionId);
             const current = engine.store.session(sessionId);
             if (current.projectId !== params.projectId)
               throw new Error("Session does not belong to this project");
@@ -364,6 +558,10 @@ export function createHostServer(
           }
           case "sessions.delete": {
             const sessionId = String(params.sessionId ?? "");
+            if (desktopSnapshot(sessionId))
+              throw new Error(
+                "This session belongs to the MonoCode app on that computer; delete it there.",
+              );
             const current = engine.store.session(sessionId);
             if (current.projectId !== params.projectId)
               throw new Error("Session does not belong to this project");
@@ -373,17 +571,36 @@ export function createHostServer(
           }
           case "sessions.sync": {
             const sessionId = String(params.sessionId ?? "");
+            const revision = Number.isSafeInteger(params.revision)
+              ? Number(params.revision)
+              : undefined;
+            const watch = desktopWatch(sessionId);
+            if (watch) {
+              // Watching a desktop turn polls fast; skip the transcript read
+              // while the desktop copy hasn't changed.
+              if (revision === watch.revision) {
+                result = { kind: "unchanged", revision };
+                break;
+              }
+              const view = desktopView(sessionId, watch.projectId);
+              if (view) {
+                result = transfers.respond(sessionId, desktopSync(view, revision));
+                break;
+              }
+            }
+            catchUp(sessionId);
             result = transfers.respond(
               sessionId,
-              engine.store.sync(
-                sessionId,
-                Number.isSafeInteger(params.revision)
-                  ? Number(params.revision)
-                  : undefined,
-              ),
+              engine.store.sync(sessionId, revision),
             );
             break;
           }
+          case "sessions.desktopLive":
+            result = desktop.live.beat(params);
+            break;
+          case "sessions.adopted":
+            result = engine.store.adopted();
+            break;
           case "sessions.syncChunk":
             result = transfers.chunk(
               String(params.sessionId ?? ""),
@@ -392,7 +609,10 @@ export function createHostServer(
             );
             break;
           case "sessions.get": {
-            const value = engine.store.session(String(params.sessionId ?? ""));
+            const id = String(params.sessionId ?? "");
+            const watch = desktopWatch(id);
+            const value =
+              (watch && desktopView(id, watch.projectId)) ?? engine.store.session(id);
             result = value.revision === params.revision ? null : value;
             break;
           }
@@ -405,8 +625,99 @@ export function createHostServer(
             );
             break;
           }
-          case "commands.dispatch":
+          case "commands.dispatch": {
+            const sessionId = String(params.sessionId ?? "");
+            // Stopping or answering a turn the desktop app runs: leave it for
+            // the app, which picks it up with its next heartbeat.
+            if (
+              params.type === "cancel" ||
+              params.type === "approve" ||
+              params.type === "answer"
+            ) {
+              const watch = desktopWatch(sessionId);
+              if (watch?.running) {
+                if (!desktop.live.alive())
+                  throw new Error(
+                    "The MonoCode app on that computer isn't responding. Try again when it's open.",
+                  );
+                const command = parseCommand(params);
+                if (
+                  command.type === "cancel" ||
+                  command.type === "approve" ||
+                  command.type === "answer"
+                )
+                  desktop.live.enqueue(command);
+                result = { commandId: command.commandId, sessionId, revision: watch.revision };
+                break;
+              }
+            }
+            if (params.type !== "create") adopt(sessionId);
             result = engine.command(params);
+            break;
+          }
+          case "sync.pull": {
+            const sinceRev = Number.isSafeInteger(params.sinceRev) ? Number(params.sinceRev) : 0;
+            result = syncPull(engine.store.db, sinceRev);
+            break;
+          }
+          case "sync.push": {
+            if (!Array.isArray(params.ops)) throw new Error("Invalid sync ops");
+            result = engine.store.transaction(() => syncPush(engine.store.db, params.ops as SyncOp[]));
+            break;
+          }
+          case "automations.list":
+            result = automations.list();
+            break;
+          case "automations.save":
+            result = automations.save(params.automation);
+            break;
+          case "automations.delete":
+            automations.delete(String(params.automationId ?? ""));
+            result = { deleted: true };
+            break;
+          case "automations.runs":
+            result = automations.runs(String(params.automationId ?? ""));
+            break;
+          case "automations.runNow":
+            result = automations.runNow(String(params.automationId ?? ""));
+            break;
+          case "tasks.list":
+            result = tasks.list();
+            break;
+          case "tasks.save":
+            result = tasks.save(params.task);
+            break;
+          case "tasks.move":
+            result = await tasks.move(String(params.taskId ?? ""), params.to);
+            break;
+          case "tasks.delete":
+            await tasks.delete(
+              String(params.taskId ?? ""),
+              params.discard === true,
+            );
+            result = { deleted: true };
+            break;
+          case "goals.list":
+            result = goals.list();
+            break;
+          case "goals.create":
+            result = goals.create(params.goal);
+            break;
+          case "goals.approve":
+            result = goals.approve(String(params.goalId ?? ""));
+            break;
+          case "goals.replan":
+            result = goals.replan(String(params.goalId ?? ""), params.feedback);
+            break;
+          case "goals.cancel":
+            result = await goals.cancel(String(params.goalId ?? ""));
+            break;
+          case "goals.delete":
+            await goals.delete(
+              String(params.goalId ?? ""),
+              params.withTasks === true,
+            );
+            result = { deleted: true };
             break;
           case "attachments.upload":
             result = writeAttachmentChunk(engine.store, params);

@@ -91,31 +91,95 @@ export function loadRateLimits(
   const cached = snapshots.get(key);
   if (cached && !force) return Promise.resolve(cached);
 
+  cancelRetry(key);
   publish(key, fetchingRateLimits(provider, cached));
   const run = (async () => {
+    let result: ProviderRateLimits;
     try {
-      const result =
+      result =
         provider === "claude"
           ? await fetchClaudeRateLimits(accountId)
           : provider === "codex"
             ? await fetchCodexRateLimits(accountId)
             : await fetchOpencodeGoRateLimits();
-      publish(key, result);
-      return result;
     } catch (error) {
-      const result = errorRateLimits(
+      result = errorRateLimits(
         provider,
         error instanceof Error ? error.message : String(error),
-        getCachedRateLimits(provider, accountId),
       );
-      publish(key, result);
-      return result;
     } finally {
       pending.delete(key);
     }
+    if (result.status === "error") {
+      // A failed request (a 429, a dropped connection) says nothing about the
+      // usage itself: the last windows stay, dated when they were read.
+      if (cached && hasWindows(cached)) {
+        result = {
+          ...errorRateLimits(provider, result.error ?? "", cached),
+          updatedAt: cached.updatedAt,
+        };
+      }
+      scheduleRetry(provider, accountId);
+    } else {
+      retryAttempts.delete(key);
+    }
+    publish(key, result);
+    return result;
   })();
   pending.set(key, run);
   return run;
+}
+
+/**
+ * The cached limits when they were read within `maxAgeMs`, else a new read.
+ * For callers that need current numbers but must share the footer's requests
+ * instead of adding their own: the providers rate-limit this endpoint.
+ */
+export function loadFreshRateLimits(
+  provider: RateLimitProvider,
+  accountId = "default",
+  maxAgeMs: number,
+): Promise<ProviderRateLimits> {
+  const cached = snapshots.get(keyFor(provider, accountId));
+  const fresh =
+    cached?.status === "ok" && Date.now() - cached.updatedAt < maxAgeMs;
+  return loadRateLimits(provider, accountId, !fresh);
+}
+
+function hasWindows(limits: ProviderRateLimits): boolean {
+  return Boolean(
+    limits.session || limits.weekly || limits.monthly || limits.resetCredits,
+  );
+}
+
+/** Waits between automatic retries of a failed read; the last one repeats. */
+const RETRY_DELAYS_MS = [60_000, 3 * 60_000, 10 * 60_000, 15 * 60_000];
+const retryAttempts = new Map<string, number>();
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelRetry(key: string): void {
+  const timer = retryTimers.get(key);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  retryTimers.delete(key);
+}
+
+function scheduleRetry(provider: RateLimitProvider, accountId: string): void {
+  const key = keyFor(provider, accountId);
+  const attempt = retryAttempts.get(key) ?? 0;
+  retryAttempts.set(key, attempt + 1);
+  cancelRetry(key);
+  retryTimers.set(
+    key,
+    setTimeout(
+      () => {
+        retryTimers.delete(key);
+        // The account may have been removed while waiting.
+        if (snapshots.has(key)) void loadRateLimits(provider, accountId, true);
+      },
+      RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)],
+    ),
+  );
 }
 
 /** Also used when an account is removed and by tests that need a clean cache. */
@@ -125,10 +189,14 @@ export function clearCachedRateLimits(
 ): void {
   if (provider && accountId) {
     const key = keyFor(provider, accountId);
+    cancelRetry(key);
+    retryAttempts.delete(key);
     snapshots.delete(key);
     const { [key]: _removed, ...rest } = allSnapshots;
     allSnapshots = rest;
   } else {
+    for (const key of [...retryTimers.keys()]) cancelRetry(key);
+    retryAttempts.clear();
     snapshots.clear();
     allSnapshots = {};
   }

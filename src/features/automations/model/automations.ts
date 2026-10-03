@@ -1,12 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { HarnessId, RuntimeMode } from "../../sessions/model/session";
+import {
+  isScheduleKind,
+  nextAutomationRunAt,
+  parseTime,
+  type AutomationScheduleKind,
+} from "./automationSchedule";
+
+export {
+  isScheduleKind,
+  nextAutomationRunAt,
+  type AutomationScheduleKind,
+} from "./automationSchedule";
 
 export const AUTOMATIONS_CHANGED = "monocode:automations-changed";
 const LOCAL_CHANGED = "monocode:automations-local-changed";
 
 export type AutomationWorkspaceMode = "current" | "worktree" | "existing";
-export type AutomationScheduleKind = "hourly" | "daily" | "weekdays" | "weekly";
 export type AutomationTriggerKind =
   "time" | "github" | "linear" | "jira" | "gitlab" | "azuredevops";
 
@@ -52,6 +63,9 @@ export type Automation = {
   dayOfWeek: number;
   triggers?: AutomationTrigger[] | null;
   missedRunGraceMinutes: number;
+  /** Run limits; zero or missing means off. See automationLimits.ts. */
+  maxRunMinutes?: number;
+  maxRunsPerDay?: number;
   enabled: boolean;
   nextRunAt: number;
   lastRunAt?: number;
@@ -60,6 +74,18 @@ export type Automation = {
   lastSessionId?: string;
   createdAt: number;
   updatedAt: number;
+  /** Set when a machine's host stores and runs this automation on its own
+   * schedule, instead of this app. See hostAutomationClient.ts. */
+  host?: AutomationHost;
+};
+
+export type AutomationHost = {
+  machineId: string;
+  machineName: string;
+  /** The host's ID for the project folder. */
+  projectId: string;
+  /** A run is going and its session is waiting on an approval or a question. */
+  needsInput?: boolean;
 };
 
 export type AutomationUpsert = Omit<
@@ -70,6 +96,7 @@ export type AutomationUpsert = Omit<
   | "lastSessionId"
   | "createdAt"
   | "updatedAt"
+  | "host"
 >;
 
 export type AutomationRunTrigger = "scheduled" | "manual" | "event";
@@ -85,6 +112,8 @@ export type AutomationRun = {
   status: AutomationRunStatus;
   sessionId?: string;
   error?: string;
+  /** A background run's session is waiting on an approval or a question. */
+  needsInput?: boolean;
   eventKey?: string;
   eventKind?: AutomationTriggerKind;
   event?: string;
@@ -145,6 +174,10 @@ export type AutomationDraft = {
   dayOfWeek: number;
   triggers: AutomationTrigger[];
   missedRunGraceMinutes: number;
+  maxRunMinutes: number;
+  maxRunsPerDay: number;
+  /** Stored and run by the project machine's host, with no desktop open. */
+  runInBackground: boolean;
   enabled: boolean;
 };
 
@@ -157,15 +190,6 @@ export const AUTOMATION_WEEKDAYS = [
   "Friday",
   "Saturday",
 ] as const;
-
-export function isScheduleKind(value: string): value is AutomationScheduleKind {
-  return (
-    value === "hourly" ||
-    value === "daily" ||
-    value === "weekdays" ||
-    value === "weekly"
-  );
-}
 
 export function createAutomationTrigger(
   kind: AutomationTriggerKind,
@@ -294,47 +318,6 @@ export function nextRunPreview(at: number): string {
   return `Next run ${day}, ${time} ${zone}`;
 }
 
-export function nextAutomationRunAt(
-  schedule: Pick<
-    AutomationDraft,
-    "scheduleKind" | "minute" | "time" | "dayOfWeek"
-  >,
-  after = Date.now(),
-): number {
-  const start = new Date(after);
-  start.setSeconds(0, 0);
-  const [hour, minute] = parseTime(schedule.time);
-  if (schedule.scheduleKind === "hourly") {
-    const candidate = new Date(start);
-    candidate.setMinutes(clamp(schedule.minute, 0, 59), 0, 0);
-    if (candidate.getTime() <= after)
-      candidate.setHours(candidate.getHours() + 1);
-    return candidate.getTime();
-  }
-
-  const candidate = new Date(start);
-  candidate.setHours(hour, minute, 0, 0);
-  if (schedule.scheduleKind === "daily") {
-    if (candidate.getTime() <= after)
-      candidate.setDate(candidate.getDate() + 1);
-    return candidate.getTime();
-  }
-  if (schedule.scheduleKind === "weekdays") {
-    if (candidate.getTime() <= after)
-      candidate.setDate(candidate.getDate() + 1);
-    while (candidate.getDay() === 0 || candidate.getDay() === 6) {
-      candidate.setDate(candidate.getDate() + 1);
-    }
-    return candidate.getTime();
-  }
-
-  const day = clamp(schedule.dayOfWeek, 0, 6);
-  let days = (day - candidate.getDay() + 7) % 7;
-  if (days === 0 && candidate.getTime() <= after) days = 7;
-  candidate.setDate(candidate.getDate() + days);
-  return candidate.getTime();
-}
-
 export function automationScheduleLabel(
   automation: Pick<
     Automation,
@@ -375,6 +358,9 @@ export function newAutomationDraft(
     dayOfWeek: 1,
     triggers: [],
     missedRunGraceMinutes: 720,
+    maxRunMinutes: 0,
+    maxRunsPerDay: 0,
+    runInBackground: false,
     enabled: true,
   };
 }
@@ -439,6 +425,9 @@ export function draftFromAutomation(automation: Automation): AutomationDraft {
     dayOfWeek: automation.dayOfWeek,
     triggers: automationTriggers(automation),
     missedRunGraceMinutes: automation.missedRunGraceMinutes,
+    maxRunMinutes: automation.maxRunMinutes ?? 0,
+    maxRunsPerDay: automation.maxRunsPerDay ?? 0,
+    runInBackground: automation.host != null,
     enabled: automation.enabled,
   };
 }
@@ -459,7 +448,10 @@ export async function listAutomations(): Promise<Automation[]> {
 export async function saveAutomation(
   draft: AutomationDraft,
 ): Promise<Automation> {
-  const synced = applyTriggers(draft, draft.triggers);
+  const { runInBackground: _local, ...synced } = applyTriggers(
+    draft,
+    draft.triggers,
+  );
   const automation: AutomationUpsert = {
     ...synced,
     id: synced.id ?? crypto.randomUUID(),
@@ -594,16 +586,6 @@ export function subscribeAutomations(onChange: () => void): () => void {
 function emitLocalChange() {
   cachedAutomations = null;
   window.dispatchEvent(new Event(LOCAL_CHANGED));
-}
-
-function parseTime(value: string): [number, number] {
-  const [hour, minute] = value.split(":").map(Number);
-  return [clamp(hour, 0, 23), clamp(minute, 0, 59)];
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
 function formatClock(value: string): string {

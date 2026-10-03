@@ -26,11 +26,14 @@ import {
   type TerminalFitMode,
 } from "../model/terminalLayout";
 import { IS_MAC } from "../../../platform/tauri/platform";
+import { loadTerminalProfile } from "../model/terminalProfiles";
 import "@xterm/xterm/css/xterm.css";
 
 type Props = {
   id: string;
   cwd: string;
+  /** Terminal profile to start in; the user's default when absent. */
+  profile?: string;
   active: boolean;
   onMetaChange?: (patch: TerminalMetaPatch) => void;
 };
@@ -120,6 +123,13 @@ function monoFont(): string {
   return fromCss || "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace";
 }
 
+/**
+ * Teardown still in flight per PTY id. A view that mounts with an id another
+ * view (or a StrictMode replay of itself) is still stopping must wait, or the
+ * late kill lands on the replacement shell and drops its data handler.
+ */
+const stoppingPtys = new Map<string, Promise<void>>();
+
 function oscColors() {
   const light = isLightScheme();
   return {
@@ -138,7 +148,9 @@ function oscColors() {
   };
 }
 
-export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
+export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) {
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
   const outerRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -218,32 +230,48 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
 
     let oscBuffer = "";
 
-    const unsubscribe = subscribePty(
-      id,
-      (data) => {
-        const onMeta = onMetaChangeRef.current;
-        if (onMeta) {
-          const text = new TextDecoder().decode(data);
-          const scanned = scanOscCwd(text, oscBuffer);
-          oscBuffer = scanned.rest;
-          if (scanned.cwd) {
-            const patch: TerminalMetaPatch = { cwd: scanned.cwd };
-            if (!runningProcessRef.current) {
-              patch.title = defaultTerminalTitle(scanned.cwd);
+    let unsubscribe = () => {};
+    let didStart = false;
+    const start = () => {
+      if (closed) return;
+      unsubscribe = subscribePty(
+        id,
+        (data) => {
+          if (closed) return;
+          const onMeta = onMetaChangeRef.current;
+          if (onMeta) {
+            const text = new TextDecoder().decode(data);
+            const scanned = scanOscCwd(text, oscBuffer);
+            oscBuffer = scanned.rest;
+            if (scanned.cwd) {
+              const patch: TerminalMetaPatch = { cwd: scanned.cwd };
+              if (!runningProcessRef.current) {
+                patch.title = defaultTerminalTitle(scanned.cwd);
+              }
+              onMeta(patch);
             }
-            onMeta(patch);
           }
-        }
-        term.write(data);
-      },
-      (code) => {
-        if (closed) return;
-        const status = code == null ? "" : ` (${code})`;
-        term.writeln(`\r\n[process exited${status}]`);
-      },
-    );
+          term.write(data);
+        },
+        (code) => {
+          if (closed) return;
+          const status = code == null ? "" : ` (${code})`;
+          term.writeln(`
+[process exited${status}]`);
+        },
+      );
+      didStart = true;
+      return spawnPty(
+        id,
+        cwd,
+        term.cols,
+        term.rows,
+        profileRef.current ?? loadTerminalProfile(),
+      );
+    };
 
-    const starting = spawnPty(id, cwd, term.cols, term.rows)
+    const starting = (stoppingPtys.get(id) ?? Promise.resolve())
+      .then(start)
       .then(() => {
         if (!closed) spawned.current = true;
       })
@@ -362,8 +390,16 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
       oscCursor.dispose();
       renderSub.dispose();
       bufferSub.dispose();
-      unsubscribe();
-      void starting.catch(() => undefined).then(() => killPty(id));
+      const stopping = starting
+        .catch(() => undefined)
+        .then(() => {
+          unsubscribe();
+          return didStart ? killPty(id) : undefined;
+        })
+        .finally(() => {
+          if (stoppingPtys.get(id) === stopping) stoppingPtys.delete(id);
+        });
+      stoppingPtys.set(id, stopping);
       term.dispose();
       termRef.current = null;
       spawned.current = false;

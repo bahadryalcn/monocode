@@ -82,6 +82,7 @@ let liveWorkspace: {
   projectTerminals: () => ProjectTerminalDock[];
   projectReturnMemory: () => ProjectReturnMemory;
   lastDockSide: () => DockSide | null;
+  keepTab?: (tab: WorkspaceTab) => boolean;
   flush: () => void;
 } | null = null;
 
@@ -98,6 +99,7 @@ export function setQuitWorkspace(
   projectReturnMemory: () => ProjectReturnMemory,
   flush: () => void,
   lastDockSide: () => DockSide | null = () => null,
+  keepTab?: (tab: WorkspaceTab) => boolean,
 ): () => void {
   liveWorkspace = {
     sessions,
@@ -107,6 +109,7 @@ export function setQuitWorkspace(
     projectTerminals,
     projectReturnMemory,
     lastDockSide,
+    keepTab,
     flush,
   };
   bootingResumed = null;
@@ -133,6 +136,7 @@ export async function handleQuitRequested(): Promise<boolean> {
         "quit",
         liveWorkspace.projectTerminals(),
         liveWorkspace.lastDockSide() ?? undefined,
+        liveWorkspace.keepTab,
       );
       return true;
     } catch {
@@ -213,6 +217,7 @@ export async function closeBusyWindow(): Promise<void> {
     liveWorkspace.projectReturnMemory(),
     liveWorkspace.projectTerminals(),
     liveWorkspace.lastDockSide() ?? undefined,
+    liveWorkspace.keepTab,
   );
 }
 
@@ -518,6 +523,7 @@ export async function persistQuitState(
   mode: "quit" | "unload" = "quit",
   projectTerminals: ProjectTerminalDock[] = [],
   lastDockSide?: DockSide,
+  keepTab?: (tab: WorkspaceTab) => boolean,
 ): Promise<void> {
   const refs = inFlightRefs(sessions, tabs);
   const interrupted = new Set(refs.map((ref) => ref.sessionId));
@@ -555,6 +561,7 @@ export async function persistQuitState(
         memory,
         projectTerminals,
         lastDockSide,
+        keepTab,
       ),
     ),
   );
@@ -600,6 +607,7 @@ async function confirmAndCloseWindow(
   memory: ProjectReturnMemory,
   projectTerminals: ProjectTerminalDock[] = [],
   lastDockSide?: DockSide,
+  keepTab?: (tab: WorkspaceTab) => boolean,
 ): Promise<void> {
   if (quitDialogOpen) return;
   quitDialogOpen = true;
@@ -623,6 +631,7 @@ async function confirmAndCloseWindow(
         "quit",
         projectTerminals,
         lastDockSide,
+        keepTab,
       );
       await reapWindowRuntime(sessions, tabs, projectTerminals, false);
       await closeCurrentWindow();

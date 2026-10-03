@@ -813,4 +813,145 @@ describe("remote host API", () => {
     ).resolves.toBe("A branch switch is already in progress");
     expect((await run("git_reset", { sha: head, mode: "soft" })).error).toBeUndefined();
   });
+
+  it("accepts sync pushes and pulls, rejecting a stale push", async () => {
+    const s = await setup();
+    const pushed = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "Work", collapsed: false } }],
+    });
+    expect(pushed.value.result.applied).toEqual([{ table: "group", id: "g1", rev: pushed.value.result.rev }]);
+
+    const pulled = await s.call("sync.pull", { sinceRev: 0 });
+    expect(pulled.value.result.records).toEqual([
+      { table: "group", id: "g1", rev: pushed.value.result.rev, value: { id: "g1", name: "Work", collapsed: false } },
+    ]);
+
+    const stale = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "Renamed", collapsed: false } }],
+    });
+    expect(stale.value.result.applied).toEqual([]);
+    expect(stale.value.result.rejected).toHaveLength(1);
+  });
+
+  it("skips a malformed sync op without failing the rest of the push", async () => {
+    const s = await setup();
+    const pushed = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g9", baseRev: 0, value: { id: "g9", name: "Kept", collapsed: false } }, null],
+    });
+    expect(pushed.status).toBe(200);
+    expect(pushed.value.result.applied).toHaveLength(1);
+    expect(pushed.value.result.rejected).toEqual([]);
+
+    const pulled = await s.call("sync.pull", { sinceRev: 0 });
+    expect(JSON.stringify(pulled.value.result.records)).toContain("g9");
+  });
+
+  it("advertises the sync capability", async () => {
+    const s = await setup();
+    const described = await s.call("environment.describe");
+    expect(described.value.result.capabilities).toContain("sync");
+  });
+
+  it("two desktops converge on the same group after a disconnect with edits on both sides", async () => {
+    const s = await setup();
+    // Desktop A pushes a new group.
+    const a = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "From A", collapsed: false } }],
+    });
+    expect(a.value.result.rejected).toEqual([]);
+
+    // Desktop B, still at revision 0, pulls and catches up.
+    const bPull = await s.call("sync.pull", { sinceRev: 0 });
+    expect(bPull.value.result.records).toHaveLength(1);
+    const bRev = bPull.value.result.rev;
+
+    // Both edit the same group while "disconnected" from each other (each
+    // still believes the revision it last pulled).
+    const bPush = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: bRev, value: { id: "g1", name: "From B", collapsed: false } }],
+    });
+    expect(bPush.value.result.applied).toHaveLength(1);
+
+    // A, still at the revision from its own first push, tries to edit too —
+    // this is the "concurrent edit" case: A's base revision is now stale.
+    const aRetry = await s.call("sync.push", {
+      ops: [{ table: "group", id: "g1", baseRev: a.value.result.applied[0].rev, value: { id: "g1", name: "From A again", collapsed: false } }],
+    });
+    expect(aRetry.value.result.rejected).toHaveLength(1);
+    const winning = aRetry.value.result.rejected[0].current;
+
+    // Both sides pull and land on the same value: whichever write actually
+    // reached the host last (B's).
+    const finalPull = await s.call("sync.pull", { sinceRev: 0 });
+    const finalGroup = finalPull.value.result.records.find((r: any) => r.id === "g1");
+    expect(finalGroup.value).toEqual(winning.value);
+    expect(finalGroup.value.name).toBe("From B");
+  });
+
+  it("answers the task board commands, advertised as a capability", async () => {
+    const s = await setup();
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toContain("tasks");
+    const task = {
+      id: "main",
+      title: "Ship the report",
+      prompt: "Write the weekly report",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "auto",
+    };
+    const saved = await s.call("tasks.save", { task });
+    expect(saved.value.result).toMatchObject({ id: "main", status: "queued" });
+    expect((await s.call("tasks.list")).value.result).toEqual([
+      saved.value.result,
+    ]);
+    const refused = await s.call("tasks.move", { taskId: "main", to: "done" });
+    expect(refused.value.error).toBe("A queued task cannot be moved to done.");
+    expect(
+      (await s.call("tasks.delete", { taskId: "main" })).value.result,
+    ).toEqual({ deleted: true });
+    expect((await s.call("tasks.list")).value.result).toEqual([]);
+  });
+
+  it("answers the goal commands, advertised as a capability", async () => {
+    const s = await setup();
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toContain("goals");
+    const goal = {
+      id: "launch",
+      title: "Launch the beta",
+      prompt: "Ship the beta",
+      projectIds: [s.project.id],
+      leadProjectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "auto",
+    };
+    const created = await s.call("goals.create", { goal });
+    expect(created.value.result).toMatchObject({
+      id: "launch",
+      status: "planning",
+      taskIds: [],
+    });
+    expect((await s.call("goals.list")).value.result).toMatchObject([
+      { id: "launch", status: "planning" },
+    ]);
+    const refused = await s.call("goals.approve", { goalId: "launch" });
+    expect(refused.value.error).toBe(
+      "Only a plan waiting for approval can be approved.",
+    );
+    expect(
+      (await s.call("goals.replan", { goalId: "launch" })).value.error,
+    ).toBe("Only a goal whose plan was not started can be planned again.");
+    expect(
+      (await s.call("goals.cancel", { goalId: "launch" })).value.result,
+    ).toMatchObject({ status: "cancelled" });
+    expect(
+      (await s.call("goals.delete", { goalId: "launch" })).value.result,
+    ).toEqual({ deleted: true });
+    expect((await s.call("goals.list")).value.result).toEqual([]);
+  });
 });

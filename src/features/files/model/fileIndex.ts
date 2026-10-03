@@ -1,4 +1,9 @@
-import { listProjectFiles, type ProjectFile } from "../../../platform/tauri/fs";
+import {
+  listDir,
+  listProjectFiles,
+  statFiles,
+  type ProjectFile,
+} from "../../../platform/tauri/fs";
 import { subscribeDirsChanged } from "./fileTree";
 import { scorePath, type FuzzyHit } from "../../../shared/lib/fuzzy";
 import { resolveWorkspacePath, slash } from "../../../shared/lib/paths";
@@ -199,6 +204,27 @@ export async function resolveOpenablePath(
   }
   if (files.length === 0) return direct;
 
+  const relHint = relativePathHint(href, cwd, direct);
+  const indexed = indexedFile(files, cwd, direct, relHint);
+  if (indexed) return indexed;
+  if (await fileExists(direct)) return direct;
+
+  // Nothing is at the direct path. The file may be newer than the index, or
+  // generated into an ignored folder, which the index leaves out.
+  const fresh = await loadProjectFiles(cwd, true).catch(() => files);
+  return (
+    indexedFile(fresh, cwd, direct, relHint) ??
+    (await findInIgnoredFolders(cwd, searchHint(relHint))) ??
+    direct
+  );
+}
+
+function indexedFile(
+  files: ProjectFile[],
+  cwd: string,
+  direct: string,
+  relHint: string,
+): string | undefined {
   const byPath = new Map(
     files.map((file) => [normalizeEditorPath(file.path), file]),
   );
@@ -206,7 +232,6 @@ export async function resolveOpenablePath(
   const exact = byPath.get(normalizedDirect);
   if (exact) return exact.path;
 
-  const relHint = relativePathHint(href, cwd, direct);
   const exactRelative = files.find(
     (file) =>
       file.relative === relHint ||
@@ -224,10 +249,79 @@ export async function resolveOpenablePath(
 
   const baseName = relHint.split("/").filter(Boolean).pop() ?? relHint;
   const byName = files.filter((file) => file.name === baseName);
-  if (byName.length === 0) return direct;
+  if (byName.length === 0) return undefined;
   if (byName.length === 1) return byName[0].path;
 
   return pickOpenableFile(byName, cwd, relHint).path;
+}
+
+/** Unknown counts as existing, so a failed check leaves the path as it was. */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    const [stat] = await statFiles([path]);
+    return !stat || stat.mtimeMs != null;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * A path outside `cwd` (a remote path, or a drive path) can't be matched as a
+ * suffix of a folder entry, so only its file name is searched for.
+ */
+function searchHint(relHint: string): string {
+  if (!relHint.includes("://") && !/^[A-Za-z]:\//.test(relHint)) return relHint;
+  return relHint.split("/").filter(Boolean).pop() ?? "";
+}
+
+const IGNORED_SEARCH_MAX_FOLDERS = 40;
+const IGNORED_SEARCH_MAX_DEPTH = 4;
+/** Ignored folders too large to walk, and never where output is written. */
+const IGNORED_SEARCH_SKIPPED = new Set([
+  ".git",
+  "node_modules",
+  ".pnpm-store",
+  ".venv",
+  "venv",
+  "target",
+]);
+
+/**
+ * Looks for `relHint` in the project's top-level ignored folders, breadth
+ * first and within a small budget of listings.
+ */
+async function findInIgnoredFolders(
+  cwd: string,
+  relHint: string,
+): Promise<string | undefined> {
+  if (!relHint || relHint.includes("://") || /^[A-Za-z]:\//.test(relHint))
+    return undefined;
+  const suffix = `/${relHint}`;
+  const pending = [{ path: cwd, depth: 0, ignored: false }];
+  for (
+    let listed = 0;
+    pending.length > 0 && listed < IGNORED_SEARCH_MAX_FOLDERS;
+    listed += 1
+  ) {
+    const folder = pending.shift()!;
+    const entries = await listDir(folder.path).catch(() => []);
+    for (const entry of entries) {
+      if (!folder.ignored && !entry.ignored) continue;
+      if (!entry.isDir) {
+        if (slash(entry.path).endsWith(suffix)) return entry.path;
+      } else if (
+        !IGNORED_SEARCH_SKIPPED.has(entry.name) &&
+        folder.depth < IGNORED_SEARCH_MAX_DEPTH
+      ) {
+        pending.push({
+          path: entry.path,
+          depth: folder.depth + 1,
+          ignored: true,
+        });
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Resolve shortened references while preserving paths selected from file UI. */

@@ -1,10 +1,18 @@
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
+import {
+  type WorktreeFocus,
+  inWorktreeFocus,
+  useWorktreeFocus,
+} from "../../features/source-control/model/worktreeFocus";
+import { SidebarWorktreeSwitcher } from "../../features/source-control/ui/SidebarWorktreeSwitcher";
 import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/OrchestrationSidebarAgents";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Archive,
   Chatting,
   Check,
+  CheckList,
+  DashboardSquare,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -24,10 +32,12 @@ import {
   Share,
   Settings,
   StickyNote,
+  Trash2,
   Zap,
 } from "../../shared/ui/icons";
 import {
   memo,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -39,6 +49,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import {
   loadSidebarTabOrder,
@@ -61,8 +72,17 @@ import { orchestrationTaskLabel } from "../../features/orchestration/model/orche
 import {
   orderedSessionActionIds,
   pruneSessionSelection,
+  selectAllSessions,
+  sessionSelectionRange,
   toggleSessionSelection,
 } from "../../features/sessions/model/sessionSelection";
+import {
+  bulkDeleteConfirmMessage,
+  bulkDeleteSummary,
+  deleteSessionsInBulk,
+  splitRunningSessions,
+} from "../../features/sessions/model/bulkSessionDelete";
+import { TransientNotice } from "../../shared/ui/TransientNotice";
 import {
   paneDropFromPoint,
   setExternalPaneDrop,
@@ -122,7 +142,14 @@ import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
 import type { SettingsSectionId } from "../../features/settings/model/settings";
 import type { InstalledUpdate } from "../model/updateNotice";
-import { TAB_GROUP_COLORS } from "../../features/workspace/model/tabGroups";
+import {
+  loadTabGroupColors,
+  loadTabGroupCustomColors,
+  loadTabGroupLabels,
+  loadTabGroupMascots,
+  TAB_GROUP_COLORS,
+} from "../../features/workspace/model/tabGroups";
+import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import { useDragResize } from "../../shared/hooks/useDragResize";
 import { useGitFileStatuses } from "../../features/source-control/hooks/useGitFileStatuses";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
@@ -148,7 +175,11 @@ import {
 } from "../../features/files/ui/ExplorerMenu";
 import { FileTree } from "../../features/files/ui/FileTree";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
-import type { RecentSessionsSource } from "./LastSessionsSection";
+import {
+  LastSessionsRows,
+  useLastSessionsRows,
+  type RecentSessionsSource,
+} from "./LastSessionsSection";
 import { formatRelative } from "../../features/sessions/model/recentSessions";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectRail } from "./ProjectRail";
@@ -221,6 +252,11 @@ type Props = {
   gitCwd?: string;
   /** Branch identity shown for a worktree whose folder has a temporary name. */
   explorerRootLabel?: string;
+  /** Open tabs per worktree path key, for the worktree switcher. */
+  worktreeTabStats?: ReadonlyMap<string, { tabs: number; busy: boolean }>;
+  onSelectWorkspace?: (focus?: WorktreeFocus) => void;
+  workspaceSwitchPending?: boolean;
+  workspaceSwitchError?: string;
   open: boolean;
   sessions: SessionSummary[];
   busySessionIds: Set<string>;
@@ -258,6 +294,9 @@ type Props = {
   onCancelReminders?: (sessionIds: readonly string[]) => void;
   onDeleteSession?: (sessionId: string) => void;
   onDeleteSessions?: (sessionIds: readonly string[]) => void;
+  /** Delete without asking. Resolves false when the session was kept and
+   * rejects on an error, so a bulk delete can report it. */
+  onDeleteSessionNow?: (sessionId: string) => Promise<boolean>;
   onOpenFile: OpenFileFn;
   onOpenTerminal?: (cwd: string) => void;
   onFileMoved?: (from: string, to: string) => void;
@@ -286,6 +325,7 @@ type Props = {
   recentSessions?: RecentSessionsSource;
   onSelectProject?: (path: string) => void;
   onOpenProject?: () => void;
+  onOpenSyncedProject?: (projectId: string, name: string) => void | Promise<void>;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onNew?: () => string | void;
   onNewTerminal?: () => void;
@@ -294,11 +334,13 @@ type Props = {
   onOpenInboxItem?: (item: LinkedWorkItem, sessionId: string) => void;
   onOpenNotes?: () => void;
   onOpenAutomations?: () => void;
+  onOpenTasks?: () => void;
   onGoToFile?: () => void;
   searchActive?: boolean;
   inboxActive?: boolean;
   notesActive?: boolean;
   automationsActive?: boolean;
+  tasksActive?: boolean;
   notesEnabled?: boolean;
   onToggleProjectRail?: () => void;
   projectRailOpen?: boolean;
@@ -325,6 +367,10 @@ function SidebarComponent({
   cwd,
   gitCwd,
   explorerRootLabel,
+  worktreeTabStats,
+  onSelectWorkspace,
+  workspaceSwitchPending,
+  workspaceSwitchError,
   open,
   sessions,
   busySessionIds,
@@ -350,6 +396,7 @@ function SidebarComponent({
   onCancelReminders,
   onDeleteSession: onDeleteLocalSession,
   onDeleteSessions: onDeleteLocalSessions,
+  onDeleteSessionNow: onDeleteLocalSessionNow,
   onOpenFile,
   onOpenTerminal,
   onFileMoved,
@@ -378,6 +425,7 @@ function SidebarComponent({
   recentSessions,
   onSelectProject,
   onOpenProject,
+  onOpenSyncedProject,
   onRemoveProject,
   onNew,
   onSearch,
@@ -385,11 +433,13 @@ function SidebarComponent({
   onOpenInboxItem,
   onOpenNotes,
   onOpenAutomations,
+  onOpenTasks,
   onGoToFile,
   searchActive = false,
   inboxActive = false,
   notesActive = false,
   automationsActive = false,
+  tasksActive = false,
   notesEnabled = true,
   onToggleProjectRail,
   projectRailOpen = true,
@@ -557,6 +607,10 @@ function SidebarComponent({
   );
   const contextSelectionRef = useRef(false);
   const selectionAnchorRef = useRef<string | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
+  const dismissBulkNotice = useCallback(() => setBulkNotice(null), []);
+  const bulkDeleteActive = useRef(false);
   const [folderMenu, setFolderMenu] = useState<{
     x: number;
     y: number;
@@ -612,11 +666,16 @@ function SidebarComponent({
   const pendingFirstLoad = remoteProject
     ? !!remote.machine && !remote.loaded && projectSessions.length === 0
     : pending && sessions.length === 0;
+  const worktreeFocus = useWorktreeFocus(cwd);
+  const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   const listedSessions = mergeFolderSessionSummaries(
     projectSessions,
     remoteProject ? [] : openSessions,
     sessionFolders,
-  ).filter((session) => !session.orchestrationLeadId);
+  ).filter(
+    (session) =>
+      !session.orchestrationLeadId && inWorktreeFocus(session, focusedWorktree),
+  );
   const visibleSessions = [
     ...filterSessionsByQuery(
       filterSessionsByStatus(
@@ -690,6 +749,7 @@ function SidebarComponent({
     if (tab !== "sessions") {
       selectionAnchorRef.current = null;
       setSelectedSessionIds(new Set());
+      setSelectionMode(false);
       return;
     }
     const available = new Set(sessionNavigationIds);
@@ -753,6 +813,7 @@ function SidebarComponent({
     !inboxActive &&
     !notesActive &&
     !automationsActive &&
+    !tasksActive &&
     !settingsOpen &&
     inProject;
   const sidebarVisible = open && sidebarAvailable;
@@ -880,6 +941,7 @@ function SidebarComponent({
     setRenamingFolderId(null);
     setFolderMenu(null);
     setSessionDrop(null);
+    setSelectionMode(false);
     pendingFolderSessionIds.current.clear();
   }, [cwd]);
 
@@ -961,24 +1023,67 @@ function SidebarComponent({
     return () => scrollParent.removeEventListener("scroll", onScroll, true);
   }, [sessionMenu, folderMenu, filterMenu]);
 
+  const selectionKeys = useRef({
+    selectAll: () => {},
+    deleteSelected: () => {},
+  });
   useEffect(() => {
-    if (selectedSessionIds.size === 0) return;
+    if (selectedSessionIds.size === 0 && !selectionMode) return;
     const clear = () => {
       selectionAnchorRef.current = null;
       contextSelectionRef.current = false;
       setSelectedSessionIds(new Set());
+      setSelectionMode(false);
       setSessionMenu(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      clear();
+      if (event.key === "Escape") {
+        clear();
+        return;
+      }
+      if (event.defaultPrevented || contextSelectionRef.current) return;
+      const target = event.target instanceof Element ? event.target : null;
+      // Typing, dialogs and menus keep their own keys.
+      if (
+        target?.closest(
+          "input,textarea,select,[contenteditable],[role='dialog'],[role='menu']",
+        )
+      )
+        return;
+      if (
+        target &&
+        target !== document.body &&
+        !target.closest("[data-session-list-panel]")
+      )
+        return;
+      const mod = event.ctrlKey || event.metaKey;
+      if (selectionMode && mod && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        selectionKeys.current.selectAll();
+        return;
+      }
+      if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        !mod &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        selectionKeys.current.deleteSelected();
+      }
     };
     // A pointer landing off the cards drops the selection; a menu acting on
-    // it stays open, and the cards handle their own clicks.
+    // it stays open, and the cards handle their own clicks. Selection mode
+    // also survives the rest of the session list, such as its search field.
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target;
       const el = target instanceof Element ? target : null;
-      if (el?.closest("[data-session-card],[data-popover-side]")) return;
+      if (
+        el?.closest(
+          "[data-session-card],[data-popover-side],[data-session-selection-keep]",
+        )
+      )
+        return;
+      if (selectionMode && el?.closest("[data-session-list-panel]")) return;
       clear();
     };
     window.addEventListener("keydown", onKeyDown);
@@ -987,7 +1092,7 @@ function SidebarComponent({
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [selectedSessionIds.size]);
+  }, [selectedSessionIds.size, selectionMode]);
 
   const commitSessionFolders = (next: SessionFolder[]) => {
     setSessionFolders(next);
@@ -1126,6 +1231,9 @@ function SidebarComponent({
       disabled: !onSetReminders,
       submenu: sessionReminderPresets(),
     },
+    ...(!multipleMenuSessions && !selectionMode
+      ? [{ kind: "item" as const, id: "select", label: "Select" }]
+      : []),
     { kind: "sep" as const },
     { kind: "item" as const, id: "folder-new", label: "New folder" },
     ...(sessionFolders.length > 0 ? [{ kind: "sep" as const }] : []),
@@ -1222,6 +1330,12 @@ function SidebarComponent({
     const archived = allMenuSessionsArchived;
     const pinned = allMenuSessionsPinned;
     closeSessionMenu();
+    if (id === "select") {
+      selectionAnchorRef.current = sessionId;
+      setSelectionMode(true);
+      setSelectedSessionIds(new Set([sessionId]));
+      return;
+    }
     if (id === "reminder:cancel") {
       onCancelReminders?.(sessionIds);
       return;
@@ -1236,11 +1350,7 @@ function SidebarComponent({
       return;
     }
     if (id === "pin") {
-      if (sessionIds.length > 1 && onPinSessions) {
-        onPinSessions(sessionIds, !pinned);
-      } else {
-        for (const id of sessionIds) onPinSession?.(id, !pinned);
-      }
+      pinSessions(sessionIds, !pinned);
       return;
     }
     if (id === "rename") {
@@ -1290,21 +1400,128 @@ function SidebarComponent({
       return;
     }
     if (id === "archive") {
-      if (sessionIds.length > 1 && onArchiveSessions) {
-        onArchiveSessions(sessionIds, !archived);
-      } else {
-        for (const id of sessionIds) onArchiveSession?.(id, !archived);
-      }
+      archiveSessions(sessionIds, !archived);
       return;
     }
     if (id === "delete") {
-      if (sessionIds.length > 1 && onDeleteSessions) {
-        onDeleteSessions(sessionIds);
-      } else {
-        for (const id of sessionIds) onDeleteSession?.(id);
-      }
+      if (sessionIds.length > 1) void bulkDeleteSessions(sessionIds);
+      else for (const id of sessionIds) onDeleteSession?.(id);
     }
   };
+
+  const archiveSessions = (sessionIds: readonly string[], archived: boolean) => {
+    if (sessionIds.length > 1 && onArchiveSessions) {
+      onArchiveSessions(sessionIds, archived);
+    } else {
+      for (const id of sessionIds) onArchiveSession?.(id, archived);
+    }
+  };
+
+  const pinSessions = (sessionIds: readonly string[], pinned: boolean) => {
+    if (sessionIds.length > 1 && onPinSessions) {
+      onPinSessions(sessionIds, pinned);
+    } else {
+      for (const id of sessionIds) onPinSession?.(id, pinned);
+    }
+  };
+
+  // Read at delete time, so a conversation that starts running while the
+  // confirmation is open is still left alone.
+  const runningSessionIdsRef = useRef<ReadonlySet<string>>(new Set());
+  runningSessionIdsRef.current = new Set([
+    ...listedBusySessionIds,
+    ...listedApprovalSessionIds,
+  ]);
+
+  const bulkDeleteSessions = async (sessionIds: readonly string[]) => {
+    if (bulkDeleteActive.current || sessionIds.length === 0) return;
+    const machine = remote.machine;
+    if (remoteProject && (!machine || !hostProject)) {
+      window.alert("Connect this project's machine to delete its sessions.");
+      return;
+    }
+    const deleteOne =
+      remoteProject && machine && hostProject
+        ? async (sessionId: string) => {
+            await remoteRequest(machine.id, "sessions.delete", {
+              projectId: hostProject.projectId,
+              sessionId,
+            });
+            forgetRemoteQueue(sessionId);
+            onRemoteSessionDeleted?.(sessionId);
+          }
+        : onDeleteLocalSessionNow;
+    if (!deleteOne) {
+      // Without the reporting delete, only a handler that asks first may run.
+      onDeleteSessions?.(sessionIds);
+      return;
+    }
+    const { deletable, running } = splitRunningSessions(
+      sessionIds,
+      runningSessionIdsRef.current,
+    );
+    if (deletable.length === 0) {
+      setBulkNotice(bulkDeleteSummary({ skipped: running, failed: [] }));
+      return;
+    }
+    if (
+      !window.confirm(bulkDeleteConfirmMessage(deletable.length, running.length))
+    )
+      return;
+    bulkDeleteActive.current = true;
+    try {
+      const result = await deleteSessionsInBulk(deletable, {
+        isRunning: (id) => runningSessionIdsRef.current.has(id),
+        deleteOne,
+      });
+      setBulkNotice(
+        bulkDeleteSummary({
+          skipped: [...running, ...result.skipped],
+          failed: result.failed,
+        }),
+      );
+    } finally {
+      bulkDeleteActive.current = false;
+      if (remoteProject) refreshRemoteProjectSessions();
+    }
+  };
+
+  // The bar acts on the selection in list order, like the context menu.
+  const selectedOrderedIds = sessionNavigationIds.filter((id) =>
+    selectedSessionIds.has(id),
+  );
+  const selectedSessions = listedSessions.filter((session) =>
+    selectedSessionIds.has(session.id),
+  );
+  const allSelectedArchived =
+    selectedSessions.length > 0 &&
+    selectedSessions.every((session) => session.archived);
+  const allSelectedPinned =
+    selectedSessions.length > 0 &&
+    selectedSessions.every((session) => session.pinned);
+  const selectAllListedSessions = () => {
+    contextSelectionRef.current = false;
+    setSelectedSessionIds((current) =>
+      selectAllSessions(current, sessionNavigationIds),
+    );
+  };
+  const clearSessionSelection = () => {
+    selectionAnchorRef.current = null;
+    contextSelectionRef.current = false;
+    setSelectedSessionIds(new Set());
+    setSelectionMode(false);
+  };
+  selectionKeys.current = {
+    selectAll: selectAllListedSessions,
+    deleteSelected: () => {
+      if (onDeleteSession || onDeleteSessions) {
+        void bulkDeleteSessions(selectedOrderedIds);
+      }
+    },
+  };
+  const showBulkBar =
+    selectionMode ||
+    (selectedSessionIds.size > 0 && !contextSelectionRef.current);
 
   const onFolderMenuPick = (id: string) => {
     if (!folderMenu) return;
@@ -1368,23 +1585,22 @@ function SidebarComponent({
         selectionAnchorRef.current = null;
       }
       const anchor = selectionAnchorRef.current ?? activeListedSessionId ?? sessionId;
-      const start = visibleIds.indexOf(anchor);
-      const end = visibleIds.indexOf(sessionId);
-      const range =
-        start < 0 || end < 0
-          ? [sessionId]
-          : visibleIds.slice(Math.min(start, end), Math.max(start, end) + 1);
-      selectionAnchorRef.current = start < 0 ? sessionId : anchor;
+      const range = sessionSelectionRange(visibleIds, anchor, sessionId);
+      selectionAnchorRef.current = visibleIds.includes(anchor)
+        ? anchor
+        : sessionId;
       setSelectedSessionIds(
         (current) =>
           new Set(
-            event.ctrlKey || event.metaKey ? [...current, ...range] : range,
+            event.ctrlKey || event.metaKey || selectionMode
+              ? [...current, ...range]
+              : range,
           ),
       );
       return;
     }
     selectionAnchorRef.current = sessionId;
-    if (event.ctrlKey || event.metaKey) {
+    if (event.ctrlKey || event.metaKey || selectionMode) {
       const next = toggleSessionSelection(selectedSessionIds, sessionId);
       if (next.size === 0) selectionAnchorRef.current = null;
       setSelectedSessionIds(next);
@@ -1397,6 +1613,14 @@ function SidebarComponent({
 
   // Cards are memoized. Their handlers go through one stable set that calls
   // the latest version, so a sidebar render no longer re-renders every card.
+  const onSessionCardDelete = (sessionId: string) => {
+    if (selectedSessionIds.size > 0 && !contextSelectionRef.current) {
+      void bulkDeleteSessions(selectedOrderedIds);
+      return;
+    }
+    onDeleteSession?.(sessionId);
+  };
+
   const cardHandlers = useRef({
     onSessionCardSelect,
     onOpenInboxItem,
@@ -1406,7 +1630,7 @@ function SidebarComponent({
     onSessionContextMenu,
     onArchiveSession,
     setRenamingSessionId,
-    onDeleteSession,
+    onSessionCardDelete,
   });
   cardHandlers.current = {
     onSessionCardSelect,
@@ -1417,7 +1641,7 @@ function SidebarComponent({
     onSessionContextMenu,
     onArchiveSession,
     setRenamingSessionId,
-    onDeleteSession,
+    onSessionCardDelete,
   };
   const cardActions = useMemo(
     () => ({
@@ -1440,7 +1664,7 @@ function SidebarComponent({
       rename: (sessionId: string) =>
         cardHandlers.current.setRenamingSessionId(sessionId),
       delete: (sessionId: string) =>
-        cardHandlers.current.onDeleteSession?.(sessionId),
+        cardHandlers.current.onSessionCardDelete(sessionId),
     }),
     [],
   );
@@ -1462,6 +1686,7 @@ function SidebarComponent({
         session={session}
         isActive={session.id === activeListedSessionId}
         isSelected={selectedSessionIds.has(session.id)}
+        selectionMode={selectionMode}
         busy={listedBusySessionIds.has(session.id)}
         done={unseenFinishedIds.has(session.id)}
         linkedUpdate={linkedSessionUpdateIds.has(session.id)}
@@ -1604,9 +1829,21 @@ function SidebarComponent({
             className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5"
             data-tauri-drag-region="deep"
           >
-            <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
-              Workspace
-            </span>
+            <div className="flex min-w-0 flex-1 items-center">
+              {!remoteProject && cwd && cwd !== "~" ? (
+                <SidebarWorktreeSwitcher
+                  cwd={cwd}
+                  tabStats={worktreeTabStats}
+                  onSelect={onSelectWorkspace}
+                  pending={workspaceSwitchPending}
+                  switchError={workspaceSwitchError}
+                />
+              ) : (
+                <span className="min-w-0 truncate text-sm font-medium leading-tight">
+                  Workspace
+                </span>
+              )}
+            </div>
             <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNew} />
           </div>
           <div
@@ -1651,10 +1888,12 @@ function SidebarComponent({
               onOpenNotificationSettings={onOpenNotificationSettings}
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
+              onOpenTasks={onOpenTasks}
               searchActive={searchActive}
               inboxActive={inboxActive}
               notesActive={notesActive}
               automationsActive={automationsActive}
+              tasksActive={tasksActive}
               inboxUnseen={inboxUnseen}
             />
           ) : null}
@@ -1703,11 +1942,31 @@ function SidebarComponent({
           )}
         </div>
         {tab === "sessions" && cwd && cwd !== "~" ? (
-          <div className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
+          <div
+            data-session-list-panel
+            className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2"
+          >
             <div className="relative flex h-7 min-w-0 flex-1 items-center">
               <Search className="pointer-events-none absolute left-2 size-3 shrink-0 opacity-50" />
               {sessionSearchInput}
             </div>
+            <span data-session-selection-keep className="contents">
+              <SessionsHeaderButton
+                label={selectionMode ? "Stop selecting" : "Select conversations"}
+                active={selectionMode}
+                onClick={() => {
+                  if (selectionMode) {
+                    clearSessionSelection();
+                    return;
+                  }
+                  contextSelectionRef.current = false;
+                  setSessionMenu(null);
+                  setSelectionMode(true);
+                }}
+              >
+                <CheckList className="size-3" strokeWidth={1.75} />
+              </SessionsHeaderButton>
+            </span>
             <SessionsHeaderButton
               label="Filter sessions"
               active={filtersActive}
@@ -1719,11 +1978,76 @@ function SidebarComponent({
             </SessionsHeaderButton>
           </div>
         ) : null}
+        {tab === "sessions" && cwd && cwd !== "~" && showBulkBar ? (
+          <div
+            role="toolbar"
+            aria-label="Selected conversations"
+            data-session-bulk-bar
+            data-session-selection-keep
+            className="flex min-h-8 shrink-0 flex-wrap items-center gap-x-1 gap-y-0.5 border-b border-stroke bg-content/5 px-2 py-1 text-[11px] text-content/70"
+          >
+            <span className="mr-auto shrink-0 pl-0.5 tabular-nums text-content">
+              {selectedSessionIds.size} selected
+            </span>
+            <button
+              type="button"
+              disabled={
+                sessionNavigationIds.length === 0 ||
+                selectedSessionIds.size === sessionNavigationIds.length
+              }
+              onClick={selectAllListedSessions}
+              className="rounded-md px-1.5 py-0.5 hover:bg-content/10 hover:text-content disabled:pointer-events-none disabled:opacity-40"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              onClick={clearSessionSelection}
+              className="rounded-md px-1.5 py-0.5 hover:bg-content/10 hover:text-content"
+            >
+              {selectedSessionIds.size > 0 ? "Clear" : "Done"}
+            </button>
+            {selectedSessionIds.size > 0 ? (
+              <span className="flex shrink-0 items-center gap-px">
+                {onPinSession || onPinSessions ? (
+                  <BulkBarAction
+                    label={allSelectedPinned ? "Unpin" : "Pin"}
+                    onClick={() =>
+                      pinSessions(selectedOrderedIds, !allSelectedPinned)
+                    }
+                  >
+                    <Pin className="size-3" strokeWidth={1.75} />
+                  </BulkBarAction>
+                ) : null}
+                {onArchiveSession || onArchiveSessions ? (
+                  <BulkBarAction
+                    label={allSelectedArchived ? "Unarchive" : "Archive"}
+                    onClick={() =>
+                      archiveSessions(selectedOrderedIds, !allSelectedArchived)
+                    }
+                  >
+                    <Archive className="size-3" strokeWidth={1.75} />
+                  </BulkBarAction>
+                ) : null}
+                {onDeleteSession || onDeleteSessions ? (
+                  <BulkBarAction
+                    label="Delete"
+                    danger
+                    onClick={() => void bulkDeleteSessions(selectedOrderedIds)}
+                  >
+                    <Trash2 className="size-3" strokeWidth={1.75} />
+                  </BulkBarAction>
+                ) : null}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         <div
           ref={(el) => {
             sessionsLock(el);
             sessionsScrollRef.current = el;
           }}
+          data-session-list-panel
           className={`min-h-0 flex-1 overflow-y-auto overscroll-none ${
             tab === "sessions" ? "" : "hidden"
           }`}
@@ -2100,6 +2424,9 @@ function SidebarComponent({
           onClose={() => setFilterMenu(null)}
         />
       ) : null}
+      {bulkNotice ? (
+        <TransientNotice message={bulkNotice} onDismiss={dismissBulkNotice} />
+      ) : null}
       {linkingSession ? (
         <LinkSessionWorkItemDialog
           initial={linkingSession.linkedWorkItem}
@@ -2159,11 +2486,16 @@ function SidebarComponent({
           onOpenNotes={notesEnabled ? onOpenNotes : undefined}
           notesActive={notesActive}
           onOpenAutomations={onOpenAutomations}
+          onOpenTasks={onOpenTasks}
           automationsActive={automationsActive}
+          tasksActive={tasksActive}
           onOpenSettings={onOpenSettings}
           onTogglePanel={onToggleProjectRail}
           onLeaveActive={onGoBack}
           titleBarAbove={titleBarAbove}
+          recentSessions={recentSessions}
+          activeSessionId={activeSessionId}
+          onSelectAgent={onSelectAgent}
         />
       ) : null}
       {railMounted.current && onSelectProject && onOpenProject ? (
@@ -2189,10 +2521,13 @@ function SidebarComponent({
           onOpenNotes={onOpenNotes}
           notesActive={notesActive}
           onOpenAutomations={onOpenAutomations}
+          onOpenTasks={onOpenTasks}
           automationsActive={automationsActive}
+          tasksActive={tasksActive}
           onTogglePanel={onToggleProjectRail}
           onSelectProject={onSelectProject}
           onOpenProject={onOpenProject}
+          onOpenSyncedProject={onOpenSyncedProject}
           onRemoveProject={onRemoveProject}
           settingsOpen={settingsOpen}
           settingsSection={settingsSection}
@@ -2266,10 +2601,12 @@ function SidebarProjectPicker({
   onOpenNotificationSettings,
   onOpenNotes,
   onOpenAutomations,
+  onOpenTasks,
   searchActive = false,
   inboxActive = false,
   notesActive = false,
   automationsActive = false,
+  tasksActive = false,
   inboxUnseen = false,
 }: {
   cwd: string;
@@ -2284,10 +2621,12 @@ function SidebarProjectPicker({
   onOpenNotificationSettings?: (projectPath?: string) => void;
   onOpenNotes?: () => void;
   onOpenAutomations?: () => void;
+  onOpenTasks?: () => void;
   searchActive?: boolean;
   inboxActive?: boolean;
   notesActive?: boolean;
   automationsActive?: boolean;
+  tasksActive?: boolean;
   inboxUnseen?: boolean;
 }) {
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
@@ -2362,6 +2701,11 @@ function SidebarProjectPicker({
             <Zap className="size-3.5" strokeWidth={1.75} />
           </IconButton>
         ) : null}
+        {onOpenTasks ? (
+          <IconButton label="Tasks" active={tasksActive} onClick={onOpenTasks}>
+            <DashboardSquare className="size-3.5" strokeWidth={1.75} />
+          </IconButton>
+        ) : null}
       </div>
       {inboxMenu ? (
         <InboxNotificationMenu
@@ -2400,11 +2744,16 @@ function CompactProjectRail({
   onOpenNotes,
   notesActive,
   onOpenAutomations,
+  onOpenTasks,
   automationsActive,
+  tasksActive,
   onOpenSettings,
   onTogglePanel,
   onLeaveActive,
   titleBarAbove,
+  recentSessions,
+  activeSessionId,
+  onSelectAgent,
 }: {
   cwd: string;
   recents: RecentProject[];
@@ -2427,11 +2776,16 @@ function CompactProjectRail({
   onOpenNotes?: () => void;
   notesActive: boolean;
   onOpenAutomations?: () => void;
+  onOpenTasks?: () => void;
   automationsActive: boolean;
+  tasksActive: boolean;
   onOpenSettings?: () => void;
   onTogglePanel?: () => void;
   onLeaveActive?: () => void;
   titleBarAbove: boolean;
+  recentSessions?: RecentSessionsSource;
+  activeSessionId?: string;
+  onSelectAgent?: (sessionId: string) => void;
 }) {
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
     null,
@@ -2440,7 +2794,11 @@ function CompactProjectRail({
   const action = (active: boolean, open?: () => void) =>
     active && onLeaveActive ? onLeaveActive : open;
   const workspaceActive =
-    !searchActive && !inboxActive && !notesActive && !automationsActive;
+    !searchActive &&
+    !inboxActive &&
+    !notesActive &&
+    !automationsActive &&
+    !tasksActive;
   const openWorkspaceTab = (nextTab: SidebarTab) => {
     if (!workspaceActive) onLeaveActive?.();
     onTabChange(nextTab);
@@ -2485,6 +2843,17 @@ function CompactProjectRail({
             onOpenProject={onOpenProject}
             onRemoveProject={onRemoveProject}
             onOpenNotificationSettings={onOpenNotificationSettings}
+          />
+        ) : null}
+        {recentSessions && onSelectProject ? (
+          <CompactLastSessionsAction
+            cwd={cwd}
+            recents={recents}
+            source={recentSessions}
+            activeSessionId={activeSessionId}
+            searchActive={searchActive}
+            onOpenSession={onSelectAgent}
+            onOpenProject={onSelectProject}
           />
         ) : null}
         <div
@@ -2539,6 +2908,12 @@ function CompactProjectRail({
           active={automationsActive}
           onClick={action(automationsActive, onOpenAutomations)}
         />
+        <CompactRailAction
+          label="Tasks"
+          icon={DashboardSquare}
+          active={tasksActive}
+          onClick={action(tasksActive, onOpenTasks)}
+        />
       </div>
       <div className="min-h-2 flex-1" />
       <div className="flex w-full flex-col items-center gap-1 py-1.5">
@@ -2571,6 +2946,7 @@ function CompactRailAction({
   dot = false,
   onClick,
   onOpenContextMenu,
+  ref,
 }: {
   label: string;
   icon: typeof PanelLeft;
@@ -2579,9 +2955,11 @@ function CompactRailAction({
   dot?: boolean;
   onClick?: () => void;
   onOpenContextMenu?: (x: number, y: number) => void;
+  ref?: Ref<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={ref}
       type="button"
       role={tab ? "tab" : undefined}
       title={label}
@@ -2636,6 +3014,88 @@ function CompactRailAction({
   );
 }
 
+/** The compact rail's own way into "Last sessions": a button that opens the list in a popover, since there's no room for the full section. */
+function CompactLastSessionsAction({
+  cwd,
+  recents,
+  source,
+  activeSessionId,
+  searchActive,
+  onOpenSession,
+  onOpenProject,
+}: {
+  cwd: string;
+  recents: RecentProject[];
+  source: RecentSessionsSource;
+  activeSessionId?: string;
+  searchActive: boolean;
+  onOpenSession?: (sessionId: string) => void;
+  onOpenProject: (path: string) => void;
+}) {
+  const projectKeys = useMemo(
+    () => new Set(collectRailProjects(recents, cwd).keys()),
+    [recents, cwd],
+  );
+  const { rows, hasRows, togglePin } = useLastSessionsRows({
+    source,
+    projectKeys,
+    enabled: true,
+  });
+  const [groupLabels] = useState(loadTabGroupLabels);
+  const [groupColors] = useState(loadTabGroupColors);
+  const [groupCustomColors] = useState(loadTabGroupCustomColors);
+  const [groupMascots] = useState(loadTabGroupMascots);
+  const groupLogos = useTabGroupLogos();
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  if (!hasRows) return null;
+
+  return (
+    <>
+      <CompactRailAction
+        ref={anchor}
+        label="Last sessions"
+        icon={Clock}
+        active={open}
+        onClick={() => setOpen((value) => !value)}
+      />
+      {open ? (
+        <Popover
+          anchor={anchor}
+          side="right"
+          align="start"
+          width={280}
+          onDismiss={() => setOpen(false)}
+          role="menu"
+          aria-label="Last sessions"
+          className="p-1"
+        >
+          <LastSessionsRows
+            rows={rows}
+            activeSessionId={activeSessionId}
+            searchActive={searchActive}
+            onOpenSession={(sessionId) => {
+              setOpen(false);
+              onOpenSession?.(sessionId);
+            }}
+            onOpenProject={(path) => {
+              setOpen(false);
+              onOpenProject(path);
+            }}
+            onTogglePin={togglePin}
+            className="flex max-h-80"
+            groupLabels={groupLabels}
+            groupColors={groupColors}
+            groupCustomColors={groupCustomColors}
+            groupLogos={groupLogos}
+            groupMascots={groupMascots}
+          />
+        </Popover>
+      ) : null}
+    </>
+  );
+}
+
 function WorkspaceTitleActions({
   onSearch,
   onNew,
@@ -2660,6 +3120,32 @@ function WorkspaceTitleActions({
         </IconButton>
       ) : null}
     </div>
+  );
+}
+
+function BulkBarAction({
+  label,
+  danger = false,
+  onClick,
+  children,
+}: {
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={`${label} selected`}
+      aria-label={`${label} selected`}
+      onClick={onClick}
+      className={`grid size-6 place-items-center rounded-md text-content/60 hover:bg-content/10 ${
+        danger ? "hover:text-red-400" : "hover:text-content"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -2938,6 +3424,7 @@ const SessionCard = memo(function SessionCard({
   session,
   isActive,
   isSelected,
+  selectionMode = false,
   busy,
   done,
   linkedUpdate,
@@ -2959,6 +3446,7 @@ const SessionCard = memo(function SessionCard({
   session: SessionSummary;
   isActive: boolean;
   isSelected: boolean;
+  selectionMode?: boolean;
   busy: boolean;
   done: boolean;
   linkedUpdate: boolean;
@@ -3332,6 +3820,21 @@ const SessionCard = memo(function SessionCard({
               compact && !orchestrationExpanded ? "" : "mt-1"
             }`}
           >
+            {selectionMode ? (
+              <span
+                aria-hidden
+                data-session-checkbox={isSelected ? "checked" : "unchecked"}
+                className={`grid size-3.5 shrink-0 place-items-center rounded-[4px] border ${
+                  isSelected
+                    ? "border-accent bg-accent text-white"
+                    : "border-content/35"
+                }`}
+              >
+                {isSelected ? (
+                  <Check className="size-2.5" strokeWidth={2.5} />
+                ) : null}
+              </span>
+            ) : null}
             {session.pinned ? (
               <Pin
                 className="size-3 shrink-0 text-content/45"

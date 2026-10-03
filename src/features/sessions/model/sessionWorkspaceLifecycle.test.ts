@@ -245,3 +245,42 @@ describe("removeSessionFromWorkspace", () => {
     expect(result.sessions.map((s) => s.id)).toEqual(["replacement"]);
   });
 });
+
+describe("removeSessionFromWorkspace across worktrees", () => {
+  const sessions = [
+    session("main"),
+    { ...session("a1"), worktreeCwd: "/trees/a" },
+    { ...session("a2"), worktreeCwd: "/trees/a" },
+  ];
+  const tabs = [tab("t-a1", "a1"), tab("t-main", "main"), tab("t-a2", "a2")];
+  const worktreeOf = (entry: WorkspaceTab) =>
+    sessions.find((item) => leafIds(entry.layout).includes(item.id))
+      ?.worktreeCwd ?? "/projects/monocode";
+
+  it("moves to a tab of the same worktree instead of the nearest one", () => {
+    const result = removeSessionFromWorkspace({
+      tabs,
+      sessions,
+      sessionId: "a2",
+      activeTabId: "t-a2",
+      scope: "project",
+      worktreeOf,
+      createReplacement: (seed) => session("replacement", seed?.cwd),
+    });
+    expect(result.activeTabId).toBe("t-a1");
+  });
+
+  it("keeps the last tab of a worktree with a blank session", () => {
+    const result = removeSessionFromWorkspace({
+      tabs: [tab("t-main", "main"), tab("t-a1", "a1")],
+      sessions,
+      sessionId: "a1",
+      activeTabId: "t-a1",
+      scope: "project",
+      worktreeOf,
+      createReplacement: (seed) => session("replacement", seed?.cwd),
+    });
+    expect(result.activeTabId).toBe("t-a1");
+    expect(result.tabs.map((entry) => entry.id)).toEqual(["t-main", "t-a1"]);
+  });
+});

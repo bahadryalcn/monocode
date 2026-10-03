@@ -2,6 +2,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
 import { TemplatesSettings } from "./TemplatesSettings";
+import {
+  remoteRequest,
+  useRemoteMachines,
+} from "../../connections/model/connections";
+import { HOST_UPDATE_NOTICE } from "../../connections/model/remoteCapabilities";
+import type { RemoteMachine } from "../../connections/model/protocol";
+import {
+  effectiveProfileId,
+  listTerminalProfiles,
+  saveTerminalProfile,
+  useTerminalProfile,
+  type ShellProfiles,
+} from "../../terminal/model/terminalProfiles";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownCircle,
@@ -198,9 +211,13 @@ import {
 import { refreshHarnessCatalogs } from "../../../integrations/harness/core/registry";
 import { loginHarness } from "../../../integrations/harness/core/auth";
 import {
+  catalogModelsFor,
   defaultModelId,
   firstEnabledHarness,
   getModelSnapshot,
+  isEnabledChoice,
+  isModelEnabled,
+  saveModelEnabled,
   loadDefaultModels,
   loadHiddenPickerProviders,
   loadLastModelChoice,
@@ -258,6 +275,12 @@ import {
   useProviderAccountIdentities,
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
+import {
+  saveMaskEmails,
+  saveShowRemainingUsage,
+  useMaskEmails,
+  useShowRemainingUsage,
+} from "../model/displayPrefs";
 import {
   checkInstalledHarnessVersions,
   getHarnessUpdateSnapshot,
@@ -629,6 +652,7 @@ export function SettingsView({
               {section === "chat" ? <ChatPage /> : null}
               {section === "chat" ? <TemplatesSettings /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
+              {section === "terminal" ? <TerminalPage /> : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
@@ -1081,9 +1105,11 @@ function GeneralPage({
         <Row
           id="keep-awake-screen"
           label="Keep the screen on"
-          description={IS_WIN || IS_MAC
-            ? "Keep the display awake while the sleep setting is active. Closing the lid or choosing Sleep still works."
-            : "Keep the display awake while the sleep setting is active. Automatic screen locking may be prevented."}
+          description={
+            IS_WIN || IS_MAC
+              ? "Keep the display awake while the sleep setting is active. Closing the lid or choosing Sleep still works."
+              : "Keep the display awake while the sleep setting is active. Automatic screen locking may be prevented."
+          }
         >
           <Toggle
             label="Keep the screen on"
@@ -1976,16 +2002,16 @@ function UpdateRow({
     updatesEnabled === false
       ? "Automatic updates are disabled in this build."
       : snapshot.phase === "available"
-      ? `Version ${snapshot.availableVersion} is available.`
-      : snapshot.phase === "downloading"
-        ? `Downloading${snapshot.progress != null ? ` ${snapshot.progress}%` : "…"}`
-        : snapshot.phase === "checking"
-          ? "Checking for updates…"
-          : snapshot.phase === "current"
-            ? "You're on the latest version."
-            : snapshot.phase === "error"
-              ? (snapshot.error ?? "Update check failed.")
-              : "MonoCode updates itself from the release feed.";
+        ? `Version ${snapshot.availableVersion} is available.`
+        : snapshot.phase === "downloading"
+          ? `Downloading${snapshot.progress != null ? ` ${snapshot.progress}%` : "…"}`
+          : snapshot.phase === "checking"
+            ? "Checking for updates…"
+            : snapshot.phase === "current"
+              ? "You're on the latest version."
+              : snapshot.phase === "error"
+                ? (snapshot.error ?? "Update check failed.")
+                : "MonoCode updates itself from the release feed.";
 
   return (
     <Row
@@ -2928,6 +2954,204 @@ function KeybindingShortcutEditor({
   );
 }
 
+/** Which shell new terminals open in, and `!commands` run in. */
+function TerminalPage() {
+  const [listed, setListed] = useState<ShellProfiles | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const chosen = useTerminalProfile();
+  const scan = (refresh: boolean) => {
+    setScanning(true);
+    void listTerminalProfiles(refresh)
+      .then(setListed)
+      .catch(() => setListed({ profiles: [], defaultId: null }))
+      .finally(() => setScanning(false));
+  };
+  useEffect(() => scan(false), []);
+  const systemDefault = listed?.profiles.find(
+    (profile) => profile.id === listed.defaultId,
+  );
+  const missing =
+    !!listed && !!chosen && !listed.profiles.some((profile) => profile.id === chosen);
+  const current = effectiveProfileId(listed, chosen);
+
+  return (
+    <>
+      <Group
+        title="Default profile"
+        description="New terminals open in this shell, and `!commands` from the composer run in it. A terminal already open keeps the shell it started with."
+        action={
+          <button
+            type="button"
+            disabled={scanning}
+            onClick={() => scan(true)}
+            className="h-7 rounded-md px-2.5 text-[12px] text-content/60 hover:bg-content/10 hover:text-content disabled:opacity-50"
+          >
+            {scanning ? "Looking…" : "Look again"}
+          </button>
+        }
+      >
+        <Row
+          id="terminal-default-profile"
+          label="Default terminal profile"
+          description={
+            missing
+              ? "The shell you picked is no longer installed, so the system default is used."
+              : "Automatic follows the system: PowerShell on Windows, your login shell elsewhere."
+          }
+        >
+          <Select
+            label="Default terminal profile"
+            value={chosen && !missing ? chosen : ""}
+            options={[
+              {
+                value: "",
+                label: systemDefault
+                  ? `Automatic (${systemDefault.name})`
+                  : "Automatic",
+              },
+              ...(listed?.profiles ?? []).map((profile) => ({
+                value: profile.id,
+                label: profile.name,
+              })),
+            ]}
+            onChange={(next) => saveTerminalProfile(next || undefined)}
+          />
+        </Row>
+      </Group>
+      <Group
+        title="Available shells"
+        description="Found on this computer. Git Bash runs bash commands such as ls, grep and && chains on Windows. Sessions on this computer use this choice even when you type the command on another machine."
+      >
+        {listed === null ? (
+          <Row label="Looking for shells…" />
+        ) : listed.profiles.length === 0 ? (
+          <Row
+            label="No shells found"
+            description="Install PowerShell, Git for Windows or another shell, then look again."
+          />
+        ) : (
+          listed.profiles.map((profile) => (
+            <Row key={profile.id} label={profile.name} description={profile.path}>
+              {profile.id === current ? (
+                <span className="text-[12px] text-content/45">Default</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => saveTerminalProfile(profile.id)}
+                  className="h-7 rounded-md bg-content/10 px-2.5 text-[12px] text-content hover:bg-content/15"
+                >
+                  Set as default
+                </button>
+              )}
+            </Row>
+          ))
+        )}
+      </Group>
+      <RemoteMachineShells />
+    </>
+  );
+}
+
+/** Each connected machine runs `!commands` for its sessions in its own shell. */
+function RemoteMachineShells() {
+  const { machines } = useRemoteMachines();
+  if (machines.length === 0) return null;
+  return (
+    <>
+      {machines.map((machine) => (
+        <RemoteMachineShell key={machine.id} machine={machine} />
+      ))}
+    </>
+  );
+}
+
+function RemoteMachineShell({ machine }: { machine: RemoteMachine }) {
+  const [listed, setListed] = useState<ShellProfiles | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const explain = (error: unknown) => {
+    const text = String(error).replace(/^Error: /, "");
+    return /unsupported|unknown method|not supported/i.test(text)
+      ? HOST_UPDATE_NOTICE
+      : text;
+  };
+  useEffect(() => {
+    let alive = true;
+    setProblem(null);
+    void remoteRequest<ShellProfiles>(machine.id, "shell.profiles").then(
+      (value) => {
+        if (alive) setListed(value);
+      },
+      (error) => {
+        if (alive) setProblem(explain(error));
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [machine.id]);
+  const choose = (next: string) => {
+    setSaving(true);
+    setProblem(null);
+    void remoteRequest<ShellProfiles>(
+      machine.id,
+      "shell.setProfile",
+      { profile: next || null },
+      false,
+      true,
+    )
+      .then(setListed, (error) => setProblem(explain(error)))
+      .finally(() => setSaving(false));
+  };
+  const systemDefault = listed?.profiles.find(
+    (profile) => profile.id === listed.defaultId,
+  );
+  const chosen =
+    listed?.chosenId &&
+    listed.profiles.some((profile) => profile.id === listed.chosenId)
+      ? listed.chosenId
+      : "";
+  return (
+    <Group
+      title={machine.name}
+      description="`!commands` in sessions on this machine run here, in this shell, whichever computer you type them on."
+    >
+      <Row
+        label="Default shell"
+        description={
+          problem ??
+          (listed
+            ? (listed.profiles.find((profile) => profile.id === (chosen || listed.defaultId))
+                ?.path ?? undefined)
+            : "Asking the machine…")
+        }
+      >
+        {listed ? (
+          <Select
+            label={`Default shell on ${machine.name}`}
+            value={chosen}
+            options={[
+              {
+                value: "",
+                label: systemDefault
+                  ? `Automatic (${systemDefault.name})`
+                  : "Automatic",
+              },
+              ...listed.profiles.map((profile) => ({
+                value: profile.id,
+                label: profile.name,
+              })),
+            ]}
+            onChange={(next) => {
+              if (!saving) choose(next);
+            }}
+          />
+        ) : null}
+      </Row>
+    </Group>
+  );
+}
+
 function KeybindingsPage() {
   const [query, setQuery] = useState("");
   const [overrides, setOverrides] = useState(loadKeybindingOverrides);
@@ -3020,7 +3244,10 @@ function binaryInspectionError(
   inspection: HarnessBinaryInspection,
 ): string | null {
   if (inspection.error) return inspection.error;
-  if (provider === "codex" && !/^codex-cli\s+\d+\.\d+\.\d+/.test(inspection.version ?? "")) {
+  if (
+    provider === "codex" &&
+    !/^codex-cli\s+\d+\.\d+\.\d+/.test(inspection.version ?? "")
+  ) {
     return "Codex CLI returned an invalid version.";
   }
   if (provider === "opencode") {
@@ -3154,7 +3381,9 @@ function ProviderBinaryControl({
           setEditing(false);
         }}
         className={`grid size-6 place-items-center rounded hover:bg-content/10 focus-visible:outline-2 focus-visible:outline-accent ${
-          restartRequired ? "text-amber-300" : "text-content/35 hover:text-content"
+          restartRequired
+            ? "text-amber-300"
+            : "text-content/35 hover:text-content"
         }`}
       >
         <FolderOpen className="size-3.5" strokeWidth={1.75} />
@@ -3231,7 +3460,8 @@ function ProviderBinaryControl({
                 className="mt-1.5 h-8 w-full rounded-md border border-content/10 bg-content/[0.04] px-2 font-mono text-[11px] text-content outline-none placeholder:font-sans placeholder:text-content/35 focus:border-accent/45 disabled:opacity-50"
               />
               <p className="mt-1.5 text-[10px] text-content/40">
-                Enter the absolute path to the CLI executable. Changes apply after restarting MonoCode.
+                Enter the absolute path to the CLI executable. Changes apply
+                after restarting MonoCode.
               </p>
               {error ? (
                 <span
@@ -3270,31 +3500,33 @@ function ProviderBinaryControl({
               <div className="mt-2 rounded-md border border-content/10 bg-content/[0.03] px-2.5 py-2">
                 <span className="block max-h-12 overflow-y-auto whitespace-pre-wrap break-all font-mono text-[10px] text-content/65">
                   {inspection?.path ??
-                    (error ? "CLI could not be resolved" : "Checking the selected CLI…")}
+                    (error
+                      ? "CLI could not be resolved"
+                      : "Checking the selected CLI…")}
                 </span>
                 <span className="mt-1 block max-h-10 overflow-y-auto whitespace-pre-wrap break-words text-[10px] text-content/40">
                   {inspection?.version ??
                     (error ? "Retry to check this CLI" : "Checking version…")}
                 </span>
               </div>
-               {error ? (
-                 <span
-                   role="alert"
-                   title={error}
-                   className="mt-1.5 block max-h-20 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-red-400"
-                 >
-                   {error}
-                 </span>
-               ) : null}
-               {revealError ? (
-                 <span
-                   role="alert"
-                   className="mt-1.5 block max-h-20 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-red-400"
-                 >
-                   Could not open the CLI location: {revealError}
-                 </span>
-               ) : null}
-               <div className="mt-3 flex justify-end gap-2">
+              {error ? (
+                <span
+                  role="alert"
+                  title={error}
+                  className="mt-1.5 block max-h-20 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-red-400"
+                >
+                  {error}
+                </span>
+              ) : null}
+              {revealError ? (
+                <span
+                  role="alert"
+                  className="mt-1.5 block max-h-20 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-red-400"
+                >
+                  Could not open the CLI location: {revealError}
+                </span>
+              ) : null}
+              <div className="mt-3 flex justify-end gap-2">
                 {error ? (
                   <SecondaryButton
                     disabled={working}
@@ -3316,7 +3548,9 @@ function ProviderBinaryControl({
                     if (inspection) {
                       void revealPath(inspection.path).catch((cause) => {
                         setRevealError(
-                          cause instanceof Error ? cause.message : String(cause),
+                          cause instanceof Error
+                            ? cause.message
+                            : String(cause),
                         );
                       });
                     }
@@ -3461,10 +3695,6 @@ function ProvidersPage({
 
   return (
     <>
-      <ProviderAccountsSettings />
-      <ProviderUsageSettings />
-      <UsageOverview />
-
       <Group
         id="agent-clis"
         title="Agent CLIs"
@@ -3478,50 +3708,60 @@ function ProvidersPage({
         }
         description={
           project
-            ? `These defaults apply to ${projectName(project)} only. A provider with Show in picker off is also kept out of new conversations started in this project. CLI paths remain global for MonoCode.`
-            : "A provider is listed as installed once its CLI is found on your PATH. Uninstalled CLIs stay listed but are left out of the model picker, as are installed ones with Show in picker off. The model beside a provider is what its new conversations start with; Use by default picks the provider itself. CLI paths are global for MonoCode and apply to every project."
+            ? `Defaults for ${projectName(project)} only. CLI paths stay global.`
+            : "Pick the model each CLI starts with and which one is the default. CLIs not found on your PATH are left out of the picker."
         }
       >
-        {HARNESSES.map((harness) => {
-          const inPicker = project
-            ? !(projectSettings.hidden ?? []).includes(harness) &&
-              !hiddenGlobally.includes(harness)
-            : !hiddenGlobally.includes(harness);
-          // A globally hidden provider stays out of every project's picker, so
-          // the project toggle is shown locked rather than appearing to work.
-          const pickerLocked =
-            project != null && hiddenGlobally.includes(harness);
-          const selectedModel = project
-            ? (projectSettings.models?.[harness] ??
-              (projectSettings.defaultHarness === harness
-                ? projectSettings.defaultModel
-                : undefined) ??
-              defaultModels[harness] ??
-              (choice?.harness === harness
-                ? choice.model
-                : defaultModelId(harness)))
-            : (defaultModels[harness] ??
-              (choice?.harness === harness
-                ? choice.model
-                : defaultModelId(harness)));
-          const isDefault = project
-            ? effectiveDefaultHarness === harness
-            : choice?.harness === harness;
-          return (
-            <ProviderRow
-              key={harness}
-              harness={harness}
-              selectedModel={selectedModel}
-              isDefault={isDefault}
-              inPicker={inPicker}
-              pickerLocked={pickerLocked}
-              onDefault={onDefault}
-              onModelChange={onModelChange}
-              onPickerVisible={(visible) => onPickerVisible(harness, visible)}
-            />
-          );
-        })}
+        <div className="max-h-[480px] overflow-y-auto">
+          {HARNESSES.map((harness) => {
+            const inPicker = project
+              ? !(projectSettings.hidden ?? []).includes(harness) &&
+                !hiddenGlobally.includes(harness)
+              : !hiddenGlobally.includes(harness);
+            // A globally hidden provider stays out of every project's picker, so
+            // the project toggle is shown locked rather than appearing to work.
+            const pickerLocked =
+              project != null && hiddenGlobally.includes(harness);
+            const selectedModel = project
+              ? (projectSettings.models?.[harness] ??
+                (projectSettings.defaultHarness === harness
+                  ? projectSettings.defaultModel
+                  : undefined) ??
+                defaultModels[harness] ??
+                (choice?.harness === harness
+                  ? choice.model
+                  : defaultModelId(harness)))
+              : (defaultModels[harness] ??
+                (choice?.harness === harness
+                  ? choice.model
+                  : defaultModelId(harness)));
+            const isDefault = project
+              ? effectiveDefaultHarness === harness
+              : choice?.harness === harness;
+            return (
+              <ProviderRow
+                key={harness}
+                harness={harness}
+                selectedModel={selectedModel}
+                isDefault={isDefault}
+                inPicker={inPicker}
+                pickerLocked={pickerLocked}
+                onDefault={onDefault}
+                onModelChange={onModelChange}
+                onPickerVisible={(visible) => onPickerVisible(harness, visible)}
+              />
+            );
+          })}
+        </div>
       </Group>
+
+      <ProviderAccountsSettings />
+
+      <EnabledModelsGroup />
+
+      <UsageDisplaySettings />
+      <ProviderUsageSettings />
+      <UsageOverview />
 
       <HarnessUpdatesGroup />
 
@@ -3539,6 +3779,68 @@ function ProvidersPage({
         </Row>
       </Group>
     </>
+  );
+}
+
+/** Per-model switches: a model turned off is never offered or picked by default. */
+function EnabledModelsGroup() {
+  const harnesses = HARNESSES.filter(
+    (harness) =>
+      isHarnessAvailable(harness) && catalogModelsFor(harness).length > 0,
+  );
+  const [selected, setSelected] = useState<HarnessId | null>(null);
+  const harness =
+    selected && harnesses.includes(selected) ? selected : harnesses[0];
+  if (!harness) return null;
+
+  const models = catalogModelsFor(harness);
+  const enabledCount = models.filter((model) =>
+    isModelEnabled(model.id),
+  ).length;
+
+  return (
+    <Group
+      id="enabled-models"
+      title="Models"
+      description="Models that are off are hidden from every picker and never chosen by default. Existing conversations keep theirs."
+      action={
+        <Select
+          label="Provider"
+          value={harness}
+          options={harnesses.map((id) => ({
+            value: id,
+            label: HARNESS_TITLE[id],
+            icon: <HarnessIcon harness={id} className="size-3.5 shrink-0" />,
+          }))}
+          onChange={(next) => setSelected(next as HarnessId)}
+        />
+      }
+    >
+      <div className="max-h-[360px] overflow-y-auto">
+        {models.map((model) => {
+          const on = isModelEnabled(model.id);
+          return (
+            <Row
+              key={model.id}
+              label={model.name}
+              description={
+                [model.provider?.name, model.nativeId]
+                  .filter(Boolean)
+                  .join(" · ") || undefined
+              }
+            >
+              <Toggle
+                label={`Use ${model.name}`}
+                on={on}
+                onChange={(next) => saveModelEnabled(model.id, next)}
+                // The last model stays on so the provider keeps a default.
+                disabled={on && enabledCount <= 1}
+              />
+            </Row>
+          );
+        })}
+      </div>
+    </Group>
   );
 }
 
@@ -3581,7 +3883,7 @@ function HarnessUpdatesGroup() {
     <Group
       id="harness-updates"
       title="CLI updates"
-      description="MonoCode compares each installed CLI with its newest release and updates it with the CLI's own updater. Hermes Agent and Antigravity have no release feed to compare against, so they are not listed."
+      description="Compares installed CLIs with their newest release. Hermes Agent and Antigravity have no release feed and are not listed."
       action={
         <div className="flex items-center gap-2">
           {pending.length > 1 ? (
@@ -3611,7 +3913,7 @@ function HarnessUpdatesGroup() {
       {checks === null ? (
         <Row
           label={checking ? "Checking installed CLIs…" : "Not checked yet"}
-          description="Check for updates runs each installed CLI to read its version, then looks up its newest release."
+          description="Runs each installed CLI to read its version, then looks up the newest release."
         />
       ) : checks.length === 0 ? (
         <Row
@@ -3619,14 +3921,16 @@ function HarnessUpdatesGroup() {
           description="None of the CLIs with a release feed are installed."
         />
       ) : (
-        checks.map((entry) => (
-          <HarnessUpdateSettingsRow
-            key={entry.harness}
-            check={entry}
-            state={stateOf(entry.harness)}
-            onUpdate={(update) => start([update])}
-          />
-        ))
+        <div className="max-h-[360px] overflow-y-auto">
+          {checks.map((entry) => (
+            <HarnessUpdateSettingsRow
+              key={entry.harness}
+              check={entry}
+              state={stateOf(entry.harness)}
+              onUpdate={(update) => start([update])}
+            />
+          ))}
+        </div>
       )}
     </Group>
   );
@@ -3691,6 +3995,37 @@ function HarnessUpdateSettingsRow({
         <Check className="size-4 text-emerald-400" aria-hidden />
       ) : null}
     </Row>
+  );
+}
+
+function UsageDisplaySettings() {
+  const showRemainingUsage = useShowRemainingUsage();
+  const maskEmails = useMaskEmails();
+  return (
+    <Group title="Usage and privacy">
+      <Row
+        id="show-remaining-usage"
+        label="Show remaining usage"
+        description="Fill usage meters with what is left in each limit instead of what has been used."
+      >
+        <Toggle
+          label="Show remaining usage"
+          on={showRemainingUsage}
+          onChange={saveShowRemainingUsage}
+        />
+      </Row>
+      <Row
+        id="mask-emails"
+        label="Mask account emails"
+        description="Blur account emails in Settings and the usage popover until you click one, so they stay out of screenshots."
+      >
+        <Toggle
+          label="Mask account emails"
+          on={maskEmails}
+          onChange={saveMaskEmails}
+        />
+      </Row>
+    </Group>
   );
 }
 
@@ -3844,7 +4179,7 @@ function ProviderUsageSettings() {
     <Group
       id="provider-usage"
       title="Usage"
-      description="Estimated from local session logs at standard API rates. Subscription plans are billed differently."
+      description="Estimated from local session logs at API rates. Subscription plans are billed differently."
       action={
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Select
@@ -3946,7 +4281,7 @@ function ProviderUsageSettings() {
                 onChange={setBreakdown}
               />
             </div>
-            <div className="border-t border-content/5 bg-content/[0.015]">
+            <div className="max-h-72 overflow-y-auto border-t border-content/5 bg-content/[0.015]">
               {rows.map((row) => (
                 <div
                   key={row.key}
@@ -4223,55 +4558,156 @@ function ProviderAccountsSettings() {
     <Group
       id="provider-accounts"
       title="Accounts"
-      description="Create isolated sign-ins for providers that support account profiles. Account switching stays available from the usage control in the footer."
+      description="Separate sign-ins per provider. Switch accounts from the usage control in the footer."
       action={<AccountUsageRefresh usage={usage} />}
     >
-      {PROVIDER_ACCOUNT_PROVIDERS.map((provider) => {
-        const accounts = providerAccounts(provider);
-        const adding = editor?.provider === provider && !editor.accountId;
-        return (
-          <div
-            key={provider}
-            className="border-b border-content/5 last:border-b-0"
-          >
-            <div className="flex items-center gap-4 px-4 py-3.5">
-              <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-content/[0.05] ring-1 ring-inset ring-content/[0.06]">
-                  <HarnessIcon harness={provider} className="size-4" />
-                </span>
-                <div className="min-w-0">
-                  <div className="text-[13px] font-medium text-content">
-                    {HARNESS_TITLE[provider]}
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-content/40">
-                    {accounts.length}{" "}
-                    {accounts.length === 1 ? "account" : "accounts"}
+      <div className="max-h-[460px] overflow-y-auto">
+        {PROVIDER_ACCOUNT_PROVIDERS.map((provider) => {
+          const accounts = providerAccounts(provider);
+          const adding = editor?.provider === provider && !editor.accountId;
+          return (
+            <div
+              key={provider}
+              className="border-b border-content/5 last:border-b-0"
+            >
+              <div className="flex items-center gap-4 px-4 py-3.5">
+                <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                  <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-content/[0.05] ring-1 ring-inset ring-content/[0.06]">
+                    <HarnessIcon harness={provider} className="size-4" />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium text-content">
+                      {HARNESS_TITLE[provider]}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-content/40">
+                      {accounts.length}{" "}
+                      {accounts.length === 1 ? "account" : "accounts"}
+                    </div>
                   </div>
                 </div>
+                <button
+                  type="button"
+                  disabled={Boolean(working)}
+                  onClick={() => startAdd(provider)}
+                  className="flex shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
+                >
+                  <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
+                  Add account
+                </button>
               </div>
-              <button
-                type="button"
-                disabled={Boolean(working)}
-                onClick={() => startAdd(provider)}
-                className="flex shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
-              >
-                <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
-                Add account
-              </button>
-            </div>
-            <div className="border-t border-content/5 bg-content/[0.015] pl-10">
-              {accounts.map((account) => {
-                const editing =
-                  editor?.provider === provider &&
-                  editor.accountId === account.id;
-                const removing = working === `remove:${provider}:${account.id}`;
-                const signingIn = working === `signin:${provider}:${account.id}`;
-                const identity = identities[identityKey(account)];
-                const orgTag = identityOrganizationTag(identity);
-                const limits = usage.usage[accountUsageKey(account)];
-                return editing ? (
+              <div className="border-t border-content/5 bg-content/[0.015] pl-10">
+                {accounts.map((account) => {
+                  const editing =
+                    editor?.provider === provider &&
+                    editor.accountId === account.id;
+                  const removing =
+                    working === `remove:${provider}:${account.id}`;
+                  const signingIn =
+                    working === `signin:${provider}:${account.id}`;
+                  const identity = identities[identityKey(account)];
+                  const orgTag = identityOrganizationTag(identity);
+                  const limits = usage.usage[accountUsageKey(account)];
+                  return editing ? (
+                    <ProviderAccountEditor
+                      key={account.id}
+                      editor={editor}
+                      working={Boolean(working)}
+                      onLabel={(label) =>
+                        setEditor((current) =>
+                          current ? { ...current, label } : current,
+                        )
+                      }
+                      onCancel={() => setEditor(null)}
+                      onSubmit={submitEditor}
+                    />
+                  ) : (
+                    <div
+                      key={account.id}
+                      className="flex h-12 items-center gap-3 border-b border-content/5 px-4 py-2 last:border-b-0"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-[12px] text-content/85">
+                            {account.label}
+                          </span>
+                          {orgTag ? (
+                            <span className="max-w-[8rem] shrink-0 truncate rounded bg-content/[0.07] px-1 text-[9px] leading-4 text-content/50">
+                              {orgTag}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-0.5 flex min-w-0 items-center gap-2.5 text-[10px]">
+                          <AccountStatusLabel
+                            status={accountStatus(limits, usage.now)}
+                            className="shrink-0"
+                          />
+                          <ProviderAccountSubtitle
+                            identity={identity}
+                            fallback={
+                              account.isDefault
+                                ? "Provider CLI profile"
+                                : "Isolated profile"
+                            }
+                            className="truncate text-content/30"
+                          />
+                        </div>
+                      </div>
+                      <AccountUsageMeters limits={limits} now={usage.now} />
+                      <div className="flex min-w-24 shrink-0 items-center justify-end gap-1">
+                        {signingIn || (limits && canSignIn(limits)) ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(working)}
+                            aria-label={`Sign in to ${account.label}`}
+                            onClick={() => void signInAccount(account)}
+                            className="mr-1 flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2 text-[11px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
+                          >
+                            {signingIn ? (
+                              <Loader
+                                className="size-3 animate-spin"
+                                aria-hidden
+                              />
+                            ) : null}
+                            {signingIn ? "Signing in…" : "Sign in"}
+                          </button>
+                        ) : null}
+                        {account.isDefault ? (
+                          <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-content/30">
+                            Default
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          disabled={Boolean(working)}
+                          aria-label={`Rename ${account.label}`}
+                          title="Rename account"
+                          onClick={() => startRename(account)}
+                          className="grid size-7 place-items-center rounded-md text-content/40 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.96] disabled:opacity-35"
+                        >
+                          <Pencil className="size-3.5" strokeWidth={1.75} />
+                        </button>
+                        {!account.isDefault ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(working)}
+                            aria-label={`Remove ${account.label}`}
+                            title="Remove account"
+                            onClick={() => void removeAccount(account)}
+                            className="grid size-7 place-items-center rounded-md text-content/35 transition-transform duration-150 hover:bg-red-400/10 hover:text-red-400 active:scale-[0.96] disabled:opacity-35"
+                          >
+                            {removing ? (
+                              <Loader className="size-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="size-3.5" strokeWidth={1.75} />
+                            )}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+                {adding && editor ? (
                   <ProviderAccountEditor
-                    key={account.id}
                     editor={editor}
                     working={Boolean(working)}
                     onLabel={(label) =>
@@ -4282,109 +4718,12 @@ function ProviderAccountsSettings() {
                     onCancel={() => setEditor(null)}
                     onSubmit={submitEditor}
                   />
-                ) : (
-                  <div
-                    key={account.id}
-                    className="flex h-12 items-center gap-3 border-b border-content/5 px-4 py-2 last:border-b-0"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate text-[12px] text-content/85">
-                          {account.label}
-                        </span>
-                        {orgTag ? (
-                          <span className="max-w-[8rem] shrink-0 truncate rounded bg-content/[0.07] px-1 text-[9px] leading-4 text-content/50">
-                            {orgTag}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="mt-0.5 flex min-w-0 items-center gap-2.5 text-[10px]">
-                        <AccountStatusLabel
-                          status={accountStatus(limits, usage.now)}
-                          className="shrink-0"
-                        />
-                        <ProviderAccountSubtitle
-                          identity={identity}
-                          fallback={
-                            account.isDefault
-                              ? "Provider CLI profile"
-                              : "Isolated profile"
-                          }
-                          className="truncate text-content/30"
-                        />
-                      </div>
-                    </div>
-                    <AccountUsageMeters limits={limits} now={usage.now} />
-                    <div className="flex min-w-24 shrink-0 items-center justify-end gap-1">
-                      {signingIn || (limits && canSignIn(limits)) ? (
-                        <button
-                          type="button"
-                          disabled={Boolean(working)}
-                          aria-label={`Sign in to ${account.label}`}
-                          onClick={() => void signInAccount(account)}
-                          className="mr-1 flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2 text-[11px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
-                        >
-                          {signingIn ? (
-                            <Loader
-                              className="size-3 animate-spin"
-                              aria-hidden
-                            />
-                          ) : null}
-                          {signingIn ? "Signing in…" : "Sign in"}
-                        </button>
-                      ) : null}
-                      {account.isDefault ? (
-                        <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-content/30">
-                          Default
-                        </span>
-                      ) : null}
-                      <button
-                        type="button"
-                        disabled={Boolean(working)}
-                        aria-label={`Rename ${account.label}`}
-                        title="Rename account"
-                        onClick={() => startRename(account)}
-                        className="grid size-7 place-items-center rounded-md text-content/40 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.96] disabled:opacity-35"
-                      >
-                        <Pencil className="size-3.5" strokeWidth={1.75} />
-                      </button>
-                      {!account.isDefault ? (
-                        <button
-                          type="button"
-                          disabled={Boolean(working)}
-                          aria-label={`Remove ${account.label}`}
-                          title="Remove account"
-                          onClick={() => void removeAccount(account)}
-                          className="grid size-7 place-items-center rounded-md text-content/35 transition-transform duration-150 hover:bg-red-400/10 hover:text-red-400 active:scale-[0.96] disabled:opacity-35"
-                        >
-                          {removing ? (
-                            <Loader className="size-3.5 animate-spin" />
-                          ) : (
-                            <Trash2 className="size-3.5" strokeWidth={1.75} />
-                          )}
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-              {adding && editor ? (
-                <ProviderAccountEditor
-                  editor={editor}
-                  working={Boolean(working)}
-                  onLabel={(label) =>
-                    setEditor((current) =>
-                      current ? { ...current, label } : current,
-                    )
-                  }
-                  onCancel={() => setEditor(null)}
-                  onSubmit={submitEditor}
-                />
-              ) : null}
+                ) : null}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
       {error ? (
         <p
           className="border-t border-content/5 px-4 py-2.5 text-[11px] leading-4 text-red-400"
@@ -4518,7 +4857,14 @@ function ProviderRow({
   const models = modelsFor(harness);
   const available = isHarnessAvailable(harness);
   const current =
-    models.length > 0 ? resolveModel(harness, selectedModel) : null;
+    models.length > 0
+      ? resolveModel(
+          harness,
+          isEnabledChoice(harness, selectedModel)
+            ? selectedModel
+            : defaultModelId(harness),
+        )
+      : null;
 
   useEffect(() => {
     if (!available || models.length > 0) return;
@@ -4565,7 +4911,7 @@ function ProviderRow({
       {available ? (
         <div className="flex items-center gap-2">
           <span className="text-[12px] text-content/50">
-            {pickerLocked ? "Hidden globally" : "Show in picker"}
+            {pickerLocked ? "Hidden globally" : "In picker"}
           </span>
           <Toggle
             label={`Show ${HARNESS_TITLE[harness]} in the model picker`}

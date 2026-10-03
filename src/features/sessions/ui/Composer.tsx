@@ -95,6 +95,7 @@ import type {
   WorkspaceMode,
   ComposerTurnOptions,
 } from "../model/session";
+import { parseShellCommand } from "../model/shellRun";
 import {
   HARNESS_TITLE,
   harnessSupportsAttachments,
@@ -281,6 +282,8 @@ type Props = {
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
   /** Why Send cannot reach its destination right now; Send stays usable and tries again. */
   sendBlockedReason?: string;
+  /** Send is refused while set (another computer is mid-turn on this session). */
+  sendHeldReason?: string;
   context?: ContextUsage;
   sessionUsage?: SessionUsage;
   compactSupported?: boolean;
@@ -645,6 +648,7 @@ export function Composer({
   hideTopBar = false,
   remoteSession = false,
   sendBlockedReason,
+  sendHeldReason,
   remoteFeatures,
   context,
   sessionUsage,
@@ -1857,7 +1861,7 @@ export function Composer({
     });
   };
   const submit = (value: string, queue = false) => {
-    if (disabled || worktreeRemoved || submitLockRef.current) return;
+    if (disabled || worktreeRemoved || sendHeldReason || submitLockRef.current) return;
     submitLockRef.current = true;
     void completeSubmit(value, queue).finally(() => {
       submitLockRef.current = false;
@@ -1873,7 +1877,7 @@ export function Composer({
       pending = pasteFlightRef.current;
     }
     const value = ref.current?.value ?? submittedValue;
-    if (disabled || worktreeRemoved) return;
+    if (disabled || worktreeRemoved || sendHeldReason) return;
     if (isMcpCommand(value)) {
       mcpInsertAt.current = 0;
       if (ref.current) {
@@ -1989,6 +1993,15 @@ export function Composer({
         : text;
     const files = attachmentsRef.current;
     if (!text && files.length === 0 && !noteCard && !handoffCard) return;
+    // `!command` runs in the shell: it goes out exactly as typed, with none of
+    // the context a prompt would carry.
+    const shellLine =
+      files.length === 0 &&
+      !resendEdited &&
+      !inboxCard &&
+      !noteCard &&
+      !handoffCard &&
+      parseShellCommand(value) !== undefined;
     // Clear the parent draft before onSubmit. The app can synchronously remount
     // the composer when the first message leaves an empty session (EmptySession →
     // docked layout). If draftRef still holds the sent text, the new instance
@@ -2000,15 +2013,18 @@ export function Composer({
     const resendSelectedMcp = selectedMcp;
     onDraftChange?.("");
     const accepted = onSubmit(
-      mcpContextText(
-        taggedMcpServers(submittedText, selectedMcp),
-        submittedText,
-      ),
+      shellLine
+        ? value.trim()
+        : mcpContextText(
+            taggedMcpServers(submittedText, selectedMcp),
+            submittedText,
+          ),
       files,
       {
         ...(queue ? { followUpBehavior: "queue" as const } : {}),
-        intent:
-          planSelected || command.planning
+        intent: shellLine
+          ? "default"
+          : planSelected || command.planning
             ? "plan"
             : orchestrationSelected || orchestratorCommand.matched
               ? "orchestrate"
@@ -2762,9 +2778,7 @@ export function Composer({
                       : handoffCard
                         ? "Add context, or send to continue…"
                         : (placeholder ??
-                          (shell
-                            ? "Ask, build, / for commands, @ for references... "
-                            : "Ask, build, / for commands, @ for references... "))
+                          "Ask, build, / for commands, @ for references, ! to run a command... ")
               }
               aria-label={inputAriaLabel}
               disabled={disabled}
@@ -3115,7 +3129,7 @@ export function Composer({
                 hasValue={hasValue && !worktreeRemoved}
                 allowBusySubmit={allowBusySubmit}
                 label={draftActive ? "Save draft" : "Send"}
-                blockedReason={sendBlockedReason}
+                blockedReason={sendHeldReason ?? sendBlockedReason}
                 onSend={() => submit(ref.current?.value ?? "")}
                 onQueue={
                   queueShortcutApplies({

@@ -43,6 +43,11 @@ pub struct Automation {
     #[serde(default)]
     triggers: Option<Vec<AutomationTrigger>>,
     missed_run_grace_minutes: i64,
+    /// Run limits; zero means off.
+    #[serde(default)]
+    max_run_minutes: i64,
+    #[serde(default)]
+    max_runs_per_day: i64,
     enabled: bool,
     next_run_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +92,10 @@ pub struct AutomationUpsert {
     #[serde(default)]
     triggers: Option<Vec<AutomationTrigger>>,
     missed_run_grace_minutes: i64,
+    #[serde(default)]
+    max_run_minutes: i64,
+    #[serde(default)]
+    max_runs_per_day: i64,
     #[serde(default = "default_true")]
     enabled: bool,
     next_run_at: i64,
@@ -302,6 +311,11 @@ fn validate_upsert(input: &AutomationUpsert, now: i64) -> Result<(), String> {
     }
     if !(0..=43_200).contains(&input.missed_run_grace_minutes) {
         return Err("Invalid missed-run grace period.".into());
+    }
+    if !(0..=10_080).contains(&input.max_run_minutes)
+        || !(0..=1_000).contains(&input.max_runs_per_day)
+    {
+        return Err("Invalid automation run limit.".into());
     }
     if input.next_run_at <= now {
         return Err("The next automation run must be in the future.".into());
@@ -689,6 +703,8 @@ pub fn automations_upsert(
         day_of_week: automation.day_of_week,
         triggers,
         missed_run_grace_minutes: automation.missed_run_grace_minutes,
+        max_run_minutes: automation.max_run_minutes,
+        max_runs_per_day: automation.max_runs_per_day,
         enabled: automation.enabled,
         next_run_at: automation.next_run_at,
         last_run_at: previous.as_ref().and_then(|value| value.last_run_at),
@@ -1062,6 +1078,8 @@ mod tests {
             day_of_week: 1,
             triggers: None,
             missed_run_grace_minutes: 720,
+            max_run_minutes: 0,
+            max_runs_per_day: 0,
             enabled: true,
             next_run_at: 1,
             last_run_at: None,
@@ -1111,6 +1129,8 @@ mod tests {
             day_of_week: 1,
             triggers: None,
             missed_run_grace_minutes: 720,
+            max_run_minutes: 0,
+            max_runs_per_day: 0,
             enabled: true,
             next_run_at: 1,
             last_run_at: None,

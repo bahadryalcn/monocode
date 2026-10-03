@@ -377,9 +377,11 @@ pub(crate) fn extract_opencode_go_api_key(raw: &str) -> Option<String> {
     }
 }
 
-struct ClaudeCredentials {
-    access_token: String,
-    expires_at_ms: Option<i64>,
+pub(crate) struct ClaudeCredentials {
+    pub(crate) access_token: String,
+    pub(crate) expires_at_ms: Option<i64>,
+    /// Plan the token was issued for, e.g. "max" or "team".
+    pub(crate) subscription_type: Option<String>,
 }
 
 fn usage_result(
@@ -430,14 +432,19 @@ fn fetch_claude_usage_sync(config_dir: Option<PathBuf>) -> Result<ClaudeUsageFet
     Ok(fetch_usage_with_token(&creds.access_token))
 }
 
-fn fetch_usage_with_token(token: &str) -> ClaudeUsageFetch {
-    let agent = ureq::AgentBuilder::new().timeout(HTTP_TIMEOUT).build();
-    let result = agent
-        .get(OAUTH_USAGE_URL)
+pub(crate) fn claude_oauth_get(url: &str, token: &str) -> Result<ureq::Response, ureq::Error> {
+    ureq::AgentBuilder::new()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .get(url)
         .set("Authorization", &format!("Bearer {token}"))
         .set("anthropic-beta", OAUTH_BETA)
         .set("User-Agent", USER_AGENT)
-        .call();
+        .call()
+}
+
+fn fetch_usage_with_token(token: &str) -> ClaudeUsageFetch {
+    let result = claude_oauth_get(OAUTH_USAGE_URL, token);
 
     match result {
         Ok(response) => {
@@ -473,7 +480,9 @@ fn usage_error(status: u16) -> ClaudeUsageFetch {
     usage_result("error", Some(status), None, Some(message))
 }
 
-fn read_claude_credentials(config_dir: Option<&std::path::Path>) -> Option<ClaudeCredentials> {
+pub(crate) fn read_claude_credentials(
+    config_dir: Option<&std::path::Path>,
+) -> Option<ClaudeCredentials> {
     #[cfg(target_os = "macos")]
     {
         let service = claude_keychain_service(config_dir);
@@ -506,6 +515,13 @@ fn credentials_from_blob(raw: &str) -> Option<ClaudeCredentials> {
     Some(ClaudeCredentials {
         access_token,
         expires_at_ms: oauth_expires_at_ms(&blob),
+        subscription_type: blob
+            .get("claudeAiOauth")
+            .and_then(|oauth| oauth.get("subscriptionType"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|plan| !plan.is_empty())
+            .map(String::from),
     })
 }
 
@@ -542,6 +558,10 @@ fn oauth_expires_at_ms(blob: &Value) -> Option<i64> {
         Value::String(text) => text.trim().parse().ok(),
         _ => None,
     }
+}
+
+pub(crate) fn claude_token_expired(creds: &ClaudeCredentials) -> bool {
+    token_expired(creds.expires_at_ms, now_ms())
 }
 
 /// An unknown expiry is treated as usable: the usage request itself will 401

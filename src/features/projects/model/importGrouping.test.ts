@@ -9,18 +9,18 @@ describe("proposeProjectGroups", () => {
     const groups = proposeProjectGroups({
       grouped: none,
       paths: [
-        "G:/Projects/Firisbe/jira",
-        "G:/Projects/Firisbe/db-ai",
-        "G:/Projects/my_projects/monocode",
-        "G:/Projects/my_projects/burak",
-        "G:/wallet/mobile",
-        "G:/wallet/tms-app",
+        "G:/Projects/Acme/jira",
+        "G:/Projects/Acme/db-ai",
+        "G:/Projects/work/web",
+        "G:/Projects/work/api",
+        "G:/shop/mobile",
+        "G:/shop/admin",
       ],
     });
     expect(groups.map((group) => [group.name, group.paths])).toEqual([
-      ["Firisbe", ["G:/Projects/Firisbe/db-ai", "G:/Projects/Firisbe/jira"]],
-      ["my_projects", ["G:/Projects/my_projects/burak", "G:/Projects/my_projects/monocode"]],
-      ["wallet", ["G:/wallet/mobile", "G:/wallet/tms-app"]],
+      ["Acme", ["G:/Projects/Acme/db-ai", "G:/Projects/Acme/jira"]],
+      ["shop", ["G:/shop/admin", "G:/shop/mobile"]],
+      ["work", ["G:/Projects/work/api", "G:/Projects/work/web"]],
     ]);
   });
 
@@ -36,17 +36,17 @@ describe("proposeProjectGroups", () => {
   it("lets a lone project join a group the user already has", () => {
     const groups = proposeProjectGroups({
       grouped: none,
-      existingGroupNames: ["firisbe"],
-      paths: ["G:/Projects/Firisbe/jira"],
+      existingGroupNames: ["acme"],
+      paths: ["G:/Projects/Acme/jira"],
     });
     expect(groups).toHaveLength(1);
-    expect(groups[0].name).toBe("Firisbe");
+    expect(groups[0].name).toBe("Acme");
   });
 
   it("leaves projects the user already grouped alone, and does not count them", () => {
     const groups = proposeProjectGroups({
-      grouped: new Set([pathKey("G:/Projects/Firisbe/jira")]),
-      paths: ["G:/Projects/Firisbe/jira", "G:/Projects/Firisbe/db-ai"],
+      grouped: new Set([pathKey("G:/Projects/Acme/jira")]),
+      paths: ["G:/Projects/Acme/jira", "G:/Projects/Acme/db-ai"],
     });
     expect(groups).toEqual([]);
   });
@@ -55,15 +55,15 @@ describe("proposeProjectGroups", () => {
     const groups = proposeProjectGroups({
       grouped: none,
       paths: [
-        "g:/Projects/my_projects/burak",
-        "G:/Projects/my_projects/monocode",
-        "G:/projects/MY_PROJECTS/burak",
+        "g:/Projects/work/api",
+        "G:/Projects/work/web",
+        "G:/projects/WORK/api",
       ],
     });
     expect(groups).toHaveLength(1);
     expect(groups[0].paths).toEqual([
-      "g:/Projects/my_projects/burak",
-      "G:/Projects/my_projects/monocode",
+      "g:/Projects/work/api",
+      "G:/Projects/work/web",
     ]);
   });
 
@@ -71,7 +71,7 @@ describe("proposeProjectGroups", () => {
     expect(
       proposeProjectGroups({
         grouped: none,
-        paths: ["G:/a", "G:/b", "C:/Users/kraba/x", "C:/Users/kraba/y"],
+        paths: ["G:/a", "G:/b", "C:/Users/dev/x", "C:/Users/dev/y"],
       }),
     ).toEqual([]);
   });

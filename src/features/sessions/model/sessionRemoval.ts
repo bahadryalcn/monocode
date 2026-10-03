@@ -59,7 +59,15 @@ type SessionRemovalMode = "archive" | "delete";
 type SessionRemovalOptions = {
   mode: SessionRemovalMode;
   scope?: WorkspaceTabCloseScope;
+  /** When given, the tab that takes over also has to share the closing
+   * tab's worktree. */
+  worktreeOf?: (tab: WorkspaceTab) => string | null;
   replacement: ReplacementSeed;
+  /** Checkout the blank replacement of a removed session starts in, when it
+   * should not fall back to the project folder. */
+  worktreeFor?: (
+    removed: Session,
+  ) => { worktreeCwd: string; branch?: string } | undefined;
   workspace: {
     snapshot(): Workspace;
     apply(change: WorkspaceChange): void;
@@ -78,13 +86,16 @@ export function createSessionRemover(options: SessionRemovalOptions): {
   const scope = options.scope ?? "project";
   const createReplacement = (latest: Session | undefined): Session => {
     const seed = latest ?? options.replacement;
-    return newSession(
-      seed.harness ?? "cursor",
-      seed.cwd,
-      seed.model,
-      seed.runtimeMode,
-      seed.modelSettings,
-    );
+    return {
+      ...newSession(
+        seed.harness ?? "cursor",
+        seed.cwd,
+        seed.model,
+        seed.runtimeMode,
+        seed.modelSettings,
+      ),
+      ...(latest ? options.worktreeFor?.(latest) : undefined),
+    };
   };
 
   return {
@@ -105,6 +116,7 @@ async function removeSession(
     ...initial,
     sessionId,
     scope,
+    worktreeOf: options.worktreeOf,
     createReplacement,
   });
   if (!(await options.confirm(plan.closedTabs, options.mode))) return false;
@@ -174,6 +186,7 @@ async function removeSession(
     ...current,
     sessionId,
     scope,
+    worktreeOf: options.worktreeOf,
     createReplacement,
     canCloseTab: (tab) => {
       const before = confirmed.get(tab.id);

@@ -169,6 +169,52 @@ describe("split diff layout in the file editor", () => {
     expect(writes[0]).toBe("zero\r\none\r\ntwo\r\n");
   });
 
+  it("opens straight into the pair for the side the Changes panel named", async () => {
+    base = "one\n";
+    disk = "one\ntwo\n";
+    const commands: string[] = [];
+    const answer = bridge.invoke;
+    let showDiff!: () => void;
+    const diffAsked = new Promise<void>((resolve) => (showDiff = resolve));
+    bridge.invoke = (command, args) => {
+      commands.push(command);
+      if (command === "git_file_diff") {
+        expect(args?.staged).toBe(false);
+        return diffAsked.then(() => answer(command, args));
+      }
+      return answer(command, args);
+    };
+    await act(async () =>
+      root.render(
+        createElement(FileEditor, {
+          path: PATH,
+          cwd: CWD,
+          active: true,
+          showDiff: true,
+          changeKind: "unstaged",
+          onDirtyChange: (_path, value) => dirty.push(value),
+        }),
+      ),
+    );
+    await act(async () =>
+      vi.waitFor(() => expect(commands).toContain("git_file_diff")),
+    );
+    // The opened side is known, so the file list is not asked for first; and
+    // there is no plain editor to tear down while the "before" side is on its way.
+    expect(commands).not.toContain("git_diff_files");
+    expect(container.querySelector(".cm-editor")).toBeNull();
+    expect(container.textContent).toContain("Opening notes.txt");
+
+    showDiff();
+    // Each pass leaves `act`, which is when React draws what arrived in it.
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(container.querySelector(".cm-merge-b")).not.toBeNull();
+    });
+    expect(before().state.doc.toString()).toBe("one\n");
+    expect(after().state.doc.toString()).toBe("one\ntwo\n");
+  });
+
   it("keeps unsaved edits and the caret when switching back to inline", async () => {
     base = "one\ntwo\n";
     disk = "one\ntwo\n";

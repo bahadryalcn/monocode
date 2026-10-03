@@ -57,10 +57,13 @@ export type HostSession = {
   autoWorktreeBranch?: string;
   /** Host-only: the revision at which each block last changed. */
   blockRevisions?: Record<string, number>;
+  /** Taken over from this machine's desktop app: the desktop copy's last
+   * `updated_at` the host has caught up with. */
+  desktop?: { updatedAt: number };
 };
 export type HostSessionSummary = Omit<
   HostSession,
-  "session" | "blockRevisions"
+  "session" | "blockRevisions" | "desktop"
 > & {
   id: string;
   title: string;
@@ -76,6 +79,8 @@ export type HostSessionSummary = Omit<
   worktreeCwd?: string;
   repo?: string;
   draft?: boolean;
+  /** Set when the session lives in the MonoCode app on the host machine, not yet adopted by the host. */
+  origin?: "desktop";
 };
 
 export type RemoteAttachment = {
@@ -191,6 +196,8 @@ export type HostCommand =
       sessionId: string;
       draftBlockId: string;
     }
+  /** A `!command` from the composer: runs on the host, with no model turn. */
+  | { type: "shell"; commandId: string; sessionId: string; line: string }
   | {
       type: "usageLimit";
       commandId: string;

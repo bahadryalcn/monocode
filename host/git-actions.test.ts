@@ -30,6 +30,8 @@ function repo() {
   git("config", "user.name", "Test");
   git("config", "user.email", "test@example.test");
   git("config", "commit.gpgsign", "false");
+  // A Windows runner defaults to autocrlf=true, which rewrites the files these tests read back.
+  git("config", "core.autocrlf", "false");
   const write = (name: string, text: string) => writeFileSync(join(cwd, name), text);
   const commit = (name: string, text: string, message = `edit ${name}`) => {
     write(name, text);

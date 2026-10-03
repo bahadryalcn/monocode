@@ -33,3 +33,31 @@ export function pruneSessionSelection(
   }
   return selected as Set<string>;
 }
+
+/** Inclusive run between the anchor and the target, in list order. */
+export function sessionSelectionRange(
+  orderedSessionIds: readonly string[],
+  anchorSessionId: string,
+  targetSessionId: string,
+): string[] {
+  const start = orderedSessionIds.indexOf(anchorSessionId);
+  const end = orderedSessionIds.indexOf(targetSessionId);
+  if (start < 0 || end < 0) return [targetSessionId];
+  return orderedSessionIds.slice(
+    Math.min(start, end),
+    Math.max(start, end) + 1,
+  );
+}
+
+export function selectAllSessions(
+  selected: ReadonlySet<string>,
+  orderedSessionIds: readonly string[],
+): Set<string> {
+  if (
+    selected.size === orderedSessionIds.length &&
+    orderedSessionIds.every((id) => selected.has(id))
+  ) {
+    return selected as Set<string>;
+  }
+  return new Set(orderedSessionIds);
+}

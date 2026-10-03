@@ -240,7 +240,15 @@ function DockBody({
           ref={lockList}
           className="flex max-h-40 flex-col gap-px overflow-y-auto overscroll-none border-t border-content/10 px-1 py-1"
         >
-          {dock.agents.map((agent) => (
+          {/* Running rows lead, so their Stop buttons are not buried under
+              finished ones. The sort is stable: transcript order otherwise. */}
+          {[...dock.agents]
+            .sort(
+              (a, b) =>
+                Number(b.status === "running") -
+                Number(a.status === "running"),
+            )
+            .map((agent) => (
             <DockAgentRow
               key={agent.blockId}
               agent={agent}

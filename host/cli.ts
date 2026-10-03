@@ -23,6 +23,9 @@ import { acquireHostOwner } from "./owner";
 import { HostEngine } from "./engine";
 import { hostProviders } from "./providers";
 import { createHostServer } from "./server";
+import { HostAutomations } from "./automations";
+import { HostTasks } from "./tasks";
+import { HostGoals } from "./goals";
 import {
   REMOTE_PROVIDERS,
   type RemoteProvider,
@@ -238,6 +241,10 @@ Connect another computer using an SSH forward to the loopback port.`);
       }
     }
     const engine = new HostEngine(store, hostProviders);
+    const automations = new HostAutomations(store, engine);
+    const tasks = new HostTasks(store, engine);
+    // Goals run on the task board's timer.
+    const goals = new HostGoals(store, engine, tasks);
     const secret = randomBytes(32).toString("base64url");
     let stopping = false;
     let stop: () => Promise<void>;
@@ -270,10 +277,12 @@ Connect another computer using an SSH forward to the loopback port.`);
           response.writeHead(400).end();
         }
       });
-    });
+    }, automations, tasks, undefined, goals);
     stop = async () => {
       if (stopping) return;
       stopping = true;
+      automations.stop();
+      tasks.stop();
       server.close();
       server.closeAllConnections();
       await engine.close();
@@ -285,6 +294,8 @@ Connect another computer using an SSH forward to the loopback port.`);
       server.once("error", reject);
       server.listen(port, "127.0.0.1", resolve);
     });
+    automations.start();
+    tasks.start();
     writeFileSync(
       statePath,
       JSON.stringify({ pid: process.pid, port, secret }),

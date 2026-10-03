@@ -23,7 +23,10 @@ import { useColorScheme } from "../../../shared/hooks/useColorScheme";
 import { formatInteger } from "../../../shared/lib/numbers";
 import type { ColorScheme } from "../../settings/model/appearance";
 import { basename } from "../../../platform/tauri/fs";
-import { highlightDiffFile, type SyntaxToken } from "../../files/editor/syntaxTokens";
+import {
+  highlightDiffFile,
+  type SyntaxToken,
+} from "../../files/editor/syntaxTokens";
 import { DiffCommentComposer } from "./DiffCommentComposer";
 import {
   DiffOverviewContext,
@@ -436,9 +439,7 @@ const FileSection = memo(function FileSection({
         className={`${
           fileLayout === "stacked" ? "sticky top-0 z-30 backdrop-blur-xl" : ""
         } flex items-center gap-2 bg-content/2 px-3 py-1.5 ${
-          fileLayout === "stacked" || expanded
-            ? "border-b border-stroke"
-            : ""
+          fileLayout === "stacked" || expanded ? "border-b border-stroke" : ""
         }`}
       >
         <button
@@ -707,7 +708,8 @@ function VirtualRows({
   const hoverAt = useCallback(
     (point: { x: number; y: number } | null) => {
       const body = bodyRef.current;
-      const clear = () => setHover((current) => (current == null ? current : null));
+      const clear = () =>
+        setHover((current) => (current == null ? current : null));
       if (point == null || !body) return clear();
       const bounds = body.getBoundingClientRect();
       let y = point.y - bounds.top - range.padTop;
@@ -787,21 +789,28 @@ function VirtualRows({
 
   useEffect(() => {
     if (!near) return;
-    const scrollers = [codeRef.current, codeRightRef.current].filter(
-      (node): node is HTMLDivElement => node !== null,
-    );
-    if (scrollers.length === 0) return;
+    const body = bodyRef.current;
+    if (!body) return;
 
     // WebKit can latch a wheel gesture to a horizontal scroller instead of
     // chaining its vertical delta to the surrounding unified diff.
     const onWheel = (event: WheelEvent) => {
-      if (event.deltaY === 0) return;
-      const code = event.currentTarget as HTMLElement;
+      if (
+        event.defaultPrevented ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.deltaY === 0
+      )
+        return;
+      const target = event.target instanceof Node ? event.target : null;
+      const code = [codeRef.current, codeRightRef.current].find(
+        (node) => node && target && node.contains(target),
+      );
       const ownScroller = scrollerRef.current;
       const verticalScroller =
         ownScroller && ownScroller.scrollHeight > ownScroller.clientHeight + 1
           ? ownScroller
-          : verticalScrollParent(code, true);
+          : verticalScrollParent(body, true);
       if (!verticalScroller) return;
 
       const scale =
@@ -817,13 +826,18 @@ function VirtualRows({
 
       event.preventDefault();
       verticalScroller.scrollTop = next;
+      // Cancelling the native gesture also cancels its horizontal component.
+      // Preserve diagonal touchpad scrolling in the column under the pointer.
+      if (code && event.deltaX !== 0) {
+        const horizontalScale =
+          event.deltaMode === 2 ? code.clientWidth : scale;
+        code.scrollLeft += event.deltaX * horizontalScale;
+      }
     };
 
-    for (const node of scrollers) {
-      node.addEventListener("wheel", onWheel, { passive: false });
-    }
+    body.addEventListener("wheel", onWheel, { passive: false });
     return () => {
-      for (const node of scrollers) node.removeEventListener("wheel", onWheel);
+      body.removeEventListener("wheel", onWheel);
     };
   }, [near, scrollerRef, split]);
 
@@ -870,9 +884,7 @@ function VirtualRows({
       );
     });
 
-  const visibleSplit = splitRows
-    ? splitRows.slice(range.start, range.end)
-    : [];
+  const visibleSplit = splitRows ? splitRows.slice(range.start, range.end) : [];
   const renderSplitLane = (side: DiffSide, lane: Lane) =>
     visibleSplit.map((row, index) => {
       const key = splitRowKey(row, range.start + index);

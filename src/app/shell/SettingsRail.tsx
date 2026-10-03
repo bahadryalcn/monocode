@@ -12,6 +12,7 @@ import {
   Palette,
   SlidersHorizontal,
   Sparkles,
+  Terminal,
   type IconComponent,
 } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
@@ -25,6 +26,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   connections: Internet,
   appearance: Palette,
   keybindings: Keyboard,
+  terminal: Terminal,
   chat: MessageSquare,
   providers: Bot,
   mcp: Globe,

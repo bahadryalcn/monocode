@@ -26,6 +26,7 @@ export function tabGroupColor(project: string): string {
 const COLOR_KEY = "monocode:tab-group:colors";
 const CUSTOM_COLOR_KEY = "monocode:tab-group:custom-colors";
 const LABEL_KEY = "monocode:tab-group:labels";
+const AUTO_LABEL_KEY = "monocode:tab-group:auto-labels";
 const LABELS_CHANGED = "monocode:tab-group-labels-changed";
 const LOGO_KEY = "monocode:tab-group:logos";
 const MASCOT_KEY = "monocode:tab-group:mascots";
@@ -71,6 +72,7 @@ const APPEARANCE_KEYS = [
   COLOR_KEY,
   CUSTOM_COLOR_KEY,
   LABEL_KEY,
+  AUTO_LABEL_KEY,
   LOGO_KEY,
   MASCOT_KEY,
 ] as const;
@@ -216,8 +218,32 @@ export function saveTabGroupCustomColor(
   notifyProjectPathsChanged();
 }
 
+/** What each project is shown as: the name the user gave it, else its automatic one. */
 export function loadTabGroupLabels(): Record<string, string> {
+  return { ...loadAutoTabGroupLabels(), ...loadCustomTabGroupLabels() };
+}
+
+/** Only the names the user typed. These are the ones that sync. */
+export function loadCustomTabGroupLabels(): Record<string, string> {
   return readRecord(LABEL_KEY);
+}
+
+// Names given automatically to keep two rail rows from reading the same are
+// kept apart from the user's labels and never synced: each desktop sees a
+// different set of clashes, so a synced one would be renamed back and forth.
+export function loadAutoTabGroupLabels(): Record<string, string> {
+  return readRecord(AUTO_LABEL_KEY);
+}
+
+export function saveAutoTabGroupLabel(project: string, label: string): void {
+  const trimmed = label.trim();
+  const next = loadAutoTabGroupLabels();
+  if ((next[project] ?? "") === trimmed) return;
+  if (!trimmed) delete next[project];
+  else next[project] = trimmed;
+  if (!writeRecord(AUTO_LABEL_KEY, next)) return;
+  notifyTabGroupLabelsChanged();
+  notifyProjectPathsChanged();
 }
 
 export function subscribeTabGroupLabels(onChange: () => void): () => void {
@@ -233,10 +259,16 @@ function notifyTabGroupLabelsChanged(): void {
 
 export function saveTabGroupLabel(project: string, label: string): void {
   const trimmed = label.trim();
-  const next = loadTabGroupLabels();
+  const next = loadCustomTabGroupLabels();
   if (!trimmed) delete next[project];
   else next[project] = trimmed;
   if (!writeRecord(LABEL_KEY, next)) return;
+  // A name chosen by the user, or a reset to the folder name, replaces the automatic one.
+  const auto = loadAutoTabGroupLabels();
+  if (project in auto) {
+    delete auto[project];
+    writeRecord(AUTO_LABEL_KEY, auto);
+  }
   notifyTabGroupLabelsChanged();
   notifyProjectPathsChanged();
 }
@@ -271,7 +303,7 @@ export function clearTabGroupSettings(project: string): void {
     const next = readRecord(key);
     if (!(project in next)) continue;
     delete next[project];
-    if (writeRecord(key, next) && key === LABEL_KEY) {
+    if (writeRecord(key, next) && (key === LABEL_KEY || key === AUTO_LABEL_KEY)) {
       notifyTabGroupLabelsChanged();
     }
   }
@@ -290,7 +322,7 @@ export function rebaseProjectTabGroupSettings(from: string, to: string): void {
     if (!(newKey in next)) next[newKey] = next[oldKey];
     delete next[oldKey];
     if (!writeRecord(key, next)) continue;
-    labelsChanged ||= key === LABEL_KEY;
+    labelsChanged ||= key === LABEL_KEY || key === AUTO_LABEL_KEY;
     logosChanged ||= key === LOGO_KEY;
   }
   if (labelsChanged) notifyTabGroupLabelsChanged();

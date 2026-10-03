@@ -44,6 +44,8 @@ function repo() {
   git("config", "user.name", "Test");
   git("config", "user.email", "test@example.test");
   git("config", "commit.gpgsign", "false");
+  // A Windows runner defaults to autocrlf=true, which rewrites the files these tests read back.
+  git("config", "core.autocrlf", "false");
   const write = (name: string, text: string | Buffer) => {
     mkdirSync(join(cwd, name, ".."), { recursive: true });
     writeFileSync(join(cwd, name), text);

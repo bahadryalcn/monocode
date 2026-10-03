@@ -33,7 +33,8 @@ export class HostStore {
       CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), snapshot TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, receipt TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events (session_id TEXT NOT NULL REFERENCES sessions(id), revision INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id, revision));
-      CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL UNIQUE);`);
+      CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL UNIQUE);
+      CREATE TABLE IF NOT EXISTS sync_records (table_name TEXT NOT NULL, id TEXT NOT NULL, value TEXT, rev INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (table_name, id));`);
     const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
     if (!columns.some((column) => column.name === "summary"))
       this.db.exec("ALTER TABLE sessions ADD COLUMN summary TEXT");
@@ -153,6 +154,33 @@ export class HostStore {
         (block) => (blockRevisions[block.id] ?? value.revision) > revision,
       ),
     };
+  }
+
+  /** Sessions taken over from this machine's desktop app, without parsing
+   * their transcripts. */
+  adopted(): {
+    id: string;
+    projectId: string;
+    revision: number;
+    updatedAt: number;
+    status: HostSession["status"];
+  }[] {
+    return this.db
+      .prepare(
+        `SELECT id, project_id,
+          json_extract(snapshot, '$.revision') AS revision,
+          json_extract(snapshot, '$.updatedAt') AS updated_at,
+          json_extract(snapshot, '$.status') AS status
+        FROM sessions WHERE json_extract(snapshot, '$.desktop') IS NOT NULL`,
+      )
+      .all()
+      .map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        revision: Number(row.revision),
+        updatedAt: Number(row.updated_at),
+        status: String(row.status) as HostSession["status"],
+      }));
   }
 
   sessions(projectId?: string): HostSession[] {

@@ -710,14 +710,59 @@ export function isCheckoutBlockedByChanges(message: string): boolean {
 
 const GIT_CHANGED = "monocode-git-changed";
 
-/** Tell git UIs (diff pane, branch picker) to reload after a local git mutation. */
-export function notifyGitChanged() {
-  window.dispatchEvent(new Event(GIT_CHANGED));
+/**
+ * What a git change touched. `index` is the working tree and the index of one
+ * checkout (an edit, stage, unstage or discard): commits, branches, stashes
+ * and other checkouts are as they were. `refs` is anything else.
+ */
+export type GitChangeScope = "index" | "refs";
+
+type GitChange = { cwd?: string; scope: GitChangeScope };
+
+/** Whether two folders belong to one checkout: the same folder or nested. */
+function sameCheckout(a: string, b: string): boolean {
+  const normalize = (path: string) =>
+    path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const left = normalize(a);
+  const right = normalize(b);
+  return (
+    left === right ||
+    left.startsWith(`${right}/`) ||
+    right.startsWith(`${left}/`)
+  );
 }
 
-export function subscribeGitChanged(listener: () => void): () => void {
-  window.addEventListener(GIT_CHANGED, listener);
-  return () => window.removeEventListener(GIT_CHANGED, listener);
+/**
+ * Tell git UIs (diff pane, branch picker) to reload after a local git mutation.
+ * Naming the checkout and an `index` scope keeps the reload to the views that
+ * show that checkout's changed files.
+ */
+export function notifyGitChanged(cwd?: string, scope: GitChangeScope = "refs") {
+  window.dispatchEvent(
+    new CustomEvent<GitChange>(GIT_CHANGED, { detail: { cwd, scope } }),
+  );
+}
+
+/**
+ * `filter.cwd` skips `index` changes of unrelated checkouts; `filter.refsOnly`
+ * skips every `index` change, for views of commits, branches or stashes.
+ */
+export function subscribeGitChanged(
+  listener: () => void,
+  filter?: { cwd?: string; refsOnly?: boolean },
+): () => void {
+  const onChange = (event: Event) => {
+    const change = (event as CustomEvent<GitChange | null>).detail;
+    if (change?.scope === "index") {
+      if (filter?.refsOnly) return;
+      if (filter?.cwd && change.cwd && !sameCheckout(filter.cwd, change.cwd)) {
+        return;
+      }
+    }
+    listener();
+  };
+  window.addEventListener(GIT_CHANGED, onChange);
+  return () => window.removeEventListener(GIT_CHANGED, onChange);
 }
 
 export function createPath(
@@ -766,6 +811,23 @@ export function revealPath(path: string): Promise<void> {
 
 export function openPathWithDefaultApp(path: string): Promise<void> {
   return invoke<void>("open_path_with_default_app", { path });
+}
+
+/** Runs a command line in the user's shell on this computer. */
+export function runShellCommand(
+  cwd: string,
+  command: string,
+  profile?: string,
+): Promise<{ output: string; exitCode: number | null; timedOut: boolean }> {
+  return invoke("run_shell_command", { cwd, command, profile: profile ?? null });
+}
+
+/** Whether a path on this computer is a folder; false when it is missing or on another machine. */
+export function isLocalDirectory(path: string): Promise<boolean> {
+  if (path.startsWith(REMOTE_PATH_PREFIX)) return Promise.resolve(false);
+  return invoke<{ isDir: boolean }[]>("inspect_paths", { paths: [path] })
+    .then((infos) => infos[0]?.isDir === true)
+    .catch(() => false);
 }
 
 export function homeDir(): Promise<string> {

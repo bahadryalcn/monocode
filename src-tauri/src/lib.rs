@@ -19,6 +19,7 @@ mod inbox_media;
 mod jira;
 mod keep_awake;
 mod linear;
+mod local_host;
 mod link_preview;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -46,6 +47,7 @@ mod skills;
 pub mod ssh_askpass;
 #[cfg(target_os = "windows")]
 mod tray;
+mod terminal_profiles;
 mod turn_probe;
 mod turn_steps;
 mod window;
@@ -270,6 +272,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             remote::remote_machines,
             remote::remote_connect,
+            local_host::local_host_connect,
             remote::remote_disconnect,
             remote::remote_request,
             remote::remote_ssh_begin,
@@ -489,6 +492,9 @@ pub fn run() {
             harness::harness_sse_open,
             harness::harness_sse_close,
             harness::harness_exec,
+            harness::run_shell_command,
+            terminal_profiles::terminal_profiles,
+            terminal_profiles::set_terminal_profile,
             harness_updates::harness_latest_version,
             harness_updates::harness_update_check_claim,
             harness_updates::harness_update,

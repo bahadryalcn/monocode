@@ -69,9 +69,12 @@ function start(entry: Entry) {
   const resume = () => {
     if (!document.hidden) void load(entry);
   };
-  const unsubscribe = subscribeGitChanged(() => {
-    if (!document.hidden) void load(entry, true);
-  });
+  const unsubscribe = subscribeGitChanged(
+    () => {
+      if (!document.hidden) void load(entry, true);
+    },
+    { refsOnly: true },
+  );
   window.addEventListener("focus", resume);
   document.addEventListener("visibilitychange", resume);
   entry.stop = () => {

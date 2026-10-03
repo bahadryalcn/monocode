@@ -141,9 +141,8 @@ export function UsageOverview() {
             Cost by project and day
           </h2>
           <p className="mt-1 text-[12px] leading-relaxed text-content/45">
-            API-equivalent estimates at list prices, from local session logs.
-            Subscription plans are not billed per token, so this is not what you
-            pay.
+            API-equivalent estimates from local session logs, not what a
+            subscription plan bills.
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2 pb-0.5">
@@ -464,7 +463,7 @@ function dayTotalText(day: UsageDayBucket, metric: Metric): string {
 function ProjectTable({ data }: { data: UsageOverviewData }) {
   const grouped = data.groups.some((section) => section.name !== null);
   return (
-    <div className="overflow-x-auto">
+    <div className="max-h-80 overflow-auto">
       <table className="w-full min-w-[520px] border-collapse text-left text-[12px] tabular-nums">
         <caption className="px-4 py-3 text-left text-[13px] font-medium text-content">
           Projects by estimated cost

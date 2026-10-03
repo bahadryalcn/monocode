@@ -15,7 +15,14 @@ import {
   resolveTabGroupLabel,
   resolveTabGroupMascot,
 } from "../../workspace/model/tabGroups";
-import { Check, ChevronDown, ChevronUp, CircleAlert } from "../../../shared/ui/icons";
+import {
+  Check,
+  ChevronDown,
+  ChevronUp,
+  CircleAlert,
+  Internet,
+} from "../../../shared/ui/icons";
+import { isRemoteProjectPath } from "../../projects/model/recents";
 import { HarnessIcon } from "./HarnessIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { TerminalSpinner } from "./TerminalSpinner";
@@ -180,7 +187,13 @@ function LiveAgentCard({
       ? "Done"
       : agent.activity;
   const live = !agent.needsApproval && !agent.done;
-  const title = [agent.title, project, activity, elapsed]
+  const remote = isRemoteProjectPath(agent.cwd);
+  const title = [
+    agent.title,
+    remote ? `${project} (remote)` : project,
+    activity,
+    elapsed,
+  ]
     .filter(Boolean)
     .join("\n");
 
@@ -236,6 +249,13 @@ function LiveAgentCard({
       </span>
       <span className="mt-1 flex min-w-0 items-center gap-1.5 pl-4 text-[11px] leading-tight text-content/45">
         <HarnessIcon harness={agent.harness} className="size-3 shrink-0" />
+        {remote ? (
+          <Internet
+            aria-label="On another machine"
+            className="size-3 shrink-0"
+            strokeWidth={1.75}
+          />
+        ) : null}
         <span className="min-w-0 flex-1 truncate">{project}</span>
         {elapsed ? (
           <span className="shrink-0 tabular-nums">{elapsed}</span>

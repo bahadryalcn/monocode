@@ -104,6 +104,57 @@ describe("UnifiedDiffView layouts", () => {
     ).toHaveLength(1);
   });
 
+  it.each(["inline", "split"])(
+    "scrolls %s diffs from code and gutter, preserving touchpad movement",
+    async (layout) => {
+      localStorage.setItem("monocode.diffLayout", layout);
+      await render(model("old", "new"));
+      const scroller = container.querySelector<HTMLElement>(".unified-diff")!;
+      Object.defineProperties(scroller, {
+        scrollHeight: { configurable: true, value: 2000 },
+        clientHeight: { configurable: true, value: 400 },
+      });
+      const columns = container.querySelectorAll<HTMLElement>(
+        ".overflow-x-auto.overscroll-x-none",
+      );
+      for (const code of columns) {
+        const wheel = new WheelEvent("wheel", {
+          deltaY: 40,
+          deltaX: 12,
+          bubbles: true,
+          cancelable: true,
+        });
+        code.dispatchEvent(wheel);
+        expect(wheel.defaultPrevented).toBe(true);
+        expect(code.scrollLeft).toBe(12);
+      }
+      expect(scroller.scrollTop).toBe(columns.length * 40);
+      const gutter = columns[0].previousElementSibling!;
+      gutter.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: 3,
+          deltaMode: 1,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(scroller.scrollTop).toBeGreaterThan(columns.length * 40);
+
+      const top = scroller.scrollTop;
+      const zoom = new WheelEvent("wheel", {
+        deltaY: 50,
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      // happy-dom's WheelEvent does not initialize mouse modifier keys.
+      Object.defineProperty(zoom, "ctrlKey", { value: true });
+      columns[0].dispatchEvent(zoom);
+      expect(zoom.defaultPrevented).toBe(false);
+      expect(scroller.scrollTop).toBe(top);
+    },
+  );
+
   it("still stages a hunk from a split row", async () => {
     localStorage.setItem("monocode.diffLayout", "split");
     const onStageHunk = vi.fn();

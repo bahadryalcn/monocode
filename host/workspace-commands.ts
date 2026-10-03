@@ -491,7 +491,7 @@ export class WorkspaceCommands {
 
   private async gitCommand(cwd: unknown, args: string[]): Promise<string> {
     const root = await this.gitRoot(cwd);
-    return (await exec("git", ["-c", "core.pager=cat", ...args], {
+    return (await exec("git", [...(args.includes("--") ? ["--literal-pathspecs"] : []), "-c", "core.pager=cat", ...args], {
       cwd: root,
       timeout: 30_000,
       maxBuffer: 4 * 1024 * 1024,

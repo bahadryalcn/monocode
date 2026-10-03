@@ -27,7 +27,7 @@ function baseName(path: string): string {
  * Which folders deserve a rail group, going by the folder each project sits in.
  *
  * Projects that share a parent folder are grouped under that folder's name
- * (`G:/Projects/Firisbe/*` becomes "Firisbe"). The rule is deliberately
+ * (`G:/Projects/Acme/*` becomes "Acme"). The rule is deliberately
  * conservative, because it runs on a pile of newly imported projects:
  *
  * - a parent needs at least `minMembers` of the given projects, unless the user

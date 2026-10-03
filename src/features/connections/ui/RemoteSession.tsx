@@ -21,6 +21,8 @@ import { notifyGitChanged } from "../../../platform/tauri/fs";
 import type { Worktree } from "../../source-control/model/worktrees";
 import { useProjectBranchesState } from "../../source-control/hooks/useProjectBranches";
 import { registerRemoteSessionActions } from "../model/remoteSessionActions";
+import { HOST_UPDATE_NOTICE, SESSION_SHELL } from "../model/remoteCapabilities";
+import { parseShellCommand } from "../../sessions/model/shellRun";
 import { loadResumeAtReset } from "../../settings/model/settings";
 import {
   clearPendingRemoteCommand,
@@ -420,7 +422,10 @@ function ConnectedRemoteSession({
           rememberSessionSnapshot(snapshotKey(machine.id, sessionId), next);
         setSnapshot(next);
         if (next) onSnapshot?.(shell.id, next);
-        active = !!next?.session.busy;
+        // A `!command` still running on the host changes the transcript too.
+        active =
+          !!next?.session.busy ||
+          !!next?.session.blocks.some((block) => block.shell?.running);
       } catch (reason) {
         if (stale()) return;
         setOnline(false);
@@ -961,6 +966,67 @@ function ConnectedRemoteSession({
     else setStarting({ ...turn, failed: true });
   };
 
+  const dispatchShell = (id: string, command: string) =>
+    remoteRequest<CommandReceipt>(
+      machine.id,
+      "commands.dispatch",
+      { type: "shell", commandId: crypto.randomUUID(), sessionId: id, line: command },
+      false,
+      true,
+    ).then(() => {
+      if (alive.current) setRefresh((value) => value + 1);
+    });
+
+  /** Runs a `!command` on the host. It is not a turn: nothing is queued or
+   * retried, and a refused one stays in the composer. */
+  const runShell = (command: string): boolean => {
+    if (!descriptor) {
+      setError("This project’s machine isn’t connected yet.");
+      return false;
+    }
+    if (!descriptor.capabilities.includes(SESSION_SHELL)) {
+      setError(HOST_UPDATE_NOTICE);
+      return false;
+    }
+    if (sendingRef.current || preparingRef.current) return false;
+    const version = bindingVersion.current;
+    const failed = (reason: unknown) => {
+      reportRemoteConnection(project.key, "session", reason);
+      if (alive.current && version === bindingVersion.current)
+        setError(String(reason).replace(/^Error: /, ""));
+    };
+    setError("");
+    if (hostSession) {
+      void dispatchShell(hostSession.id, command).catch(failed);
+      return true;
+    }
+    // A new conversation: the command needs a session to run in.
+    if (sessionId || !draft.model) return false;
+    if (draftWorkspaceMode === "worktree") {
+      setError("Send a message first to create the worktree, then run commands in it.");
+      return false;
+    }
+    preparingRef.current = true;
+    void run({
+      type: "create",
+      commandId: crypto.randomUUID(),
+      projectId: project.projectId,
+      ...(selectedCwd !== project.cwd ? { worktreeCwd: selectedCwd } : {}),
+      harness: draft.harness,
+      model: draft.model,
+      modelSettings: draft.settings,
+      runtimeMode: draft.mode,
+    })
+      .then((receipt) =>
+        receipt ? dispatchShell(receipt.sessionId, command) : undefined,
+      )
+      .catch(failed)
+      .finally(() => {
+        preparingRef.current = false;
+      });
+    return true;
+  };
+
   const submit = (
     text: string,
     attachments: Attachment[] = [],
@@ -968,6 +1034,11 @@ function ConnectedRemoteSession({
     asDraft = false,
     planBlockId?: string,
   ): boolean => {
+    const shellCommand =
+      asDraft || attachments.length || options?.draftBlockId || planBlockId
+        ? undefined
+        : parseShellCommand(text);
+    if (shellCommand) return runShell(shellCommand);
     if (
       (text.trim() || attachments.length) &&
       shouldQueueRemoteMessage({
