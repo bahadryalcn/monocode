@@ -64,7 +64,16 @@ export function planTabMoveRemainder(
   const moving = new Set(movingIds);
   const remaining = tabs.filter((tab) => !moving.has(tab.id));
   const inProject = filterTabsForProject(remaining, sessions, projectCwd);
-  const closeWindow = secondaryWindow && remaining.length === 0;
+  const movedSessionIds = new Set(
+    tabs
+      .filter((tab) => moving.has(tab.id))
+      .flatMap((tab) => leafIds(tab.layout)),
+  );
+  const ownsOtherRunningWork = sessions.some(
+    (session) => session.busy && !movedSessionIds.has(session.id),
+  );
+  const closeWindow =
+    secondaryWindow && remaining.length === 0 && !ownsOtherRunningWork;
   const needsSeed = !closeWindow && inProject.length === 0;
   const nextActiveTabId = moving.has(activeTabId)
     ? (inProject[0]?.id ?? null)

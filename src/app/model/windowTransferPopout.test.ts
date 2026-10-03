@@ -105,6 +105,19 @@ describe("planTabMoveRemainder", () => {
     });
   });
 
+  it("keeps a window alive while it owns an inbox turn outside its tab tree", () => {
+    const plan = planTabMoveRemainder(
+      [tabs[0]],
+      [...sessions, session("inbox", "/p/one", true)],
+      ["ta"],
+      "ta",
+      "/p/one",
+      true,
+    );
+    expect(plan.closeWindow).toBe(false);
+    expect(plan.needsSeed).toBe(true);
+  });
+
   it("keeps a secondary window that still owns another project", () => {
     const plan = planTabMoveRemainder(
       tabs,
