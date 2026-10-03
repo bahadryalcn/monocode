@@ -831,6 +831,27 @@ const LocalSessionPane = memo(function LocalSessionPane({
     </Composer>
   );
 
+  const notesShortcut = keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`);
+  const notesButton =
+    notesEnabled && visible && focused && !showNotesPanel ? (
+      <button
+        type="button"
+        title={`Notes${notesShortcut ? ` (${notesShortcut})` : ""}`}
+        aria-label="Open notes panel"
+        data-no-drag
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={toggleNotesPanel}
+        className={
+          inSplit
+            ? "grid size-5 shrink-0 place-items-center rounded text-content/35 hover:bg-content/10 hover:text-content"
+            : "absolute right-3 top-1.5 z-10 grid size-6 place-items-center rounded-md text-content/35 hover:bg-content/10 hover:text-content"
+        }
+      >
+        <File className="size-3.5" strokeWidth={1.75} />
+      </button>
+    ) : null;
+
   const pane = (
     <div
       ref={paneRef}
@@ -886,6 +907,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             {title}
           </span>
+          {notesButton}
           <button
             type="button"
             title={`Close Pane (${MOD}W)`}
@@ -1168,23 +1190,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
       </div>
     </div>
   );
-  const notesShortcut = keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`);
-
   return (
     <div className="relative flex h-full min-h-0 min-w-0 flex-1">
       {pane}
       {showNotesPanel ? (
         <SessionNotesPanel sessionId={session.id} cwd={session.cwd} />
-      ) : notesEnabled && visible && focused ? (
-        <button
-          type="button"
-          title={`Notes${notesShortcut ? ` (${notesShortcut})` : ""}`}
-          aria-label="Open notes panel"
-          onClick={toggleNotesPanel}
-          className="absolute right-3 top-1.5 z-10 grid size-6 place-items-center rounded-md text-content/35 hover:bg-content/10 hover:text-content"
-        >
-          <File className="size-3.5" strokeWidth={1.75} />
-        </button>
+      ) : !inSplit ? (
+        notesButton
       ) : null}
     </div>
   );
