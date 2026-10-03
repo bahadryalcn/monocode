@@ -22,6 +22,9 @@ import { initializeProviderBinaryPaths } from "./features/providers/model/provid
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
+import { bootstrap } from "./app/model/bootstrap";
+import { BootFailure } from "./app/shell/BootFailure";
+import { NoteDraftRecoveryNotice } from "./features/notes/ui/NoteDraftRecoveryNotice";
 
 performance.mark("monocode:bootstrap");
 // Let local boot IPC overlap loading/evaluating the workspace UI.
@@ -88,14 +91,19 @@ void listen("quit_aborted", () => {
   abortQuit();
 });
 
-void Promise.all([
-  homeDirPrimed,
-  providerBinaryPathsPrimed,
-  loadBootWorkspace(),
-  // Saved drafts are in the cache before the first composer mounts.
-  hydrateComposerDrafts(),
-  appLoaded,
-]).then(
+const appRoot = ReactDOM.createRoot(
+  document.getElementById("root") as HTMLElement,
+);
+void bootstrap(
+  () =>
+    Promise.all([
+      homeDirPrimed,
+      providerBinaryPathsPrimed,
+      loadBootWorkspace(),
+      // Saved drafts are in the cache before the first composer mounts.
+      hydrateComposerDrafts(),
+      appLoaded,
+    ]),
   ([
     ,
     ,
@@ -105,7 +113,7 @@ void Promise.all([
   ]) => {
     performance.mark("monocode:workspace-ready");
     const installedUpdate = windowTransfer ? null : consumeInstalledUpdate();
-    ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    appRoot.render(
       <React.StrictMode>
         <BootGate>
           <App
@@ -115,8 +123,15 @@ void Promise.all([
             history={history}
             historyCwd={historyCwd}
           />
+          <NoteDraftRecoveryNotice />
         </BootGate>
       </React.StrictMode>,
+    );
+  },
+  (error) => {
+    document.getElementById("boot-splash")?.remove();
+    appRoot.render(
+      <BootFailure error={error} onRetry={() => window.location.reload()} />,
     );
   },
 );

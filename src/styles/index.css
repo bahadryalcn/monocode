@@ -72,6 +72,14 @@
 }
 
 :root {
+  --ui-font-secondary: 0.8125rem;
+  --ui-font-caption: 0.75rem;
+  --ui-text-secondary: color-mix(in srgb, var(--color-content) 85%, var(--color-background-base));
+  --ui-text-disabled: color-mix(in srgb, var(--color-content) 50%, var(--color-background-base));
+  --ui-control-height: 2.25rem;
+  --ui-control-height-compact: 1.75rem;
+  --ui-focus-width: 2px;
+  --ui-focus-offset: 2px;
   --motion-reorder-duration: 160ms;
   --motion-tab-close-duration: 200ms;
   --motion-feedback-duration: 120ms;
@@ -96,6 +104,21 @@
   --color-skill: #e8c547;
   --color-mention: #38bdf8;
   --color-markdown-heading: #f9a8c9;
+}
+
+.ui-secondary-text {
+  font-size: var(--ui-font-secondary);
+  color: var(--ui-text-secondary);
+}
+
+.ui-caption-text {
+  font-size: var(--ui-font-caption);
+  color: var(--ui-text-secondary);
+}
+
+:where(button, input, select, textarea, a[href], [tabindex]):focus-visible {
+  outline: var(--ui-focus-width) solid var(--color-accent);
+  outline-offset: var(--ui-focus-offset);
 }
 
 html {
@@ -2757,10 +2780,9 @@ header[data-tauri-drag-region] button {
   }
 }
 
-/* Keep the original glass tint in dark mode. Light popovers use an opaque
-   surface so underlying content cannot show through. */
+/* Menus need a stable surface above bright buttons and custom backgrounds. */
 .popover-backdrop {
-  background: color-mix(in srgb, var(--color-content) 2%, transparent);
+  background: color-mix(in srgb, var(--color-background-base) 95%, transparent);
 }
 
 html.theme-light .popover-backdrop {

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { RemoteOutboxNotice } from "./RemoteOutboxNotice";
 import { useEffect, useRef, useState } from "react";
 import { Internet, Loader, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
 import {
@@ -364,6 +365,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
       : "Save and reconnect";
   return (
     <div data-setting-id="remote-machines" className="flex flex-col gap-5">
+      <RemoteOutboxNotice />
       <div className="flex items-end justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-[13px] font-semibold text-content">

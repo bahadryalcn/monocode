@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import {
   applySessionSync,
-  type HostCommand,
   type HostSession,
   type HostSessionSummary,
   type RemoteMachine,
@@ -173,75 +172,7 @@ export function rememberRemoteSession(shellId: string, sessionId?: string) {
   window.dispatchEvent(new Event(REMOTE_HISTORY_CHANGE));
 }
 
-const pendingPrefix = (project: string, environment: string) =>
-  `monocode.remote-command.v1:${JSON.stringify([project, environment])}:`;
-
-type PendingEntry = { command: HostCommand; shellId?: string; followup?: HostCommand };
-const readPendingEntry = (value: string): PendingEntry => {
-  const parsed = JSON.parse(value) as PendingEntry | HostCommand;
-  return "command" in parsed ? parsed : { command: parsed };
-};
-
-export const pendingRemoteFollowup = (project: string, environment: string, id: string) => {
-  const value = localStorage.getItem(`${pendingPrefix(project, environment)}${id}`);
-  return value ? readPendingEntry(value).followup : undefined;
-};
-
-export const pendingRemoteCommand = (
-  project: string,
-  environment: string,
-  sessionId?: string | null,
-  shellId?: string,
-): HostCommand | undefined => {
-  const prefix = pendingPrefix(project, environment);
-  for (let index = 0; index < localStorage.length; index++) {
-    const key = localStorage.key(index);
-    if (key?.startsWith(prefix)) {
-      const value = localStorage.getItem(key);
-      if (value) {
-        const entry = readPendingEntry(value);
-        const command = entry.command;
-        if (
-          sessionId === undefined ||
-          (sessionId === null
-            ? command.type === "create" && (!entry.shellId || entry.shellId === shellId)
-            : command.type !== "create" && command.sessionId === sessionId)
-        )
-          return command;
-      }
-    }
-  }
-};
-
-// Each command owns its storage entry: a late receipt from another pane can
-// never erase this pane's uncertain request. Persistence must succeed before
-// dispatch; unlike preferences, silently dropping an outbox entry is unsafe.
-export const savePendingRemoteCommand = (
-  project: string,
-  environment: string,
-  command: HostCommand,
-  shellId?: string,
-  followup?: HostCommand,
-) => {
-  try {
-    localStorage.setItem(
-      `${pendingPrefix(project, environment)}${command.commandId}`,
-      JSON.stringify({ command, shellId,
-        followup: followup ?? pendingRemoteFollowup(project, environment, command.commandId),
-      } satisfies PendingEntry),
-    );
-  } catch {
-    throw new Error(
-      "Cannot save your request locally. Free up app storage before sending.",
-    );
-  }
-};
-export const clearPendingRemoteCommand = (
-  project: string,
-  environment: string,
-  commandId: string,
-) =>
-  localStorage.removeItem(`${pendingPrefix(project, environment)}${commandId}`);
+export { pendingRemoteCommand, pendingRemoteFollowup, savePendingRemoteCommand, clearPendingRemoteCommand } from "./remoteOutbox";
 
 /** Whether a request may start a missing SSH tunnel. Always, unless the user
  * turned automatic reconnecting off: then only what the user did (`fresh`, or

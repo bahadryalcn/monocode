@@ -5,9 +5,20 @@ import { EditorView } from "@codemirror/view";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { invalidateNotes, loadNotes, NOTES_CHANGED_EVENT, type Note, type NoteUpsert } from "../notes";
+import {
+  invalidateNotes,
+  loadNotes,
+  NOTES_CHANGED_EVENT,
+  type Note,
+  type NoteUpsert,
+} from "../notes";
 import { NotesView } from "./NotesView";
-import { savePinnedProjects, saveProjectRailOrder } from "../../projects/model/recents";
+import { NoteDraftRecoveryNotice } from "./NoteDraftRecoveryNotice";
+import { drafts } from "../noteDrafts";
+import {
+  savePinnedProjects,
+  saveProjectRailOrder,
+} from "../../projects/model/recents";
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", async (original) => ({
@@ -34,6 +45,7 @@ const recents = [
 ];
 
 beforeEach(() => {
+  drafts.clear();
   invalidateNotes();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const storage = new Map<string, string>();
@@ -92,26 +104,39 @@ async function render(projects = recents, cwd = "/work/Edefyn") {
 it("shows a preloaded note immediately while refreshing in the background", async () => {
   await loadNotes();
   let finish!: (notes: Note[]) => void;
-  const refresh = new Promise<Note[]>((resolve) => { finish = resolve; });
+  const refresh = new Promise<Note[]>((resolve) => {
+    finish = resolve;
+  });
   invoke.mockReturnValue(refresh);
   await render();
-  expect(container.querySelector<HTMLInputElement>('[aria-label="Note title"]')?.value)
-    .toBe("Plan");
+  expect(
+    container.querySelector<HTMLInputElement>('[aria-label="Note title"]')
+      ?.value,
+  ).toBe("Plan");
   expect(container.textContent).toContain("Keep this text.");
   expect(container.textContent).not.toContain("Select a note");
   expect(container.querySelector(".animate-spin")).toBeNull();
 
   await act(async () => finish([{ ...stored, title: "Updated plan" }]));
-  expect(container.querySelector<HTMLInputElement>('[aria-label="Note title"]')?.value)
-    .toBe("Updated plan");
+  expect(
+    container.querySelector<HTMLInputElement>('[aria-label="Note title"]')
+      ?.value,
+  ).toBe("Updated plan");
 });
 
 it("refreshes an open note after an Operator write", async () => {
   await render();
-  stored = { ...stored, title: "Updated by Operator", body: "New text", updatedAt: 2 };
+  stored = {
+    ...stored,
+    title: "Updated by Operator",
+    body: "New text",
+    updatedAt: 2,
+  };
   await act(async () => window.dispatchEvent(new Event(NOTES_CHANGED_EVENT)));
-  expect(container.querySelector<HTMLInputElement>('[aria-label="Note title"]')?.value)
-    .toBe("Updated by Operator");
+  expect(
+    container.querySelector<HTMLInputElement>('[aria-label="Note title"]')
+      ?.value,
+  ).toBe("Updated by Operator");
   expect(container.textContent).toContain("New text");
 });
 
@@ -120,7 +145,9 @@ it("keeps a note's consecutive lines on their own lines", async () => {
   stored = { ...stored, body: "> first line\n> second line\n> third line" };
   await render();
 
-  const preview = container.querySelector<HTMLElement>('[data-streamdown="blockquote"]')!;
+  const preview = container.querySelector<HTMLElement>(
+    '[data-streamdown="blockquote"]',
+  )!;
   expect(preview.querySelector("p")?.innerHTML).toBe(
     "first line<br>second line<br>third line",
   );
@@ -187,9 +214,9 @@ function editorView() {
 }
 
 function tab(label: string) {
-  return [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(
-    (button) => button.textContent === label,
-  )!;
+  return [
+    ...container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+  ].find((button) => button.textContent === label)!;
 }
 
 it("replaces regex matches with their groups in the note source", async () => {
@@ -488,7 +515,8 @@ it.each(["title", "body", "tags"] as const)(
         field === "title" ? "Title after reopening" : "Title before moving",
       body:
         field === "body" ? "Content after reopening" : "Content before moving",
-      tags: field === "tags" ? ["ideas", "after"] : ["ideas", "before"],
+      tags:
+        field === "tags" ? ["ideas", "before", "after"] : ["ideas", "before"],
       sourceCwd: "/work/portognjeeen",
     };
     expect(stored).toMatchObject(expected);
@@ -599,4 +627,220 @@ it("clears a failed move error when the saved project is selected again", async 
   expect(stored.sourceCwd).toBe("/work/Edefyn");
   expect(projectButton()?.textContent).toContain("Edefyn");
   expect(container.querySelector('[role="alert"]')).toBeNull();
+});
+
+async function editTitle(value: string) {
+  const input = container.querySelector<HTMLInputElement>(
+    '[aria-label="Note title"]',
+  )!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+function button(label: string) {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (item) => item.textContent?.trim() === label,
+  )!;
+}
+
+it("requires confirmation and resumes saving after a failed delete", async () => {
+  vi.useFakeTimers();
+  await render();
+  const save = invoke.getMockImplementation()!;
+  invoke.mockImplementation((command, args) =>
+    command === "notes_delete"
+      ? Promise.reject(new Error("Delete denied"))
+      : save(command, args),
+  );
+  await act(async () => button("Delete").click());
+  expect(
+    invoke.mock.calls.some(([command]) => command === "notes_delete"),
+  ).toBe(false);
+  expect(container.textContent).toContain("Delete “Plan”?");
+  await act(async () => button("Cancel").click());
+  expect(container.textContent).not.toContain("This cannot be undone");
+  await act(async () => button("Delete").click());
+  await act(async () => button("Confirm delete").click());
+  expect(container.textContent).toContain("Delete denied");
+  await editTitle("Still editable");
+  await act(async () => vi.advanceTimersByTime(400));
+  expect(stored.title).toBe("Still editable");
+});
+
+it("does not recreate a successfully deleted note from queued saves", async () => {
+  await render();
+  const save = invoke.getMockImplementation()!;
+  let deleted = false;
+  invoke.mockImplementation((command, args) => {
+    if (command === "notes_delete") {
+      deleted = true;
+      return Promise.resolve();
+    }
+    if (command === "notes_list" && deleted) return Promise.resolve([]);
+    return save(command, args);
+  });
+  await editTitle("Pending changes");
+  await act(async () => button("Delete").click());
+  await act(async () => button("Confirm delete").click());
+  expect(deleted).toBe(true);
+  expect(container.querySelector('[aria-label="Note title"]')).toBeNull();
+  expect(
+    invoke.mock.calls.filter(([command]) => command === "notes_upsert"),
+  ).toHaveLength(0);
+});
+
+it("shows list failures together with stale notes and supports retry", async () => {
+  await render();
+  invoke.mockRejectedValueOnce(new Error("Cannot refresh"));
+  await act(async () => window.dispatchEvent(new Event(NOTES_CHANGED_EVENT)));
+  expect(container.textContent).toContain("Cannot refresh");
+  expect(
+    container.querySelector<HTMLInputElement>('[aria-label="Note title"]')
+      ?.value,
+  ).toBe("Plan");
+  await act(async () => button("Retry").click());
+  expect(container.textContent).not.toContain("Cannot refresh");
+});
+
+it("does not describe an initial loading failure as an empty collection", async () => {
+  invoke.mockRejectedValueOnce(new Error("Cannot read"));
+  await render();
+  expect(container.textContent).toContain("Cannot read");
+  expect(container.textContent).not.toContain("No notes yet");
+  await act(async () => button("Retry").click());
+  expect(container.querySelector('[aria-label="Note title"]')).not.toBeNull();
+});
+
+it("recovers a failed unmount save after reopening the view", async () => {
+  vi.useFakeTimers();
+  await render();
+  await editTitle("Retained draft");
+  invoke.mockRejectedValueOnce(new Error("Disk full"));
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await render();
+  expect(
+    container.querySelector<HTMLInputElement>('[aria-label="Note title"]')
+      ?.value,
+  ).toBe("Retained draft");
+  expect(container.textContent).toContain("Disk full");
+  await act(async () => button("Retry").click());
+  expect(stored.title).toBe("Retained draft");
+  expect(container.textContent).not.toContain("Disk full");
+});
+
+it("offers global retry after the notes view closes", async () => {
+  await render();
+  await editTitle("Global recovery");
+  invoke.mockRejectedValueOnce(new Error("Offline disk"));
+  await act(async () => root.unmount());
+  root = createRoot(container);
+  await act(async () => root.render(createElement(NoteDraftRecoveryNotice)));
+  expect(document.body.textContent).toContain("Offline disk");
+  await act(async () => button("Retry save").click());
+  expect(stored.title).toBe("Global recovery");
+  expect(document.body.textContent).not.toContain("Offline disk");
+});
+
+it("resizes the notes list from the keyboard and reports its current width", async () => {
+  await render();
+  const separator = container.querySelector<HTMLElement>('[role="separator"]')!;
+  expect(separator.tabIndex).toBe(0);
+  const before = Number(separator.getAttribute("aria-valuenow"));
+  await act(async () =>
+    separator.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowRight",
+        bubbles: true,
+        cancelable: true,
+      }),
+    ),
+  );
+  expect(Number(separator.getAttribute("aria-valuenow"))).toBe(before + 10);
+  await act(async () =>
+    separator.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Home",
+        bubbles: true,
+        cancelable: true,
+      }),
+    ),
+  );
+  expect(separator.getAttribute("aria-valuenow")).toBe(
+    separator.getAttribute("aria-valuemin"),
+  );
+});
+
+it("restores failed edits when switching away and returning to the note", async () => {
+  vi.useFakeTimers();
+  const second = { ...stored, id: "other-recovery-note", title: "Other note" };
+  const save = invoke.getMockImplementation()!;
+  let fail = true;
+  invoke.mockImplementation((command, args) => {
+    if (command === "notes_list")
+      return Promise.resolve([{ ...stored }, second]);
+    if (command === "notes_upsert" && fail)
+      return Promise.reject(new Error("Unavailable storage"));
+    return save(command, args);
+  });
+  const select = async (title: string) => {
+    const item = [
+      ...container.querySelectorAll<HTMLButtonElement>("li button"),
+    ].find((entry) => entry.textContent?.includes(title))!;
+    await act(async () => item.click());
+  };
+  await render();
+  await select("Plan");
+  await editTitle("Draft to recover");
+  await select("Other note");
+  expect(container.textContent).toContain("Unsaved note: Unavailable storage");
+  await act(async () => button("Recover draft").click());
+  expect(
+    container.querySelector<HTMLInputElement>('[aria-label="Note title"]')
+      ?.value,
+  ).toBe("Draft to recover");
+  expect(container.textContent).toContain(
+    "Could not save note: Unavailable storage",
+  );
+  fail = false;
+  await act(async () => button("Retry").click());
+  expect(stored.title).toBe("Draft to recover");
+});
+
+it("hides and restores the global notice when Notes opens and closes", async () => {
+  drafts.set("unselected-draft", {
+    base: { ...stored, id: "unselected-draft", title: "Recovery notice" },
+    edits: { current: { title: "Unsaved title" } },
+    project: { current: null },
+    skipSave: { current: false },
+    error: "Retained failure",
+  });
+  await act(async () => root.render(createElement(NoteDraftRecoveryNotice)));
+  expect(button("Retry save")).toBeDefined();
+  await act(async () =>
+    root.render(
+      createElement(
+        "div",
+        null,
+        createElement(NoteDraftRecoveryNotice),
+        createElement(NotesView, { cwd: "/work/Edefyn", recents, onClose }),
+      ),
+    ),
+  );
+  expect(button("Retry save")).toBeUndefined();
+  await act(async () => root.render(createElement(NoteDraftRecoveryNotice)));
+  expect(button("Retry save")).toBeDefined();
+});
+
+it("releases successfully saved drafts after the editor unmounts", async () => {
+  await render();
+  await editTitle("Save and release");
+  await act(async () => root.unmount());
+  expect(stored.title).toBe("Save and release");
+  expect(drafts.has(stored.id)).toBe(false);
+  root = createRoot(container);
 });

@@ -63,32 +63,47 @@ const NOTE_SLUG_RE = /(^|\s)@note\/([A-Za-z0-9_-]+)/g;
 
 let cache: Note[] | null = null;
 let inflight: Promise<Note[]> | null = null;
+// Retain the newest outcome for superseded callers, including its rejection.
+let latestRequest: Promise<Note[]> | null = null;
+let generation = 0;
 
 export function peekNotes(): Note[] | null {
   return cache;
 }
 
 export function invalidateNotes() {
+  generation += 1;
   cache = null;
+  inflight = null;
+  latestRequest = null;
 }
 
 export async function loadNotes(refresh = false): Promise<Note[]> {
   if (!refresh && cache) return cache;
   if (!refresh && inflight) return inflight;
 
+  const requestGeneration = ++generation;
   const promise = invoke<Note[]>("notes_list")
-    .then((notes) => {
-      cache = notes;
-      return notes;
-    })
-    .catch(() => {
-      if (!cache) cache = [];
-      return cache;
-    })
+    .then(
+      (notes) => {
+        if (requestGeneration !== generation)
+          return latestRequest ?? loadNotes(refresh);
+        cache = notes;
+        return notes;
+      },
+      (error: unknown) => {
+        if (requestGeneration !== generation)
+          return latestRequest ?? loadNotes(refresh);
+        // Background mention pickers retain their fallback; list screens report failures.
+        if (refresh) throw error;
+        return cache ?? [];
+      },
+    )
     .finally(() => {
       if (inflight === promise) inflight = null;
     });
   inflight = promise;
+  latestRequest = promise;
   return promise;
 }
 
@@ -99,13 +114,13 @@ export async function getNote(id: string): Promise<Note | null> {
 
 export async function upsertNote(note: NoteUpsert): Promise<Note> {
   const saved = await invoke<Note>("notes_upsert", { note });
-  cache = null;
+  invalidateNotes();
   return saved;
 }
 
 export async function deleteNote(id: string): Promise<void> {
   await invoke("notes_delete", { id });
-  cache = null;
+  invalidateNotes();
 }
 
 export async function createNote(input: {

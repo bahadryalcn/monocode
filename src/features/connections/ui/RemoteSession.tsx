@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { RemoteOutboxNotice } from "./RemoteOutboxNotice";
+import { useRemoteOutboxIssues } from "../model/remoteOutbox";
 import type { SessionPaneProps } from "../../sessions/ui/SessionPane";
 import type {
   Attachment,
@@ -1427,6 +1429,7 @@ function ConnectedRemoteSession({
     return remotePath(machine.environmentId, absolute);
   };
 
+  const outboxIssues = useRemoteOutboxIssues(project.key, machine.environmentId);
   const overrides: RemoteSessionOverrides = {
     session,
     remoteSession: true,
@@ -1437,7 +1440,9 @@ function ConnectedRemoteSession({
     },
     remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     remoteSessionStarted: !!sessionId,
-    sendBlockedReason: blocksSending(connection.status)
+    sendBlockedReason: outboxIssues.length
+      ? "An unfinished request needs recovery. Check the host and review the request above."
+      : blocksSending(connection.status)
       ? needsSignIn(connection.status)
         ? `${machine.name} needs you to sign in first. Use “Sign in and reconnect” above.`
         : `Can’t reach ${machine.name}. Send reconnects first.`
@@ -1533,6 +1538,7 @@ function ConnectedRemoteSession({
     <ModelSourceContext.Provider value={modelSource}>
       <div className="relative flex h-full min-h-0 flex-col">
         <RemoteConnectionBanner cwd={project.key} stale={!!hostSession} />
+        <RemoteOutboxNotice project={project.key} environment={machine.environmentId} />
         {notice ? (
           <div
             role={error ? "alert" : "status"}

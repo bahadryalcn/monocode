@@ -1,4 +1,11 @@
-import { LoaderCircle, Plus, Search, File, Trash2, X } from "../../../shared/ui/icons";
+import {
+  LoaderCircle,
+  Plus,
+  Search,
+  File,
+  Trash2,
+  X,
+} from "../../../shared/ui/icons";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openSearchPanel } from "@codemirror/search";
 import type { EditorView } from "@codemirror/view";
@@ -43,7 +50,10 @@ import {
 } from "../noteImages";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
+import {
+  looksLikeProject,
+  type RecentProject,
+} from "../../projects/model/recents";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -55,6 +65,17 @@ import {
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import { openReplacePanel } from "../../files/editor/editorSearch";
 import { NoteMarkdownEditor, NoteMarkdownToolbar } from "./NoteMarkdownEditor";
+import {
+  drafts,
+  DRAFT_CHANGED_EVENT,
+  notifyDrafts,
+  mountNotesView,
+  pruneDraft,
+  noteSaveQueues,
+  enqueueNoteSave,
+  type Draft,
+  type Edits,
+} from "../noteDrafts";
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 420;
@@ -65,29 +86,6 @@ let rememberedNoteId: string | null = null;
 
 type NoteViewMode = "preview" | "source" | "split";
 const rememberedModes = new Map<string, NoteViewMode>();
-
-// Keep pending saves ordered across editor unmounts and reopened notes.
-const noteSaveQueues = new Map<
-  string,
-  { pending: Promise<void>; saved?: Note }
->();
-
-function enqueueNoteSave(
-  id: string,
-  save: (latest?: Note) => void | Promise<Note | void>,
-) {
-  const queue = noteSaveQueues.get(id) ?? { pending: Promise.resolve() };
-  const persist = async () => {
-    const saved = await save(queue.saved);
-    if (saved) queue.saved = saved;
-  };
-  const pending = queue.pending.then(persist, persist).finally(() => {
-    if (queue.pending === pending) noteSaveQueues.delete(id);
-  });
-  queue.pending = pending;
-  noteSaveQueues.set(id, queue);
-  return pending;
-}
 
 type Props = {
   besideRail?: boolean;
@@ -106,6 +104,7 @@ export function NotesView({
   onClose,
   onToggleSidebar,
 }: Props) {
+  useEffect(mountNotesView, []);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const listLock = useLockOverscroll<HTMLDivElement>();
@@ -121,6 +120,20 @@ export function NotesView({
   const [notes, setNotes] = useState<Note[]>(() => peekNotes() ?? []);
   const [loading, setLoading] = useState(() => peekNotes() === null);
   const [error, setError] = useState<string | null>(null);
+  const [, updateDrafts] = useState(0);
+  useEffect(() => {
+    const update = () => {
+      updateDrafts((value) => value + 1);
+      setNotes((current) =>
+        current.map((note) => {
+          const saved = drafts.get(note.id)?.saved;
+          return saved && saved.updatedAt > note.updatedAt ? saved : note;
+        }),
+      );
+    };
+    window.addEventListener(DRAFT_CHANGED_EVENT, update);
+    return () => window.removeEventListener(DRAFT_CHANGED_EVENT, update);
+  }, []);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     const cached = peekNotes();
@@ -229,14 +242,19 @@ export function NotesView({
   const onDelete = async (id: string) => {
     try {
       await deleteNote(id);
-      const next = await loadNotes(true);
-      setNotes(next);
+      drafts.delete(id);
+      notifyDrafts();
+      setNotes((current) => current.filter((note) => note.id !== id));
       setSelectedId((current) => {
         if (current !== id) return current;
-        return next[0]?.id ?? null;
+        return notes.find((note) => note.id !== id)?.id ?? null;
       });
+      // A list refresh failure must not turn a successful deletion into failure.
+      void refresh();
+      return true;
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     }
   };
 
@@ -285,13 +303,41 @@ export function NotesView({
         ref={listLock}
         className="min-h-0 flex-1 overflow-y-auto overscroll-none"
       >
-        {error && notes.length === 0 ? (
-          <p className="px-3 py-2 text-[12px] text-content/50">{error}</p>
-        ) : loading && notes.length === 0 ? (
+        {error ? (
+          <div role="alert" className="px-3 py-2 text-[12px] text-content">
+            Could not load or update notes: {error}{" "}
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className="underline"
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {[...drafts]
+          .filter(([id, draft]) => id !== selectedId && draft.error)
+          .map(([id, draft]) => (
+            <div
+              key={id}
+              role="alert"
+              className="px-3 py-2 text-[12px] text-content"
+            >
+              Unsaved note: {draft.error}{" "}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => setSelectedId(id)}
+              >
+                Recover draft
+              </button>
+            </div>
+          ))}
+        {loading && notes.length === 0 ? (
           <div className="flex justify-center py-10 text-content/40">
             <LoaderCircle className="size-4 animate-spin" strokeWidth={1.75} />
           </div>
-        ) : visible.length === 0 ? (
+        ) : error && notes.length === 0 ? null : visible.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/50">
             {query.trim()
               ? "No matching notes"
@@ -316,8 +362,7 @@ export function NotesView({
         )}
       </div>
       <div
-        role="separator"
-        aria-orientation="vertical"
+        {...resize.separatorProps}
         aria-label="Resize notes list"
         className={`absolute inset-y-0 -right-px z-10 w-1.5 cursor-col-resize touch-none ${
           resize.dragging ? "bg-content/15" : "hover:bg-content/10"
@@ -525,7 +570,7 @@ function NoteDetail({
   recents: RecentProject[];
   activeCwd?: string;
   onSaved: (note: Note) => void;
-  onDelete: (id: string) => void | Promise<void>;
+  onDelete: (id: string) => Promise<boolean>;
   onAddToChat: (note: Note) => void;
 }) {
   if (!note) {
@@ -561,7 +606,7 @@ function NoteEditor({
   recents: RecentProject[];
   activeCwd?: string;
   onSaved: (note: Note) => void;
-  onDelete: (id: string) => void | Promise<void>;
+  onDelete: (id: string) => Promise<boolean>;
   onAddToChat: (note: Note) => void;
 }) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
@@ -576,33 +621,68 @@ function NoteEditor({
   };
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  type Edits = Partial<Pick<Note, "title" | "body" | "tags">>;
-  const [edits, setEdits] = useState<Edits>({});
+  const [draftState] = useState(() => {
+    const existing = drafts.get(note.id);
+    const recover =
+      existing &&
+      (Object.keys(existing.edits.current).length > 0 ||
+        existing.project.current ||
+        existing.error ||
+        noteSaveQueues.has(note.id));
+    const draft: Draft = (recover ? existing : undefined) ?? {
+      edits: { current: {} },
+      project: { current: null },
+      skipSave: { current: false },
+      error: null,
+      base: note,
+    };
+    drafts.set(note.id, draft);
+    return draft;
+  });
+  const [edits, setEdits] = useState<Edits>(draftState.edits.current);
   const title = edits.title ?? note.title;
   const body = edits.body ?? note.body;
   const tags = edits.tags ?? note.tags;
   // Keep only an unsaved choice locally so completed moves survive reopening.
   const [projectChange, setProjectChange] = useState<{ path: string } | null>(
-    null,
+    draftState.project.current,
   );
   const sourceCwd = projectChange?.path ?? note.sourceCwd;
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveErrorState] = useState<string | null>(
+    draftState.error,
+  );
+  const setSaveError = (error: string | null) => {
+    draftState.error = error;
+    setSaveErrorState(error);
+    notifyDrafts();
+  };
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [imageDrag, setImageDrag] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
-  const editsRef = useRef(edits);
+  const editsRef = draftState.edits;
   const bodyRef = useRef(body);
-  const projectChangeRef = useRef(projectChange);
+  const projectChangeRef = draftState.project;
   const noteRef = useRef(note);
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const editorViewRef = useRef<EditorView | null>(null);
   const lastDropAt = useRef(0);
-  const skipSave = useRef(false);
+  const skipSave = draftState.skipSave;
   const saveTimer = useRef<number | null>(null);
   const onSavedRef = useRef(onSaved);
   bodyRef.current = body;
   noteRef.current = note;
   onSavedRef.current = onSaved;
   const time = formatRelativeTime(new Date(note.updatedAt).toISOString());
+  useEffect(() => {
+    const sync = () => {
+      setEdits({ ...draftState.edits.current });
+      setProjectChange(draftState.project.current);
+      setSaveErrorState(draftState.error);
+    };
+    window.addEventListener(DRAFT_CHANGED_EVENT, sync);
+    return () => window.removeEventListener(DRAFT_CHANGED_EVENT, sync);
+  }, [draftState]);
 
   const editNote = useCallback((change: Edits) => {
     const next = { ...editsRef.current, ...change };
@@ -621,6 +701,7 @@ function NoteEditor({
     const nextTags = changes.tags ?? current.tags;
     const nextProject = projectChangeRef.current;
     const acceptSaved = (saved: Note) => {
+      draftState.saved = saved;
       noteRef.current = saved;
       // A completed save only clears the edits included in that request.
       const remaining = { ...editsRef.current };
@@ -784,10 +865,12 @@ function NoteEditor({
   }, [addDroppedImages, insertionRange, note.id]);
 
   useEffect(() => {
+    draftState.mounts = (draftState.mounts ?? 0) + 1;
     return () => {
-      void saveNow();
+      draftState.mounts = Math.max(0, (draftState.mounts ?? 1) - 1);
+      void saveNow().finally(() => pruneDraft(note.id, draftState));
     };
-  }, [saveNow]);
+  }, [saveNow, draftState, note.id]);
 
   const onTitleKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") return;
@@ -895,18 +978,53 @@ function NoteEditor({
             </button>
             <button
               type="button"
-              onClick={() => {
-                skipSave.current = true;
-                if (saveTimer.current != null)
-                  window.clearTimeout(saveTimer.current);
-                void enqueueNoteSave(note.id, () => onDelete(note.id));
-              }}
+              disabled={deleting}
+              onClick={() => setConfirmDelete(true)}
               className="inline-flex items-center gap-1.5 rounded-md px-3 h-7 text-[12px] text-content/70 hover:bg-content/10 hover:text-red-400"
             >
               <Trash2 className="size-3.5" strokeWidth={1.75} />
               Delete
             </button>
           </div>
+          {confirmDelete ? (
+            <div
+              role="group"
+              aria-label="Confirm note deletion"
+              className="flex flex-wrap items-center gap-2 text-[12px]"
+            >
+              <span>Delete “{title}”? This cannot be undone.</span>
+              <button
+                type="button"
+                disabled={deleting}
+                className="underline"
+                onClick={() => {
+                  setDeleting(true);
+                  skipSave.current = true;
+                  if (saveTimer.current != null)
+                    window.clearTimeout(saveTimer.current);
+                  void enqueueNoteSave(note.id, async () => {
+                    const deleted = await onDelete(note.id);
+                    if (!deleted) {
+                      skipSave.current = false;
+                      setDeleting(false);
+                      setConfirmDelete(false);
+                      scheduleSave();
+                    }
+                  });
+                }}
+              >
+                Confirm delete
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                className="underline"
+                onClick={() => setConfirmDelete(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : null}
           {saveError ? (
             <div
               role="alert"
