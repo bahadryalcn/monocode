@@ -823,7 +823,7 @@ function TitleBarComponent({
     el.scrollBy({ left: direction * amount, behavior: "smooth" });
   }, []);
   const activeTabRef = useRef<HTMLDivElement | null>(null);
-  const canDrag = tabs.length > 1;
+  const canDrag = tabs.length > 1 || Boolean(onMoveToNewWindow);
 
   useEffect(() => {
     if (sortable.draggingId) return;

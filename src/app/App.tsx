@@ -11464,6 +11464,7 @@ function Workspace({
   );
 
   const actions = useRef({
+    onArrangeActiveTab,
     onNew,
     onArchiveFocusedSession,
     onToggleNotesPanel,
@@ -11498,6 +11499,7 @@ function Workspace({
     onOpenAutomations,
   });
   actions.current = {
+    onArrangeActiveTab,
     onNew,
     onArchiveFocusedSession,
     onToggleNotesPanel,
@@ -11785,6 +11787,18 @@ function Workspace({
       ),
       listen("split_down", () =>
         run("split-down", () => actions.current.onSplit("down")),
+      ),
+      ...([
+        ["layout_columns", "columns"],
+        ["layout_rows", "rows"],
+        ["layout_grid", "grid"],
+        ["layout_main_left", "main-left"],
+        ["layout_main_top", "main-top"],
+        ["layout_equalize", "equalize"],
+      ] as const).map(([event, preset]) =>
+        listen(event, () =>
+          run(event, () => actions.current.onArrangeActiveTab(preset)),
+        ),
       ),
       listen("new_terminal", () =>
         run("new-terminal", actions.current.onNewTerminal),

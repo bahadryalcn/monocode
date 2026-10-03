@@ -165,7 +165,14 @@ fn build_session_window(
     })?;
 
     #[cfg(target_os = "macos")]
-    crate::macos::install(&window);
+    {
+        // Pop-outs are built on a blocking worker. AppKit chrome must be
+        // installed on the main thread; readiness is still awaited off-thread.
+        let chrome_window = window.clone();
+        window
+            .run_on_main_thread(move || crate::macos::install(&chrome_window))
+            .map_err(|error| error.to_string())?;
+    }
 
     #[cfg(not(target_os = "macos"))]
     {
