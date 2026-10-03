@@ -5,7 +5,9 @@ import { promisify } from "node:util";
 import {
   canEditTask,
   canMoveTask,
+  EMPTY_PROMPT_ERROR,
   hasUnmergedBranch,
+  isNewTaskStatus,
   isTaskStatus,
   parseHostTask,
   parseReviewVerdict,
@@ -237,16 +239,23 @@ export class HostTasks {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
-  /** Adds a task to the queue, or edits one that is not running or finished. */
+  /** Adds a task to the queue, or as a to-do item when asked to, or edits one
+   * that is not running or finished. An edit keeps the task's status. */
   save(raw: unknown): HostTask {
     const input = parseHostTask(raw);
+    const requested = (raw as { status?: unknown }).status;
+    if (requested !== undefined && !isNewTaskStatus(requested))
+      throw new Error("A new task starts as to do or queued.");
     const now = this.now();
     const previous = this.find(input.id);
     if (!previous) {
+      const status = requested ?? "queued";
+      if (status === "queued" && !input.prompt.trim())
+        throw new Error(EMPTY_PROMPT_ERROR);
       this.store.project(input.projectId);
       return this.write({
         ...input,
-        status: "queued",
+        status,
         createdAt: now,
         updatedAt: now,
       });
@@ -254,7 +263,9 @@ export class HostTasks {
     if (previous.status === "running" || previous.status === "verifying")
       throw new Error("Stop this task before editing it.");
     if (!canEditTask(previous.status))
-      throw new Error("Only a queued or blocked task can be edited.");
+      throw new Error("Only a to-do, queued or blocked task can be edited.");
+    if (previous.status === "queued" && !input.prompt.trim())
+      throw new Error(EMPTY_PROMPT_ERROR);
     this.store.project(previous.projectId);
     const { verifyCommand, ...kept } = previous;
     return this.write({
@@ -276,9 +287,31 @@ export class HostTasks {
     if (!canMoveTask(task.status, to))
       throw new Error(`A ${task.status} task cannot be moved to ${to}.`);
     const now = this.now();
-    if (to === "queued") {
+    if (to === "queued" && !task.prompt.trim())
+      throw new Error(EMPTY_PROMPT_ERROR);
+    if (to === "todo" && task.status === "queued") {
+      // Only a task nothing has run for can be pulled back.
+      if (task.sessionId || task.startedAt || hasUnmergedBranch(task))
+        throw new Error("This task already started, so it cannot go back to To do.");
+      return this.write({ ...task, status: "todo", updatedAt: now });
+    }
+    if (to === "done" && task.status === "todo") {
+      if (hasUnmergedBranch(task))
+        throw new Error(
+          `This task’s earlier work is on ${task.branch}. Run it again to review and merge that, or delete it to discard.`,
+        );
+      // The owner did it by hand: nothing ran, so there is nothing to merge.
+      return this.write({
+        ...task,
+        status: "done",
+        completedAt: now,
+        updatedAt: now,
+      });
+    }
+    if (to === "queued" || to === "todo") {
       // A task that runs again starts over in a fresh session. Unmerged work
-      // stays on its branch, and the next run continues there.
+      // stays on its branch, and the next run continues there. A task put
+      // back to to-do is cleared the same way.
       const {
         sessionId,
         runId,
@@ -292,11 +325,10 @@ export class HostTasks {
         mergeError,
         ...rest
       } = task;
-      if (!task.merged)
-        return this.write({ ...rest, status: "queued", updatedAt: now });
+      if (!task.merged) return this.write({ ...rest, status: to, updatedAt: now });
       const { branch, worktreeCwd, baseBranch, baseCommit, merged, ...fresh } =
         rest;
-      return this.write({ ...fresh, status: "queued", updatedAt: now });
+      return this.write({ ...fresh, status: to, updatedAt: now });
     }
     if (to === "blocked") {
       if (task.status === "verifying") {

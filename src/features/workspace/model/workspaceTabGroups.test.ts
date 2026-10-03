@@ -17,8 +17,10 @@ import {
   findOpenSessionTab,
   findTabForProject,
   openAddToChatSessionPane,
+  planOpenSessionsSideBySide,
   planWorkspaceTabClose,
   replaceGroupInTabOrder,
+  SIDE_BY_SIDE_LIMIT,
   switchSessionInTab,
   workspaceTabProject,
   focusedWorkspaceTabCwd,
@@ -740,5 +742,37 @@ describe("keepsWorkspaceTab", () => {
         (id) => id === "feature",
       ),
     ).toBe(true);
+  });
+});
+
+describe("planOpenSessionsSideBySide", () => {
+  it("builds one grid tab and moves chats out of their old tabs", () => {
+    const a = newTab("a");
+    const split = splitPane(newTab("b").layout, "b", "right", "c");
+    const bc: WorkspaceTab = { ...newTab("b"), layout: split };
+    const result = planOpenSessionsSideBySide({
+      tabs: [a, bc],
+      sessionIds: ["a", "b", "d", "a"],
+      createTabId: () => "grid-tab",
+    });
+    expect(result).not.toBeNull();
+    expect(result!.tab.id).toBe("grid-tab");
+    expect(leafIds(result!.tab.layout)).toEqual(["a", "b", "d"]);
+    expect(result!.tab.focusedId).toBe("a");
+    // Tab "a" lost its last leaf and is gone; the other keeps only "c".
+    expect(result!.tabs).toHaveLength(1);
+    expect(leafIds(result!.tabs[0].layout)).toEqual(["c"]);
+  });
+
+  it("needs two distinct sessions", () => {
+    expect(
+      planOpenSessionsSideBySide({ tabs: [], sessionIds: ["a", "a"] }),
+    ).toBeNull();
+  });
+
+  it("caps the number of sessions", () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `s${i}`);
+    const result = planOpenSessionsSideBySide({ tabs: [], sessionIds: ids });
+    expect(leafIds(result!.tab.layout)).toHaveLength(SIDE_BY_SIDE_LIMIT);
   });
 });

@@ -32,27 +32,51 @@ export const BACKGROUND_MACHINE_ERROR =
 /** Machines whose host does background work on its own, this computer's
  * included. `capability` is what the host must advertise: automations unless
  * another kind of background work is asked for. */
-export async function backgroundMachines(
+/** What each saved machine answered: whether its host does this kind of
+ * background work, is too old for it, or could not be reached. Names use
+ * "this computer" for the local host. */
+export type MachineReach = {
+  capable: RemoteMachine[];
+  outdated: string[];
+  unreachable: string[];
+};
+
+export async function probeMachines(
   capability: string = HOST_AUTOMATIONS,
-): Promise<RemoteMachine[]> {
+): Promise<MachineReach> {
   const machines = await invoke<RemoteMachine[]>("remote_machines");
-  const capable = await Promise.all(
+  const reach: MachineReach = { capable: [], outdated: [], unreachable: [] };
+  const answers = await Promise.all(
     (Array.isArray(machines) ? machines : []).map(async (machine) => {
       try {
         const host = await remoteRequest<{ capabilities?: unknown }>(
           machine.id,
           "environment.describe",
         );
-        return Array.isArray(host.capabilities) &&
-          host.capabilities.includes(capability)
-          ? machine
-          : null;
+        return {
+          machine,
+          capable:
+            Array.isArray(host.capabilities) &&
+            host.capabilities.includes(capability),
+        };
       } catch {
-        return null;
+        return { machine, capable: null };
       }
     }),
   );
-  return capable.filter((machine) => machine !== null);
+  for (const { machine, capable } of answers) {
+    const name = isLocalSyncMachine(machine) ? "this computer" : machine.name;
+    if (capable) reach.capable.push(machine);
+    else if (capable === false) reach.outdated.push(name);
+    else reach.unreachable.push(name);
+  }
+  return reach;
+}
+
+export async function backgroundMachines(
+  capability: string = HOST_AUTOMATIONS,
+): Promise<RemoteMachine[]> {
+  return (await probeMachines(capability)).capable;
 }
 
 /** The machine that would run a background automation for the project at

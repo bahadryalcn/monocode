@@ -10,6 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Archive,
   Chatting,
+  Loader,
   Check,
   CheckList,
   DashboardSquare,
@@ -31,6 +32,7 @@ import {
   Search,
   Share,
   Settings,
+  SplitSquare,
   StickyNote,
   Trash2,
   Zap,
@@ -52,8 +54,13 @@ import {
   type Ref,
 } from "react";
 import {
+  loadSessionSidebarWidth,
   loadSidebarTabOrder,
+  saveSessionSidebarWidth,
   saveSidebarTabOrder,
+  SESSION_SIDEBAR_WIDTH_DEFAULT,
+  SESSION_SIDEBAR_WIDTH_MAX,
+  SESSION_SIDEBAR_WIDTH_MIN,
   type SidebarTabId,
 } from "../../features/settings/model/appearance";
 import { formatInteger } from "../../shared/lib/numbers";
@@ -212,12 +219,10 @@ import {
 } from "../../features/connections/model/connections";
 import { parseRemotePath, remotePath, remoteProjectFor } from "../../features/connections/model/remoteProjects";
 
-const MIN_WIDTH = 260;
-const MAX_WIDTH = 560;
-const DEFAULT_WIDTH = 260;
+const MIN_WIDTH = SESSION_SIDEBAR_WIDTH_MIN;
+const MAX_WIDTH = SESSION_SIDEBAR_WIDTH_MAX;
+const DEFAULT_WIDTH = SESSION_SIDEBAR_WIDTH_DEFAULT;
 const REMINDERS_COLOR = "#f59e0b";
-
-let rememberedWidth = DEFAULT_WIDTH;
 
 type SidebarTab = SidebarTabId;
 
@@ -277,6 +282,8 @@ type Props = {
     targetId: string,
     edge: PaneEdge,
   ) => void;
+  /** Opens several sessions together as a grid in one new tab. */
+  onOpenSessionsSideBySide?: (sessionIds: string[]) => void;
   onRenameSession?: (sessionId: string, title: string) => void;
   onArchiveSession?: (sessionId: string, archived: boolean) => void;
   onArchiveSessions?: (
@@ -385,6 +392,7 @@ function SidebarComponent({
   onSessionNavigationOrder,
   onPrefetchSession: onPrefetchLocalSession,
   onPlaceSessionOnPane: onPlaceLocalSessionOnPane,
+  onOpenSessionsSideBySide: onOpenLocalSessionsSideBySide,
   onRenameSession: onRenameLocalSession,
   onArchiveSession: onArchiveLocalSession,
   onArchiveSessions: onArchiveLocalSessions,
@@ -510,6 +518,9 @@ function SidebarComponent({
     : onSelectLocalSession;
   const onPrefetchSession = remoteProject ? undefined : onPrefetchLocalSession;
   const onPlaceSessionOnPane = remoteProject ? undefined : onPlaceLocalSessionOnPane;
+  const onOpenSessionsSideBySide = remoteProject
+    ? undefined
+    : onOpenLocalSessionsSideBySide;
   const onRenameSession = remoteProject
     ? (sessionId: string, title: string) => { void remoteChange(sessionId, { title }); }
     : onRenameLocalSession;
@@ -585,10 +596,8 @@ function SidebarComponent({
     min: MIN_WIDTH,
     max: () => Math.min(MAX_WIDTH, Math.floor(window.innerWidth * 0.5)),
     defaultWidth: DEFAULT_WIDTH,
-    initial: rememberedWidth,
-    onCommit: (next) => {
-      rememberedWidth = next;
-    },
+    initial: loadSessionSidebarWidth(),
+    onCommit: saveSessionSidebarWidth,
   });
   const [tabOrder, setTabOrder] = useState<SidebarTab[]>(loadSidebarTabOrder);
   const [now, setNow] = useState(() => Date.now());
@@ -664,8 +673,14 @@ function SidebarComponent({
   // Revisits render straight from cache, so this is only ever true the first
   // time a project is opened.
   const pendingFirstLoad = remoteProject
-    ? !!remote.machine && !remote.loaded && projectSessions.length === 0
+    ? !remote.loaded &&
+      !remote.failed &&
+      projectSessions.length === 0 &&
+      (!!remote.machine || !remote.machinesLoaded)
     : pending && sessions.length === 0;
+  // A remote list comes over SSH and can take seconds: say so, unlike the
+  // local one, which lands within a frame or two.
+  const remoteLoading = remoteProject && pendingFirstLoad;
   const worktreeFocus = useWorktreeFocus(cwd);
   const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   const listedSessions = mergeFolderSessionSummaries(
@@ -1181,6 +1196,15 @@ function SidebarComponent({
           },
         ]
       : []),
+    ...(multipleMenuSessions && onOpenSessionsSideBySide
+      ? [
+          {
+            kind: "item" as const,
+            id: "side-by-side",
+            label: "Open Side by Side",
+          },
+        ]
+      : []),
     ...(!multipleMenuSessions && onRenameSession
       ? [
           {
@@ -1351,6 +1375,10 @@ function SidebarComponent({
     }
     if (id === "pin") {
       pinSessions(sessionIds, !pinned);
+      return;
+    }
+    if (id === "side-by-side") {
+      onOpenSessionsSideBySide?.(sessionIds);
       return;
     }
     if (id === "rename") {
@@ -1802,7 +1830,7 @@ function SidebarComponent({
             if (sortable.consumeClick()) return;
             onTabPick(itemId);
           }}
-          className={`flex h-6 min-w-0 flex-1 items-center justify-center self-center rounded-md px-2 text-[12px] leading-none ${
+          className={`flex h-6 min-w-0 flex-1 items-center justify-center self-center overflow-hidden rounded-md px-1.5 text-[12px] leading-none ${
             active ? "bg-selection text-content" : "text-content/50"
           }`}
         >
@@ -2009,6 +2037,17 @@ function SidebarComponent({
             </button>
             {selectedSessionIds.size > 0 ? (
               <span className="flex shrink-0 items-center gap-px">
+                {onOpenSessionsSideBySide && selectedOrderedIds.length > 1 ? (
+                  <BulkBarAction
+                    label="Open Side by Side"
+                    onClick={() => {
+                      onOpenSessionsSideBySide(selectedOrderedIds);
+                      clearSessionSelection();
+                    }}
+                  >
+                    <SplitSquare className="size-3" strokeWidth={1.75} />
+                  </BulkBarAction>
+                ) : null}
                 {onPinSession || onPinSessions ? (
                   <BulkBarAction
                     label={allSelectedPinned ? "Unpin" : "Pin"}
@@ -2065,7 +2104,29 @@ function SidebarComponent({
               than as progress. This is checked before the empty state so that
               cannot claim "No sessions yet" before the rows have landed.
             */}
-              {pendingFirstLoad ? null : status === "error" &&
+              {remoteLoading ? (
+                <p
+                  role="status"
+                  className="flex items-center gap-2 px-3 py-2 text-[12px] text-content/50"
+                >
+                  <Loader
+                    className="size-3.5 shrink-0 animate-spin"
+                    strokeWidth={1.75}
+                    aria-hidden
+                  />
+                  {remote.machine
+                    ? `Loading sessions from ${remote.machine.name}…`
+                    : "Connecting to this project’s machine…"}
+                </p>
+              ) : pendingFirstLoad ? null : remoteProject &&
+                remote.failed &&
+                projectSessions.length === 0 ? (
+                <p className="px-3 py-2 text-[12px] text-content/50">
+                  {remote.machine
+                    ? `Couldn’t reach ${remote.machine.name}. Trying again…`
+                    : "Couldn’t load sessions"}
+                </p>
+              ) : status === "error" &&
                 projectSessions.length === 0 ? (
                 <p className="px-3 py-2 text-[12px] text-content/50">
                   Couldn’t load sessions
@@ -2635,7 +2696,7 @@ function SidebarProjectPicker({
   const inboxTrigger = useRef<HTMLElement | null>(null);
   return (
     <div
-      className="flex h-9 items-center gap-0.5 border-b border-stroke px-2"
+      className="@container/picker flex h-9 items-center gap-0.5 border-b border-stroke px-2"
       data-tauri-drag-region="deep"
     >
       <SearchableProjectPickerWithMenu
@@ -2648,7 +2709,7 @@ function SidebarProjectPicker({
         onRemoveProject={onRemoveProject}
         onOpenNotificationSettings={onOpenNotificationSettings}
       />
-      <div className="ml-auto flex items-center">
+      <div className="ml-auto flex shrink-0 items-center">
         {onNew ? (
           <IconButton label={`New tab (${MOD}T)`} onClick={onNew}>
             <Plus className="size-3.5" strokeWidth={1.75} />
@@ -2688,23 +2749,29 @@ function SidebarProjectPicker({
           </IconButton>
         ) : null}
         {onOpenNotes ? (
-          <IconButton label="Notes" active={notesActive} onClick={onOpenNotes}>
-            <StickyNote className="size-3.5" strokeWidth={1.75} />
-          </IconButton>
+          <span className="contents @max-[230px]/picker:hidden">
+            <IconButton label="Notes" active={notesActive} onClick={onOpenNotes}>
+              <StickyNote className="size-3.5" strokeWidth={1.75} />
+            </IconButton>
+          </span>
         ) : null}
         {onOpenAutomations ? (
-          <IconButton
-            label="Automations"
-            active={automationsActive}
-            onClick={onOpenAutomations}
-          >
-            <Zap className="size-3.5" strokeWidth={1.75} />
-          </IconButton>
+          <span className="contents @max-[260px]/picker:hidden">
+            <IconButton
+              label="Automations"
+              active={automationsActive}
+              onClick={onOpenAutomations}
+            >
+              <Zap className="size-3.5" strokeWidth={1.75} />
+            </IconButton>
+          </span>
         ) : null}
         {onOpenTasks ? (
-          <IconButton label="Tasks" active={tasksActive} onClick={onOpenTasks}>
-            <DashboardSquare className="size-3.5" strokeWidth={1.75} />
-          </IconButton>
+          <span className="contents @max-[290px]/picker:hidden">
+            <IconButton label="Tasks" active={tasksActive} onClick={onOpenTasks}>
+              <DashboardSquare className="size-3.5" strokeWidth={1.75} />
+            </IconButton>
+          </span>
         ) : null}
       </div>
       {inboxMenu ? (

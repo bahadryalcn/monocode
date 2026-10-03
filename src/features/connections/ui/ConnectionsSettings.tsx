@@ -68,6 +68,7 @@ export function ConnectionsSettings() {
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
   const [port, setPort] = useState("");
+  const [alternate, setAlternate] = useState("");
   const [jobId, setJobId] = useState<string>();
   const [job, setJob] = useState<SshSetup>();
   const [busy, setBusy] = useState(false);
@@ -258,6 +259,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
     setName(draft.name);
     setTarget(draft.target);
     setPort(draft.port);
+    setAlternate(draft.alternate ?? "");
     setAdding(true);
     setError("");
     setNotice("");
@@ -268,13 +270,14 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
     setTarget("");
     setName("");
     setPort("");
+    setAlternate("");
   };
   // Saving is the user's own action, so it connects even when automatic
   // reconnecting is off. The connection runs as a setup job, the same one
   // Reconnect uses, which is where a new host key or password is answered.
   const save = async () => {
     if (!editing || busy) return;
-    const parsed = parseMachineDraft({ name, target, port });
+    const parsed = parseMachineDraft({ name, target, port, alternate });
     if (!parsed.ok) return setError(parsed.error);
     const impact = editImpact(editing, parsed.value);
     if (!impact.changed) return closeForm();
@@ -583,6 +586,26 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               </button>
             )}
           </label>
+          {editing ? (
+            <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
+              Other address <span className="sr-only">(optional)</span>
+              <input
+                disabled={busy}
+                className={input}
+                value={alternate}
+                onChange={(event) => setAlternate(event.target.value)}
+                placeholder="Optional, e.g. user@100.64.0.5 (Tailscale)"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <span className="text-[11px] leading-relaxed text-content/45">
+                A second way to this same machine, such as its home-network IP
+                and its Tailscale address. MonoCode connects through whichever
+                answers, so it works at home and away. The other address is
+                checked against this machine's known host key.
+              </span>
+            </label>
+          ) : null}
           <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
             Name <span className="sr-only">(optional)</span>
             <input

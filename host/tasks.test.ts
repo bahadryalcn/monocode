@@ -464,7 +464,142 @@ describe("host tasks", () => {
 
     await review({ id: "reviewed" });
     expect(() => tasks.save(input({ id: "reviewed" }))).toThrow(
-      "Only a queued or blocked task can be edited.",
+      "Only a to-do, queued or blocked task can be edited.",
+    );
+  });
+
+  it("keeps a to-do item off the queue: tick never starts it and it takes no slot", async () => {
+    const { tasks, input, clock, turns, task, addProject } = setup();
+    const added = tasks.save(input({ id: "idea", status: "todo" }));
+    expect(added).toMatchObject({ status: "todo", createdAt: clock.now });
+    // Two tasks running would fill the board; the to-do item is not counted.
+    tasks.save(input({ id: "a" }));
+    // Tasks sharing a project folder run one at a time.
+    tasks.save(input({ id: "b", projectId: addProject("second").id }));
+    clock.now += 1;
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(MAX_RUNNING_TASKS));
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(task("idea")).toMatchObject({ status: "todo" });
+    expect(task("idea").sessionId).toBeUndefined();
+    expect(turns).toHaveLength(MAX_RUNNING_TASKS);
+  });
+
+  it("adds a to-do item with no description, and queues by default", () => {
+    const { tasks, input } = setup();
+    expect(tasks.save(input({ id: "idea", status: "todo", prompt: "" }))).toMatchObject({
+      status: "todo",
+      prompt: "",
+    });
+    expect(tasks.save(input({ id: "later", status: "queued" })).status).toBe("queued");
+    expect(() => tasks.save(input({ id: "bad", status: "running" }))).toThrow(
+      "A new task starts as to do or queued.",
+    );
+    expect(() => tasks.save(input({ id: "empty", prompt: "  " }))).toThrow(
+      "Add a description before starting this task with an agent.",
+    );
+  });
+
+  it("edits a to-do item and keeps it in to do", () => {
+    const { tasks, input } = setup();
+    tasks.save(input({ status: "todo", prompt: "" }));
+    const edited = tasks.save(input({ title: "Renamed", prompt: "Details" }));
+    expect(edited).toMatchObject({
+      status: "todo",
+      title: "Renamed",
+      prompt: "Details",
+    });
+    // An edit may leave the description empty while it is only a to-do item.
+    expect(tasks.save(input({ prompt: "" })).status).toBe("todo");
+  });
+
+  it("starts a to-do item like a newly queued task", async () => {
+    const { tasks, input, task, turns } = setup();
+    tasks.save(input({ status: "todo" }));
+    const queued = await tasks.move("main", "queued");
+    expect(queued.status).toBe("queued");
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(task().status).toBe("running");
+    expect(turns[0].input.text).toBe("Write the weekly report");
+  });
+
+  it("refuses to start a task with an empty description", async () => {
+    const { tasks, input } = setup();
+    tasks.save(input({ status: "todo", prompt: " " }));
+    await expect(tasks.move("main", "queued")).rejects.toThrow(
+      "Add a description before starting this task with an agent.",
+    );
+    expect(tasks.list()[0].status).toBe("todo");
+  });
+
+  it("marks a to-do item done without running or merging anything", async () => {
+    const { tasks, input, clock, turns } = setup();
+    tasks.save(input({ status: "todo" }));
+    clock.now += 5;
+    expect(await tasks.move("main", "done")).toMatchObject({
+      status: "done",
+      completedAt: clock.now,
+    });
+    await tasks.tick();
+    expect(turns).toHaveLength(0);
+    const reopened = await tasks.move("main", "todo");
+    expect(reopened.status).toBe("todo");
+    expect(reopened.completedAt).toBeUndefined();
+  });
+
+  it("pulls a queued task back to to do, and reopens blocked and done ones", async () => {
+    const { tasks, input, run, review, task } = setup();
+    tasks.save(input({ id: "waiting" }));
+    expect((await tasks.move("waiting", "todo")).status).toBe("todo");
+    await tasks.delete("waiting");
+
+    await run();
+    await tasks.move("main", "blocked");
+    const back = await tasks.move("main", "todo");
+    expect(back.status).toBe("todo");
+    expect(back.error).toBeUndefined();
+    expect(back.sessionId).toBeUndefined();
+    expect(back.startedAt).toBeUndefined();
+    await tasks.delete("main", true);
+
+    await review({ id: "reviewed" });
+    await tasks.move("reviewed", "done");
+    expect((await tasks.move("reviewed", "todo")).status).toBe("todo");
+    expect(task("reviewed").sessionId).toBeUndefined();
+  });
+
+  it("refuses to-do moves the board does not offer", async () => {
+    const { tasks, input, run, review } = setup();
+    tasks.save(input({ id: "idea", status: "todo" }));
+    for (const to of ["running", "verifying", "review", "blocked", "todo"])
+      await expect(tasks.move("idea", to)).rejects.toThrow(
+        `A todo task cannot be moved to ${to}.`,
+      );
+    await run({ id: "working" });
+    await expect(tasks.move("working", "todo")).rejects.toThrow(
+      "A running task cannot be moved to todo.",
+    );
+    await tasks.move("working", "blocked");
+    await tasks.delete("working");
+    await review({ id: "reviewed" });
+    await expect(tasks.move("reviewed", "todo")).rejects.toThrow(
+      "A review task cannot be moved to todo.",
+    );
+  });
+
+  it("does not pull back a queued task that has unmerged work on a branch", async () => {
+    const { tasks, addRepo, run, task, finish, turns } = setup();
+    const repo = addRepo("repo");
+    const started = await run({ projectId: repo.id, review: false });
+    writeFileSync(join(turns.at(-1)!.input.cwd, "work.txt"), "work\n");
+    await finish(started.sessionId!);
+    // In review with its branch; run it again, then try to pull it back.
+    await tasks.move("main", "queued");
+    expect(task().branch).toBeTruthy();
+    await expect(tasks.move("main", "todo")).rejects.toThrow(
+      "This task already started, so it cannot go back to To do.",
     );
   });
 

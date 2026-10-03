@@ -8,7 +8,13 @@ import { RUNTIME_MODES, type RuntimeMode } from "../../sessions/model/session";
  * not a desktop is open. The host advertises this capability when it has it. */
 export const HOST_TASKS = "tasks";
 
+/** The host keeps manual to-do items: tasks the owner adds by hand that no
+ * agent starts until they are moved to the queue. The host advertises this
+ * capability when it has it; an older host knows only queued tasks. */
+export const HOST_TASKS_TODO = "tasks.todo";
+
 export const TASK_STATUSES = [
+  "todo",
   "queued",
   "running",
   "verifying",
@@ -20,6 +26,7 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 /** The board's columns. A task being verified is shown under Running. */
 export const TASK_COLUMNS = [
+  "todo",
   "queued",
   "running",
   "review",
@@ -102,14 +109,17 @@ export type HostTask = HostTaskInput & {
 
 /** Where the user may move a task from each status. Running or verifying to
  * blocked stops the run; anything to queued runs the task again in a fresh
- * session; review to done merges an isolated task's branch. */
+ * session; review to done merges an isolated task's branch. A to-do item
+ * goes to done when the owner did it by hand, and a queued task goes back to
+ * to-do only while it has not started. */
 export const TASK_MOVES: Record<TaskStatus, readonly TaskStatus[]> = {
-  queued: [],
+  todo: ["queued", "done"],
+  queued: ["todo"],
   running: ["blocked"],
   verifying: ["blocked"],
   review: ["done", "queued"],
-  done: ["queued"],
-  blocked: ["queued"],
+  done: ["queued", "todo"],
+  blocked: ["queued", "todo"],
 };
 
 export function isTaskStatus(value: unknown): value is TaskStatus {
@@ -122,7 +132,12 @@ export function canMoveTask(from: TaskStatus, to: TaskStatus): boolean {
 
 /** A task can be edited while nothing has run or is running for it. */
 export function canEditTask(status: TaskStatus): boolean {
-  return status === "queued" || status === "blocked";
+  return status === "todo" || status === "queued" || status === "blocked";
+}
+
+/** Where a new task may start: on the queue, or as a to-do item. */
+export function isNewTaskStatus(value: unknown): value is "todo" | "queued" {
+  return value === "todo" || value === "queued";
 }
 
 /** The task has a branch of its own that has not been merged. */
@@ -131,6 +146,9 @@ export function hasUnmergedBranch(
 ): boolean {
   return Boolean(task.branch) && !task.merged;
 }
+
+export const EMPTY_PROMPT_ERROR =
+  "Add a description before starting this task with an agent.";
 
 /** The dependencies a task still waits for: those not done yet. A dependency
  * that was deleted no longer holds the task back. */
@@ -173,13 +191,14 @@ export function parseHostTask(input: unknown): HostTaskInput {
     throw new Error("Invalid task ID");
   if (typeof v.title !== "string" || !v.title.trim() || v.title.length > 200)
     throw new Error("Task title is required and must be under 200 characters.");
+  // A to-do item may have no description; the host asks for one before an
+  // agent starts the task.
   if (
     typeof v.prompt !== "string" ||
-    !v.prompt.trim() ||
     v.prompt.length > 256_000 ||
     v.prompt.includes("\0")
   )
-    throw new Error("Task prompt is required.");
+    throw new Error("Invalid task description.");
   if (typeof v.projectId !== "string" || !ID.test(v.projectId))
     throw new Error("Choose a project for this task.");
   if (!isRemoteProvider(v.harness)) throw new Error("Invalid task agent");

@@ -21,6 +21,7 @@ const BODY_KEY = "monocode.bodyGlass";
 const SCHEME_KEY = "monocode.colorScheme";
 const SIDEBAR_TAB_ORDER_KEY = "monocode.sidebarTabOrder";
 const PROJECT_RAIL_WIDTH_KEY = "monocode.projectRailWidth";
+const SESSION_SIDEBAR_WIDTH_KEY = "monocode.sessionSidebarWidth";
 const TRANSCRIPT_LAYOUT_KEY = "monocode.transcriptLayout";
 const TRANSCRIPT_ANCHOR_KEY = "monocode.transcriptAnchor";
 const CHAT_BACKGROUND_PATH_KEY = "monocode.chatBackgroundPath";
@@ -137,9 +138,15 @@ export const SIDEBAR_BLUR_MIN = 1;
 export const SIDEBAR_BLUR_MAX = 64;
 export const SIDEBAR_BLUR_DEFAULT = 24;
 
-export const PROJECT_RAIL_WIDTH_MIN = 180;
+export const PROJECT_RAIL_WIDTH_MIN = 56;
+/** Below this the rail drops its labels and shows icons only. */
+export const PROJECT_RAIL_COMPACT_WIDTH = 140;
 export const PROJECT_RAIL_WIDTH_MAX = 360;
 export const PROJECT_RAIL_WIDTH_DEFAULT = 200;
+
+export const SESSION_SIDEBAR_WIDTH_MIN = 180;
+export const SESSION_SIDEBAR_WIDTH_MAX = 560;
+export const SESSION_SIDEBAR_WIDTH_DEFAULT = 260;
 
 export const BODY_GLASS_DEFAULT = !IS_LINUX;
 
@@ -847,6 +854,25 @@ export function saveProjectRailWidth(value: number) {
   writeNumber(
     PROJECT_RAIL_WIDTH_KEY,
     Math.round(clamp(value, PROJECT_RAIL_WIDTH_MIN, PROJECT_RAIL_WIDTH_MAX)),
+  );
+}
+
+export function loadSessionSidebarWidth(): number {
+  return Math.round(
+    clamp(
+      readNumber(SESSION_SIDEBAR_WIDTH_KEY) ?? SESSION_SIDEBAR_WIDTH_DEFAULT,
+      SESSION_SIDEBAR_WIDTH_MIN,
+      SESSION_SIDEBAR_WIDTH_MAX,
+    ),
+  );
+}
+
+export function saveSessionSidebarWidth(value: number) {
+  writeNumber(
+    SESSION_SIDEBAR_WIDTH_KEY,
+    Math.round(
+      clamp(value, SESSION_SIDEBAR_WIDTH_MIN, SESSION_SIDEBAR_WIDTH_MAX),
+    ),
   );
 }
 

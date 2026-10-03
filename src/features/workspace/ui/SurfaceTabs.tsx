@@ -48,6 +48,8 @@ type Props = {
   onSelectFile: (fileId: string) => void;
   onCloseFile: (fileId: string) => void;
   onCloseOtherFiles: (fileId: string) => void;
+  /** Moves the file into its own window; omitted where that is unsupported. */
+  onOpenInNewWindow?: (fileId: string) => void;
   /** Double-click makes a preview tab permanent. */
   onPinFile?: (fileId: string) => void;
   onReorder: (ids: string[]) => void;
@@ -78,6 +80,7 @@ const REVEAL_LABEL = IS_MAC
 export function surfaceTabMenuItems(
   file: FilePaneTab,
   canCloseOthers = true,
+  newWindow?: { dirty: boolean },
 ): ExplorerMenuItem[] {
   const close: ExplorerMenuItem = {
     kind: "item",
@@ -95,6 +98,20 @@ export function surfaceTabMenuItems(
   }
 
   return [
+    ...(newWindow
+      ? [
+          {
+            kind: "item" as const,
+            id: "new-window",
+            label: "Open in New Window",
+            disabled: newWindow.dirty,
+            description: newWindow.dirty
+              ? "Save the file first"
+              : undefined,
+          },
+          { kind: "sep" as const },
+        ]
+      : []),
     { kind: "item", id: "open-default", label: "Open in Default App" },
     { kind: "item", id: "reveal", label: REVEAL_LABEL },
     { kind: "sep" },
@@ -198,6 +215,7 @@ export function SurfaceTabs({
   onSelectFile,
   onCloseFile,
   onCloseOtherFiles,
+  onOpenInNewWindow,
   onPinFile,
   onReorder,
   onPaneDragStart,
@@ -225,6 +243,10 @@ export function SurfaceTabs({
     }
     if (id === "close-others") {
       onCloseOtherFiles(menuFile.id);
+      return;
+    }
+    if (id === "new-window") {
+      onOpenInNewWindow?.(menuFile.id);
       return;
     }
     if (!isFilesystemTab(menuFile) || isChangesTab(menuFile)) return;
@@ -451,7 +473,13 @@ export function SurfaceTabs({
         <ExplorerMenu
           x={menu.x}
           y={menu.y}
-          items={surfaceTabMenuItems(menuFile, files.length > 1)}
+          items={surfaceTabMenuItems(
+            menuFile,
+            files.length > 1,
+            onOpenInNewWindow
+              ? { dirty: dirtyFileIds.has(menuFile.id) }
+              : undefined,
+          )}
           ariaLabel="File tab actions"
           onPick={onMenuPick}
           onClose={() => setMenu(null)}

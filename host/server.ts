@@ -450,6 +450,7 @@ export function createHostServer(
                 "sync",
                 "automations",
                 "tasks",
+                "tasks.todo",
                 "goals",
               ],
             };

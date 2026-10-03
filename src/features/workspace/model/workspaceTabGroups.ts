@@ -12,6 +12,7 @@ import {
   type PaneEdge,
   type WorkspaceTab,
 } from "./layout";
+import { layoutFromLeafIds } from "./layoutPresets";
 import { projectName } from "../../../shared/lib/paths";
 import {
   isRemoteProjectPath,
@@ -411,6 +412,51 @@ export function applyPlaceTabOnPane({
     sessions: nextSessions,
     activeTabId: target.id,
     focusedId: source.focusedId,
+  };
+}
+
+/** Most sessions "Open Side by Side" will put into one tab. */
+export const SIDE_BY_SIDE_LIMIT = 9;
+
+/**
+ * Build one grid tab holding `sessionIds`. Chats already open in another tab
+ * move here, like dropping a session card onto a pane edge; a tab left without
+ * panes disappears. `tabs` in the result excludes the new tab so the caller
+ * decides where it is inserted.
+ */
+export function planOpenSessionsSideBySide({
+  tabs,
+  sessionIds,
+  createTabId = () => crypto.randomUUID(),
+}: {
+  tabs: WorkspaceTab[];
+  sessionIds: readonly string[];
+  createTabId?: () => string;
+}): { tabs: WorkspaceTab[]; tab: WorkspaceTab } | null {
+  const ids = [...new Set(sessionIds)].slice(0, SIDE_BY_SIDE_LIMIT);
+  if (ids.length < 2) return null;
+
+  const remaining: WorkspaceTab[] = [];
+  for (const source of tabs) {
+    let next: WorkspaceTab | null = source;
+    for (const id of ids) {
+      if (next && leafIds(next.layout).includes(id)) {
+        next = closeLeaf(next, id);
+      }
+    }
+    if (next) remaining.push(next);
+  }
+
+  return {
+    tabs: remaining,
+    tab: {
+      kind: "session",
+      id: createTabId(),
+      layout: layoutFromLeafIds(ids, "grid"),
+      focusedId: ids[0],
+      editorPanes: [],
+      terminalPanes: [],
+    },
   };
 }
 

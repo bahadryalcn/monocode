@@ -91,7 +91,10 @@ import {
 import { ProviderSignInDialog } from "../features/sessions/ui/ProviderSignInDialog";
 import { TitleBar, type Tab as TitleTab } from "./shell/TitleBar";
 import { MenuBar } from "./shell/MenuBar";
-import { FilePicker } from "../features/files/ui/FilePicker";
+import {
+  FilePicker,
+  LAYOUT_ACTION_PREFIX,
+} from "../features/files/ui/FilePicker";
 import { useLockSnapshot } from "../features/group-lock/hooks/useGroupLock";
 import {
   getGroupLockView,
@@ -255,6 +258,7 @@ import {
   patchProjectTerminals,
   reorderDockTerminals,
   selectDockTerminal,
+  splitProjectTerminalsForMove,
   withDockOpen,
   withDockSide,
   withDockSize,
@@ -268,7 +272,14 @@ import {
   saveTabGroupLabel,
   tabGroupProject,
 } from "../features/workspace/model/tabGroups";
-import { type WindowTransferPayload } from "./model/windowTransfer";
+import {
+  collectWindowTransfer,
+  type WindowTransferPayload,
+} from "./model/windowTransfer";
+import {
+  busySessionsInTabs,
+  planTabMoveRemainder,
+} from "./model/windowTransferPopout";
 import {
   confirmCloseTerminal,
   confirmCloseTerminals,
@@ -424,6 +435,8 @@ import {
   applyDetachPaneToTab,
   applyPlaceTabOnPane,
   applyPlaceSessionOnPane,
+  planOpenSessionsSideBySide,
+  SIDE_BY_SIDE_LIMIT,
   filterTabsForProject,
   findOpenSessionTab,
   keepsWorkspaceTab,
@@ -433,6 +446,11 @@ import {
   workspaceTabWorktree,
   focusedWorkspaceTabCwd,
 } from "../features/workspace/model/workspaceTabGroups";
+import {
+  arrangeLayout,
+  detectLayoutPreset,
+  type LayoutPreset,
+} from "../features/workspace/model/layoutPresets";
 import { applyAddToChatRequest } from "../features/sessions/model/addChatToWorkspace";
 import {
   ADD_TO_CHAT_EVENT,
@@ -1026,6 +1044,7 @@ function titleTabsEqual(a: TitleTab[], b: TitleTab[]): boolean {
       tab.fileFocused === other.fileFocused &&
       tab.blank === other.blank &&
       tab.terminal === other.terminal &&
+      tab.hasTerminal === other.hasTerminal &&
       tab.previewFileId === other.previewFileId &&
       tab.groupId === other.groupId
     );
@@ -2802,6 +2821,29 @@ function Workspace({
     [activeTab, projectCwd, sessionDefaults?.cwd, sessionDefaults?.runtimeMode],
   );
 
+  const activeTabLayoutPreset = useMemo(
+    () => (activeTab ? detectLayoutPreset(activeTab.layout) : null),
+    [activeTab],
+  );
+  const canArrangeActiveTab = activeTab
+    ? leafIds(activeTab.layout).length >= 2
+    : false;
+
+  /** Rearranges every pane of the active tab (chats, files, terminals alike). */
+  const onArrangeActiveTab = useCallback(
+    (preset: LayoutPreset) => {
+      if (!activeTab || leafIds(activeTab.layout).length < 2) return;
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id === activeTab.id
+            ? { ...t, layout: arrangeLayout(t.layout, preset, t.focusedId) }
+            : t,
+        ),
+      );
+    },
+    [activeTab],
+  );
+
   const focusProjectTerminal = useCallback(() => {
     setProjectTerminalFocused(true);
     setComposerFocused(false);
@@ -3270,7 +3312,7 @@ function Workspace({
   }, [onCloseTabs]);
 
   const onCloseFile = useCallback(
-    (paneId: string, fileId: string) => {
+    (paneId: string, fileId: string, opts?: { skipConfirm?: boolean }) => {
       const tab = tabsRef.current.find((entry) =>
         findSurfacePane(entry, paneId),
       );
@@ -3282,7 +3324,9 @@ function Workspace({
       if (index < 0) return;
       const file = pane.files[index];
       const needsUnsavedConfirm =
-        isFilesystemTab(file) && dirtyFilesRef.current.has(fileId);
+        !opts?.skipConfirm &&
+        isFilesystemTab(file) &&
+        dirtyFilesRef.current.has(fileId);
 
       const finishClose = () => {
         const files = pane.files.filter((entry) => entry.id !== fileId);
@@ -3390,7 +3434,7 @@ function Workspace({
           );
           if (!ok) return;
         }
-        if (file.terminal) {
+        if (file.terminal && !opts?.skipConfirm) {
           const ok = await confirmCloseTerminal(file);
           if (!ok) return;
         }
@@ -3398,6 +3442,153 @@ function Workspace({
       })();
     },
     [activeTabId, onCloseTab, projectCwd, tabCloseScope],
+  );
+
+  /** Pops tabs out into a new window. Tabs, their sessions and project
+   * terminal docks are staged for the new window's boot, then removed here.
+   * Sessions with a turn in flight stay: their stream is parsed by this
+   * window's harness listeners, which a new window cannot take over. */
+  const onMoveTabsToNewWindow = useCallback(
+    async (tabIds: string[], opts?: { position?: { x: number; y: number } }) => {
+      const movingTabs = tabsRef.current.filter((tab) =>
+        tabIds.includes(tab.id),
+      );
+      if (movingTabs.length === 0) return;
+      const movingIds = movingTabs.map((tab) => tab.id);
+      // A shell cannot change windows: the source would kill the pty its
+      // twin in the new window just respawned under the same id.
+      if (filesInWorkspaceTabs(movingTabs).some((file) => file.terminal)) return;
+      if (
+        busySessionsInTabs(tabsRef.current, sessionsRef.current, movingIds)
+          .length > 0
+      ) {
+        return;
+      }
+      const dirtyIds = new Set(
+        filesInWorkspaceTabs(movingTabs)
+          .filter(
+            (file) => isFilesystemTab(file) && dirtyFilesRef.current.has(file.id),
+          )
+          .map((file) => file.id),
+      );
+      if (
+        dirtyIds.size > 0 &&
+        !(await confirmDiscardUnsaved(
+          "Unsaved changes do not move to the new window. Move anyway?",
+        ))
+      ) {
+        return;
+      }
+
+      const plan = planTabMoveRemainder(
+        tabsRef.current,
+        sessionsRef.current,
+        movingIds,
+        activeTabIdRef.current,
+        projectCwdRef.current,
+      );
+      const splitDocks = splitProjectTerminalsForMove(
+        projectTerminalsRef.current,
+        movingTabs,
+        plan.remaining,
+        sessionsRef.current,
+      );
+      const payload = collectWindowTransfer(
+        tabsRef.current,
+        sessionsRef.current,
+        movingIds,
+        activeTabIdRef.current,
+        new Set(),
+        projectCwdRef.current,
+        splitDocks.moving,
+      );
+      if (!payload) return;
+
+      const sessionIds = new Set(payload.sessions.map((session) => session.id));
+      for (const id of sessionIds) skipForgetSessionIds.current.add(id);
+      try {
+        await invoke("stage_window_transfer", {
+          payload: JSON.stringify(payload),
+        });
+        await invoke("open_new_window", {
+          x: opts?.position?.x ?? null,
+          y: opts?.position?.y ?? null,
+        });
+      } catch {
+        for (const id of sessionIds) skipForgetSessionIds.current.delete(id);
+        return;
+      }
+
+      setProjectTerminals(splitDocks.remaining);
+      let remainingTabs = plan.remaining;
+      let nextActive = plan.nextActiveTabId;
+      if (plan.needsSeed) {
+        const seedSession = sessionsRef.current.find((session) =>
+          sessionIds.has(session.id),
+        );
+        const session = newSession(
+          seedSession?.harness ?? "claude",
+          seedSession?.cwd ?? projectCwdRef.current,
+          seedSession?.model,
+          seedSession?.runtimeMode,
+          seedSession?.modelSettings,
+        );
+        const tab = newTab(session.id);
+        setSessions((prev) => [
+          ...prev.filter((entry) => !sessionIds.has(entry.id)),
+          session,
+        ]);
+        remainingTabs = [...remainingTabs, tab];
+        nextActive = tab.id;
+      } else {
+        setSessions((prev) =>
+          prev.filter((session) => !sessionIds.has(session.id)),
+        );
+      }
+      setTabs(remainingTabs);
+      if (nextActive) activateTab(nextActive);
+      setDirtyFiles((prev) => {
+        const next = new Set(prev);
+        for (const id of dirtyIds) next.delete(id);
+        return next;
+      });
+      for (const id of sessionIds) skipForgetSessionIds.current.delete(id);
+    },
+    [activateTab],
+  );
+
+  /** Moves one file tab into a new window as its own editor tab. */
+  const onOpenFileInNewWindow = useCallback(
+    async (paneId: string, fileId: string) => {
+      const found = tabsRef.current
+        .map((tab) => findSurfacePane(tab, paneId))
+        .find((entry) => entry?.kind === "editor");
+      const file = found?.pane.files.find((entry) => entry.id === fileId);
+      if (
+        !file ||
+        !isFilesystemTab(file) ||
+        dirtyFilesRef.current.has(fileId)
+      ) {
+        return;
+      }
+      const tab = newEditorWorkspaceTab({ ...file, preview: false });
+      try {
+        await invoke("stage_window_transfer", {
+          payload: JSON.stringify({
+            tabs: [tab],
+            sessions: [],
+            activeTabId: tab.id,
+            projectCwd: file.cwd || projectCwdRef.current,
+            dirtyFileIds: [],
+          } satisfies WindowTransferPayload),
+        });
+        await invoke("open_new_window", { x: null, y: null });
+      } catch {
+        return;
+      }
+      onCloseFile(paneId, fileId, { skipConfirm: true });
+    },
+    [onCloseFile],
   );
 
   const onCloseOtherFiles = useCallback((paneId: string, fileId: string) => {
@@ -4537,6 +4728,45 @@ function Workspace({
       followProject,
       replaceBlankPaneWithSession,
       revealLinkedSessionUpdate,
+    ],
+  );
+
+  /** Open several history sessions together as a grid in one new tab. */
+  const onOpenSessionsSideBySide = useCallback(
+    async (sessionIds: string[]) => {
+      const wanted = [...new Set(sessionIds)].slice(0, SIDE_BY_SIDE_LIMIT);
+      if (wanted.length === 0) return;
+      workspaceNavigation.cancel();
+      const loaded = await Promise.all(
+        wanted.map((id) => ensureOpenSession(id)),
+      );
+      const opened = loaded.filter(
+        (session): session is Session => !!session && !session.inboxAsk,
+      );
+      if (opened.length === 0) return;
+      if (opened.length === 1) {
+        await onSelectHistorySession(opened[0].id);
+        return;
+      }
+      const plan = planOpenSessionsSideBySide({
+        tabs: tabsRef.current,
+        sessionIds: opened.map((session) => session.id),
+      });
+      if (!plan) return;
+      const cwd = opened[0].cwd;
+      const next = insertBesideActive(plan.tabs, plan.tab, cwd);
+      tabsRef.current = next;
+      setTabs(next);
+      setActiveTabId(plan.tab.id);
+      setProjectTerminalFocused(false);
+      followProject(cwd);
+      setComposerFocused(true);
+    },
+    [
+      ensureOpenSession,
+      followProject,
+      insertBesideActive,
+      onSelectHistorySession,
     ],
   );
 
@@ -11620,6 +11850,15 @@ function Workspace({
   const compactProjectRail = collapsedProjectRailMode === "compact";
   const compactRailActive = compactProjectRail && !projectRailOpen;
   const compactTitleBar = IS_MAC && compactRailActive && !chromeSurfaceOpen;
+  const layoutControl = useMemo(
+    () => ({
+      current: activeTabLayoutPreset,
+      canArrange: canArrangeActiveTab,
+      onArrange: onArrangeActiveTab,
+      onSplit,
+    }),
+    [activeTabLayoutPreset, canArrangeActiveTab, onArrangeActiveTab, onSplit],
+  );
   const workspaceTitleBar = (
     <TitleBar
       tabs={titleTabs}
@@ -11646,6 +11885,10 @@ function Workspace({
       onDeleteTab={onDeleteTitleTab}
       onReorder={onReorderTabs}
       onPlaceOnPane={onPlaceTabOnPane}
+      layout={layoutControl}
+      onMoveToNewWindow={(tabId, opts) =>
+        void onMoveTabsToNewWindow([tabId], opts)
+      }
       onGoToFile={onGoToFile}
       onPinFile={onPinFile}
       recents={visibleRecents}
@@ -11696,6 +11939,7 @@ function Workspace({
               onPrefetchSession={onPrefetchHistorySession}
               onSessionNavigationOrder={onSessionNavigationOrder}
               onPlaceSessionOnPane={onPlaceSessionOnPane}
+              onOpenSessionsSideBySide={onOpenSessionsSideBySide}
               onRenameSession={onRenameHistorySession}
               onArchiveSession={onArchiveHistorySession}
               onArchiveSessions={onArchiveHistorySessions}
@@ -11839,6 +12083,7 @@ function Workspace({
                       saveUiScale(UI_SCALE_DEFAULT);
                       void applyUiScale(UI_SCALE_DEFAULT);
                     }}
+                    layout={layoutControl}
                   />
                 ) : null}
                 {compactTitleBar ? null : workspaceTitleBar}
@@ -11932,6 +12177,7 @@ function Workspace({
                                 onSelectFile={onSelectFileSurface}
                                 onCloseFile={onCloseFile}
                                 onCloseOtherFiles={onCloseOtherFiles}
+                                onOpenInNewWindow={onOpenFileInNewWindow}
                                 onPinFile={onPinFile}
                                 onReorderFiles={onReorderFiles}
                                 onFileDirtyChange={onFileDirtyChange}
@@ -12153,9 +12399,14 @@ function Workspace({
                 canStopHarnessBackgroundWork(active.harness) &&
                 sessionHasBackgroundWork(active)
               }
+              arrangeLayout={canArrangeActiveTab}
               onOpenFile={onOpenFile}
               onRunAction={(id) => {
-                if (id === "reload") actions.current.onReload();
+                const layoutPreset = id.startsWith(LAYOUT_ACTION_PREFIX)
+                  ? (id.slice(LAYOUT_ACTION_PREFIX.length) as LayoutPreset)
+                  : null;
+                if (layoutPreset) onArrangeActiveTab(layoutPreset);
+                else if (id === "reload") actions.current.onReload();
                 else if (id === "stop-background" && active) {
                   void stopHarnessBackgroundWork(
                     active.harness,
@@ -12447,6 +12698,7 @@ function toTitleTab(
       ),
     ),
     terminal: hasTerminal && harnesses.length === 0,
+    hasTerminal,
     previewFileId: previewWorkspaceFile(tab)?.id,
     groupId: tab.groupId,
   };

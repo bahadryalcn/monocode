@@ -10,10 +10,13 @@ import {
   backgroundMachines,
   hostProjectCwd,
   hostProjectFor,
+  probeMachines,
+  type MachineReach,
 } from "../../automations/model/hostAutomationClient";
 import type { HarnessId, RuntimeMode } from "../../sessions/model/session";
 import {
   HOST_TASKS,
+  HOST_TASKS_TODO,
   taskColumn,
   type HostTask,
   type HostTaskInput,
@@ -36,6 +39,8 @@ export type BoardTask = HostTask & {
 /** What the task form edits. A draft with an ID edits that task. */
 export type TaskDraft = {
   id?: string;
+  /** The status of the task being edited. */
+  status?: TaskStatus;
   title: string;
   prompt: string;
   cwd: string;
@@ -54,6 +59,48 @@ export type TaskDraft = {
 /** Machines whose host keeps a task board, this computer's included. */
 export function taskMachines(): Promise<RemoteMachine[]> {
   return backgroundMachines(HOST_TASKS);
+}
+
+/** Like `taskMachines`, plus the machines whose tasks cannot be shown. */
+export function probeTaskMachines(): Promise<MachineReach> {
+  return probeMachines(HOST_TASKS);
+}
+
+/** Why some machines' tasks are missing from the board, or null. */
+export function missingMachinesNotice(
+  reach: Pick<MachineReach, "outdated" | "unreachable">,
+): string | null {
+  const parts: string[] = [];
+  if (reach.unreachable.length)
+    parts.push(
+      `${reach.unreachable.join(", ")} ${reach.unreachable.length === 1 ? "isn’t" : "aren’t"} reachable right now, so ${reach.unreachable.length === 1 ? "its" : "their"} tasks aren’t shown.`,
+    );
+  if (reach.outdated.length)
+    parts.push(
+      `Update MonoCode Host on ${reach.outdated.join(", ")} to see ${reach.outdated.length === 1 ? "its" : "their"} tasks.`,
+    );
+  return parts.length ? parts.join(" ") : null;
+}
+
+/** Machines whose host also keeps manual to-do items. */
+export function todoMachines(): Promise<RemoteMachine[]> {
+  return backgroundMachines(HOST_TASKS_TODO);
+}
+
+/** Why a to-do item cannot be added for the project at `cwd`: its machine
+ * has a task board but an older host. Undefined when it can be added, or when
+ * there is no machine at all, which has its own message. */
+export function todoUnsupportedMessage(
+  machines: readonly RemoteMachine[],
+  todoCapable: readonly RemoteMachine[],
+  cwd: string,
+): string | undefined {
+  const machine = backgroundMachineFor(machines, cwd);
+  if (!machine || todoCapable.some((entry) => entry.id === machine.id))
+    return undefined;
+  return `Update MonoCode Host on ${
+    isLocalSyncMachine(machine) ? "this computer" : machine.name
+  } to add to-do items`;
 }
 
 export function newTaskDraft(
@@ -79,6 +126,7 @@ export function newTaskDraft(
 export function draftFromTask(task: BoardTask): TaskDraft {
   return {
     id: task.id,
+    status: task.status,
     title: task.title,
     prompt: task.prompt,
     cwd: task.cwd,
@@ -154,7 +202,7 @@ export function tasksInColumn(
   status: TaskColumn,
 ): BoardTask[] {
   const column = tasks.filter((task) => taskColumn(task.status) === status);
-  return status === "queued" || status === "running"
+  return status === "todo" || status === "queued" || status === "running"
     ? column.sort((a, b) => a.createdAt - b.createdAt)
     : column.sort(
         (a, b) => (b.completedAt ?? b.updatedAt) - (a.completedAt ?? a.updatedAt),
@@ -183,6 +231,8 @@ export function taskTimeLabel(
   >,
   now: number,
 ): string {
+  if (task.status === "todo")
+    return `Added ${formatTaskSpan(now - task.createdAt)} ago`;
   if (task.status === "queued")
     return `Waiting ${formatTaskSpan(now - task.updatedAt)}`;
   if (task.status === "running")
@@ -215,23 +265,38 @@ export async function listBoardTasks(
   return lists.flat();
 }
 
-/** Saves the draft on the machine that owns its project. */
+/** Saves the draft on the machine that owns its project. A new task is added
+ * to the queue unless `status` says to do; editing keeps a task's status. */
 export async function saveTask(
   machines: readonly RemoteMachine[],
   draft: TaskDraft,
+  status: "todo" | "queued" = "queued",
 ): Promise<BoardTask> {
   const machine = backgroundMachineFor(machines, draft.cwd);
   if (!machine) throw new Error(TASK_MACHINE_ERROR);
+  if (status === "todo" && !draft.id) {
+    // An older host would queue the item and start it.
+    const unsupported = todoUnsupportedMessage(
+      machines,
+      await todoMachines(),
+      draft.cwd,
+    );
+    if (unsupported) throw new Error(unsupported);
+  }
   const project = await hostProjectFor(machine, draft.cwd);
   const saved = await remoteRequest<HostTask>(
     machine.id,
     "tasks.save",
     {
-      task: hostTaskFromDraft(
-        draft,
-        draft.id ?? crypto.randomUUID(),
-        project.id,
-      ),
+      task: {
+        ...hostTaskFromDraft(
+          draft,
+          draft.id ?? crypto.randomUUID(),
+          project.id,
+        ),
+        // An older host starts every new task queued, and ignores this.
+        ...(draft.id ? {} : { status }),
+      },
     },
     false,
     true,

@@ -8,6 +8,7 @@ import {
   Plus,
   Search,
   Settings,
+  SplitSquare,
   StickyNote,
   Terminal,
   X,
@@ -39,6 +40,10 @@ import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
 import { getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
+import {
+  isPointerOutsideWindow,
+  popOutPosition,
+} from "../model/windowTransferPopout";
 import { WindowControls } from "./WindowControls";
 import { IS_MAC, IS_WIN, MOD, SHIFT } from "../../platform/tauri/platform";
 import type { RecentProject } from "../../features/projects/model/recents";
@@ -48,7 +53,26 @@ import {
   setExternalPaneDrop,
   useExternalTitleTabDrop,
 } from "../../features/workspace/model/paneDrop";
-import type { PaneEdge } from "../../features/workspace/model/layout";
+import type {
+  PaneEdge,
+  SplitDir,
+} from "../../features/workspace/model/layout";
+import type { LayoutPreset } from "../../features/workspace/model/layoutPresets";
+import { keybindingShortcutLabel } from "../../features/settings/model/settings";
+import {
+  SPLIT_DOWN_ID,
+  SPLIT_RIGHT_ID,
+  buildLayoutMenuItems,
+  layoutPresetFromMenuId,
+} from "./layoutMenu";
+
+/** The active tab's pane arrangement, driving the title bar Layout menu. */
+export type TitleBarLayout = {
+  current: LayoutPreset | null;
+  canArrange: boolean;
+  onArrange: (preset: LayoutPreset) => void;
+  onSplit: (dir: SplitDir) => void;
+};
 
 export type Tab = {
   id: string;
@@ -76,6 +100,8 @@ export type Tab = {
   groupId?: string;
   dirty?: boolean;
   terminal?: boolean;
+  /** A shell pane lives in this tab; ptys cannot change windows. */
+  hasTerminal?: boolean;
   /** File id when the whole tab is one preview file; double-click pins it. */
   previewFileId?: string;
 };
@@ -105,10 +131,16 @@ type Props = {
   onDeleteTab?: (id: string) => void;
   onReorder: (ids: string[], movedId?: string) => void;
   onPlaceOnPane?: (tabId: string, targetId: string, edge: PaneEdge) => void;
+  /** Pops the tab into its own window; `position` is the screen drop point. */
+  onMoveToNewWindow?: (
+    tabId: string,
+    opts?: { position?: { x: number; y: number } },
+  ) => void;
   onGoToFile?: () => void;
   onPinFile?: (fileId: string) => void;
   recents?: RecentProject[];
   onSelectProject?: (path: string) => void;
+  layout?: TitleBarLayout;
 };
 
 function sessionMeta(tab: Tab): string {
@@ -179,6 +211,12 @@ export function tabStripOverflow(
 
 export function titleTabClosable(tab: Tab, tabCount: number): boolean {
   return tabCount > 1 || !tab.blank;
+}
+
+/** Busy tabs stay: their stream is handled by this window's listeners, and a
+ * shell cannot change windows. */
+export function titleTabCanMoveToNewWindow(tab: Tab): boolean {
+  return tab.busyHarnesses.length === 0 && !tab.hasTerminal && !tab.terminal;
 }
 
 export type TitleTabContextAction = "others" | "right" | "left";
@@ -624,19 +662,73 @@ function TitleBarComponent({
   onDeleteTab,
   onReorder,
   onPlaceOnPane,
+  onMoveToNewWindow,
   onGoToFile,
   onPinFile,
   recents = [],
   onSelectProject,
+  layout,
 }: Props) {
+  const [layoutMenu, setLayoutMenu] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const layoutAnchorRef = useRef<HTMLDivElement | null>(null);
+  const layoutMenuItems = useMemo(
+    () =>
+      layout
+        ? buildLayoutMenuItems({
+            current: layout.current,
+            canArrange: layout.canArrange,
+            splitRightShortcut:
+              keybindingShortcutLabel("Pane: Split Right", `${MOD}D`) ??
+              undefined,
+            splitDownShortcut:
+              keybindingShortcutLabel(
+                "Pane: Split Down",
+                `${MOD}${SHIFT}D`,
+              ) ?? undefined,
+          })
+        : [],
+    [layout],
+  );
+  const onPickLayoutMenu = (id: string) => {
+    setLayoutMenu(null);
+    if (!layout) return;
+    if (id === SPLIT_RIGHT_ID) layout.onSplit("right");
+    else if (id === SPLIT_DOWN_ID) layout.onSplit("down");
+    else {
+      const preset = layoutPresetFromMenuId(id);
+      if (preset) layout.onArrange(preset);
+    }
+  };
   const tabIds = tabs.map((tab) => tab.id);
   const { displayed, setTabNode, finishMotion } = useTabCloseMotion(tabs);
+  const popOutTab = useCallback(
+    (tabId: string) => {
+      const tab = tabs.find((entry) => entry.id === tabId);
+      return tab ? titleTabCanMoveToNewWindow(tab) : false;
+    },
+    [tabs],
+  );
   const externalTabDrop = useMemo<ReorderExternalDrop<string> | undefined>(
     () =>
-      onPlaceOnPane
+      onPlaceOnPane || onMoveToNewWindow
         ? {
             onMove: (tabId, event) => {
-              if (tabId === activeId) {
+              if (
+                onMoveToNewWindow &&
+                popOutTab(tabId) &&
+                isPointerOutsideWindow(
+                  event.clientX,
+                  event.clientY,
+                  window.innerWidth,
+                  window.innerHeight,
+                )
+              ) {
+                setExternalPaneDrop(null);
+                return true;
+              }
+              if (!onPlaceOnPane || tabId === activeId) {
                 setExternalPaneDrop(null);
                 return false;
               }
@@ -649,7 +741,22 @@ function TitleBarComponent({
               return over != null;
             },
             onDrop: (tabId, event) => {
-              if (tabId === activeId) return false;
+              if (
+                onMoveToNewWindow &&
+                popOutTab(tabId) &&
+                isPointerOutsideWindow(
+                  event.clientX,
+                  event.clientY,
+                  window.innerWidth,
+                  window.innerHeight,
+                )
+              ) {
+                onMoveToNewWindow(tabId, {
+                  position: popOutPosition(event.screenX, event.screenY),
+                });
+                return true;
+              }
+              if (!onPlaceOnPane || tabId === activeId) return false;
               const over = paneDropFromPoint(event.clientX, event.clientY);
               if (!over) return false;
               onPlaceOnPane(tabId, over.id, over.edge);
@@ -658,7 +765,7 @@ function TitleBarComponent({
             onEnd: () => setExternalPaneDrop(null),
           }
         : undefined,
-    [activeId, onPlaceOnPane],
+    [activeId, onPlaceOnPane, onMoveToNewWindow, popOutTab],
   );
   const sortable = useAnimatedReorder(tabIds, onReorder, "x", externalTabDrop);
   const paneToTabDrop = useExternalTitleTabDrop();
@@ -775,6 +882,22 @@ function TitleBarComponent({
           shortcut: `${MOD}W`,
           disabled: !titleTabClosable(contextTab, tabs.length),
         },
+        ...(onMoveToNewWindow
+          ? [
+              {
+                kind: "item" as const,
+                id: "new-window",
+                label: "Move to New Window",
+                disabled: !titleTabCanMoveToNewWindow(contextTab),
+                description:
+                  contextTab.busyHarnesses.length > 0
+                    ? "Wait for the running response to finish"
+                    : contextTab.hasTerminal || contextTab.terminal
+                      ? "Terminals cannot move between windows"
+                      : undefined,
+              },
+            ]
+          : []),
         { kind: "sep" },
         {
           kind: "item",
@@ -836,6 +959,10 @@ function TitleBarComponent({
       onClose(contextTab.id);
       return;
     }
+    if (id === "new-window") {
+      onMoveToNewWindow?.(contextTab.id);
+      return;
+    }
     if (id === "archive") {
       onArchiveTab?.(contextTab.id);
       return;
@@ -863,9 +990,36 @@ function TitleBarComponent({
       railClosed &&
       Boolean(onOpenInbox || onOpenNotes || onOpenSettings)) ||
     (railClosed && !projectless);
+  const showLayoutControl = Boolean(layout) && !projectless;
   const trailingControls =
-    showTrailingActions || !IS_MAC ? (
+    showTrailingActions || showLayoutControl || !IS_MAC ? (
       <div className="flex h-full shrink-0 items-stretch">
+        {showLayoutControl ? (
+          <div
+            ref={layoutAnchorRef}
+            className="flex items-center pl-1 pr-1"
+            data-layout-control
+          >
+            <IconButton
+              label="Layout"
+              active={layoutMenu != null}
+              onClick={() => {
+                if (layoutMenu) {
+                  setLayoutMenu(null);
+                  return;
+                }
+                const rect = layoutAnchorRef.current?.getBoundingClientRect();
+                if (!rect) return;
+                setLayoutMenu({
+                  x: Math.max(8, rect.right - 228),
+                  y: rect.bottom + 2,
+                });
+              }}
+            >
+              <SplitSquare className="size-3.5" strokeWidth={1.75} />
+            </IconButton>
+          </div>
+        ) : null}
         {showTrailingActions ? (
           <div className="flex items-center gap-0.5 px-2">
             {projectless && railClosed && onOpenInbox ? (
@@ -1073,6 +1227,16 @@ function TitleBarComponent({
         ) : null}
         {trailingControls}
       </div>
+      {layoutMenu && layout ? (
+        <ExplorerMenu
+          x={layoutMenu.x}
+          y={layoutMenu.y}
+          items={layoutMenuItems}
+          ariaLabel="Layout"
+          onPick={onPickLayoutMenu}
+          onClose={() => setLayoutMenu(null)}
+        />
+      ) : null}
       {tabMenu && contextTab ? (
         <ExplorerMenu
           x={tabMenu.x}

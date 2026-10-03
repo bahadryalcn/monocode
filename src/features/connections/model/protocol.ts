@@ -234,7 +234,14 @@ export type RemoteMachine = {
   name: string;
   endpoint: string;
   environmentId: string;
-  ssh?: { target: string; port?: number | null; remotePort: number } | null;
+  ssh?: {
+    target: string;
+    port?: number | null;
+    remotePort: number;
+    /** A second address for the same machine (such as its Tailscale one);
+     * the desktop dials whichever answers. */
+    alternate?: string | null;
+  } | null;
 };
 
 export type SshSetup = {

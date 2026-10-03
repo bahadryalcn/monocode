@@ -3,6 +3,7 @@ import {
   tabCopy,
   tabStripOverflow,
   titleTabContextCloseIds,
+  titleTabCanMoveToNewWindow,
   titleTabClosable,
   type Tab,
 } from "./TitleBar";
@@ -141,5 +142,19 @@ describe("titleTabContextCloseIds", () => {
     expect(titleTabContextCloseIds(tabs, "a", "left")).toEqual([]);
     expect(titleTabContextCloseIds(tabs, "d", "right")).toEqual([]);
     expect(titleTabContextCloseIds(tabs, "missing", "others")).toEqual([]);
+  });
+});
+
+describe("titleTabCanMoveToNewWindow", () => {
+  it("allows idle conversation and file tabs", () => {
+    expect(titleTabCanMoveToNewWindow(tab())).toBe(true);
+  });
+
+  it("keeps tabs with a running response or a terminal", () => {
+    expect(titleTabCanMoveToNewWindow(tab({ busyHarnesses: ["claude"] }))).toBe(
+      false,
+    );
+    expect(titleTabCanMoveToNewWindow(tab({ hasTerminal: true }))).toBe(false);
+    expect(titleTabCanMoveToNewWindow(tab({ terminal: true }))).toBe(false);
   });
 });

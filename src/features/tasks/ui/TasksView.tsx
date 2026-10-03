@@ -11,6 +11,8 @@ import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 import {
   AlertCircle,
   Check,
+  ChevronDown,
+  ChevronRight,
   DashboardSquare,
   GitBranch,
   GitMerge,
@@ -23,12 +25,15 @@ import {
   Sparkles,
   Square,
   Trash2,
+  Undo2,
   X,
 } from "../../../shared/ui/icons";
+import { RUNTIME_MODE_LABEL } from "../../sessions/model/session";
 import { ModelPicker } from "../../sessions/ui/ModelPicker";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
 import { SearchableSelect } from "../../../shared/ui/SearchableSelect";
 import { SkillPromptField } from "../../skills/ui/SkillPromptField";
+import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
@@ -55,6 +60,7 @@ import {
   resolveTabGroupLabel,
 } from "../../workspace/model/tabGroups";
 import {
+  EMPTY_PROMPT_ERROR,
   TASK_COLUMNS,
   canEditTask,
   canMoveTask,
@@ -89,12 +95,15 @@ import {
   deleteTask,
   draftFromTask,
   listBoardTasks,
+  missingMachinesNotice,
   moveTask,
   newTaskDraft,
   saveTask,
-  taskMachines,
+  probeTaskMachines,
   taskTimeLabel,
   tasksInColumn,
+  todoMachines,
+  todoUnsupportedMessage,
   type BoardTask,
   type TaskDraft,
 } from "../model/taskClient";
@@ -124,6 +133,7 @@ const CHECKBOX =
   "size-3.5 cursor-pointer rounded border border-content/20 accent-accent";
 
 const COLUMN_LABELS: Record<TaskColumn, string> = {
+  todo: "To do",
   queued: "Queued",
   running: "Running",
   review: "Review",
@@ -132,6 +142,7 @@ const COLUMN_LABELS: Record<TaskColumn, string> = {
 };
 
 const COLUMN_EMPTY: Record<TaskColumn, string> = {
+  todo: "Nothing to do yet",
   queued: "Nothing waiting",
   running: "Nothing running",
   review: "Nothing to review",
@@ -222,7 +233,12 @@ function TasksContent({
   const lock = useLockSnapshot();
   // Machines whose host keeps a task board, this computer's included.
   const [machines, setMachines] = useState<RemoteMachine[]>([]);
+  // Machines whose tasks are missing: offline, or with an older host.
+  const [missingNotice, setMissingNotice] = useState<string | null>(null);
+  // The ones whose host also keeps manual to-do items.
+  const [todoCapable, setTodoCapable] = useState<RemoteMachine[]>([]);
   const [storedTasks, setTasks] = useState<BoardTask[]>([]);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -267,11 +283,15 @@ function TasksContent({
 
   const refresh = useCallback(async () => {
     try {
-      const [capable, goalHosts] = await Promise.all([
-        taskMachines(),
+      const [reach, goalHosts, todoHosts] = await Promise.all([
+        probeTaskMachines(),
         goalMachines(),
+        todoMachines(),
       ]);
+      const capable = reach.capable;
       setMachines(capable);
+      setMissingNotice(missingMachinesNotice(reach));
+      setTodoCapable(todoHosts);
       setGoalCapable(goalHosts);
       const [nextTasks, nextGoals] = await Promise.all([
         listBoardTasks(capable),
@@ -399,12 +419,20 @@ function TasksContent({
     }
   };
 
-  const onSave = async (event: FormEvent) => {
-    event.preventDefault();
+  const onMove = (task: BoardTask, to: TaskStatus) => {
+    if (to === "queued" && !task.prompt.trim()) {
+      setError(EMPTY_PROMPT_ERROR);
+      return;
+    }
+    void act(task, () => moveTask(task, to));
+  };
+
+  /** `queued` starts a new task right away; `save` keeps an edited task's status. */
+  const onSave = async (mode: "todo" | "queued" | "save") => {
     if (saving || !draft) return;
     setSaving(true);
     try {
-      await saveTask(machines, draft);
+      await saveTask(machines, draft, mode === "todo" ? "todo" : "queued");
       setDraft(null);
       setError(null);
       await refresh();
@@ -427,6 +455,62 @@ function TasksContent({
       return;
     void act(task, () => deleteTask(task, discard));
   };
+
+  const onEdit = (task: BoardTask) => {
+    setError(null);
+    setDraft(draftFromTask(task));
+  };
+
+  /** Saves a new title and description from the detail panel; true when saved. */
+  const onSaveDetails = async (
+    task: BoardTask,
+    title: string,
+    prompt: string,
+  ): Promise<boolean> => {
+    try {
+      await saveTask(machines, { ...draftFromTask(task), title, prompt });
+      setError(null);
+      await refresh();
+      return true;
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      return false;
+    }
+  };
+
+  const taskContext = (task: BoardTask) => ({
+    project: resolveTabGroupLabel(
+      projectKey(task.cwd),
+      groupLabels,
+      projectName(task.cwd),
+    ),
+    goal: task.goalId
+      ? goalTitles.get(goalKey(task.machineId, task.goalId))
+      : undefined,
+    waitingFor:
+      task.status === "queued"
+        ? unfinishedDependencies(
+            task,
+            storedTasks.filter((other) => other.machineId === task.machineId),
+          ).map((other) => other.title)
+        : [],
+  });
+  const actionsFor = (task: BoardTask) => ({
+    busy: acting === task.id,
+    onMove: (to: TaskStatus) => onMove(task, to),
+    onEdit: () => onEdit(task),
+    onDelete: () => onDelete(task),
+    onOpenSession: task.sessionId ? () => void onOpenSession(task) : undefined,
+  });
+  const selected = selectedKey
+    ? visibleTasks.find(
+        (task) => `${task.machineId}:${task.id}` === selectedKey,
+      )
+    : undefined;
+  // A task that is gone from the board takes its panel with it.
+  useEffect(() => {
+    if (selectedKey && !loading && !selected) setSelectedKey(null);
+  }, [loading, selected, selectedKey]);
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
@@ -480,16 +564,27 @@ function TasksContent({
           <span>{error}</span>
         </div>
       ) : null}
+      {missingNotice ? (
+        <div className="mx-4 mt-4 flex shrink-0 items-start gap-2 rounded-lg border border-content/10 bg-content/4 px-3 py-2 text-[12px] text-content/60">
+          <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+          <span>{missingNotice}</span>
+        </div>
+      ) : null}
       {draft ? (
         <TaskForm
           key={draft.id ?? "new"}
           draft={draft}
           recents={recents}
           machine={machineName(machines, draft.cwd)}
+          todoUnsupported={todoUnsupportedMessage(
+            machines,
+            todoCapable,
+            draft.cwd,
+          )}
           saving={saving}
           onChange={setDraft}
           onCancel={() => setDraft(null)}
-          onSubmit={onSave}
+          onSubmit={(mode) => void onSave(mode)}
         />
       ) : null}
       {goalDraft ? (
@@ -552,6 +647,7 @@ function TasksContent({
             })}
         </ul>
       ) : null}
+      <div className="flex min-h-0 min-w-0 flex-1">
       <div
         ref={boardLock}
         className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-none p-3"
@@ -561,7 +657,7 @@ function TasksContent({
             <LoaderCircle className="size-4 animate-spin" />
           </div>
         ) : (
-          <div className="grid h-full min-w-[1000px] grid-cols-5 gap-3">
+          <div className="grid h-full min-w-[1200px] grid-cols-6 gap-3">
             {TASK_COLUMNS.map((status) => {
               const column = tasksInColumn(tasks, status);
               return (
@@ -583,37 +679,11 @@ function TasksContent({
                         <TaskCard
                           task={task}
                           now={now}
-                          project={resolveTabGroupLabel(
-                            projectKey(task.cwd),
-                            groupLabels,
-                            projectName(task.cwd),
-                          )}
-                          busy={acting === task.id}
-                          goal={
-                            task.goalId
-                              ? goalTitles.get(goalKey(task.machineId, task.goalId))
-                              : undefined
-                          }
-                          waitingFor={
-                            task.status === "queued"
-                              ? unfinishedDependencies(
-                                  task,
-                                  storedTasks.filter(
-                                    (other) => other.machineId === task.machineId,
-                                  ),
-                                ).map((other) => other.title)
-                              : []
-                          }
-                          onMove={(to) => void act(task, () => moveTask(task, to))}
-                          onEdit={() => {
-                            setError(null);
-                            setDraft(draftFromTask(task));
-                          }}
-                          onDelete={() => onDelete(task)}
-                          onOpenSession={
-                            task.sessionId
-                              ? () => void onOpenSession(task)
-                              : undefined
+                          {...taskContext(task)}
+                          {...actionsFor(task)}
+                          selected={`${task.machineId}:${task.id}` === selectedKey}
+                          onOpen={() =>
+                            setSelectedKey(`${task.machineId}:${task.id}`)
                           }
                         />
                       </li>
@@ -629,6 +699,20 @@ function TasksContent({
             })}
           </div>
         )}
+      </div>
+      {selected ? (
+        <TaskDetail
+          key={`${selected.machineId}:${selected.id}`}
+          task={selected}
+          now={now}
+          {...taskContext(selected)}
+          {...actionsFor(selected)}
+          onClose={() => setSelectedKey(null)}
+          onSaveDetails={(title, prompt) =>
+            onSaveDetails(selected, title, prompt)
+          }
+        />
+      ) : null}
       </div>
     </div>
   );
@@ -648,34 +732,39 @@ function TaskCard({
   task,
   now,
   project,
-  busy,
   goal,
   waitingFor,
-  onMove,
-  onEdit,
-  onDelete,
-  onOpenSession,
+  selected,
+  onOpen,
+  ...actions
 }: {
   task: BoardTask;
   now: number;
   project: string;
-  busy: boolean;
   /** The title of the goal the task was planned for. */
   goal?: string;
   /** Titles of the tasks it waits for. */
   waitingFor: readonly string[];
-  onMove: (to: TaskStatus) => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  /** Missing while the task has no session yet. */
-  onOpenSession?: () => void;
-}) {
+  /** Its detail panel is open. */
+  selected: boolean;
+  onOpen: () => void;
+} & TaskActionHandlers) {
   const model = resolveModel(task.harness, task.model);
-  const can = (to: TaskStatus) => canMoveTask(task.status, to);
+  const description = task.prompt.trim();
   return (
+    // A click anywhere on the card but its buttons opens the detail panel.
     <article
       aria-label={task.title}
-      className="rounded-md border border-content/10 bg-background-base px-2.5 py-2"
+      aria-current={selected || undefined}
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget && event.key === "Enter")
+          onOpen();
+      }}
+      className={`cursor-pointer rounded-md border bg-background-base px-2.5 py-2 hover:border-content/20 ${
+        selected ? "border-content/30" : "border-content/10"
+      }`}
     >
       {goal ? (
         <p
@@ -693,6 +782,14 @@ function TaskCard({
       >
         {task.title}
       </h3>
+      {description ? (
+        <p
+          data-task-description
+          className="mt-0.5 line-clamp-2 whitespace-pre-line break-words text-[11px] leading-snug text-content/45"
+        >
+          {description}
+        </p>
+      ) : null}
       <p className="mt-1 truncate text-[11px] text-content/45">
         {project} · on {task.machineName}
       </p>
@@ -758,64 +855,395 @@ function TaskCard({
           {task.mergeError}
         </p>
       ) : null}
-      <div className="mt-1.5 flex flex-wrap items-center gap-0.5">
-        {busy ? (
-          <LoaderCircle className="mx-1.5 size-3 animate-spin text-content/40" />
-        ) : null}
-        {can("done") ? (
-          hasUnmergedBranch(task) ? (
-            <CardAction
-              label={`Merge into ${task.baseBranch}`}
-              disabled={busy}
-              onClick={() => onMove("done")}
-            >
-              <GitMerge className="size-3" />
-            </CardAction>
-          ) : (
-            <CardAction
-              label="Approve"
-              disabled={busy}
-              onClick={() => onMove("done")}
-            >
-              <Check className="size-3" />
-            </CardAction>
-          )
-        ) : null}
-        {can("queued") ? (
-          <CardAction
-            label={task.status === "blocked" ? "Retry" : "Run again"}
-            disabled={busy}
-            onClick={() => onMove("queued")}
-          >
-            {task.status === "blocked" ? (
-              <RotateCcw className="size-3" />
-            ) : (
-              <Play className="size-3" />
-            )}
-          </CardAction>
-        ) : null}
-        {can("blocked") ? (
-          <CardAction label="Stop" disabled={busy} onClick={() => onMove("blocked")}>
-            <Square className="size-3" />
-          </CardAction>
-        ) : null}
-        {onOpenSession ? (
-          <CardAction label="Open session" disabled={false} onClick={onOpenSession}>
-            <MessageSquare className="size-3" />
-          </CardAction>
-        ) : null}
-        {canEditTask(task.status) ? (
-          <CardAction label="Edit" disabled={busy} onClick={onEdit}>
-            <Pencil className="size-3" />
-          </CardAction>
-        ) : null}
-        {task.status === "running" || task.status === "verifying" ? null : (
-          <CardAction label="Delete" disabled={busy} onClick={onDelete}>
-            <Trash2 className="size-3" />
-          </CardAction>
-        )}
-      </div>
+      <TaskActions task={task} {...actions} />
     </article>
+  );
+}
+
+type TaskActionHandlers = {
+  busy: boolean;
+  onMove: (to: TaskStatus) => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  /** Missing while the task has no session yet. */
+  onOpenSession?: () => void;
+};
+
+/** What the owner can do with a task, as the card and the detail panel both
+ * offer it. Clicks stay on the buttons rather than opening the panel. */
+function TaskActions({
+  task,
+  busy,
+  onMove,
+  onEdit,
+  onDelete,
+  onOpenSession,
+}: { task: BoardTask } & TaskActionHandlers) {
+  const can = (to: TaskStatus) => canMoveTask(task.status, to);
+  return (
+    <div
+      className="mt-1.5 flex flex-wrap items-center gap-0.5"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    >
+      {busy ? (
+        <LoaderCircle className="mx-1.5 size-3 animate-spin text-content/40" />
+      ) : null}
+      {can("done") ? (
+        hasUnmergedBranch(task) ? (
+          <CardAction
+            label={`Merge into ${task.baseBranch}`}
+            disabled={busy}
+            onClick={() => onMove("done")}
+          >
+            <GitMerge className="size-3" />
+          </CardAction>
+        ) : (
+          <CardAction
+            label={task.status === "todo" ? "Mark done" : "Approve"}
+            disabled={busy}
+            onClick={() => onMove("done")}
+          >
+            <Check className="size-3" />
+          </CardAction>
+        )
+      ) : null}
+      {can("queued") ? (
+        <CardAction
+          label={
+            task.status === "todo"
+              ? "Start"
+              : task.status === "blocked"
+                ? "Retry"
+                : "Run again"
+          }
+          disabled={busy}
+          onClick={() => onMove("queued")}
+        >
+          {task.status === "blocked" ? (
+            <RotateCcw className="size-3" />
+          ) : (
+            <Play className="size-3" />
+          )}
+        </CardAction>
+      ) : null}
+      {can("todo") ? (
+        <CardAction
+          label={task.status === "done" ? "Reopen" : "Move to To do"}
+          disabled={busy}
+          onClick={() => onMove("todo")}
+        >
+          <Undo2 className="size-3" />
+        </CardAction>
+      ) : null}
+      {can("blocked") ? (
+        <CardAction label="Stop" disabled={busy} onClick={() => onMove("blocked")}>
+          <Square className="size-3" />
+        </CardAction>
+      ) : null}
+      {onOpenSession ? (
+        <CardAction label="Open session" disabled={false} onClick={onOpenSession}>
+          <MessageSquare className="size-3" />
+        </CardAction>
+      ) : null}
+      {canEditTask(task.status) ? (
+        <CardAction label="Edit" disabled={busy} onClick={onEdit}>
+          <Pencil className="size-3" />
+        </CardAction>
+      ) : null}
+      {task.status === "running" || task.status === "verifying" ? null : (
+        <CardAction label="Delete" disabled={busy} onClick={onDelete}>
+          <Trash2 className="size-3" />
+        </CardAction>
+      )}
+    </div>
+  );
+}
+
+const STATUS_LABELS: Record<TaskStatus, string> = {
+  todo: "To do",
+  queued: "Queued",
+  running: "Running",
+  verifying: "Verifying",
+  review: "Review",
+  done: "Done",
+  blocked: "Blocked",
+};
+
+function formatTime(at: number | undefined): string | undefined {
+  return at ? new Date(at).toLocaleString() : undefined;
+}
+
+function DetailRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex min-w-0 gap-2 text-[12px] leading-snug">
+      <dt className="w-24 shrink-0 text-content/45">{label}</dt>
+      <dd className="min-w-0 flex-1 break-words text-content/80">{children}</dd>
+    </div>
+  );
+}
+
+/** A task in full, beside the board: its description, where and how it runs,
+ * and everything the host recorded about it. The title and description can be
+ * edited in place while the task may be edited at all. */
+function TaskDetail({
+  task,
+  now,
+  project,
+  goal,
+  waitingFor,
+  onClose,
+  onSaveDetails,
+  ...actions
+}: {
+  task: BoardTask;
+  now: number;
+  project: string;
+  goal?: string;
+  waitingFor: readonly string[];
+  onClose: () => void;
+  /** Resolves true once the new title and description are saved. */
+  onSaveDetails: (title: string, prompt: string) => Promise<boolean>;
+} & TaskActionHandlers) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  const [prompt, setPrompt] = useState(task.prompt);
+  const [saving, setSaving] = useState(false);
+  const model = resolveModel(task.harness, task.model);
+  const description = task.prompt.trim();
+  const editable = canEditTask(task.status);
+  const canSave =
+    title.trim().length > 0 &&
+    (task.status === "todo" || prompt.trim().length > 0) &&
+    !saving;
+
+  // The task may stop being editable while its panel is open.
+  useEffect(() => {
+    if (!editable) setEditing(false);
+  }, [editable]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (editing) setEditing(false);
+      else onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editing, onClose]);
+
+  const beginEdit = () => {
+    setTitle(task.title);
+    setPrompt(task.prompt);
+    setEditing(true);
+  };
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!canSave) return;
+    setSaving(true);
+    try {
+      if (await onSaveDetails(title.trim(), prompt)) setEditing(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const { command, review } = task.verification ?? {};
+  return (
+    <aside
+      aria-label="Task details"
+      className="flex min-h-0 w-[380px] max-w-[45%] shrink-0 flex-col border-l border-stroke"
+    >
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stroke px-3">
+        <span className="inline-flex h-5 items-center rounded-full bg-content/8 px-2 text-[11px] font-medium text-content/70">
+          {STATUS_LABELS[task.status]}
+        </span>
+        {task.needsInput ? (
+          <span className="inline-flex h-5 items-center rounded-full bg-amber-500/12 px-2 text-[11px] font-medium text-amber-400">
+            Needs input
+          </span>
+        ) : null}
+        <button
+          type="button"
+          aria-label="Close details"
+          onClick={onClose}
+          className="ml-auto grid size-6 place-items-center rounded-md text-content/50 hover:bg-content/10 hover:text-content"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+        {editing ? (
+          <form aria-label="Edit details" onSubmit={save} className="space-y-2">
+            <input
+              autoFocus
+              aria-label="Title"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              className="w-full rounded-md border border-content/10 bg-content/3 px-2 py-1 text-[14px] font-semibold text-content outline-none focus:border-content/20"
+            />
+            <textarea
+              aria-label="Description"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="Details, acceptance criteria, links…"
+              rows={8}
+              className="block w-full resize-y rounded-md border border-content/10 bg-content/3 px-2 py-1.5 text-[13px] leading-relaxed text-content outline-none placeholder:text-content/35 focus:border-content/20"
+            />
+            <div className="flex items-center gap-2">
+              <button type="submit" disabled={!canSave} className={ACTION_FILLED}>
+                {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className={ACTION_OUTLINE}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <div className="flex items-start gap-2">
+              <h2 className="min-w-0 flex-1 break-words text-[15px] font-semibold leading-snug text-content">
+                {task.title}
+              </h2>
+              {editable ? (
+                <button
+                  type="button"
+                  onClick={beginEdit}
+                  className={CARD_ACTION}
+                  aria-label="Edit title and description"
+                >
+                  <Pencil className="size-3" />
+                  Edit
+                </button>
+              ) : null}
+            </div>
+            <div data-task-detail-description className="text-[13px] text-content/80">
+              {description ? (
+                <AgentMarkdown text={task.prompt} allowRemoteMedia={false} />
+              ) : (
+                <p className="text-content/45">No description.</p>
+              )}
+            </div>
+          </>
+        )}
+        <TaskActions task={task} {...actions} />
+        {goal ? (
+          <p className="flex min-w-0 items-center gap-1 text-[12px] text-content/55">
+            <Sparkles className="size-3 shrink-0" />
+            <span className="min-w-0 truncate">Part of the goal “{goal}”</span>
+          </p>
+        ) : null}
+        {task.status === "blocked" && task.error ? (
+          <p
+            role="alert"
+            className="break-words text-[12px] leading-snug text-rose-400"
+          >
+            {task.error}
+          </p>
+        ) : null}
+        <dl className="space-y-1.5">
+          <DetailRow label="Project">{project}</DetailRow>
+          <DetailRow label="Machine">{task.machineName}</DetailRow>
+          <DetailRow label="Agent">
+            <span className="inline-flex items-center gap-1">
+              <HarnessIcon harness={task.harness} className="size-3.5 shrink-0" />
+              {model.name}
+            </span>
+          </DetailRow>
+          <DetailRow label="Access">{RUNTIME_MODE_LABEL[task.runtimeMode]}</DetailRow>
+          <DetailRow label="Time limit">
+            {RUN_TIME_LIMIT_OPTIONS.find(
+              (option) => option.value === String(task.maxRunMinutes),
+            )?.label ?? `${task.maxRunMinutes} minutes`}
+          </DetailRow>
+          {task.branch ? (
+            <DetailRow label="Branch">
+              {task.merged
+                ? `${task.branch} merged into ${task.baseBranch}`
+                : task.branch}
+            </DetailRow>
+          ) : null}
+          {task.baseBranch ? (
+            <DetailRow label="Base branch">{task.baseBranch}</DetailRow>
+          ) : null}
+          {waitingFor.length > 0 ? (
+            <DetailRow label="Waiting for">{waitingFor.join(", ")}</DetailRow>
+          ) : null}
+          <DetailRow label="Created">{formatTime(task.createdAt)}</DetailRow>
+          {task.startedAt ? (
+            <DetailRow label="Started">{formatTime(task.startedAt)}</DetailRow>
+          ) : null}
+          {task.completedAt ? (
+            <DetailRow label="Completed">{formatTime(task.completedAt)}</DetailRow>
+          ) : null}
+          <DetailRow label="Status">{taskTimeLabel(task, now)}</DetailRow>
+          {task.verifyCommand ? (
+            <DetailRow label="Check command">
+              <code className="font-mono text-[11px]">{task.verifyCommand}</code>
+            </DetailRow>
+          ) : null}
+        </dl>
+        {command ? (
+          <section aria-label="Check output" className="space-y-1">
+            <h3 className="text-[12px] text-content/55">
+              Check command{" "}
+              <span
+                className={
+                  !command.timedOut && command.exitCode === 0
+                    ? "text-emerald-400"
+                    : "text-rose-400"
+                }
+              >
+                {!command.timedOut && command.exitCode === 0
+                  ? "passed"
+                  : command.timedOut
+                    ? "timed out"
+                    : command.exitCode === null
+                      ? "could not run"
+                      : `failed (exit code ${command.exitCode})`}
+              </span>
+            </h3>
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-content/5 px-2 py-1.5 font-mono text-[11px] text-content/65">
+              {command.output.trim() || "No output."}
+            </pre>
+          </section>
+        ) : null}
+        {review ? (
+          <p className="break-words text-[12px] leading-snug text-content/65">
+            Reviewer{" "}
+            <span
+              className={
+                review.verdict === "pass" ? "text-emerald-400" : "text-rose-400"
+              }
+            >
+              {review.verdict === "pass" ? "passed" : "failed"}
+            </span>
+            {review.note ? ` · ${review.note}` : null}
+          </p>
+        ) : null}
+        {task.diffStat ? (
+          <pre
+            aria-label="Diff stat"
+            className="max-h-48 overflow-auto rounded bg-content/5 px-2 py-1.5 font-mono text-[11px] leading-snug text-content/65"
+          >
+            {task.diffStat}
+          </pre>
+        ) : null}
+        {task.mergeError ? (
+          <p
+            role="alert"
+            className="break-words text-[12px] leading-snug text-rose-400"
+          >
+            {task.mergeError}
+          </p>
+        ) : null}
+      </div>
+    </aside>
   );
 }
 
@@ -895,6 +1323,7 @@ function TaskForm({
   draft,
   recents,
   machine,
+  todoUnsupported,
   saving,
   onChange,
   onCancel,
@@ -904,23 +1333,38 @@ function TaskForm({
   recents: RecentProject[];
   /** The machine whose host would run this draft, when it is connected. */
   machine?: string;
+  /** Why a to-do item cannot be added on that machine, when it cannot. */
+  todoUnsupported?: string;
   saving: boolean;
   onChange: (draft: TaskDraft) => void;
   onCancel: () => void;
-  onSubmit: (event: FormEvent) => void;
+  /** `todo` and `queued` add a new task; `save` keeps an edited task's status. */
+  onSubmit: (mode: "todo" | "queued" | "save") => void;
 }) {
+  // A to-do item is mostly title and description; the agent comes later.
+  const [agentOpen, setAgentOpen] = useState(
+    draft.id ? draft.status !== "todo" : false,
+  );
   const update = <K extends keyof TaskDraft>(key: K, value: TaskDraft[K]) =>
     onChange({ ...draft, [key]: value });
-  const valid =
+  const hasDescription = draft.prompt.trim().length > 0;
+  const ready =
     draft.title.trim().length > 0 &&
-    draft.prompt.trim().length > 0 &&
     looksLikeProject(draft.cwd) &&
     draft.model.length > 0 &&
     machine != null;
+  const canTodo = ready && !todoUnsupported;
+  const canSave = ready && (draft.status === "todo" || hasDescription);
   return (
     <form
       aria-label={draft.id ? "Edit task" : "New task"}
-      onSubmit={onSubmit}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (saving) return;
+        if (draft.id) {
+          if (canSave) onSubmit("save");
+        } else if (canTodo) onSubmit("todo");
+      }}
       className="shrink-0 border-b border-stroke px-4 py-3"
     >
       <div className="flex items-start gap-4">
@@ -936,14 +1380,40 @@ function TaskForm({
           <button type="button" onClick={onCancel} className={ACTION_OUTLINE}>
             Cancel
           </button>
-          <button
-            type="submit"
-            disabled={!valid || saving}
-            className={ACTION_FILLED}
-          >
-            {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
-            {draft.id ? "Save" : "Add to queue"}
-          </button>
+          {draft.id ? (
+            <button
+              type="submit"
+              disabled={!canSave || saving}
+              className={ACTION_FILLED}
+            >
+              {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
+              Save
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled={!ready || !hasDescription || saving}
+                title={
+                  hasDescription
+                    ? undefined
+                    : "Add a description to start this with an agent."
+                }
+                onClick={() => onSubmit("queued")}
+                className={ACTION_OUTLINE}
+              >
+                Add and start
+              </button>
+              <button
+                type="submit"
+                disabled={!canTodo || saving}
+                className={ACTION_FILLED}
+              >
+                {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
+                Add to To do
+              </button>
+            </>
+          )}
         </div>
       </div>
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-[12px] text-content/50">
@@ -965,6 +1435,11 @@ function TaskForm({
             {TASK_MACHINE_ERROR}
           </span>
         )}
+        {!draft.id && todoUnsupported ? (
+          <span role="status" className="text-amber-400">
+            {todoUnsupported}
+          </span>
+        ) : null}
       </div>
       <div className="relative mt-2 rounded-md border border-content/10 bg-content/3 has-focus:border-content/20">
         <SkillPromptField
@@ -972,72 +1447,91 @@ function TaskForm({
           harness={draft.harness}
           cwd={draft.cwd}
           onChange={(prompt) => update("prompt", prompt)}
+          label="Description"
+          placeholder="Details, acceptance criteria, links…"
         />
-        <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-          <ModelPicker
-            harness={draft.harness}
-            model={draft.model}
-            values={draft.modelSettings}
-            project={draft.cwd}
-            onChange={(harness, model) => onChange({ ...draft, harness, model })}
-            onSettingsChange={(modelSettings) =>
-              update("modelSettings", modelSettings)
-            }
-          />
-          {draft.harness !== "fx" ? (
-            <AccessPicker
-              value={draft.runtimeMode}
-              onChange={(runtimeMode) => update("runtimeMode", runtimeMode)}
+      </div>
+      <button
+        type="button"
+        aria-expanded={agentOpen}
+        onClick={() => setAgentOpen((open) => !open)}
+        className="mt-2 inline-flex h-6 items-center gap-1 rounded-md text-[12px] text-content/55 hover:text-content"
+      >
+        {agentOpen ? (
+          <ChevronDown className="size-3" />
+        ) : (
+          <ChevronRight className="size-3" />
+        )}
+        Agent settings
+      </button>
+      {agentOpen ? (
+        <div className="mt-1 space-y-2">
+          <div className="flex flex-wrap items-center gap-1 rounded-md border border-content/10 bg-content/3 px-2 py-2">
+            <ModelPicker
+              harness={draft.harness}
+              model={draft.model}
+              values={draft.modelSettings}
+              project={draft.cwd}
+              onChange={(harness, model) => onChange({ ...draft, harness, model })}
+              onSettingsChange={(modelSettings) =>
+                update("modelSettings", modelSettings)
+              }
             />
-          ) : null}
-          <span className="ml-auto flex items-center gap-2 text-[11px] text-content/45">
-            Time limit
-            <SearchableSelect
-              variant="pill"
-              searchable={false}
-              align="end"
-              label="Time limit"
-              value={String(draft.maxRunMinutes)}
-              options={RUN_TIME_LIMIT_OPTIONS}
-              onChange={(value) => update("maxRunMinutes", Number(value))}
-            />
-          </span>
+            {draft.harness !== "fx" ? (
+              <AccessPicker
+                value={draft.runtimeMode}
+                onChange={(runtimeMode) => update("runtimeMode", runtimeMode)}
+              />
+            ) : null}
+            <span className="ml-auto flex items-center gap-2 text-[11px] text-content/45">
+              Time limit
+              <SearchableSelect
+                variant="pill"
+                searchable={false}
+                align="end"
+                label="Time limit"
+                value={String(draft.maxRunMinutes)}
+                options={RUN_TIME_LIMIT_OPTIONS}
+                onChange={(value) => update("maxRunMinutes", Number(value))}
+              />
+            </span>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-content/60">
+            <label
+              title="In a git project the task works on a new branch in its own worktree, and nothing reaches the project until you merge it."
+              className="flex cursor-pointer items-center gap-1.5"
+            >
+              <input
+                type="checkbox"
+                checked={draft.isolate}
+                onChange={(event) => update("isolate", event.target.checked)}
+                className={CHECKBOX}
+              />
+              Run on its own branch
+            </label>
+            <label className="flex cursor-pointer items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={draft.review}
+                onChange={(event) => update("review", event.target.checked)}
+                className={CHECKBOX}
+              />
+              Review with a second agent
+            </label>
+            <label className="flex min-w-[220px] flex-1 items-center gap-2">
+              <span className="shrink-0">Check command</span>
+              <input
+                aria-label="Check command"
+                value={draft.verifyCommand}
+                onChange={(event) => update("verifyCommand", event.target.value)}
+                placeholder="npm test"
+                spellCheck={false}
+                className="h-7 min-w-0 flex-1 rounded-md border border-content/10 bg-content/3 px-2 font-mono text-[12px] text-content outline-none placeholder:text-content/30 focus:border-content/20"
+              />
+            </label>
+          </div>
         </div>
-      </div>
-      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-content/60">
-        <label
-          title="In a git project the task works on a new branch in its own worktree, and nothing reaches the project until you merge it."
-          className="flex cursor-pointer items-center gap-1.5"
-        >
-          <input
-            type="checkbox"
-            checked={draft.isolate}
-            onChange={(event) => update("isolate", event.target.checked)}
-            className={CHECKBOX}
-          />
-          Run on its own branch
-        </label>
-        <label className="flex cursor-pointer items-center gap-1.5">
-          <input
-            type="checkbox"
-            checked={draft.review}
-            onChange={(event) => update("review", event.target.checked)}
-            className={CHECKBOX}
-          />
-          Review with a second agent
-        </label>
-        <label className="flex min-w-[220px] flex-1 items-center gap-2">
-          <span className="shrink-0">Check command</span>
-          <input
-            aria-label="Check command"
-            value={draft.verifyCommand}
-            onChange={(event) => update("verifyCommand", event.target.value)}
-            placeholder="npm test"
-            spellCheck={false}
-            className="h-7 min-w-0 flex-1 rounded-md border border-content/10 bg-content/3 px-2 font-mono text-[12px] text-content outline-none placeholder:text-content/30 focus:border-content/20"
-          />
-        </label>
-      </div>
+      ) : null}
     </form>
   );
 }

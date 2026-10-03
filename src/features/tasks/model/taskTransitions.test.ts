@@ -108,6 +108,16 @@ describe("background transitions", () => {
     ).toEqual([]);
   });
 
+  it("never announces a task entering to do", () => {
+    for (const status of ["review", "blocked", "done", "queued"] as const)
+      expect(
+        messages(
+          { tasks: [task({ status })] },
+          { tasks: [task({ status: "todo", needsInput: true, error: "x" })] },
+        ),
+      ).toEqual([]);
+  });
+
   it("does not announce what it had not seen before", () => {
     expect(
       backgroundTransitions(

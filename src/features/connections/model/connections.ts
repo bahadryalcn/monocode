@@ -300,7 +300,7 @@ export async function connectMachine(
  * closes the old tunnel and the machine's connection status starts over. */
 export async function updateMachine(
   machine: RemoteMachine,
-  edit: { name: string; target: string; port: number | null },
+  edit: { name: string; target: string; port: number | null; alternate?: string | null },
   reconnect: boolean,
 ): Promise<RemoteMachine> {
   const saved = await invoke<RemoteMachine>("remote_machine_update", {
@@ -308,6 +308,7 @@ export async function updateMachine(
     name: edit.name,
     target: edit.target,
     port: edit.port,
+    alternate: edit.alternate ?? null,
   });
   cachedMachines = cachedMachines.map((entry) => (entry.id === saved.id ? saved : entry));
   if (reconnect) {
@@ -465,6 +466,11 @@ export type RemoteProjectSessions = {
   machine?: RemoteMachine;
   sessions: HostSessionSummary[];
   loaded: boolean;
+  /** Whether the list of machines has been read: until then `machine` is
+   * undefined because it is not known yet, not because it is missing. */
+  machinesLoaded: boolean;
+  /** The machine did not answer and no list has arrived yet. */
+  failed: boolean;
 };
 
 /** Lists a remote project's host sessions, keeping the last list visible
@@ -474,7 +480,7 @@ export function useRemoteProjectSessions(
   enabled = true,
 ): RemoteProjectSessions {
   const remote = enabled ? remoteProjectFor(project) : undefined;
-  const { machines } = useRemoteMachines(!!remote);
+  const { machines, loaded: machinesLoaded } = useRemoteMachines(!!remote);
   const machine = remote
     ? machines.find((entry) => entry.environmentId === remote.environmentId)
     : undefined;
@@ -482,6 +488,7 @@ export function useRemoteProjectSessions(
     remote ? cachedSessions(project) : [],
   );
   const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     if (!remote) return;
@@ -492,6 +499,7 @@ export function useRemoteProjectSessions(
   useEffect(() => {
     setSessions(remote ? cachedSessions(project) : []);
     setLoaded(false);
+    setFailed(false);
     if (!remote || !machine) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -507,6 +515,7 @@ export function useRemoteProjectSessions(
         failures = 0;
         setSessions(next);
         setLoaded(true);
+        setFailed(false);
         try {
           localStorage.setItem(historyKey(project), JSON.stringify(next));
           window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
@@ -516,6 +525,7 @@ export function useRemoteProjectSessions(
       } catch {
         // Keep the cached list and back off while SSH is unavailable.
         failures = Math.min(4, failures + 1);
+        if (!disposed) setFailed(true);
       }
       if (!disposed)
         timer = setTimeout(
@@ -529,7 +539,7 @@ export function useRemoteProjectSessions(
       clearTimeout(timer);
     };
   }, [project, remote?.projectId, machine?.id, refresh]);
-  return { machine, sessions, loaded };
+  return { machine, sessions, loaded, machinesLoaded, failed };
 }
 
 /** Lists the host sessions of every remote project on the rail, so one that

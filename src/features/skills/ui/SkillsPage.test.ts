@@ -522,3 +522,63 @@ describe("Settings skill preview", () => {
     expect(button("Reveal Personal guide in file explorer")).toBeDefined();
   });
 });
+
+describe("Skills for a project on another machine", () => {
+  it("lists this computer's own skills and the other machine's, each with its switch", async () => {
+    const { setRemoteCommandRunner } = await import("../../../platform/tauri/fs");
+    const { rememberRemoteProject } = await import(
+      "../../connections/model/remoteProjects"
+    );
+    const project = rememberRemoteProject("env-mac", {
+      id: "p1",
+      cwd: "/Users/me/clinic",
+      name: "clinic",
+    });
+    const remoteCalls: Record<string, unknown>[] = [];
+    setRemoteCommandRunner(async (command, args) => {
+      remoteCalls.push({ command, ...args });
+      return [
+        {
+          name: "clinic-deploy",
+          description: "Deploys the clinic",
+          path: "remote://env-mac/Users/me/clinic/.agents/skills/deploy/SKILL.md",
+          scope: "project",
+          source: "agents",
+        },
+      ];
+    });
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "list_skills") {
+        // Only this computer's own skills: there is no local project folder.
+        expect((args as { cwd: string }).cwd).toBe("");
+        return [skills[1]];
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    await act(async () =>
+      root.render(createElement(SkillsPage, { cwd: project.key })),
+    );
+    await act(async () => {});
+
+    expect(remoteCalls).toMatchObject([{ command: "list_skills", cwd: project.key }]);
+    const text = container.textContent ?? "";
+    expect(text).toContain("This computer");
+    expect(text).toContain("Personal guide");
+    expect(text).toContain("Other machine");
+    expect(text).toContain("clinic-deploy");
+    expect(text).toContain("2 skills");
+    expect(text).not.toContain("isn’t available");
+    // Its files are on the other machine: no local folder to reveal.
+    expect(
+      container.querySelector('[aria-label="Reveal clinic-deploy in file explorer"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Reveal Personal guide in file explorer"]'),
+    ).not.toBeNull();
+
+    await click("Include clinic-deploy in MonoCode catalog");
+    expect(loadDisabledSkillPaths()).toEqual([
+      "remote://env-mac/Users/me/clinic/.agents/skills/deploy/SKILL.md",
+    ]);
+  });
+});

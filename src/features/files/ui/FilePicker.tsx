@@ -32,6 +32,7 @@ import {
   loadNotesEnabled,
 } from "../../settings/model/settings";
 import { NOTES_PANEL_COMMAND } from "../../notes/notesPanel";
+import { LAYOUT_PRESETS } from "../../workspace/model/layoutPresets";
 type Action = {
   id: string;
   label: string;
@@ -43,7 +44,20 @@ export function reloadActionHint(mod = MOD, shift = SHIFT) {
   return `${mod}${shift}R`;
 }
 
-function paletteActions(cwd: string, stopBackgroundWork: boolean): Action[] {
+export const LAYOUT_ACTION_PREFIX = "layout-";
+
+export function layoutPaletteActions(): Action[] {
+  return LAYOUT_PRESETS.map((preset) => ({
+    id: `${LAYOUT_ACTION_PREFIX}${preset.id}`,
+    label: `Layout: ${preset.label}`,
+  }));
+}
+
+function paletteActions(
+  cwd: string,
+  stopBackgroundWork: boolean,
+  arrangeLayout: boolean,
+): Action[] {
   const notes = loadNotesEnabled()
     ? [
         {
@@ -69,6 +83,7 @@ function paletteActions(cwd: string, stopBackgroundWork: boolean): Action[] {
       ? [{ id: "reconnect-remote", label: "Reconnect Remote Machine" }]
       : []),
     ...notes,
+    ...(arrangeLayout ? layoutPaletteActions() : []),
   ];
 }
 
@@ -79,6 +94,8 @@ type Props = {
   initialQuery?: string;
   /** The open session has subagents or commands that can be stopped one by one. */
   stopBackgroundWork?: boolean;
+  /** The active tab has several panes, so "Layout: …" commands apply. */
+  arrangeLayout?: boolean;
   onOpenFile: OpenFileFn;
   onRunAction: (id: string) => void;
   onClose: () => void;
@@ -90,6 +107,7 @@ export function FilePicker({
   openPaths = [],
   initialQuery = "",
   stopBackgroundWork = false,
+  arrangeLayout = false,
   onOpenFile,
   onRunAction,
   onClose,
@@ -123,7 +141,7 @@ export function FilePicker({
   );
   const actionResults = useMemo((): RankedAction[] => {
     if (!paletteMode) return [];
-    const actions = paletteActions(cwd, stopBackgroundWork);
+    const actions = paletteActions(cwd, stopBackgroundWork, arrangeLayout);
     if (!actionQuery) {
       return actions.map((action) => ({
         ...action,
@@ -137,7 +155,7 @@ export function FilePicker({
         return hit ? [{ ...action, ...hit }] : [];
       })
       .sort((a, b) => b.score - a.score);
-  }, [actionQuery, paletteMode, cwd, stopBackgroundWork]);
+  }, [actionQuery, paletteMode, cwd, stopBackgroundWork, arrangeLayout]);
   const optionCount = paletteMode ? actionResults.length : results.length;
 
   useEffect(() => {

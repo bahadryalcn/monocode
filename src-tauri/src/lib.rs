@@ -208,8 +208,11 @@ fn set_dock_badge(
 }
 
 #[tauri::command]
-fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
-    window::open_new_window(&app)
+fn open_new_window(app: tauri::AppHandle, x: Option<f64>, y: Option<f64>) -> Result<(), String> {
+    match (x, y) {
+        (Some(x), Some(y)) => window::open_new_window_at(&app, x, y),
+        _ => window::open_new_window(&app),
+    }
 }
 
 fn should_request_quit(code: Option<i32>) -> bool {

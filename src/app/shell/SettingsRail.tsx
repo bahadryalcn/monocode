@@ -56,7 +56,7 @@ export function SettingsNav({ section, onSelect, onClose }: Props) {
       >
         {settingsSectionsByGroup().map((group) => (
           <div key={group.id} className="flex flex-col gap-px">
-            <div className="px-2 pb-1 text-xs font-semibold text-content/35">
+            <div className="px-2 pb-1 text-xs font-semibold text-content/35 @max-[140px]/rail:hidden">
               {group.label}
             </div>
             {group.sections.map((item) => (
@@ -93,15 +93,17 @@ function NavRow({
     <button
       type="button"
       onClick={onClick}
+      title={label}
+      aria-label={label}
       aria-current={active ? "true" : undefined}
-      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left @max-[140px]/rail:justify-center @max-[140px]/rail:px-0 ${
         active
           ? "bg-selection text-content"
           : "text-content/50 hover:bg-content/5 hover:text-content"
       }`}
     >
       <Icon className="size-4 shrink-0 opacity-70" strokeWidth={1.75} />
-      <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
+      <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight @max-[140px]/rail:hidden">
         {label}
       </span>
     </button>

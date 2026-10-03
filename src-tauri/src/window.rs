@@ -71,6 +71,14 @@ pub fn open_new_window(app: &AppHandle) -> Result<(), String> {
     open_session_window(app, true).map(|_| ())
 }
 
+/// Opens a window with its top-left corner at the given screen position
+/// (logical pixels), e.g. where a tab was dropped outside its window.
+pub fn open_new_window_at(app: &AppHandle, x: f64, y: f64) -> Result<(), String> {
+    let window = open_session_window(app, true)?;
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+    Ok(())
+}
+
 fn configure_session_window(config: &mut tauri::utils::config::WindowConfig, reveal: bool) {
     config.visible = reveal;
     config.focus = reveal;

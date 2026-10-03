@@ -121,7 +121,8 @@ export function backgroundTransitions(
   const transitions: BackgroundTransition[] = [];
   for (const [key, task] of next.tasks) {
     const before = previous.tasks.get(key);
-    if (!before) continue;
+    // Nothing runs for a to-do item, so moving one there is never news.
+    if (!before || task.status === "todo") continue;
     if (task.status === "review" && before.status !== "review")
       transitions.push({
         target: "tasks",

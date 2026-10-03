@@ -300,6 +300,7 @@ fn apply_edit(
     name: &str,
     target: String,
     port: Option<u16>,
+    alternate: Option<String>,
 ) -> Result<StoredMachine, String> {
     let machine = machines
         .iter_mut()
@@ -314,6 +315,8 @@ fn apply_edit(
         target,
         port,
         remote_port: old.remote_port,
+        alternate,
+        host_key_alias: None,
     };
     machine.endpoint = format!("ssh://{}", ssh.target);
     machine.ssh = Some(ssh);
@@ -337,8 +340,11 @@ pub fn remote_machine_update(
     name: String,
     target: String,
     port: Option<u16>,
+    alternate: Option<String>,
 ) -> Result<Machine, String> {
     let target = remote_ssh::validate_target(&target, port)?;
+    let alternate = remote_ssh::validate_alternate(alternate.as_deref(), port)?
+        .filter(|alternate| *alternate != target);
     // A running setup would write its older copy of the machine back over this.
     if state
         .jobs
@@ -359,7 +365,7 @@ pub fn remote_machine_update(
         .iter()
         .find(|m| m.id == machine_id)
         .and_then(|m| m.ssh.clone());
-    let machine = apply_edit(&mut machines, &machine_id, &name, target, port)?;
+    let machine = apply_edit(&mut machines, &machine_id, &name, target, port, alternate)?;
     write(&path, &machines)?;
     if before != machine.ssh {
         state.tunnels.remove(&machine_id);
@@ -509,7 +515,53 @@ fn supported_remote_method(method: &str) -> bool {
             | "sync.push"
             | "shell.profiles"
             | "shell.setProfile"
+            | "sessions.get"
+            | "automations.list"
+            | "automations.save"
+            | "automations.delete"
+            | "automations.runs"
+            | "automations.runNow"
+            | "tasks.list"
+            | "tasks.save"
+            | "tasks.move"
+            | "tasks.delete"
+            | "goals.list"
+            | "goals.create"
+            | "goals.approve"
+            | "goals.replan"
+            | "goals.cancel"
+            | "goals.delete"
     )
+}
+
+/// A machine set up again: it keeps its id, so its projects and sessions stay
+/// linked. Added anew from another address (its Tailscale one, say), it keeps
+/// the address it had and takes the new one as its other address, rather
+/// than losing the first; it keeps its name unless a new one was given.
+fn merge_known_machine(
+    machine: &mut StoredMachine,
+    old: &StoredMachine,
+    adding: bool,
+    named: bool,
+) {
+    machine.id = old.id.clone();
+    if !adding {
+        return;
+    }
+    let (Some(new), Some(previous)) = (machine.ssh.as_mut(), old.ssh.as_ref()) else {
+        return;
+    };
+    if new.target != previous.target {
+        let added = std::mem::replace(&mut new.target, previous.target.clone());
+        new.alternate = Some(added);
+        new.port = previous.port.or(new.port);
+        machine.endpoint = format!("ssh://{}", new.target);
+    } else {
+        new.alternate = previous.alternate.clone();
+    }
+    if !named {
+        machine.name = old.name.clone();
+    }
 }
 
 fn start_ssh_job(
@@ -519,6 +571,8 @@ fn start_ssh_job(
     existing: Option<StoredMachine>,
     upgrade: bool,
 ) -> Result<String, String> {
+    let adding = existing.is_none();
+    let named = !name.trim().is_empty();
     let job = Job::new();
     let id = job.view().id;
     {
@@ -663,7 +717,7 @@ fn start_ssh_job(
             Ok((machine, tunnel))
         })();
         job.complete(|| {
-            let (mut machine, tunnel) = prepared?;
+            let (mut machine, mut tunnel) = prepared?;
             let state = app.state::<RemoteConnections>();
             let _guard = state
                 .store
@@ -675,7 +729,10 @@ fn start_ssh_job(
                 .iter()
                 .find(|m| m.environment_id == machine.environment_id)
             {
-                machine.id = old.id.clone();
+                merge_known_machine(&mut machine, old, adding, named);
+                if let Some(ssh) = &machine.ssh {
+                    tunnel.retarget(ssh.clone());
+                }
             }
             machines.retain(|m| m.id != machine.id);
             machines.push(machine.clone());
@@ -703,6 +760,8 @@ pub fn remote_ssh_begin(
             target,
             port,
             remote_port: 3774,
+            alternate: None,
+            host_key_alias: None,
         },
         name.trim().chars().take(100).collect(),
         None,
@@ -844,6 +903,8 @@ mod tests {
                 target: target.into(),
                 port: None,
                 remote_port: 3999,
+                alternate: None,
+                host_key_alias: None,
             }),
         }
     }
@@ -857,6 +918,7 @@ mod tests {
             " Mac ",
             "me@new.local".into(),
             Some(2222),
+            Some("me@100.64.0.5".into()),
         )
         .unwrap();
         assert_eq!(edited.id, "a");
@@ -869,19 +931,63 @@ mod tests {
             (ssh.target.as_str(), ssh.port, ssh.remote_port),
             ("me@new.local", Some(2222), 3999)
         );
+        assert_eq!(ssh.alternate.as_deref(), Some("me@100.64.0.5"));
         // Only the edited machine changed, and a blank name keeps the old one.
         assert_eq!(machines[1].ssh.as_ref().unwrap().target, "me@other");
         let again =
-            apply_edit(&mut machines, "a", "  ", "me@new.local".into(), Some(2222)).unwrap();
+            apply_edit(&mut machines, "a", "  ", "me@new.local".into(), Some(2222), None).unwrap();
         assert_eq!(again.name, "Mac");
+    }
+
+    #[test]
+    fn adding_a_known_machine_from_another_address_keeps_both() {
+        let old = StoredMachine {
+            name: "llm".into(),
+            ..saved("a", "me@192.168.2.145")
+        };
+        let mut added = StoredMachine {
+            name: "Bahadir's MacBook Pro".into(),
+            token: "new-token".into(),
+            ..saved("fresh-id", "me@100.97.82.0")
+        };
+        merge_known_machine(&mut added, &old, true, false);
+        assert_eq!(added.id, "a");
+        assert_eq!(added.name, "llm");
+        assert_eq!(added.token, "new-token");
+        assert_eq!(added.endpoint, "ssh://me@192.168.2.145");
+        let ssh = added.ssh.unwrap();
+        assert_eq!(ssh.target, "me@192.168.2.145");
+        assert_eq!(ssh.alternate.as_deref(), Some("me@100.97.82.0"));
+    }
+
+    #[test]
+    fn adding_a_known_machine_again_keeps_its_other_address_and_a_new_name() {
+        let mut old = saved("a", "me@home");
+        old.ssh.as_mut().unwrap().alternate = Some("me@tailnet".into());
+        let mut added = StoredMachine {
+            name: "Studio".into(),
+            ..saved("fresh-id", "me@home")
+        };
+        merge_known_machine(&mut added, &old, true, true);
+        assert_eq!(added.name, "Studio");
+        assert_eq!(added.ssh.unwrap().alternate.as_deref(), Some("me@tailnet"));
+    }
+
+    #[test]
+    fn reconnecting_a_machine_keeps_only_its_identity() {
+        let old = saved("a", "me@home");
+        let mut again = saved("fresh-id", "me@moved");
+        merge_known_machine(&mut again, &old, false, false);
+        assert_eq!(again.id, "a");
+        assert_eq!(again.ssh.unwrap().target, "me@moved");
     }
 
     #[test]
     fn only_a_saved_ssh_machine_can_be_edited() {
         let mut machines = vec![saved("a", "me@home")];
         machines[0].ssh = None;
-        assert!(apply_edit(&mut machines, "a", "", "me@x".into(), None).is_err());
-        assert!(apply_edit(&mut machines, "missing", "", "me@x".into(), None).is_err());
+        assert!(apply_edit(&mut machines, "a", "", "me@x".into(), None, None).is_err());
+        assert!(apply_edit(&mut machines, "missing", "", "me@x".into(), None, None).is_err());
     }
 
     #[test]
@@ -890,7 +996,7 @@ mod tests {
             std::env::temp_dir().join(format!("monocode-edit-{}.json", uuid::Uuid::new_v4()));
         let mut machines = vec![saved("a", "me@192.168.1.5")];
         write(&path, &machines).unwrap();
-        apply_edit(&mut machines, "a", "", "me@new.local".into(), None).unwrap();
+        apply_edit(&mut machines, "a", "", "me@new.local".into(), None, None).unwrap();
         write(&path, &machines).unwrap();
         let loaded = read(&path).unwrap();
         let _ = std::fs::remove_file(&path);

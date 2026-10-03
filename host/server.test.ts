@@ -893,6 +893,9 @@ describe("remote host API", () => {
     expect(
       (await s.call("environment.describe")).value.result.capabilities,
     ).toContain("tasks");
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toContain("tasks.todo");
     const task = {
       id: "main",
       title: "Ship the report",
@@ -909,6 +912,14 @@ describe("remote host API", () => {
     ]);
     const refused = await s.call("tasks.move", { taskId: "main", to: "done" });
     expect(refused.value.error).toBe("A queued task cannot be moved to done.");
+    const todo = await s.call("tasks.save", {
+      task: { ...task, id: "idea", prompt: "", status: "todo" },
+    });
+    expect(todo.value.result).toMatchObject({ id: "idea", status: "todo" });
+    expect(
+      (await s.call("tasks.move", { taskId: "idea", to: "queued" })).value.error,
+    ).toBe("Add a description before starting this task with an agent.");
+    await s.call("tasks.delete", { taskId: "idea" });
     expect(
       (await s.call("tasks.delete", { taskId: "main" })).value.result,
     ).toEqual({ deleted: true });

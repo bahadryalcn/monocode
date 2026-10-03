@@ -62,7 +62,7 @@ const goal = (overrides: Partial<HostGoal>): HostGoal => ({
 /** A host on this computer holding `tasks`; records what the board asks of it. */
 function host(
   tasks: HostTask[],
-  capabilities = ["tasks"],
+  capabilities = ["tasks", "tasks.todo"],
   goals: HostGoal[] = [],
 ) {
   const requests: Array<{ method: string; params: unknown }> = [];
@@ -85,6 +85,10 @@ function host(
     if (args.method === "goals.list") return goals;
     if (args.method === "tasks.move")
       return { ...tasks[0], status: args.params.to };
+    if (args.method === "tasks.delete") {
+      tasks.splice(0);
+      return { deleted: true };
+    }
     return {};
   });
   return requests;
@@ -110,6 +114,20 @@ const button = (scope: ParentNode, label: string) =>
     (entry) => entry.textContent?.trim() === label,
   );
 
+/** Types into a controlled React field. */
+function type(field: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype =
+    field instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(field, value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+const card = (title: string) =>
+  container.querySelector<HTMLElement>(`article[aria-label="${title}"]`)!;
+const panel = () =>
+  container.querySelector<HTMLElement>('aside[aria-label="Task details"]');
+
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const storage = new Map<string, string>();
@@ -130,8 +148,9 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("lays tasks out in five columns with the actions each status allows", async () => {
+it("lays tasks out in six columns with the actions each status allows", async () => {
   host([
+    task({ id: "t", status: "todo" }),
     task({ id: "a" }),
     task({ id: "b", status: "running", startedAt: 1, needsInput: true }),
     task({ id: "c", status: "review", completedAt: 2 }),
@@ -143,16 +162,22 @@ it("lays tasks out in five columns with the actions each status allows", async (
     Array.from(container.querySelectorAll("[data-task-column]"), (section) =>
       section.getAttribute("aria-label"),
     ),
-  ).toEqual(["Queued", "Running", "Review", "Done", "Blocked"]);
+  ).toEqual(["To do", "Queued", "Running", "Review", "Done", "Blocked"]);
   const actions = (status: string) =>
     Array.from(column(status).querySelectorAll("button"), (entry) =>
       entry.textContent?.trim(),
     );
-  expect(actions("queued")).toEqual(["Edit", "Delete"]);
+  expect(actions("todo")).toEqual(["Mark done", "Start", "Edit", "Delete"]);
+  expect(actions("queued")).toEqual(["Move to To do", "Edit", "Delete"]);
   expect(actions("running")).toEqual(["Stop"]);
   expect(actions("review")).toEqual(["Approve", "Run again", "Delete"]);
-  expect(actions("done")).toEqual(["Run again", "Delete"]);
-  expect(actions("blocked")).toEqual(["Retry", "Edit", "Delete"]);
+  expect(actions("done")).toEqual(["Run again", "Reopen", "Delete"]);
+  expect(actions("blocked")).toEqual([
+    "Retry",
+    "Move to To do",
+    "Edit",
+    "Delete",
+  ]);
   expect(column("running").textContent).toContain("Needs input");
   expect(column("blocked").textContent).toContain("Not signed in");
   expect(column("queued").textContent).toContain("on this computer");
@@ -171,7 +196,7 @@ it("asks the task's machine to move it", async () => {
 it("shows a task being verified under Running", async () => {
   host([task({ status: "verifying", startedAt: 1, branch: "mc/abcd1234" })]);
   await render();
-  expect(container.querySelectorAll("[data-task-column]")).toHaveLength(5);
+  expect(container.querySelectorAll("[data-task-column]")).toHaveLength(6);
   expect(column("running").textContent).toContain("Verifying");
   expect(column("running").textContent).toContain("mc/abcd1234");
   expect(
@@ -255,6 +280,9 @@ it("offers the branch, check and review options on a new task", async () => {
   await render();
   await act(async () => button(container, "New task")!.click());
   const form = container.querySelector('form[aria-label="New task"]')!;
+  // The agent controls are tucked away until asked for.
+  expect(form.querySelector('input[type="checkbox"]')).toBeNull();
+  await act(async () => button(form, "Agent settings")!.click());
   const boxes = Array.from(
     form.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
   );
@@ -280,7 +308,8 @@ it("says so when the project's machine cannot take a task", async () => {
   expect(form.querySelector('[role="alert"]')?.textContent).toContain(
     "isn’t connected, or its MonoCode Host needs an update",
   );
-  expect(button(form, "Add to queue")!.disabled).toBe(true);
+  expect(button(form, "Add to To do")!.disabled).toBe(true);
+  expect(button(form, "Add and start")!.disabled).toBe(true);
 });
 
 it("shows a plan waiting for approval and asks the goal's machine to approve it", async () => {
@@ -374,4 +403,218 @@ it("offers a new goal form with plan review off and the reviewer on", async () =
   expect(boxes.map((box) => box.checked)).toEqual([false, true]);
   expect(form.querySelector('[data-goal-project="/work/project"]')).toBeTruthy();
   expect(button(form, "Plan it")!.disabled).toBe(true);
+});
+
+const edit = (scope: ParentNode) =>
+  scope.querySelector<HTMLButtonElement>(
+    'button[aria-label="Edit title and description"]',
+  )!;
+const escape = () =>
+  act(async () =>
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })),
+  );
+
+it("adds a to-do item with a title and description, or adds and starts it", async () => {
+  const requests = host([]);
+  await render();
+  const open = async () => {
+    await act(async () => button(container, "New task")!.click());
+    const form = container.querySelector('form[aria-label="New task"]')!;
+    await act(async () =>
+      type(
+        form.querySelector<HTMLInputElement>('input[aria-label="Task title"]')!,
+        "Call the bank",
+      ),
+    );
+    return form;
+  };
+  const describe = (form: Element, text: string) =>
+    act(async () =>
+      type(
+        form.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Description"]',
+        )!,
+        text,
+      ),
+    );
+  const saves = () =>
+    requests.filter((request) => request.method === "tasks.save");
+
+  let form = await open();
+  // Without a description it can be a to-do item but not start.
+  expect(button(form, "Add to To do")!.disabled).toBe(false);
+  expect(button(form, "Add and start")!.disabled).toBe(true);
+  await describe(form, "About the card");
+  await act(async () => button(form, "Add to To do")!.click());
+  expect((saves()[0].params as any).task).toMatchObject({
+    title: "Call the bank",
+    prompt: "About the card",
+    status: "todo",
+  });
+
+  form = await open();
+  await describe(form, "Do it");
+  await act(async () => button(form, "Add and start")!.click());
+  expect((saves()[1].params as any).task).toMatchObject({
+    title: "Call the bank",
+    prompt: "Do it",
+    status: "queued",
+  });
+});
+
+it("offers to update an older host instead of adding a to-do item", async () => {
+  const requests = host([], ["tasks"]);
+  await render();
+  await act(async () => button(container, "New task")!.click());
+  const form = container.querySelector('form[aria-label="New task"]')!;
+  await act(async () =>
+    type(
+      form.querySelector<HTMLInputElement>('input[aria-label="Task title"]')!,
+      "Idea",
+    ),
+  );
+  expect(form.querySelector('[role="status"]')!.textContent).toBe(
+    "Update MonoCode Host on this computer to add to-do items",
+  );
+  expect(button(form, "Add to To do")!.disabled).toBe(true);
+  expect(requests.some((request) => request.method === "tasks.save")).toBe(
+    false,
+  );
+});
+
+it("opens a task's details from its card, and closes them with Escape", async () => {
+  host([
+    task({
+      status: "review",
+      prompt: "Write the weekly report\nInclude the totals",
+      completedAt: 2,
+      branch: "mc/abcd1234",
+      baseBranch: "main",
+      diffStat: " report.md | 1 +",
+      verification: {
+        command: { exitCode: 0, output: "12 tests passed", timedOut: false },
+        review: { verdict: "pass", note: "Covers the week.", sessionId: "s" },
+      },
+    }),
+  ]);
+  await render();
+  expect(panel()).toBeNull();
+  expect(card("Ship the report").textContent).toContain(
+    "Write the weekly report",
+  );
+  await act(async () => card("Ship the report").click());
+  await act(async () => {});
+  const details = panel()!;
+  expect(details).toBeTruthy();
+  expect(details.textContent).toContain("Ship the report");
+  expect(details.textContent).toContain("Include the totals");
+  expect(details.textContent).toContain("Review");
+  expect(details.textContent).toContain("mc/abcd1234");
+  expect(details.textContent).toContain("12 tests passed");
+  expect(details.textContent).toContain("Reviewer passed · Covers the week.");
+  expect(details.textContent).toContain("report.md | 1 +");
+  // The board stays visible beside it.
+  expect(column("review")).toBeTruthy();
+
+  await escape();
+  expect(panel()).toBeNull();
+  await act(async () => card("Ship the report").click());
+  await act(async () =>
+    panel()!
+      .querySelector<HTMLButtonElement>('button[aria-label="Close details"]')!
+      .click(),
+  );
+  expect(panel()).toBeNull();
+});
+
+it("does not open the panel from a card's action buttons", async () => {
+  const requests = host([task({ status: "review", completedAt: 2 })]);
+  await render();
+  await act(async () => button(card("Ship the report"), "Approve")!.click());
+  expect(panel()).toBeNull();
+  expect(requests.some((request) => request.method === "tasks.move")).toBe(
+    true,
+  );
+});
+
+it("edits a task's title and description in the panel", async () => {
+  const requests = host([task({ status: "todo" })]);
+  await render();
+  await act(async () => card("Ship the report").click());
+  await act(async () => edit(panel()!).click());
+  const form = panel()!.querySelector('form[aria-label="Edit details"]')!;
+  await act(async () =>
+    type(
+      form.querySelector<HTMLInputElement>('input[aria-label="Title"]')!,
+      "Renamed",
+    ),
+  );
+  await act(async () =>
+    type(
+      form.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Description"]',
+      )!,
+      "New details",
+    ),
+  );
+  await act(async () => button(form, "Save")!.click());
+  const save = requests.find((request) => request.method === "tasks.save")!;
+  expect((save.params as any).task).toMatchObject({
+    id: "main",
+    title: "Renamed",
+    prompt: "New details",
+    model: "claude:test",
+  });
+  // An edit keeps the task's status.
+  expect((save.params as any).task.status).toBeUndefined();
+  expect(panel()!.querySelector("form")).toBeNull();
+});
+
+it("cancels an edit with Escape before closing the panel", async () => {
+  host([task({ status: "todo" })]);
+  await render();
+  await act(async () => card("Ship the report").click());
+  await act(async () => edit(panel()!).click());
+  await escape();
+  expect(panel()).toBeTruthy();
+  expect(panel()!.querySelector("form")).toBeNull();
+});
+
+it("gives the panel the card's actions, and closes it when the task is gone", async () => {
+  const requests = host([task({ status: "todo" })]);
+  await render();
+  await act(async () => card("Ship the report").click());
+  expect(
+    Array.from(panel()!.querySelectorAll("button"), (entry) =>
+      entry.textContent?.trim(),
+    ),
+  ).toEqual(expect.arrayContaining(["Mark done", "Start", "Edit", "Delete"]));
+  await act(async () => button(panel()!, "Start")!.click());
+  expect(requests).toContainEqual({
+    method: "tasks.move",
+    params: { taskId: "main", to: "queued" },
+  });
+  await act(async () => button(panel()!, "Mark done")!.click());
+  expect(requests).toContainEqual({
+    method: "tasks.move",
+    params: { taskId: "main", to: "done" },
+  });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  await act(async () => button(panel()!, "Delete")!.click());
+  await act(async () => {});
+  expect(panel()).toBeNull();
+  confirm.mockRestore();
+});
+
+it("will not start a to-do item without a description", async () => {
+  const requests = host([task({ status: "todo", prompt: "" })]);
+  await render();
+  await act(async () => card("Ship the report").click());
+  await act(async () => button(panel()!, "Start")!.click());
+  expect(container.textContent).toContain(
+    "Add a description before starting this task with an agent.",
+  );
+  expect(requests.some((request) => request.method === "tasks.move")).toBe(
+    false,
+  );
 });

@@ -303,6 +303,7 @@ it("edits a machine's address, saves it first and reconnects through the interac
     name: "Home Mac",
     target: "me@10.0.0.9",
     port: null,
+    alternate: null,
   });
   expect(invoke).toHaveBeenCalledWith("remote_ssh_reconnect", { machineId: "machine" });
   const order = vi.mocked(invoke).mock.calls.map(([command]) => command);

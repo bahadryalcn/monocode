@@ -25,6 +25,9 @@ import {
   saveDisabledSkillPaths,
   SKILLS_CHANGE_EVENT,
 } from "../model/skills";
+import { isRemoteProjectPath } from "../../projects/model/recents";
+import { remoteProjectFor } from "../../connections/model/remoteProjects";
+import { knownRemoteMachine } from "../../connections/model/connections";
 
 /** Inspect and manage file skills without modifying provider-owned catalogs. */
 export function SkillsPage({
@@ -43,6 +46,13 @@ export function SkillsPage({
   const addSkillButton = useRef<HTMLButtonElement>(null);
   const [skills, setSkills] = useState<DiscoveredSkill[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // A project on another machine: its skills there, next to this computer's.
+  const remoteProject = remoteProjectFor(cwd);
+  const remoteName = remoteProject
+    ? (knownRemoteMachine(remoteProject.environmentId)?.name ?? "Other machine")
+    : null;
+  const [remoteSkills, setRemoteSkills] = useState<DiscoveredSkill[] | null>(null);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -124,9 +134,14 @@ export function SkillsPage({
 
   useEffect(() => {
     let cancelled = false;
+    const remote = isRemoteProjectPath(cwd);
     setSkills(null);
     setError(null);
-    listSkills(cwd)
+    setRemoteSkills(null);
+    setRemoteError(null);
+    // This computer's own skills always; with a remote project, without the
+    // project folder, which lives on the other machine.
+    listSkills(remote ? "" : cwd)
       .then((next) => {
         if (cancelled) return;
         setSkills(next);
@@ -136,6 +151,15 @@ export function SkillsPage({
         if (cancelled) return;
         setError(err instanceof Error ? err.message : String(err));
       });
+    if (remote)
+      listSkills(cwd)
+        .then((next) => {
+          if (!cancelled) setRemoteSkills(next);
+        })
+        .catch((err: unknown) => {
+          if (!cancelled)
+            setRemoteError(err instanceof Error ? err.message : String(err));
+        });
     return () => {
       cancelled = true;
     };
@@ -148,18 +172,18 @@ export function SkillsPage({
   }, []);
 
   const needle = query.trim().toLowerCase();
-  const filtered = useMemo(
-    () =>
-      (skills ?? []).filter(
-        (skill) =>
-          !needle ||
-          skill.name.toLowerCase().includes(needle) ||
-          skill.description.toLowerCase().includes(needle) ||
-          skill.source.toLowerCase().includes(needle) ||
-          skill.path.toLowerCase().includes(needle),
-      ),
-    [needle, skills],
-  );
+  const matches = (list: DiscoveredSkill[] | null) =>
+    (list ?? []).filter(
+      (skill) =>
+        !needle ||
+        skill.name.toLowerCase().includes(needle) ||
+        skill.description.toLowerCase().includes(needle) ||
+        skill.source.toLowerCase().includes(needle) ||
+        skill.path.toLowerCase().includes(needle),
+    );
+  const filtered = useMemo(() => matches(skills), [needle, skills]);
+  const remoteFiltered = useMemo(() => matches(remoteSkills), [needle, remoteSkills]);
+  const shownCount = filtered.length + remoteFiltered.length;
 
   const onToggle = (path: string, enabled: boolean): void => {
     const next = enabled
@@ -205,111 +229,31 @@ export function SkillsPage({
       .finally(() => setBusy(false));
   };
 
-  return (
-    <div className="@container/skills flex min-h-0 min-w-0 flex-1">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col @3xl/skills:flex-row">
-        <div
-          ref={lockOverscroll}
-          className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none"
-        >
-          <div
-            className={`mx-auto w-full max-w-5xl py-8 ${previewOpen ? "px-4" : "px-8"}`}
-          >
-            {header}
-            <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
-              <div className="flex min-w-0 flex-1 items-center gap-3">
-                <span className="shrink-0 text-[12px] text-content/40 tabular-nums">
-                  {skills == null
-                    ? "…"
-                    : `${filtered.length} ${filtered.length === 1 ? "skill" : "skills"}`}
-                </span>
-                <label className="flex h-7 w-52 min-w-0 flex-1 items-center gap-2 rounded-md border border-content/10 px-2 text-content/45 focus-within:border-content/20">
-                  <Search className="size-3.5 shrink-0" strokeWidth={1.75} />
-                  <input
-                    ref={filterInput}
-                    value={query}
-                    onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Filter"
-                    aria-label="Filter skills"
-                    spellCheck={false}
-                    autoComplete="off"
-                    className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
-                  />
-                </label>
-                <button
-                  type="button"
-                  aria-label="Refresh skills"
-                  title="Rescan skill folders"
-                  disabled={skills === null && !error}
-                  onClick={() => {
-                    invalidateSkills();
-                    window.dispatchEvent(new Event(SKILLS_CHANGE_EVENT));
-                    setReload((value) => value + 1);
-                  }}
-                  className="grid size-6 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content"
-                >
-                  <RefreshCw className="size-3.5" strokeWidth={1.75} />
-                </button>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                <button
-                  type="button"
-                  aria-label={adding ? "Close skill form" : "Add skill"}
-                  ref={addSkillButton}
-                  disabled={busy}
-                  className="rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 hover:bg-content/10 disabled:opacity-40"
-                  onClick={() => {
-                    setAdding((value) => !value);
-                    setCreateError(null);
-                  }}
-                  title="Create a starter SKILL.md you can edit"
-                >
-                  {adding ? "Close" : "Add skill"}
-                </button>
-              </div>
-            </div>
-
-            {adding ? (
-              <div className="mb-4 overflow-hidden rounded-lg border border-content/10 bg-content/[0.03]">
-                <CreateSkillForm
-                  key={cwd}
-                  query={query}
-                  cwd={cwd}
-                  monospace={false}
-                  error={createError}
-                  busy={busy}
-                  onCancel={() => {
-                    setAdding(false);
-                    setCreateError(null);
-                    addSkillButton.current?.focus();
-                  }}
-                  onCreate={onCreate}
-                />
-              </div>
-            ) : null}
-
-            {actionError ? (
-              <p role="alert" className="pb-3 text-[12px] text-red-400">
-                {actionError}
-              </p>
-            ) : null}
-
-            {error ? (
-              <p role="alert" className="text-[12px] text-red-400">
-                {error}
-              </p>
-            ) : skills == null ? (
-              <p className="text-[12px] text-content/45">Loading skills…</p>
-            ) : (
-              <div className="overflow-hidden rounded-lg border border-content/10">
-                {filtered.length === 0 ? (
-                  <p className="px-3 py-3 text-[12px] text-content/45">
-                    {skills.length === 0
-                      ? "No skills yet. Add skill creates a starter SKILL.md."
-                      : "No matching skills"}
-                  </p>
-                ) : (
-                  filtered.map((skill) => {
+  /** One machine's skills: rows to preview, switch off or locate. */
+  const renderSkills = (
+    all: DiscoveredSkill[] | null,
+    shown: DiscoveredSkill[],
+    failure: string | null,
+    local: boolean,
+  ): ReactNode =>
+    failure ? (
+      <p role="alert" className="text-[12px] text-red-400">
+        {failure}
+      </p>
+    ) : all == null ? (
+      <p className="text-[12px] text-content/45">Loading skills…</p>
+    ) : (
+      <div className="overflow-hidden rounded-lg border border-content/10">
+        {shown.length === 0 ? (
+          <p className="px-3 py-3 text-[12px] text-content/45">
+            {all.length === 0
+              ? local
+                ? "No skills yet. Add skill creates a starter SKILL.md."
+                : "No skills on this machine for this project."
+              : "No matching skills"}
+          </p>
+        ) : (
+          shown.map((skill) => {
                     const disabled = disabledPaths.includes(skill.path);
                     return (
                       <div
@@ -393,6 +337,7 @@ export function SkillsPage({
                           >
                             <Copy className="size-3" strokeWidth={1.75} />
                           </button>
+                          {local ? (
                           <button
                             type="button"
                             aria-label={`Reveal ${skill.name} in file explorer`}
@@ -402,13 +347,118 @@ export function SkillsPage({
                           >
                             <FolderOpen className="size-3" strokeWidth={1.75} />
                           </button>
+                          ) : null}
                         </div>
                       </div>
                     );
-                  })
-                )}
+          })
+        )}
+      </div>
+    );
+
+  return (
+    <div className="@container/skills flex min-h-0 min-w-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col @3xl/skills:flex-row">
+        <div
+          ref={lockOverscroll}
+          className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none"
+        >
+          <div
+            className={`mx-auto w-full max-w-5xl py-8 ${previewOpen ? "px-4" : "px-8"}`}
+          >
+            {header}
+            <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <span className="shrink-0 text-[12px] text-content/40 tabular-nums">
+                  {skills == null
+                    ? "…"
+                    : `${shownCount} ${shownCount === 1 ? "skill" : "skills"}`}
+                </span>
+                <label className="flex h-7 w-52 min-w-0 flex-1 items-center gap-2 rounded-md border border-content/10 px-2 text-content/45 focus-within:border-content/20">
+                  <Search className="size-3.5 shrink-0" strokeWidth={1.75} />
+                  <input
+                    ref={filterInput}
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Filter"
+                    aria-label="Filter skills"
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
+                  />
+                </label>
+                <button
+                  type="button"
+                  aria-label="Refresh skills"
+                  title="Rescan skill folders"
+                  disabled={skills === null && !error}
+                  onClick={() => {
+                    invalidateSkills();
+                    window.dispatchEvent(new Event(SKILLS_CHANGE_EVENT));
+                    setReload((value) => value + 1);
+                  }}
+                  className="grid size-6 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content"
+                >
+                  <RefreshCw className="size-3.5" strokeWidth={1.75} />
+                </button>
               </div>
-            )}
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  aria-label={adding ? "Close skill form" : "Add skill"}
+                  ref={addSkillButton}
+                  disabled={busy}
+                  className="rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 hover:bg-content/10 disabled:opacity-40"
+                  onClick={() => {
+                    setAdding((value) => !value);
+                    setCreateError(null);
+                  }}
+                  title="Create a starter SKILL.md you can edit"
+                >
+                  {adding ? "Close" : "Add skill"}
+                </button>
+              </div>
+            </div>
+
+            {adding ? (
+              <div className="mb-4 overflow-hidden rounded-lg border border-content/10 bg-content/[0.03]">
+                <CreateSkillForm
+                  key={cwd}
+                  query={query}
+                  cwd={cwd}
+                  monospace={false}
+                  error={createError}
+                  busy={busy}
+                  onCancel={() => {
+                    setAdding(false);
+                    setCreateError(null);
+                    addSkillButton.current?.focus();
+                  }}
+                  onCreate={onCreate}
+                />
+              </div>
+            ) : null}
+
+            {actionError ? (
+              <p role="alert" className="pb-3 text-[12px] text-red-400">
+                {actionError}
+              </p>
+            ) : null}
+
+            {remoteName ? (
+              <h3 className="pb-2 text-[12px] font-medium text-content/60">
+                This computer
+              </h3>
+            ) : null}
+            {renderSkills(skills, filtered, error, true)}
+            {remoteName ? (
+              <>
+                <h3 className="pt-6 pb-2 text-[12px] font-medium text-content/60">
+                  {remoteName}
+                </h3>
+                {renderSkills(remoteSkills, remoteFiltered, remoteError, false)}
+              </>
+            ) : null}
 
             <p className="pt-3 text-[12px] text-content/40">
               Hidden skills stay on disk and are excluded from MonoCode's
