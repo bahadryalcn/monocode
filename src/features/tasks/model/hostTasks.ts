@@ -1,0 +1,240 @@
+import {
+  isRemoteProvider,
+  type RemoteProvider,
+} from "../../connections/model/protocol";
+import { RUNTIME_MODES, type RuntimeMode } from "../../sessions/model/session";
+
+/** A backlog of tasks a machine's host works through on its own, whether or
+ * not a desktop is open. The host advertises this capability when it has it. */
+export const HOST_TASKS = "tasks";
+
+export const TASK_STATUSES = [
+  "queued",
+  "running",
+  "verifying",
+  "review",
+  "done",
+  "blocked",
+] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+
+/** The board's columns. A task being verified is shown under Running. */
+export const TASK_COLUMNS = [
+  "queued",
+  "running",
+  "review",
+  "done",
+  "blocked",
+] as const satisfies readonly TaskStatus[];
+export type TaskColumn = (typeof TASK_COLUMNS)[number];
+
+export function taskColumn(status: TaskStatus): TaskColumn {
+  return status === "verifying" ? "running" : status;
+}
+
+/** What the host checked after the agent finished, before review. */
+export type TaskVerification = {
+  command?: { exitCode: number | null; output: string; timedOut: boolean };
+  review?: { verdict: "pass" | "fail"; note: string; sessionId: string };
+};
+
+export type HostTaskInput = {
+  id: string;
+  title: string;
+  prompt: string;
+  /** The host's ID for the project folder. */
+  projectId: string;
+  harness: RemoteProvider;
+  model: string;
+  modelSettings: Record<string, string>;
+  runtimeMode: RuntimeMode;
+  /** Stop a run still going after this long; zero means off. */
+  maxRunMinutes: number;
+  /** Run on a new branch in its own worktree when the project is a git
+   * repository. A task saved before this existed counts as true. */
+  isolate?: boolean;
+  /** A shell command that must exit with zero before the task reaches review. */
+  verifyCommand?: string;
+  /** Have a second agent review the result. Counts as true when absent. */
+  review?: boolean;
+  /** The goal this task was planned for. */
+  goalId?: string;
+  /** Tasks that must be done (merged) before this one starts. */
+  dependsOn?: string[];
+};
+
+export type HostTask = HostTaskInput & {
+  status: TaskStatus;
+  sessionId?: string;
+  /** The session turn this task started. */
+  runId?: string;
+  /** Why the task is blocked. */
+  error?: string;
+  /** The branch an isolated task works on, and the worktree it is checked
+   * out in. Kept until the task is merged or discarded. */
+  branch?: string;
+  worktreeCwd?: string;
+  /** The branch the project was on when the task branch was created, and the
+   * commit the task branch started from. */
+  baseBranch?: string;
+  baseCommit?: string;
+  /** The task branch was merged into `baseBranch` and removed. */
+  merged?: boolean;
+  verification?: TaskVerification;
+  /** The reviewer's session turn while it is still running. */
+  reviewer?: {
+    sessionId?: string;
+    runId?: string;
+    startedAt: number;
+    error?: string;
+  };
+  /** What the task branch changes, for a task in review. */
+  diffStat?: string;
+  /** Why the last attempt to merge a reviewed task failed. */
+  mergeError?: string;
+  /** The running session is waiting on an approval or a question. */
+  needsInput?: boolean;
+  createdAt: number;
+  updatedAt: number;
+  startedAt?: number;
+  completedAt?: number;
+};
+
+/** Where the user may move a task from each status. Running or verifying to
+ * blocked stops the run; anything to queued runs the task again in a fresh
+ * session; review to done merges an isolated task's branch. */
+export const TASK_MOVES: Record<TaskStatus, readonly TaskStatus[]> = {
+  queued: [],
+  running: ["blocked"],
+  verifying: ["blocked"],
+  review: ["done", "queued"],
+  done: ["queued"],
+  blocked: ["queued"],
+};
+
+export function isTaskStatus(value: unknown): value is TaskStatus {
+  return TASK_STATUSES.some((status) => status === value);
+}
+
+export function canMoveTask(from: TaskStatus, to: TaskStatus): boolean {
+  return TASK_MOVES[from].includes(to);
+}
+
+/** A task can be edited while nothing has run or is running for it. */
+export function canEditTask(status: TaskStatus): boolean {
+  return status === "queued" || status === "blocked";
+}
+
+/** The task has a branch of its own that has not been merged. */
+export function hasUnmergedBranch(
+  task: Pick<HostTask, "branch" | "merged">,
+): boolean {
+  return Boolean(task.branch) && !task.merged;
+}
+
+/** The dependencies a task still waits for: those not done yet. A dependency
+ * that was deleted no longer holds the task back. */
+export function unfinishedDependencies<
+  T extends Pick<HostTask, "id" | "status">,
+>(task: Pick<HostTask, "dependsOn">, tasks: readonly T[]): T[] {
+  return (task.dependsOn ?? []).flatMap((id) => {
+    const dependency = tasks.find((entry) => entry.id === id);
+    return dependency && dependency.status !== "done" ? [dependency] : [];
+  });
+}
+
+export const NO_VERDICT = "Reviewer gave no verdict";
+
+/** Reads the reviewer's reply: its last line must be `VERDICT: PASS` or
+ * `VERDICT: FAIL - <why>`. Anything else fails the review. */
+export function parseReviewVerdict(reply: string): {
+  verdict: "pass" | "fail";
+  note: string;
+} {
+  const line = (reply.trim().split(/\r?\n/).pop() ?? "")
+    .replace(/[*_`]/g, "")
+    .trim();
+  const match = /^VERDICT:\s*(PASS|FAIL)\b\s*[-–—:.]?\s*(.*)$/i.exec(line);
+  if (!match) return { verdict: "fail", note: NO_VERDICT };
+  const note = match[2].trim().slice(0, 300);
+  return match[1].toUpperCase() === "PASS"
+    ? { verdict: "pass", note }
+    : { verdict: "fail", note: note || "The reviewer gave no reason." };
+}
+
+const ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Validates what a desktop sent. Throws with the reason on bad input. */
+export function parseHostTask(input: unknown): HostTaskInput {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Invalid task");
+  const v = input as Record<string, unknown>;
+  if (typeof v.id !== "string" || !ID.test(v.id))
+    throw new Error("Invalid task ID");
+  if (typeof v.title !== "string" || !v.title.trim() || v.title.length > 200)
+    throw new Error("Task title is required and must be under 200 characters.");
+  if (
+    typeof v.prompt !== "string" ||
+    !v.prompt.trim() ||
+    v.prompt.length > 256_000 ||
+    v.prompt.includes("\0")
+  )
+    throw new Error("Task prompt is required.");
+  if (typeof v.projectId !== "string" || !ID.test(v.projectId))
+    throw new Error("Choose a project for this task.");
+  if (!isRemoteProvider(v.harness)) throw new Error("Invalid task agent");
+  if (typeof v.model !== "string" || !v.model.trim() || v.model.length > 200)
+    throw new Error("Invalid task model");
+  if (!RUNTIME_MODES.includes(v.runtimeMode as never))
+    throw new Error("Invalid task run mode.");
+  const settings = v.modelSettings ?? {};
+  if (
+    typeof settings !== "object" ||
+    Array.isArray(settings) ||
+    Object.values(settings as object).some((value) => typeof value !== "string")
+  )
+    throw new Error("Invalid model settings");
+  const limit = v.maxRunMinutes ?? 0;
+  if (!Number.isInteger(limit) || Number(limit) < 0 || Number(limit) > 10_080)
+    throw new Error("Invalid task run limit");
+  if (
+    (v.isolate !== undefined && typeof v.isolate !== "boolean") ||
+    (v.review !== undefined && typeof v.review !== "boolean")
+  )
+    throw new Error("Invalid task options");
+  const check = v.verifyCommand ?? "";
+  if (typeof check !== "string" || check.length > 4000 || check.includes("\0"))
+    throw new Error("Invalid check command");
+  if (
+    v.goalId !== undefined &&
+    (typeof v.goalId !== "string" || !ID.test(v.goalId))
+  )
+    throw new Error("Invalid task goal");
+  if (
+    v.dependsOn !== undefined &&
+    (!Array.isArray(v.dependsOn) ||
+      v.dependsOn.length > 20 ||
+      v.dependsOn.some(
+        (id) => typeof id !== "string" || !ID.test(id) || id === v.id,
+      ))
+  )
+    throw new Error("Invalid task dependencies");
+  return {
+    id: v.id,
+    title: v.title.trim(),
+    prompt: v.prompt,
+    projectId: v.projectId,
+    harness: v.harness,
+    model: v.model,
+    modelSettings: settings as Record<string, string>,
+    runtimeMode: v.runtimeMode as RuntimeMode,
+    maxRunMinutes: Number(limit),
+    isolate: v.isolate !== false,
+    ...(check.trim() ? { verifyCommand: check.trim() } : {}),
+    review: v.review !== false,
+    ...(typeof v.goalId === "string" ? { goalId: v.goalId } : {}),
+    ...(Array.isArray(v.dependsOn) && v.dependsOn.length
+      ? { dependsOn: [...new Set(v.dependsOn as string[])] }
+      : {}),
+  };
+}

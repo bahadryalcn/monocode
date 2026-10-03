@@ -634,6 +634,12 @@ function sanitizeFile(raw: unknown): FilePaneTab | null {
       ? { changeKind: value.changeKind }
       : {}),
     ...(value.terminal === true ? { terminal: true } : {}),
+    ...(value.terminal === true &&
+    typeof value.shellProfile === "string" &&
+    value.shellProfile &&
+    value.shellProfile.length <= 1024
+      ? { shellProfile: value.shellProfile }
+      : {}),
     ...(value.preview === true ? { preview: true } : {}),
   };
 }

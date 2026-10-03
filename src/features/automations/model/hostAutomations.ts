@@ -35,6 +35,8 @@ export type HostAutomation = HostAutomationInput & {
   lastRunStatus?: AutomationRunStatus;
   lastRunError?: string;
   lastSessionId?: string;
+  /** A run is going and its session is waiting on an approval or a question. */
+  needsInput?: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -52,6 +54,8 @@ export type HostAutomationRun = {
   /** The session turn this run started. */
   runId?: string;
   error?: string;
+  /** While running: the session is waiting on an approval or a question. */
+  needsInput?: boolean;
 };
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;

@@ -192,6 +192,7 @@ pub fn pty_spawn(
     cwd: String,
     cols: u16,
     rows: u16,
+    profile: Option<String>,
 ) -> Result<(), String> {
     let (cols, rows) = (cols.max(2), rows.max(2));
     // A reloaded page restores its terminals under the same ids while the old
@@ -204,19 +205,21 @@ pub fn pty_spawn(
     let workdir = working_dir(&cwd);
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
 
+    let shell = shell_for(profile.as_deref());
+
     #[cfg(unix)]
     {
-        spawn_unix(app, host, window.label(), id, workdir, cols, rows)
+        spawn_unix(app, host, window.label(), id, workdir, cols, rows, shell)
     }
 
     #[cfg(windows)]
     {
-        spawn_windows(app, host, window.label(), id, workdir, cols, rows)
+        spawn_windows(app, host, window.label(), id, workdir, cols, rows, shell)
     }
 
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (app, cwd, cols, rows);
+        let _ = (app, cwd, cols, rows, shell);
         Err("Terminals are not supported on this platform.".into())
     }
 }
@@ -346,16 +349,17 @@ fn spawn_unix(
     workdir: std::path::PathBuf,
     cols: u16,
     rows: u16,
+    (shell, args, env): LaunchShell,
 ) -> Result<(), String> {
     use std::fs::File;
     use std::os::unix::io::FromRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Command;
 
-    let (shell, args) = default_shell();
     let (master, slave) = open_pty(cols, rows)?;
 
     let mut cmd = Command::new(&shell);
+    cmd.envs(env.iter().copied());
     cmd.args(&args)
         .current_dir(&workdir)
         .stdin(dup_stdio(slave)?)
@@ -477,10 +481,10 @@ fn spawn_windows(
     workdir: std::path::PathBuf,
     cols: u16,
     rows: u16,
+    (shell, args, env): LaunchShell,
 ) -> Result<(), String> {
     use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-    let (shell, args) = default_shell();
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -504,6 +508,9 @@ fn spawn_windows(
         cmd.env("USERPROFILE", &home);
     }
     cmd.env("PWD", workdir.to_string_lossy().as_ref());
+    for (key, value) in &env {
+        cmd.env(key, value);
+    }
 
     let mut child = crate::windows::spawn_pty(pair.slave.as_ref(), cmd)
         .map_err(|err| format!("Failed to start {shell}: {err}"))?;
@@ -567,6 +574,25 @@ fn working_dir(cwd: &str) -> std::path::PathBuf {
         return path;
     }
     dirs_home().map(std::path::PathBuf::from).unwrap_or(path)
+}
+
+/// A shell to start: its path, its arguments, and environment it needs.
+type LaunchShell = (String, Vec<String>, Vec<(&'static str, &'static str)>);
+
+/// The terminal profile `profile` names, the default one, or the old
+/// fallback when no shell could be listed.
+fn shell_for(profile: Option<&str>) -> LaunchShell {
+    match crate::terminal_profiles::resolve(profile) {
+        Some(found) => (
+            found.path.clone(),
+            crate::terminal_profiles::terminal_args(&found),
+            crate::terminal_profiles::profile_env(&found),
+        ),
+        None => {
+            let (shell, args) = default_shell();
+            (shell, args, Vec::new())
+        }
+    }
 }
 
 fn default_shell() -> (String, Vec<String>) {

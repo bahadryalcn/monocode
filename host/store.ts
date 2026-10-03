@@ -156,6 +156,33 @@ export class HostStore {
     };
   }
 
+  /** Sessions taken over from this machine's desktop app, without parsing
+   * their transcripts. */
+  adopted(): {
+    id: string;
+    projectId: string;
+    revision: number;
+    updatedAt: number;
+    status: HostSession["status"];
+  }[] {
+    return this.db
+      .prepare(
+        `SELECT id, project_id,
+          json_extract(snapshot, '$.revision') AS revision,
+          json_extract(snapshot, '$.updatedAt') AS updated_at,
+          json_extract(snapshot, '$.status') AS status
+        FROM sessions WHERE json_extract(snapshot, '$.desktop') IS NOT NULL`,
+      )
+      .all()
+      .map((row) => ({
+        id: String(row.id),
+        projectId: String(row.project_id),
+        revision: Number(row.revision),
+        updatedAt: Number(row.updated_at),
+        status: String(row.status) as HostSession["status"],
+      }));
+  }
+
   sessions(projectId?: string): HostSession[] {
     const rows = projectId
       ? this.db

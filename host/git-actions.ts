@@ -85,7 +85,7 @@ async function git(
 ): Promise<string> {
   try {
     return (
-      await exec("git", ["--no-pager", ...args], {
+      await exec("git", [...(args.includes("--") ? ["--literal-pathspecs"] : []), "--no-pager", ...args], {
         cwd: root,
         timeout,
         maxBuffer,

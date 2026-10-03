@@ -26,11 +26,14 @@ import {
   type TerminalFitMode,
 } from "../model/terminalLayout";
 import { IS_MAC } from "../../../platform/tauri/platform";
+import { loadTerminalProfile } from "../model/terminalProfiles";
 import "@xterm/xterm/css/xterm.css";
 
 type Props = {
   id: string;
   cwd: string;
+  /** Terminal profile to start in; the user's default when absent. */
+  profile?: string;
   active: boolean;
   onMetaChange?: (patch: TerminalMetaPatch) => void;
 };
@@ -145,7 +148,9 @@ function oscColors() {
   };
 }
 
-export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
+export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) {
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
   const outerRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -256,7 +261,13 @@ export function TerminalView({ id, cwd, active, onMetaChange }: Props) {
         },
       );
       didStart = true;
-      return spawnPty(id, cwd, term.cols, term.rows);
+      return spawnPty(
+        id,
+        cwd,
+        term.cols,
+        term.rows,
+        profileRef.current ?? loadTerminalProfile(),
+      );
     };
 
     const starting = (stoppingPtys.get(id) ?? Promise.resolve())

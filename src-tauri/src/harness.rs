@@ -1403,6 +1403,158 @@ pub(crate) fn exec_output(
     }
 }
 
+/// What a `!command` from the composer printed, and how it ended.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellCommandOutput {
+    pub output: String,
+    /// None when the process was killed.
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+}
+
+const SHELL_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+/// Far above what the transcript keeps; only bounds the reply to the webview.
+const SHELL_COMMAND_MAX_OUTPUT: usize = 512 * 1024;
+
+/// Run a command line the user typed, in the user's shell, and return what it
+/// printed. Unlike `harness_exec` this runs arbitrary input by design: the
+/// composer's `!command` is the user's own terminal line.
+/// `profile` is a terminal profile id (see `terminal_profiles`); without one,
+/// or when that shell is gone, the default profile runs it.
+#[tauri::command]
+pub async fn run_shell_command(
+    cwd: String,
+    command: String,
+    profile: Option<String>,
+) -> Result<ShellCommandOutput, String> {
+    if command.trim().is_empty() || command.contains('\0') {
+        return Err("Enter a command to run".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        run_shell_command_sync(&cwd, &command, profile.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn run_shell_command_sync(
+    cwd: &str,
+    command: &str,
+    profile: Option<&str>,
+) -> Result<ShellCommandOutput, String> {
+    let shell = crate::terminal_profiles::resolve(profile)
+        .ok_or_else(|| "No shell was found on this computer".to_string())?;
+    let mut cmd = crate::terminal_profiles::command_for(&shell, command);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    apply_gui_env(&mut cmd);
+    isolate_child(&mut cmd);
+    let workdir = expand_home(cwd);
+    if !workdir.is_dir() {
+        return Err(format!("{}: No such directory", workdir.display()));
+    }
+    cmd.current_dir(workdir);
+
+    let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run the command: {e}"))?;
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let (result, timed_out) = match rx.recv_timeout(SHELL_COMMAND_TIMEOUT) {
+        Ok(result) => (Some(result), false),
+        Err(_) => {
+            terminate(pid);
+            // The killed process still hands back what it printed so far.
+            (rx.recv_timeout(KILL_ESCALATE * 2).ok(), true)
+        }
+    };
+    let output = match result {
+        Some(Ok(output)) => output,
+        Some(Err(e)) => return Err(format!("Failed to run the command: {e}")),
+        None => {
+            return Ok(ShellCommandOutput {
+                output: String::new(),
+                exit_code: None,
+                timed_out,
+            })
+        }
+    };
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&stderr);
+    }
+    if text.len() > SHELL_COMMAND_MAX_OUTPUT {
+        // Keep the end, where a failing command says why.
+        let mut start = text.len() - SHELL_COMMAND_MAX_OUTPUT;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text = text[start..].to_string();
+    }
+    Ok(ShellCommandOutput {
+        output: text,
+        exit_code: if timed_out { None } else { output.status.code() },
+        timed_out,
+    })
+}
+
+#[cfg(test)]
+mod shell_command_tests {
+    use super::*;
+
+    fn cwd() -> String {
+        std::env::temp_dir().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn returns_output_and_exit_code() {
+        let ran = run_shell_command_sync(&cwd(), "echo hello", None).unwrap();
+        assert_eq!(ran.output.trim(), "hello");
+        assert_eq!(ran.exit_code, Some(0));
+        assert!(!ran.timed_out);
+    }
+
+    #[test]
+    fn reports_a_failing_exit_code() {
+        let ran = run_shell_command_sync(&cwd(), "exit 3", None).unwrap();
+        assert_eq!(ran.exit_code, Some(3));
+    }
+
+    #[test]
+    fn rejects_a_missing_working_directory() {
+        assert!(run_shell_command_sync("/no/such/monocode/dir", "echo hi", None).is_err());
+    }
+
+    #[test]
+    fn runs_bash_commands_in_git_bash_from_the_working_directory() {
+        let Some(bash) = crate::terminal_profiles::resolve(Some("git-bash"))
+            .filter(|profile| profile.id == "git-bash")
+        else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("monocode-git-bash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("marker.txt"), "x").unwrap();
+        let ran = run_shell_command_sync(
+            &dir.to_string_lossy(),
+            "ls | grep marker && echo $((2 + 3))",
+            Some(&bash.id),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(ran.exit_code, Some(0), "{}", ran.output);
+        assert!(ran.output.contains("marker.txt"), "{}", ran.output);
+        assert!(ran.output.contains('5'), "{}", ran.output);
+    }
+}
+
 const KILL_ESCALATE: Duration = Duration::from_secs(2);
 /// Quit and `Drop` cannot wait on a detached escalate thread — the process
 /// exits first and isolated harness groups stay behind as PID-1 orphans.

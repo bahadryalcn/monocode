@@ -28,6 +28,11 @@ import {
 import { MOD } from "../../../platform/tauri/platform";
 import type { TerminalMetaPatch } from "../model/terminalTab";
 import { lazySurface } from "../../../shared/ui/lazySurface";
+import {
+  effectiveProfileId,
+  useTerminalProfile,
+  useTerminalProfiles,
+} from "../model/terminalProfiles";
 
 const TerminalView = lazySurface(async () => {
   const module = await import("./TerminalView");
@@ -43,6 +48,10 @@ type Props = {
   onSizePaint: (size: number) => void;
   onSizeCommit: (size: number) => void;
   onAddTerminal: () => void;
+  /** A terminal in another shell, from the profile menu beside New Terminal. */
+  onAddTerminalWithProfile?: (profile: string) => void;
+  /** Opens the setting that picks the shell new terminals start in. */
+  onSelectDefaultProfile?: () => void;
   onSelectTerminal: (fileId: string) => void;
   onCloseTerminal: (fileId: string) => void;
   onCloseOtherTerminals: (fileId: string) => void;
@@ -80,6 +89,8 @@ export function ProjectTerminalDock({
   onSizePaint,
   onSizeCommit,
   onAddTerminal,
+  onAddTerminalWithProfile,
+  onSelectDefaultProfile,
   onSelectTerminal,
   onCloseTerminal,
   onCloseOtherTerminals,
@@ -89,7 +100,14 @@ export function ProjectTerminalDock({
   const vertical = isVerticalDock(dock.side);
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(
+    null,
+  );
   const sideButton = useRef<HTMLDivElement>(null);
+  const profileButton = useRef<HTMLDivElement>(null);
+  const profiles = useTerminalProfiles();
+  const chosenProfile = useTerminalProfile();
+  const defaultProfile = effectiveProfileId(profiles, chosenProfile);
   const drag = useRef<{ start: number; size: number } | null>(null);
   const sizeRef = useRef(dock.size);
   sizeRef.current = dock.size;
@@ -223,6 +241,20 @@ export function ProjectTerminalDock({
             >
               <Plus className="size-3.5" strokeWidth={1.75} />
             </IconButton>
+            {onAddTerminalWithProfile ? (
+              <div ref={profileButton}>
+                <IconButton
+                  label="Launch Profile…"
+                  onClick={() => {
+                    const rect = profileButton.current?.getBoundingClientRect();
+                    if (!rect) return;
+                    setProfileMenu({ x: rect.left, y: rect.bottom + 4 });
+                  }}
+                >
+                  <ChevronDown className="size-3" strokeWidth={1.75} />
+                </IconButton>
+              </div>
+            ) : null}
             <div ref={sideButton}>
             <IconButton
               label="Move Terminal"
@@ -258,12 +290,57 @@ export function ProjectTerminalDock({
             <TerminalView
               id={file.id}
               cwd={file.cwd}
+              profile={file.shellProfile}
               active={focused && file.id === dock.pane.activeFileId}
               onMetaChange={(patch) => onTerminalMetaChange?.(file.id, patch)}
             />
           </div>
         ))}
       </div>
+      {profileMenu ? (
+        <ExplorerMenu
+          x={profileMenu.x}
+          y={profileMenu.y}
+          ariaLabel="Terminal profiles"
+          items={[
+            ...(profiles?.profiles ?? []).map((profile) => ({
+              kind: "item" as const,
+              id: `profile:${profile.id}`,
+              label: profile.name,
+              description:
+                profile.id === defaultProfile ? "Default" : undefined,
+              checked: profile.id === defaultProfile,
+            })),
+            ...(profiles && profiles.profiles.length === 0
+              ? [
+                  {
+                    kind: "item" as const,
+                    id: "none",
+                    label: "No shells found",
+                    disabled: true,
+                  },
+                ]
+              : []),
+            ...(onSelectDefaultProfile
+              ? [
+                  { kind: "sep" as const },
+                  {
+                    kind: "item" as const,
+                    id: "default",
+                    label: "Select Default Profile…",
+                  },
+                ]
+              : []),
+          ]}
+          onPick={(id) => {
+            setProfileMenu(null);
+            if (id === "default") onSelectDefaultProfile?.();
+            else if (id.startsWith("profile:"))
+              onAddTerminalWithProfile?.(id.slice("profile:".length));
+          }}
+          onClose={() => setProfileMenu(null)}
+        />
+      ) : null}
       {menu ? (
         <ExplorerMenu
           x={menu.x}

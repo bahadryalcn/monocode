@@ -19,6 +19,7 @@ import {
   Search,
   Settings,
   Zap,
+  DashboardSquare,
 } from "../../shared/ui/icons";
 import {
   Fragment,
@@ -153,7 +154,9 @@ type Props = {
   onOpenNotes?: () => void;
   notesActive?: boolean;
   onOpenAutomations?: () => void;
+  onOpenTasks?: () => void;
   automationsActive?: boolean;
+  tasksActive?: boolean;
   onTogglePanel?: () => void;
   onSelectProject: (path: string) => void;
   onOpenProject: () => void | Promise<void>;
@@ -193,7 +196,9 @@ export function ProjectRail({
   onOpenNotes,
   notesActive = false,
   onOpenAutomations,
+  onOpenTasks,
   automationsActive = false,
+  tasksActive = false,
   onTogglePanel,
   onSelectProject,
   onOpenProject,
@@ -469,7 +474,11 @@ export function ProjectRail({
   if (projectGroups.length > 0) shownSections.add("groups");
   const rail = useRailSections(shownSections);
   const searchOrPageActive =
-    searchActive || inboxActive || notesActive || automationsActive;
+    searchActive ||
+    inboxActive ||
+    notesActive ||
+    automationsActive ||
+    tasksActive;
   const sectionNodes: Record<RailSectionId, ReactNode> = {
     "last-sessions": recentSessions ? (
       <LastSessionsSection
@@ -669,6 +678,13 @@ export function ProjectRail({
               onClick={onOpenAutomations}
               active={automationsActive}
               ariaLabel="Automations"
+            />
+            <RailAction
+              label="Tasks"
+              icon={DashboardSquare}
+              onClick={onOpenTasks}
+              active={tasksActive}
+              ariaLabel="Tasks"
             />
           </div>
 

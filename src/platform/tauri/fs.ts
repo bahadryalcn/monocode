@@ -813,6 +813,15 @@ export function openPathWithDefaultApp(path: string): Promise<void> {
   return invoke<void>("open_path_with_default_app", { path });
 }
 
+/** Runs a command line in the user's shell on this computer. */
+export function runShellCommand(
+  cwd: string,
+  command: string,
+  profile?: string,
+): Promise<{ output: string; exitCode: number | null; timedOut: boolean }> {
+  return invoke("run_shell_command", { cwd, command, profile: profile ?? null });
+}
+
 /** Whether a path on this computer is a folder; false when it is missing or on another machine. */
 export function isLocalDirectory(path: string): Promise<boolean> {
   if (path.startsWith(REMOTE_PATH_PREFIX)) return Promise.resolve(false);

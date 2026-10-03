@@ -1,4 +1,4 @@
-import { ask, message as showMessage } from "@tauri-apps/plugin-dialog";
+import { message as showMessage } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
@@ -48,7 +48,11 @@ import {
   applyIndexAction,
   type IndexAction,
 } from "../model/optimisticIndex";
-import { AUTO_FETCH_MS, loadAutoFetch, saveAutoFetch } from "../model/autoFetch";
+import {
+  AUTO_FETCH_MS,
+  loadAutoFetch,
+  saveAutoFetch,
+} from "../model/autoFetch";
 import {
   basename,
   gitCommit,
@@ -113,16 +117,9 @@ import {
 import { useConflictActions } from "../hooks/useConflictActions";
 import { useLegacyConflictStatus } from "../hooks/useLegacyConflictStatus";
 import { appName } from "../../../shared/lib/appName";
+import { confirmNative, confirmDiscardFile } from "../model/gitConfirmation";
 
 const GIT_POLL_MS = 2000;
-
-function confirmNative(message: string, okLabel?: string): Promise<boolean> {
-  return ask(message, {
-    title: appName(),
-    kind: "warning",
-    ...(okLabel ? { okLabel } : {}),
-  });
-}
 
 let stagedOpen = true;
 let changesOpen = true;
@@ -596,14 +593,7 @@ function ChangedFiles({
     // File actions queue behind each other; any other action holds them off.
     if (busy && queue.size === 0) return;
     if (action === "discard") {
-      const name = basename(file.relative);
-      const untracked = file.status === "untracked";
-      const ok = await confirmNative(
-        untracked
-          ? `Delete untracked file ${name}?`
-          : `Discard changes in ${name}? This cannot be undone.`,
-        untracked ? "Delete" : "Discard",
-      );
+      const ok = await confirmDiscardFile(file);
       if (!ok) return;
     }
     queue.size += 1;
@@ -884,9 +874,7 @@ function ChangedFiles({
                 : "Generate commit message"
             }
             disabled={!generating && !canGenerate}
-            onClick={() =>
-              generating ? cancelGenerate() : void generate()
-            }
+            onClick={() => (generating ? cancelGenerate() : void generate())}
             className="group absolute top-1 right-1 grid size-5 place-items-center rounded-md bg-content/10 text-content hover:bg-content/20 hover:text-content disabled:opacity-40"
           >
             {generating ? (
@@ -992,7 +980,10 @@ function ChangedFiles({
           ) : null}
         </div>
         {blockedMessage ? (
-          <p role="alert" className="mt-1.5 text-[11px] leading-snug text-amber-400">
+          <p
+            role="alert"
+            className="mt-1.5 text-[11px] leading-snug text-amber-400"
+          >
             {blockedMessage}
           </p>
         ) : null}
@@ -1017,7 +1008,12 @@ function ChangedFiles({
         ) : null}
       </div>
       {failure ? (
-        <RemoteLoadError cwd={cwd} failure={failure} stale={!!index} onRetry={() => onMutated()} />
+        <RemoteLoadError
+          cwd={cwd}
+          failure={failure}
+          stale={!!index}
+          onRetry={() => onMutated()}
+        />
       ) : null}
       <div
         ref={lockOverscroll}
@@ -1048,12 +1044,14 @@ function ChangedFiles({
                   {
                     title: "Accept All Current",
                     label: "All Current",
-                    onClick: () => void conflictActions.acceptAll(conflicts, "ours"),
+                    onClick: () =>
+                      void conflictActions.acceptAll(conflicts, "ours"),
                   },
                   {
                     title: "Accept All Incoming",
                     label: "All Incoming",
-                    onClick: () => void conflictActions.acceptAll(conflicts, "theirs"),
+                    onClick: () =>
+                      void conflictActions.acceptAll(conflicts, "theirs"),
                   },
                 ]}
               >
@@ -1063,14 +1061,18 @@ function ChangedFiles({
                   busy={busy}
                   canCompare={canCompare}
                   onOpen={(row, pin) =>
-                    (onOpenInEditor ?? ((path, pinned) => onOpenFile(path, "unstaged", pinned)))(
-                      row.path,
-                      pin,
-                    )
+                    (
+                      onOpenInEditor ??
+                      ((path, pinned) => onOpenFile(path, "unstaged", pinned))
+                    )(row.path, pin)
                   }
                   onCompare={(row) => setCompareFile(row.relative)}
-                  onChoose={(row, choice) => void conflictActions.choose(row, choice)}
-                  onMarkResolved={(row) => void conflictActions.markResolved(row)}
+                  onChoose={(row, choice) =>
+                    void conflictActions.choose(row, choice)
+                  }
+                  onMarkResolved={(row) =>
+                    void conflictActions.markResolved(row)
+                  }
                 />
               </FileSection>
             ) : null}
@@ -2007,12 +2009,17 @@ function changedFilePaths(prev: GitDiffIndex, next: GitDiffIndex): string[] {
     }
   }
   // A file entering, leaving or changing kind has new contents on disk.
-  const before = new Map((prev.conflicts ?? []).map((file) => [file.relative, file]));
-  const after = new Map((next.conflicts ?? []).map((file) => [file.relative, file]));
+  const before = new Map(
+    (prev.conflicts ?? []).map((file) => [file.relative, file]),
+  );
+  const after = new Map(
+    (next.conflicts ?? []).map((file) => [file.relative, file]),
+  );
   for (const [relative, file] of after) {
     if (before.get(relative)?.kind !== file.kind) paths.push(file.path);
   }
-  for (const [relative, file] of before) if (!after.has(relative)) paths.push(file.path);
+  for (const [relative, file] of before)
+    if (!after.has(relative)) paths.push(file.path);
   return paths;
 }
 

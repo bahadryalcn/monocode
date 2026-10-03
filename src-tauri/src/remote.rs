@@ -482,6 +482,8 @@ fn supported_remote_method(method: &str) -> bool {
             | "sessions.delete"
             | "sessions.sync"
             | "sessions.syncChunk"
+            | "sessions.adopted"
+            | "sessions.desktopLive"
             | "commands.dispatch"
             | "attachments.upload"
             | "attachments.read"
@@ -505,6 +507,8 @@ fn supported_remote_method(method: &str) -> bool {
             | "git.action"
             | "sync.pull"
             | "sync.push"
+            | "shell.profiles"
+            | "shell.setProfile"
     )
 }
 

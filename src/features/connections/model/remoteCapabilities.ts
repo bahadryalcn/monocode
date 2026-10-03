@@ -14,6 +14,9 @@ export const GIT_ACTIONS = "git.actions";
 /** Reading the three versions of a conflicted file (host/git-conflicts.ts). */
 export const GIT_CONFLICTS = "git.conflicts";
 
+/** Running a `!command` from the composer in a host session (host/shell.ts). */
+export const SESSION_SHELL = "sessions.shell";
+
 /** Shown where a feature stays off because the machine's host predates it. */
 export const HOST_UPDATE_NOTICE =
   "Update MonoCode Host in Connections settings to use this on projects on another machine.";

@@ -240,4 +240,43 @@ describe("host automations", () => {
     });
     turns[0].finish();
   });
+
+  it("mirrors whether a running session is waiting on the user", async () => {
+    const { automations, input, clock, store, turns, settled } = setup();
+    automations.save(input());
+    const run = automations.runNow("nightly");
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    const ask = (pendingQuestion?: { requestId: number; questions: [] }) => {
+      const session = store.session(run.sessionId!);
+      store.save(
+        {
+          ...session,
+          revision: session.revision + 1,
+          session: { ...session.session, pendingQuestion },
+        },
+        { type: "question" },
+      );
+      clock.now += MINUTE;
+      automations.tick();
+    };
+    ask({ requestId: 1, questions: [] });
+    expect(automations.runs("nightly")[0]).toMatchObject({
+      status: "running",
+      needsInput: true,
+    });
+    expect(automations.list()[0].needsInput).toBe(true);
+
+    ask(undefined);
+    expect(automations.runs("nightly")[0].needsInput).toBeUndefined();
+    expect(automations.list()[0].needsInput).toBeUndefined();
+
+    ask({ requestId: 2, questions: [] });
+    turns[0].finish();
+    await settled(run.sessionId!);
+    clock.now += MINUTE;
+    automations.tick();
+    expect(automations.runs("nightly")[0].status).not.toBe("running");
+    expect(automations.runs("nightly")[0].needsInput).toBeUndefined();
+    expect(automations.list()[0].needsInput).toBeUndefined();
+  });
 });

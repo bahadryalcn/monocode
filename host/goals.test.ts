@@ -1,0 +1,566 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SendTurnInput } from "../src/integrations/harness/core/types";
+import type { HostProvider } from "./providers";
+import { HostEngine } from "./engine";
+import { HostGoals } from "./goals";
+import { HostStore } from "./store";
+import { HostTasks } from "./tasks";
+
+const cleanups: Array<() => Promise<void> | void> = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+const MINUTE = 60_000;
+
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+
+type PlanTask = {
+  key: string;
+  project: string;
+  title?: string;
+  prompt?: string;
+  dependsOn?: string[];
+};
+
+/** A planner reply ending in the plan. */
+const planReply = (tasks: PlanTask[]) =>
+  [
+    "I read the projects. Here is the plan.",
+    "",
+    "```json",
+    JSON.stringify({
+      tasks: tasks.map((task) => ({
+        title: `Do ${task.key}`,
+        prompt: `Instructions for ${task.key}`,
+        dependsOn: [],
+        ...task,
+      })),
+    }),
+    "```",
+  ].join("\n");
+
+function setup() {
+  const directory = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "monocode-goals-test-")),
+  );
+  const store = new HostStore(join(directory, "host.db"));
+  const addProject = (name: string) => {
+    const cwd = join(directory, name);
+    mkdirSync(cwd);
+    return store.addProject(cwd, name);
+  };
+  /** A project that is a git repository on `main`, with one commit. */
+  const addRepo = (name: string) => {
+    const added = addProject(name);
+    git(added.cwd, "init", "-q");
+    git(added.cwd, "checkout", "-q", "-b", "main");
+    git(added.cwd, "config", "user.name", "Test");
+    git(added.cwd, "config", "user.email", "test@example.test");
+    writeFileSync(join(added.cwd, "file.txt"), "initial\n");
+    git(added.cwd, "add", "file.txt");
+    git(added.cwd, "commit", "-q", "-m", "initial");
+    return added;
+  };
+  const turns: Array<{
+    input: SendTurnInput;
+    finish: () => void;
+    fail: (error: Error) => void;
+  }> = [];
+  const provider: HostProvider = {
+    send: vi.fn(
+      (input) =>
+        new Promise<void>((resolve, reject) => {
+          turns.push({ input, finish: resolve, fail: reject });
+        }),
+    ),
+    cancel: vi.fn(async (sessionId) => {
+      turns.find((turn) => turn.input.sessionId === sessionId)?.finish();
+    }),
+    stop: vi.fn(async (sessionId) => {
+      turns.find((turn) => turn.input.sessionId === sessionId)?.finish();
+    }),
+    bind: vi.fn(),
+    approve: vi.fn(),
+    answer: vi.fn(),
+  };
+  const engine = new HostEngine(store, { claude: provider });
+  const clock = { now: new Date("2026-10-05T08:00:00").getTime() };
+  const tasks = new HostTasks(store, engine, () => clock.now);
+  const goals = new HostGoals(store, engine, tasks, () => clock.now);
+  cleanups.push(async () => {
+    for (const turn of turns) turn.finish();
+    await tasks.idle();
+    await engine.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const lead = addProject("lead");
+  const input = (overrides: Record<string, unknown> = {}) => ({
+    id: "goal",
+    title: "Launch the beta",
+    prompt: "Ship the beta across the app and the API",
+    projectIds: [lead.id],
+    leadProjectId: lead.id,
+    harness: "claude",
+    model: "claude:test",
+    modelSettings: {},
+    runtimeMode: "auto",
+    maxRunMinutes: 0,
+    // The reviewer has tests of its own.
+    verifyDefaults: { review: false },
+    ...overrides,
+  });
+  const goal = (id = "goal") => goals.list().find((entry) => entry.id === id)!;
+  const task = (id: string) => tasks.list().find((entry) => entry.id === id)!;
+  /** The goal's tasks by plan key. */
+  const planned = (id = "goal") => {
+    const current = goal(id);
+    return Object.fromEntries(
+      current.plan!.tasks.map((entry, index) => [
+        entry.key,
+        task(current.taskIds[index]),
+      ]),
+    );
+  };
+  const turnOf = (sessionId: string) =>
+    turns.find((turn) => turn.input.sessionId === sessionId)!;
+  const settled = (sessionId: string) =>
+    vi.waitFor(() => expect(store.session(sessionId).status).toBe("idle"));
+  /** A minute later: settles what finished and starts what can start. */
+  const advance = async () => {
+    clock.now += MINUTE;
+    await tasks.tick();
+    await tasks.idle();
+  };
+  /** Ends a session's turn cleanly, optionally with a reply, and settles it. */
+  const finish = async (sessionId: string, reply?: string) => {
+    const turn = turnOf(sessionId);
+    if (reply !== undefined) {
+      turn.input.onEvent({ type: "message.delta", text: reply });
+      turn.input.onEvent({ type: "message.completed" });
+    }
+    turn.finish();
+    await settled(sessionId);
+    await advance();
+  };
+  /** Creates a goal and waits for its planner's turn. */
+  const create = async (overrides: Record<string, unknown> = {}) => {
+    const expected = turns.length + 1;
+    const created = goals.create(input(overrides));
+    await vi.waitFor(() => expect(turns).toHaveLength(expected));
+    return created;
+  };
+  /** Creates a goal whose planner replies with `reply`. */
+  const plan = async (
+    reply: string,
+    overrides: Record<string, unknown> = {},
+  ) => {
+    const created = await create(overrides);
+    await finish(created.plannerSessionId!, reply);
+    return goal(created.id);
+  };
+  return {
+    store,
+    engine,
+    provider,
+    turns,
+    clock,
+    tasks,
+    goals,
+    lead,
+    input,
+    goal,
+    task,
+    planned,
+    turnOf,
+    settled,
+    advance,
+    finish,
+    create,
+    plan,
+    addProject,
+    addRepo,
+  };
+}
+
+describe("goal planning", () => {
+  it("plans in the lead project and creates the plan's tasks", async () => {
+    const {
+      goals,
+      lead,
+      addProject,
+      create,
+      finish,
+      goal,
+      planned,
+      store,
+      turns,
+      turnOf,
+    } = setup();
+    const api = addProject("api");
+    const created = await create({
+      projectIds: [lead.id, api.id],
+      verifyDefaults: {
+        review: false,
+        verifyCommand: { [api.id]: "npm test" },
+      },
+    });
+    expect(created).toMatchObject({ status: "planning", taskIds: [] });
+    expect(goals.list()).toEqual([expect.objectContaining({ id: "goal" })]);
+    const planner = store.session(created.plannerSessionId!).session;
+    expect(planner).toMatchObject({
+      title: "Plan: Launch the beta",
+      cwd: lead.cwd,
+    });
+    const prompt = turns[0].input.text;
+    expect(prompt).toContain("Job: Launch the beta");
+    expect(prompt).toContain("Ship the beta across the app and the API");
+    expect(prompt).toContain(`- lead: ${lead.cwd}`);
+    expect(prompt).toContain(`- api: ${api.cwd}`);
+    expect(prompt).toContain("Only read");
+    expect(prompt).toContain('{"tasks":[{"key":"short-id"');
+
+    await finish(
+      created.plannerSessionId!,
+      planReply([
+        { key: "api", project: api.cwd },
+        { key: "app", project: lead.cwd, dependsOn: ["api"] },
+      ]),
+    );
+    expect(goal()).toMatchObject({ status: "running" });
+    expect(goal().taskIds).toHaveLength(2);
+    expect(goal().plan!.tasks.map((entry) => entry.projectId)).toEqual([
+      api.id,
+      lead.id,
+    ]);
+    const { api: first, app: second } = planned();
+    expect(first).toMatchObject({
+      title: "Do api",
+      prompt: "Instructions for api",
+      projectId: api.id,
+      goalId: "goal",
+      harness: "claude",
+      model: "claude:test",
+      runtimeMode: "auto",
+      isolate: true,
+      review: false,
+      verifyCommand: "npm test",
+      status: "running",
+    });
+    expect(first.dependsOn).toBeUndefined();
+    expect(second).toMatchObject({
+      projectId: lead.id,
+      dependsOn: [first.id],
+      status: "queued",
+    });
+    expect(second.verifyCommand).toBeUndefined();
+    expect(turnOf(first.sessionId!).input.text).toBe("Instructions for api");
+  });
+
+  it("waits for the owner to approve the plan when asked to", async () => {
+    const { goals, lead, plan, goal, tasks, turns, advance } = setup();
+    const waiting = await plan(planReply([{ key: "one", project: lead.cwd }]), {
+      approvePlan: true,
+    });
+    expect(waiting.status).toBe("awaiting-approval");
+    expect(waiting.plan!.tasks).toMatchObject([
+      { key: "one", title: "Do one" },
+    ]);
+    expect(tasks.list()).toEqual([]);
+    await advance();
+    expect(goal().status).toBe("awaiting-approval");
+
+    const approved = goals.approve("goal");
+    expect(approved.status).toBe("running");
+    expect(approved.taskIds).toHaveLength(1);
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    await tasks.idle();
+    expect(tasks.list()[0].status).toBe("running");
+    expect(() => goals.approve("goal")).toThrow(
+      "Only a plan waiting for approval can be approved.",
+    );
+  });
+
+  it.each([
+    ["no plan at all", () => "I could not decide.", "has no ```json block"],
+    [
+      "invalid JSON",
+      () => "```json\n{tasks: []}\n```",
+      "The plan is not valid JSON",
+    ],
+    ["no tasks", () => '```json\n{"tasks":[]}\n```', "The plan has no tasks."],
+    [
+      "a project not in the goal",
+      () => planReply([{ key: "one", project: "/somewhere/else" }]),
+      "Task “one” is for “/somewhere/else”, which is not one of this goal’s projects.",
+    ],
+    [
+      "a dependency cycle",
+      (cwd: string) =>
+        planReply([
+          { key: "a", project: cwd, dependsOn: ["b"] },
+          { key: "b", project: cwd, dependsOn: ["a"] },
+        ]),
+      "The plan’s dependencies form a cycle: a → b → a.",
+    ],
+  ])("blocks a goal whose planner gave %s", async (_, reply, error) => {
+    const { lead, plan, tasks } = setup();
+    const blocked = await plan(reply(lead.cwd));
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.planError).toContain(error);
+    expect(blocked.taskIds).toEqual([]);
+    expect(tasks.list()).toEqual([]);
+  });
+
+  it("blocks a goal whose planner run failed", async () => {
+    const { create, turnOf, settled, advance, goal } = setup();
+    const created = await create();
+    turnOf(created.plannerSessionId!).fail(new Error("Not signed in"));
+    await settled(created.plannerSessionId!);
+    await advance();
+    expect(goal()).toMatchObject({
+      status: "blocked",
+      planError: "The planner failed: Not signed in",
+    });
+  });
+
+  it("plans again with the owner's feedback", async () => {
+    const { goals, lead, plan, goal, turns, finish } = setup();
+    const blocked = await plan("No plan, sorry.");
+    expect(blocked.status).toBe("blocked");
+
+    const again = goals.replan("goal", "  Split the work by folder.  ");
+    expect(again).toMatchObject({
+      status: "planning",
+      feedback: "Split the work by folder.",
+    });
+    expect(again.planError).toBeUndefined();
+    expect(again.plannerSessionId).not.toBe(blocked.plannerSessionId);
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    expect(turns[1].input.text).toContain(
+      "The owner's feedback on an earlier plan:\nSplit the work by folder.",
+    );
+    await finish(
+      again.plannerSessionId!,
+      planReply([{ key: "one", project: lead.cwd }]),
+    );
+    expect(goal().status).toBe("running");
+    expect(() => goals.replan("goal")).toThrow(
+      "Only a goal whose plan was not started can be planned again.",
+    );
+  });
+
+  it("rejects a goal for a project this machine does not have", () => {
+    const { goals, input, lead } = setup();
+    expect(() =>
+      goals.create(input({ projectIds: [lead.id, "missing"] })),
+    ).toThrow("Project is not registered on this machine");
+    expect(() => goals.create(input({ leadProjectId: "other" }))).toThrow(
+      "The lead project must be one of the goal’s projects.",
+    );
+    expect(goals.list()).toEqual([]);
+  });
+});
+
+describe("goal tasks", () => {
+  it("starts a dependent task once its dependency is merged, from the merged HEAD", async () => {
+    const {
+      goals,
+      lead,
+      addRepo,
+      plan,
+      planned,
+      tasks,
+      turns,
+      turnOf,
+      finish,
+    } = setup();
+    const repo = addRepo("repo");
+    await plan(
+      planReply([
+        { key: "a", project: repo.cwd },
+        { key: "b", project: repo.cwd, dependsOn: ["a"] },
+      ]),
+      { projectIds: [lead.id, repo.id] },
+    );
+    let { a, b } = planned();
+    expect(a.status).toBe("running");
+    expect(b.status).toBe("queued");
+    expect(turns).toHaveLength(2);
+
+    writeFileSync(join(turnOf(a.sessionId!).input.cwd, "from-a.txt"), "A\n");
+    await finish(a.sessionId!);
+    ({ a, b } = planned());
+    expect(a.status).toBe("review");
+    // Still waiting: review is not done.
+    expect(b.status).toBe("queued");
+
+    await tasks.move(a.id, "done");
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(3));
+    ({ b } = planned());
+    expect(b.status).toBe("running");
+    expect(b.baseCommit).toBe(git(repo.cwd, "rev-parse", "HEAD"));
+    expect(existsSync(join(b.worktreeCwd!, "from-a.txt"))).toBe(true);
+    expect(goals.list()[0].status).toBe("running");
+  });
+
+  it("keeps dependents queued behind a blocked task and blocks the goal", async () => {
+    const {
+      lead,
+      addProject,
+      plan,
+      planned,
+      tasks,
+      turnOf,
+      settled,
+      advance,
+      goal,
+      turns,
+    } = setup();
+    const api = addProject("api");
+    await plan(
+      planReply([
+        { key: "a", project: api.cwd },
+        { key: "b", project: lead.cwd, dependsOn: ["a"] },
+        { key: "c", project: lead.cwd, dependsOn: ["b"] },
+      ]),
+      { projectIds: [lead.id, api.id] },
+    );
+    let { a, b, c } = planned();
+    turnOf(a.sessionId!).fail(new Error("Not signed in"));
+    await settled(a.sessionId!);
+    await advance();
+    ({ a, b, c } = planned());
+    expect(a.status).toBe("blocked");
+    expect(b.status).toBe("queued");
+    expect(c.status).toBe("queued");
+    expect(goal()).toMatchObject({
+      status: "blocked",
+      error: "1 of 3 tasks blocked: Do a",
+    });
+
+    // Retrying the blocked task takes the goal up again.
+    await tasks.move(a.id, "queued");
+    expect(goal().status).toBe("running");
+    expect(goal().error).toBeUndefined();
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(3));
+    expect(planned().a.status).toBe("running");
+  });
+
+  it("is done once every task is done", async () => {
+    const { lead, addProject, plan, planned, tasks, finish, goal, advance } =
+      setup();
+    const api = addProject("api");
+    await plan(
+      planReply([
+        { key: "a", project: api.cwd },
+        { key: "b", project: lead.cwd },
+      ]),
+      { projectIds: [lead.id, api.id] },
+    );
+    let { a, b } = planned();
+    await finish(a.sessionId!);
+    await finish(b.sessionId!);
+    ({ a, b } = planned());
+    expect([a.status, b.status]).toEqual(["review", "review"]);
+    await tasks.move(a.id, "done");
+    await advance();
+    expect(goal().status).toBe("running");
+    await tasks.move(b.id, "done");
+    // Listing brings progress up to date without waiting for a tick.
+    expect(goal().status).toBe("done");
+  });
+
+  it("runs tasks of different projects at once, within the machine's cap", async () => {
+    const { lead, addProject, plan, planned, turns } = setup();
+    const one = addProject("one");
+    const two = addProject("two");
+    await plan(
+      planReply([
+        { key: "a", project: lead.cwd },
+        { key: "b", project: one.cwd },
+        { key: "c", project: two.cwd },
+      ]),
+      { projectIds: [lead.id, one.id, two.id] },
+    );
+    const statuses = Object.values(planned()).map((entry) => entry.status);
+    expect(statuses.filter((status) => status === "running")).toHaveLength(2);
+    expect(statuses.filter((status) => status === "queued")).toHaveLength(1);
+    // The planner, and two tasks.
+    expect(turns).toHaveLength(3);
+  });
+
+  it("cancels a goal: stops its running tasks and blocks its queued ones", async () => {
+    const { goals, lead, addRepo, plan, planned, provider, goal, advance } =
+      setup();
+    const repo = addRepo("repo");
+    await plan(
+      planReply([
+        { key: "a", project: repo.cwd },
+        { key: "b", project: repo.cwd, dependsOn: ["a"] },
+      ]),
+      { projectIds: [lead.id, repo.id] },
+    );
+    const before = planned().a;
+    const cancelled = await goals.cancel("goal");
+    expect(cancelled.status).toBe("cancelled");
+    expect(provider.cancel).toHaveBeenCalledTimes(1);
+    await advance();
+    const { a, b } = planned();
+    expect(a).toMatchObject({ status: "blocked", error: "Stopped by you." });
+    expect(b).toMatchObject({ status: "blocked", error: "Goal cancelled" });
+    expect(goal().status).toBe("cancelled");
+    // The branch stays.
+    expect(git(repo.cwd, "branch", "--list", before.branch!)).toContain(
+      before.branch,
+    );
+    await expect(goals.cancel("goal")).rejects.toThrow(
+      "This goal is already cancelled.",
+    );
+  });
+
+  it("cancels a goal while it is planning", async () => {
+    const { goals, create, provider, settled, advance, goal } = setup();
+    const created = await create();
+    await goals.cancel("goal");
+    expect(provider.cancel).toHaveBeenCalledTimes(1);
+    await settled(created.plannerSessionId!);
+    await advance();
+    expect(goal().status).toBe("cancelled");
+  });
+
+  it("deletes a goal with nothing running, leaving its tasks unless told", async () => {
+    const { goals, lead, plan, planned, tasks } = setup();
+    await plan(planReply([{ key: "a", project: lead.cwd }]), {
+      approvePlan: false,
+    });
+    await expect(goals.delete("goal")).rejects.toThrow(
+      "Stop this goal’s running tasks before deleting it.",
+    );
+    await tasks.move(planned().a.id, "blocked");
+    await goals.delete("goal");
+    expect(goals.list()).toEqual([]);
+    expect(tasks.list()).toHaveLength(1);
+
+    await plan(planReply([{ key: "b", project: lead.cwd }]), { id: "other" });
+    const other = planned("other").b;
+    await tasks.move(other.id, "blocked");
+    await goals.delete("other", true);
+    expect(tasks.list().map((entry) => entry.id)).not.toContain(other.id);
+  });
+});

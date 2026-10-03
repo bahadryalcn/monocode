@@ -32,6 +32,16 @@ import {
 import type { HostProvider } from "./providers";
 import { HostStore } from "./store";
 import { parseRemoteAttachments, resolveAttachments } from "./attachments";
+import { runHostShell } from "./shell";
+import {
+  SHELL_COMMAND_LIMIT,
+  finishShellBlock,
+  interruptShellBlock,
+  pendingShellRuns,
+  shellBlock,
+  withShellContext,
+  type ShellResult,
+} from "../src/features/sessions/model/shellRun";
 
 // Streamed output is written in batches. Anything a user may need to act on
 // (approvals, questions, errors, completion) is written immediately.
@@ -189,6 +199,13 @@ export function parseCommand(input: unknown): HostCommand {
       sessionId,
       draftBlockId: text(v.draftBlockId, "draft block ID"),
     };
+  if (v.type === "shell")
+    return {
+      type: "shell",
+      commandId,
+      sessionId,
+      line: text(v.line, "shell command", SHELL_COMMAND_LIMIT),
+    };
   const runId = text(v.runId, "run ID");
   if (v.type === "cancel")
     return { type: "cancel", commandId, sessionId, runId };
@@ -289,10 +306,34 @@ export class HostEngine {
   constructor(
     readonly store: HostStore,
     private readonly providers: Partial<Record<RemoteProvider, HostProvider>>,
+    private readonly shell: (
+      cwd: string,
+      command: string,
+    ) => Promise<ShellResult> = runHostShell,
   ) {
     // Provider dispatch is not transactional with SQLite. Never replay a send
     // automatically after a crash; its external effects may already exist.
-    for (const value of store.sessions()) {
+    for (const stored of store.sessions()) {
+      let value = stored;
+      // A `!command` cannot outlive the host process that started it.
+      if (value.session.blocks.some((block) => block.shell?.running))
+        value = this.save(
+          {
+            ...value,
+            session: {
+              ...value.session,
+              blocks: value.session.blocks.map((block) =>
+                block.shell?.running
+                  ? interruptShellBlock(
+                      block,
+                      "Host restarted before this command finished.",
+                    )
+                  : block,
+              ),
+            },
+          },
+          { type: "shell.interrupted" },
+        );
       if (value.status === "running") {
         this.save(
           this.settled(
@@ -358,6 +399,82 @@ export class HostEngine {
       ),
     );
   }
+
+  /** Takes over a session the desktop app created: same id, then host-owned. */
+  adoptSession(snapshot: HostSession): HostSession {
+    const id = snapshot.session.id;
+    if (snapshot.status === "running")
+      throw new Error(
+        "This session is running in MonoCode on that computer. Wait for it to finish.",
+      );
+    const provider = this.provider(snapshot.session.harness);
+    const saved = this.store.transaction(() => {
+      try {
+        return this.store.session(id);
+      } catch {
+        return this.store.save(
+          {
+            ...snapshot,
+            status: "idle",
+            desktop: { updatedAt: snapshot.updatedAt },
+          },
+          { type: "adopted" },
+        );
+      }
+    });
+    if (saved.session.providerSessionId)
+      provider.bind(id, saved.session.providerSessionId, saved.session.cwd);
+    return saved;
+  }
+
+  /**
+   * Catches an adopted session up with turns the desktop app ran since: both
+   * resume the same provider conversation, so the newer transcript wins.
+   * Leaves a session alone while either side is running a turn.
+   */
+  refreshFromDesktop(snapshot: HostSession): HostSession | undefined {
+    const id = snapshot.session.id;
+    if (snapshot.status === "running" || this.live.has(id)) return undefined;
+    const current = this.store.session(id);
+    if (!current.desktop || current.status === "running") return undefined;
+    if (snapshot.updatedAt <= current.desktop.updatedAt) return undefined;
+    const { session } = snapshot;
+    const same =
+      session.title === current.session.title &&
+      session.providerSessionId === current.session.providerSessionId &&
+      session.model === current.session.model &&
+      JSON.stringify(session.blocks) === JSON.stringify(current.session.blocks);
+    const saved = this.save(
+      {
+        ...current,
+        ...(same
+          ? {}
+          : {
+              status: "idle" as const,
+              session: {
+                ...current.session,
+                title: session.title,
+                model: session.model,
+                modelSettings: session.modelSettings,
+                runtimeMode: session.runtimeMode,
+                blocks: session.blocks,
+                providerSessionId: session.providerSessionId,
+                providerAccountId: session.providerAccountId,
+              },
+            }),
+        desktop: { updatedAt: snapshot.updatedAt },
+      },
+      { type: same ? "desktopSeen" : "desktopRefreshed" },
+    );
+    if (!same && saved.session.providerSessionId)
+      this.provider(saved.session.harness).bind(
+        id,
+        saved.session.providerSessionId,
+        saved.session.cwd,
+      );
+    return saved;
+  }
+
 
   updateSession(id: string, patch: Parameters<HostStore["updateSession"]>[1]) {
     this.flush(id);
@@ -564,6 +681,26 @@ export class HostEngine {
               ),
             },
           };
+        } else if (command.type === "shell") {
+          // No model turn: the block is the whole effect, so it is allowed
+          // while a turn runs.
+          value = {
+            ...value,
+            session: {
+              ...value.session,
+              blocks: [
+                ...value.session.blocks,
+                shellBlock(command.commandId, command.line),
+              ],
+            },
+          };
+          effect = (saved) =>
+            this.runShell(
+              saved.session.id,
+              command.commandId,
+              saved.session.cwd,
+              command.line,
+            );
         } else if (command.type === "send" || command.type === "compact") {
           if (value.status === "running")
             throw new Error("This session is already running");
@@ -600,6 +737,11 @@ export class HostEngine {
             command.type === "send"
               ? (draft?.attachments ??
                 resolveAttachments(this.store, command.attachments ?? []))
+              : [];
+          // Read before the turn's own block lands after them.
+          const shellRuns =
+            command.type === "send"
+              ? pendingShellRuns(value.session.blocks)
               : [];
           const runId = randomUUID();
           const firstTurn =
@@ -671,7 +813,9 @@ export class HostEngine {
           effect = (saved) => {
             this.run(
               saved,
-              command.type === "compact" ? null : command.text,
+              command.type === "compact"
+                ? null
+                : withShellContext(shellRuns, command.text),
               command.type === "send" ? command.intent : undefined,
               attachments,
               command.resumeAtReset,
@@ -756,6 +900,36 @@ export class HostEngine {
     // A receipt means durable host acceptance, not provider completion.
     effect?.(saved);
     return receipt;
+  }
+
+  private runShell(
+    id: string,
+    blockId: string,
+    cwd: string,
+    command: string,
+  ): void {
+    void this.shell(cwd, command)
+      .then((result) => {
+        if (this.closing) return;
+        this.flush(id);
+        const current = this.store.session(id);
+        const saved = this.save(
+          {
+            ...current,
+            session: {
+              ...current.session,
+              blocks: current.session.blocks.map((block) =>
+                block.id === blockId ? finishShellBlock(block, result) : block,
+              ),
+            },
+          },
+          { type: "shell.finished", blockId },
+        );
+        const live = this.live.get(id);
+        if (live) live.value = saved;
+      })
+      // The conversation may have been deleted while the command ran.
+      .catch((error) => console.debug("[monocode] remote shell command", error));
   }
 
   private generateFirstTurnNames(

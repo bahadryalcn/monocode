@@ -112,6 +112,7 @@ import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen
 import { RemoteSession } from "../../connections/ui/RemoteSession";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import type { HostSession } from "../../connections/model/protocol";
+import { ADOPTED_RUNNING_REASON } from "../../connections/model/adoptedSessions";
 
 export type SessionPaneProps = {
   session: Session;
@@ -624,6 +625,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
       disabled={workspaceSwitchingSessionId === session.id}
       remoteSession={remoteSession}
       sendBlockedReason={sendBlockedReason}
+      sendHeldReason={
+        session.continuingElsewhere ? ADOPTED_RUNNING_REASON : undefined
+      }
       remoteFeatures={remoteFeatures}
       allowedModelHarnesses={allowedModelHarnesses}
       enabled={visible}

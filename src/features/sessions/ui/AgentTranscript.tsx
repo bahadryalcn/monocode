@@ -64,6 +64,7 @@ import {
 } from "../../../integrations/harness/core/preview";
 import { copyMessage } from "../../../platform/tauri/clipboard";
 import type { Attachment } from "../model/session";
+import type { ShellRun } from "../model/shellRun";
 import { visibleUserPrompt } from "../../orchestration/model/orchestration";
 import { playCue } from "../../settings/model/sounds";
 import { legacyTaskListFromText } from "../model/taskList";
@@ -1587,6 +1588,9 @@ const TranscriptBlock = memo(function TranscriptBlock({
     if (block.interjection) {
       return <InterjectionDivider block={block} />;
     }
+    if (block.shell) {
+      return <ShellRunCard run={block.shell} embedded={embedded} />;
+    }
     return (
       <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>
         <pre className="min-w-0 whitespace-pre-wrap break-words">
@@ -1612,6 +1616,60 @@ const TranscriptBlock = memo(function TranscriptBlock({
     </div>
   );
 });
+
+/** A `!command` the user ran from the composer, and what it printed. */
+function ShellRunCard({
+  run,
+  embedded,
+}: {
+  run: ShellRun;
+  embedded?: boolean;
+}) {
+  const status = run.running
+    ? null
+    : run.timedOut
+      ? "timed out"
+      : run.exitCode === null
+        ? "did not finish"
+        : run.exitCode !== 0
+          ? `exit ${run.exitCode}`
+          : null;
+  return (
+    <div className={`${embedded ? "" : "px-4"} py-2`}>
+      <div
+        data-shell-run
+        className="overflow-hidden rounded-md border border-content/10 bg-content/[0.03] font-mono text-[12px] leading-5"
+      >
+        <div className="flex min-w-0 items-start gap-2 px-3 py-1.5">
+          <Terminal
+            className="mt-1 size-3 shrink-0 text-content/40"
+            strokeWidth={1.75}
+            aria-hidden
+          />
+          <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-content">
+            {run.command}
+          </span>
+          {run.running ? (
+            <TerminalSpinner className="inline-block w-3.5 shrink-0 select-none text-center text-[11px] text-content/45" />
+          ) : status ? (
+            <span
+              className={`shrink-0 text-[11px] ${
+                run.timedOut ? "text-amber-400" : "text-red-400"
+              }`}
+            >
+              {status}
+            </span>
+          ) : null}
+        </div>
+        {run.output.trim() ? (
+          <pre className="max-h-80 min-w-0 overflow-auto whitespace-pre-wrap break-words border-t border-content/10 px-3 py-2 text-content/65">
+            {run.output.trimEnd()}
+          </pre>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function UserMessageBlock({
   block,

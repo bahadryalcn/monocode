@@ -1,0 +1,885 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SendTurnInput } from "../src/integrations/harness/core/types";
+import type { HostProvider } from "./providers";
+import { HostEngine } from "./engine";
+import { HostStore } from "./store";
+import { HostTasks, MAX_RUNNING_TASKS } from "./tasks";
+
+const cleanups: Array<() => Promise<void> | void> = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+const MINUTE = 60_000;
+/** Tests that run a check command start a real shell. */
+const SHELL_TEST_MS = 60_000;
+
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+
+function setup(verifyTimeoutMs?: number) {
+  const directory = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "monocode-tasks-test-")),
+  );
+  const store = new HostStore(join(directory, "host.db"));
+  const addProject = (name: string) => {
+    const cwd = join(directory, name);
+    mkdirSync(cwd);
+    return store.addProject(cwd, name);
+  };
+  /** A project that is a git repository on `main`, with one commit. */
+  const addRepo = (name: string) => {
+    const added = addProject(name);
+    git(added.cwd, "init", "-q");
+    git(added.cwd, "checkout", "-q", "-b", "main");
+    git(added.cwd, "config", "user.name", "Test");
+    git(added.cwd, "config", "user.email", "test@example.test");
+    writeFileSync(join(added.cwd, "file.txt"), "initial\n");
+    git(added.cwd, "add", "file.txt");
+    git(added.cwd, "commit", "-q", "-m", "initial");
+    return added;
+  };
+  const project = addProject("first");
+  const turns: Array<{
+    input: SendTurnInput;
+    finish: () => void;
+    fail: (error: Error) => void;
+  }> = [];
+  const provider: HostProvider = {
+    send: vi.fn(
+      (input) =>
+        new Promise<void>((resolve, reject) => {
+          turns.push({ input, finish: resolve, fail: reject });
+        }),
+    ),
+    cancel: vi.fn(async (sessionId) => {
+      turns.find((turn) => turn.input.sessionId === sessionId)?.finish();
+    }),
+    stop: vi.fn(async (sessionId) => {
+      turns.find((turn) => turn.input.sessionId === sessionId)?.finish();
+    }),
+    bind: vi.fn(),
+    approve: vi.fn(),
+    answer: vi.fn(),
+  };
+  const engine = new HostEngine(store, { claude: provider });
+  const clock = { now: new Date("2026-10-05T08:00:00").getTime() };
+  const tasks = new HostTasks(store, engine, () => clock.now, verifyTimeoutMs);
+  cleanups.push(async () => {
+    for (const turn of turns) turn.finish();
+    await tasks.idle();
+    await engine.close();
+    store.close();
+    rmSync(directory, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const input = (overrides: Record<string, unknown> = {}) => ({
+    id: "main",
+    title: "Ship the report",
+    prompt: "Write the weekly report",
+    projectId: project.id,
+    harness: "claude",
+    model: "claude:test",
+    modelSettings: {},
+    runtimeMode: "auto",
+    maxRunMinutes: 0,
+    // The reviewer has tests of its own.
+    review: false,
+    ...overrides,
+  });
+  const task = (id = "main") => tasks.list().find((entry) => entry.id === id)!;
+  const settled = (sessionId: string) =>
+    vi.waitFor(() => expect(store.session(sessionId).status).toBe("idle"));
+  /** Saves a task and starts it; later saves get a later creation time. */
+  const run = async (overrides: Record<string, unknown> = {}) => {
+    const saved = tasks.save(input(overrides));
+    clock.now += 1;
+    const started = turns.length + 1;
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(started));
+    return task(saved.id);
+  };
+  /** A minute later: settles what finished and lets its checks run. */
+  const advance = async () => {
+    clock.now += MINUTE;
+    await tasks.tick();
+    await tasks.idle();
+  };
+  /** Ends the latest turn cleanly, optionally with a reply, and settles it. */
+  const finish = async (sessionId: string, reply?: string) => {
+    const turn = turns.at(-1)!;
+    if (reply !== undefined) {
+      turn.input.onEvent({ type: "message.delta", text: reply });
+      turn.input.onEvent({ type: "message.completed" });
+    }
+    turn.finish();
+    await settled(sessionId);
+    await advance();
+  };
+  /** Runs a task to a clean finish, leaving it in review. `files` is what
+   * the agent leaves uncommitted in its working copy. */
+  const review = async (
+    overrides: Record<string, unknown> = {},
+    files: Record<string, string> = {},
+  ) => {
+    const started = await run(overrides);
+    for (const [name, text] of Object.entries(files))
+      writeFileSync(join(turns.at(-1)!.input.cwd, name), text);
+    await finish(started.sessionId!);
+    return task(started.id);
+  };
+  /** Runs a task to its reviewer, which is the latest turn afterwards. */
+  const reviewing = async (overrides: Record<string, unknown> = {}) => {
+    const started = await run({ review: true, ...overrides });
+    await finish(started.sessionId!);
+    await vi.waitFor(() =>
+      expect(turns.at(-1)!.input.text).toContain("VERDICT: PASS"),
+    );
+    return task(started.id);
+  };
+  return {
+    store,
+    engine,
+    provider,
+    turns,
+    clock,
+    tasks,
+    input,
+    task,
+    settled,
+    run,
+    review,
+    reviewing,
+    advance,
+    finish,
+    addProject,
+    addRepo,
+  };
+}
+
+describe("host tasks", () => {
+  it("queues a saved task and lists tasks oldest first", () => {
+    const { tasks, input, clock } = setup();
+    const first = tasks.save(input());
+    expect(first).toMatchObject({ status: "queued", createdAt: clock.now });
+    clock.now += 1;
+    const second = tasks.save(input({ id: "second" }));
+    expect(tasks.list()).toEqual([first, second]);
+  });
+
+  it("rejects a task for an unknown project", () => {
+    const { tasks, input } = setup();
+    expect(() => tasks.save(input({ projectId: "missing" }))).toThrow(
+      "Project is not registered on this machine",
+    );
+  });
+
+  it("starts a queued task in a session named after it and lands in review", async () => {
+    const { tasks, run, task, store, turns, settled, clock } = setup();
+    const started = await run();
+    expect(started).toMatchObject({ status: "running", startedAt: clock.now });
+    expect(store.session(started.sessionId!).session.title).toBe(
+      "Ship the report",
+    );
+    expect(turns[0].input.text).toBe("Write the weekly report");
+
+    turns[0].finish();
+    await settled(started.sessionId!);
+    clock.now += MINUTE;
+    await tasks.tick();
+    await tasks.idle();
+    expect(task()).toMatchObject({
+      status: "review",
+      completedAt: clock.now,
+      sessionId: started.sessionId,
+      verification: {},
+    });
+    expect(task().error).toBeUndefined();
+  });
+
+  it("blocks a task whose turn failed, with the agent error", async () => {
+    const { tasks, run, task, turns, settled, clock } = setup();
+    const started = await run();
+    turns[0].fail(new Error("Not signed in"));
+    await settled(started.sessionId!);
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(task()).toMatchObject({ status: "blocked", error: "Not signed in" });
+  });
+
+  it("stops a task that passes its time limit and blocks it", async () => {
+    const { tasks, run, task, provider, settled, clock } = setup();
+    const started = await run({ maxRunMinutes: 30 });
+
+    clock.now += 29 * MINUTE;
+    await tasks.tick();
+    expect(provider.cancel).not.toHaveBeenCalled();
+
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(provider.cancel).toHaveBeenCalledTimes(1);
+    await settled(started.sessionId!);
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(task()).toMatchObject({
+      status: "blocked",
+      error: "Stopped: reached the 30-minute time limit.",
+    });
+  });
+
+  it("blocks a task when the host restarted during it", async () => {
+    const { tasks, run, task, store, clock } = setup();
+    const started = await run();
+    const session = store.session(started.sessionId!);
+    store.save(
+      { ...session, revision: session.revision + 1, status: "interrupted" },
+      { type: "interrupted" },
+    );
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(task()).toMatchObject({
+      status: "blocked",
+      error: "The host stopped during this run.",
+    });
+  });
+
+  it("blocks a task whose turn was stopped from a desktop", async () => {
+    const { tasks, run, task, engine, settled, clock } = setup();
+    const started = await run();
+    engine.command({
+      type: "cancel",
+      commandId: "cancel-from-desktop",
+      sessionId: started.sessionId!,
+      runId: started.runId!,
+    });
+    await settled(started.sessionId!);
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(task()).toMatchObject({ status: "blocked", error: "Stopped by you." });
+  });
+
+  it("runs one task per project folder at a time", async () => {
+    const { tasks, input, run, task, turns, finish } = setup();
+    const first = await run();
+    tasks.save(input({ id: "second" }));
+    await tasks.tick();
+    expect(task("second").status).toBe("queued");
+    expect(turns).toHaveLength(1);
+
+    // The folder stays taken while the first task is verified.
+    await finish(first.sessionId!);
+    expect(task().status).toBe("review");
+    expect(task("second").status).toBe("queued");
+    await tasks.tick();
+    expect(task("second").status).toBe("running");
+  });
+
+  it("runs at most two tasks at once, oldest first", async () => {
+    const { tasks, input, task, turns, settled, clock, addProject, advance } =
+      setup();
+    expect(MAX_RUNNING_TASKS).toBe(2);
+    for (const id of ["a", "b", "c"]) {
+      tasks.save(input({ id, projectId: addProject(id).id }));
+      clock.now += 1;
+    }
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    expect(["a", "b", "c"].map((id) => task(id).status)).toEqual([
+      "running",
+      "running",
+      "queued",
+    ]);
+
+    turns[0].finish();
+    await settled(task("a").sessionId!);
+    // A task being verified still counts.
+    await advance();
+    expect(task("c").status).toBe("queued");
+    await tasks.tick();
+    expect(["a", "b", "c"].map((id) => task(id).status)).toEqual([
+      "review",
+      "running",
+      "running",
+    ]);
+  });
+
+  it("mirrors whether the running session is waiting on the user", async () => {
+    const { tasks, run, task, store, clock } = setup();
+    const started = await run();
+    expect(task().needsInput).toBeUndefined();
+    const ask = async (pendingQuestion?: {
+      requestId: number;
+      questions: [];
+    }) => {
+      const session = store.session(started.sessionId!);
+      store.save(
+        {
+          ...session,
+          revision: session.revision + 1,
+          session: { ...session.session, pendingQuestion },
+        },
+        { type: "question" },
+      );
+      clock.now += MINUTE;
+      await tasks.tick();
+    };
+    await ask({ requestId: 1, questions: [] });
+    expect(task()).toMatchObject({ status: "running", needsInput: true });
+    await ask(undefined);
+    expect(task().status).toBe("running");
+    expect(task().needsInput).toBeUndefined();
+  });
+
+  it("approves a reviewed task, and runs a reviewed or done one again", async () => {
+    const { tasks, review, task, turns } = setup();
+    const reviewed = await review();
+    expect((await tasks.move("main", "done")).status).toBe("done");
+
+    const again = await tasks.move("main", "queued");
+    expect(again.status).toBe("queued");
+    expect(again.sessionId).toBeUndefined();
+    expect(again.completedAt).toBeUndefined();
+    expect(again.verification).toBeUndefined();
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    expect(task().sessionId).not.toBe(reviewed.sessionId);
+    turns[1].finish();
+  });
+
+  it("sends a reviewed task back to the queue", async () => {
+    const { tasks, review } = setup();
+    await review();
+    expect((await tasks.move("main", "queued")).status).toBe("queued");
+  });
+
+  it("stops a running task and retries a blocked one in a fresh session", async () => {
+    const { tasks, run, task, provider, turns, settled } = setup();
+    const started = await run();
+    expect(await tasks.move("main", "blocked")).toMatchObject({
+      status: "blocked",
+      error: "Stopped by you.",
+    });
+    expect(provider.cancel).toHaveBeenCalledTimes(1);
+    await settled(started.sessionId!);
+    await tasks.tick();
+    expect(task().status).toBe("blocked");
+
+    const retried = await tasks.move("main", "queued");
+    expect(retried.status).toBe("queued");
+    expect(retried.error).toBeUndefined();
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    expect(task()).toMatchObject({ status: "running" });
+    expect(task().sessionId).not.toBe(started.sessionId);
+  });
+
+  it("refuses moves the board does not offer", async () => {
+    const { tasks, input, run, review } = setup();
+    tasks.save(input({ id: "waiting" }));
+    for (const to of [
+      "running",
+      "verifying",
+      "review",
+      "done",
+      "blocked",
+      "queued",
+    ])
+      await expect(tasks.move("waiting", to)).rejects.toThrow(
+        `A queued task cannot be moved to ${to}.`,
+      );
+    await tasks.delete("waiting");
+
+    await run();
+    for (const to of ["queued", "verifying", "review", "done"])
+      await expect(tasks.move("main", to)).rejects.toThrow(
+        `A running task cannot be moved to ${to}.`,
+      );
+    await tasks.move("main", "blocked");
+    for (const to of ["running", "verifying", "review", "done"])
+      await expect(tasks.move("main", to)).rejects.toThrow(
+        `A blocked task cannot be moved to ${to}.`,
+      );
+    await tasks.delete("main");
+
+    await review({ id: "reviewed" });
+    for (const to of ["running", "verifying", "blocked"])
+      await expect(tasks.move("reviewed", to)).rejects.toThrow(
+        `A review task cannot be moved to ${to}.`,
+      );
+    await tasks.move("reviewed", "done");
+    for (const to of ["running", "verifying", "review", "blocked"])
+      await expect(tasks.move("reviewed", to)).rejects.toThrow(
+        `A done task cannot be moved to ${to}.`,
+      );
+
+    await expect(tasks.move("reviewed", "archived")).rejects.toThrow(
+      "Invalid task status",
+    );
+    await expect(tasks.move("missing", "done")).rejects.toThrow(
+      "Task not found.",
+    );
+  });
+
+  it("edits a queued or blocked task but not a running or finished one", async () => {
+    const { tasks, input, run, review, task, addProject } = setup();
+    tasks.save(input({ verifyCommand: "npm test" }));
+    const other = addProject("other");
+    const edited = tasks.save(
+      input({ title: "Renamed", maxRunMinutes: 15, projectId: other.id }),
+    );
+    expect(edited).toMatchObject({
+      status: "queued",
+      title: "Renamed",
+      maxRunMinutes: 15,
+    });
+    // A check command left empty is removed.
+    expect(edited.verifyCommand).toBeUndefined();
+    // A task stays in the project it was created for.
+    expect(edited.projectId).toBe(input().projectId);
+
+    await run({ title: "Renamed" });
+    expect(() => tasks.save(input({ title: "Again" }))).toThrow(
+      "Stop this task before editing it.",
+    );
+    expect(task().title).toBe("Renamed");
+
+    await tasks.move("main", "blocked");
+    expect(tasks.save(input({ prompt: "Try again" }))).toMatchObject({
+      status: "blocked",
+      prompt: "Try again",
+      error: "Stopped by you.",
+    });
+    await tasks.delete("main");
+
+    await review({ id: "reviewed" });
+    expect(() => tasks.save(input({ id: "reviewed" }))).toThrow(
+      "Only a queued or blocked task can be edited.",
+    );
+  });
+
+  it("deletes any task that is not running", async () => {
+    const { tasks, run } = setup();
+    await run();
+    await expect(tasks.delete("main")).rejects.toThrow(
+      "Stop this task before deleting it.",
+    );
+    await tasks.move("main", "blocked");
+    await tasks.delete("main");
+    expect(tasks.list()).toEqual([]);
+  });
+});
+
+describe("a task on its own branch", () => {
+  it("runs in a new worktree and leaves the project checkout untouched", async () => {
+    const { run, addRepo, turns, store } = setup();
+    const repo = addRepo("repo");
+    const head = git(repo.cwd, "rev-parse", "HEAD");
+    const started = await run({ projectId: repo.id });
+    expect(started).toMatchObject({
+      status: "running",
+      baseBranch: "main",
+      baseCommit: head,
+    });
+    expect(started.branch).toMatch(/^mc\/[a-z0-9]{8}$/);
+    expect(started.worktreeCwd).not.toBe(repo.cwd);
+    expect(turns[0].input.cwd).toBe(started.worktreeCwd);
+    expect(store.session(started.sessionId!).session.cwd).toBe(
+      started.worktreeCwd,
+    );
+    expect(git(started.worktreeCwd!, "symbolic-ref", "--short", "HEAD")).toBe(
+      started.branch,
+    );
+    expect(git(repo.cwd, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    expect(git(repo.cwd, "rev-parse", "HEAD")).toBe(head);
+    expect(git(repo.cwd, "status", "--porcelain")).toBe("");
+  });
+
+  it("commits what the agent left uncommitted on the task branch", async () => {
+    const { review, addRepo } = setup();
+    const repo = addRepo("repo");
+    const head = git(repo.cwd, "rev-parse", "HEAD");
+    const reviewed = await review(
+      { projectId: repo.id },
+      { "report.md": "# Report\n", "file.txt": "changed\n" },
+    );
+    expect(reviewed.status).toBe("review");
+    expect(git(reviewed.worktreeCwd!, "status", "--porcelain")).toBe("");
+    expect(git(repo.cwd, "log", "-1", "--format=%s", reviewed.branch!)).toBe(
+      "Ship the report",
+    );
+    expect(reviewed.diffStat).toContain("report.md");
+    expect(reviewed.diffStat).toContain("2 files changed");
+    // Nothing reached the project.
+    expect(git(repo.cwd, "rev-parse", "HEAD")).toBe(head);
+    expect(git(repo.cwd, "status", "--porcelain")).toBe("");
+    expect(existsSync(join(repo.cwd, "report.md"))).toBe(false);
+    expect(readFileSync(join(repo.cwd, "file.txt"), "utf8")).toBe("initial\n");
+  });
+
+  it("runs several tasks of one project at once, each on its branch", async () => {
+    const { tasks, input, task, turns, addRepo, clock } = setup();
+    const repo = addRepo("repo");
+    for (const id of ["a", "b"]) {
+      tasks.save(input({ id, projectId: repo.id }));
+      clock.now += 1;
+    }
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    expect(task("a").status).toBe("running");
+    expect(task("b").status).toBe("running");
+    expect(task("a").branch).not.toBe(task("b").branch);
+  });
+
+  it("runs in the project folder when not isolated or not a git project", async () => {
+    const { run, review, addRepo, turns } = setup();
+    const repo = addRepo("repo");
+    const inPlace = await review(
+      { projectId: repo.id, isolate: false },
+      { "report.md": "# Report\n" },
+    );
+    expect(turns[0].input.cwd).toBe(repo.cwd);
+    expect(inPlace.status).toBe("review");
+    expect(inPlace.branch).toBeUndefined();
+    expect(inPlace.diffStat).toBeUndefined();
+    // The host never commits in the project checkout.
+    expect(git(repo.cwd, "status", "--porcelain")).toBe("?? report.md");
+
+    const plain = await run({ id: "plain", isolate: true });
+    expect(plain.status).toBe("running");
+    expect(plain.branch).toBeUndefined();
+    expect(plain.worktreeCwd).toBeUndefined();
+  });
+
+  it("blocks a task when the project is not on a branch", async () => {
+    const { tasks, input, task, addRepo, turns } = setup();
+    const repo = addRepo("repo");
+    git(repo.cwd, "checkout", "-q", "--detach");
+    tasks.save(input({ projectId: repo.id }));
+    await tasks.tick();
+    expect(task().status).toBe("blocked");
+    expect(task().error).toContain("not on a branch");
+    expect(turns).toHaveLength(0);
+  });
+
+  it("merges an approved task into its base branch and cleans up", async () => {
+    const { tasks, review, addRepo } = setup();
+    const repo = addRepo("repo");
+    const reviewed = await review(
+      { projectId: repo.id },
+      { "report.md": "# Report\n" },
+    );
+    const done = await tasks.move("main", "done");
+    expect(done).toMatchObject({
+      status: "done",
+      merged: true,
+      branch: reviewed.branch,
+    });
+    expect(done.worktreeCwd).toBeUndefined();
+    expect(readFileSync(join(repo.cwd, "report.md"), "utf8")).toBe("# Report\n");
+    expect(git(repo.cwd, "symbolic-ref", "--short", "HEAD")).toBe("main");
+    // A merge commit, not a fast-forward.
+    expect(git(repo.cwd, "rev-list", "--parents", "-1", "HEAD").split(" "))
+      .toHaveLength(3);
+    expect(git(repo.cwd, "branch", "--list", "mc/*")).toBe("");
+    expect(existsSync(reviewed.worktreeCwd!)).toBe(false);
+
+    // A merged task is deleted without discarding anything, and runs again on
+    // a new branch.
+    const again = await tasks.move("main", "queued");
+    expect(again.branch).toBeUndefined();
+    expect(again.merged).toBeUndefined();
+    await tasks.delete("main");
+    expect(tasks.list()).toEqual([]);
+  });
+
+  it("keeps a task in review when the project is dirty or on another branch", async () => {
+    const { tasks, review, task, addRepo } = setup();
+    const repo = addRepo("repo");
+    const reviewed = await review(
+      { projectId: repo.id },
+      { "report.md": "# Report\n" },
+    );
+    const head = git(repo.cwd, "rev-parse", "HEAD");
+
+    writeFileSync(join(repo.cwd, "file.txt"), "edited by the owner\n");
+    await expect(tasks.move("main", "done")).rejects.toThrow(
+      "The project has uncommitted changes.",
+    );
+    expect(task().status).toBe("review");
+    expect(task().mergeError).toContain("uncommitted changes");
+    expect(readFileSync(join(repo.cwd, "file.txt"), "utf8")).toBe(
+      "edited by the owner\n",
+    );
+    git(repo.cwd, "checkout", "-q", "--", "file.txt");
+
+    git(repo.cwd, "checkout", "-q", "-b", "other");
+    await expect(tasks.move("main", "done")).rejects.toThrow(
+      "The project is on other. Check out main there, then merge again.",
+    );
+    expect(task().status).toBe("review");
+    expect(git(repo.cwd, "rev-parse", "HEAD")).toBe(head);
+    expect(git(repo.cwd, "rev-parse", "--verify", reviewed.branch!)).toBeTruthy();
+    expect(existsSync(reviewed.worktreeCwd!)).toBe(true);
+
+    git(repo.cwd, "checkout", "-q", "main");
+    const done = await tasks.move("main", "done");
+    expect(done.status).toBe("done");
+    expect(done.mergeError).toBeUndefined();
+    expect(existsSync(join(repo.cwd, "report.md"))).toBe(true);
+  });
+
+  it("aborts a conflicting merge and keeps the task in review", async () => {
+    const { tasks, review, task, addRepo } = setup();
+    const repo = addRepo("repo");
+    const reviewed = await review(
+      { projectId: repo.id },
+      { "file.txt": "from the agent\n" },
+    );
+    writeFileSync(join(repo.cwd, "file.txt"), "from the owner\n");
+    git(repo.cwd, "commit", "-q", "-am", "owner");
+    const head = git(repo.cwd, "rev-parse", "HEAD");
+
+    await expect(tasks.move("main", "done")).rejects.toThrow(
+      `${reviewed.branch} conflicts with main in file.txt. Nothing was merged.`,
+    );
+    expect(task().status).toBe("review");
+    expect(task().mergeError).toContain("conflicts with main");
+    expect(git(repo.cwd, "rev-parse", "HEAD")).toBe(head);
+    expect(git(repo.cwd, "status", "--porcelain")).toBe("");
+    expect(readFileSync(join(repo.cwd, "file.txt"), "utf8")).toBe(
+      "from the owner\n",
+    );
+    expect(git(repo.cwd, "log", "-1", "--format=%s", reviewed.branch!)).toBe(
+      "Ship the report",
+    );
+    expect(existsSync(reviewed.worktreeCwd!)).toBe(true);
+  });
+
+  it("deletes an unmerged task only when told to discard its branch", async () => {
+    const { tasks, review, addRepo } = setup();
+    const repo = addRepo("repo");
+    const reviewed = await review(
+      { projectId: repo.id },
+      { "report.md": "# Report\n" },
+    );
+    await expect(tasks.delete("main")).rejects.toThrow(
+      `This task’s work is on ${reviewed.branch} and was never merged.`,
+    );
+    expect(tasks.list()).toHaveLength(1);
+    expect(git(repo.cwd, "branch", "--list", "mc/*")).toContain(reviewed.branch);
+    expect(existsSync(reviewed.worktreeCwd!)).toBe(true);
+
+    await tasks.delete("main", true);
+    expect(tasks.list()).toEqual([]);
+    expect(git(repo.cwd, "branch", "--list", "mc/*")).toBe("");
+    expect(existsSync(reviewed.worktreeCwd!)).toBe(false);
+    expect(existsSync(join(repo.cwd, "report.md"))).toBe(false);
+  });
+
+  it("retries on the same branch, keeping the earlier work", async () => {
+    const { tasks, review, task, turns, addRepo, finish } = setup();
+    const repo = addRepo("repo");
+    const reviewed = await review(
+      { projectId: repo.id },
+      { "report.md": "# Report\n" },
+    );
+    const queued = await tasks.move("main", "queued");
+    expect(queued).toMatchObject({
+      status: "queued",
+      branch: reviewed.branch,
+      worktreeCwd: reviewed.worktreeCwd,
+      baseCommit: reviewed.baseCommit,
+    });
+    expect(queued.diffStat).toBeUndefined();
+
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    expect(task()).toMatchObject({ status: "running", branch: reviewed.branch });
+    expect(task().sessionId).not.toBe(reviewed.sessionId);
+    expect(turns[1].input.cwd).toBe(reviewed.worktreeCwd);
+    expect(existsSync(join(reviewed.worktreeCwd!, "report.md"))).toBe(true);
+
+    writeFileSync(join(reviewed.worktreeCwd!, "notes.md"), "More\n");
+    await finish(task().sessionId!);
+    expect(task().status).toBe("review");
+    expect(task().diffStat).toContain("report.md");
+    expect(task().diffStat).toContain("notes.md");
+    expect(git(repo.cwd, "branch", "--list", "mc/*").split("\n")).toHaveLength(1);
+  });
+});
+
+describe("task verification", () => {
+  it(
+    "moves to review when the check command passes, running it once",
+    async () => {
+      const { tasks, run, task, turns, settled, clock, store } = setup();
+      const started = await run({
+        verifyCommand:
+          "node -e \"require('fs').appendFileSync('runs.txt', 'x')\"",
+      });
+      turns[0].finish();
+      await settled(started.sessionId!);
+      clock.now += MINUTE;
+      await tasks.tick();
+      // A tick during the check does not start it again.
+      await tasks.tick();
+      expect(task().status).toBe("verifying");
+      await tasks.idle();
+      await tasks.tick();
+      await tasks.idle();
+      expect(task()).toMatchObject({
+        status: "review",
+        verification: { command: { exitCode: 0, timedOut: false } },
+      });
+      expect(
+        readFileSync(
+          join(store.project(started.projectId).cwd, "runs.txt"),
+          "utf8",
+        ),
+      ).toBe("x");
+    },
+    SHELL_TEST_MS,
+  );
+
+  it(
+    "blocks a task whose check command fails, keeping its output",
+    async () => {
+      const { review, addRepo } = setup();
+      const repo = addRepo("repo");
+      const blocked = await review(
+        {
+          projectId: repo.id,
+          verifyCommand: "node -e \"console.log('boom'); process.exit(3)\"",
+        },
+        { "report.md": "# Report\n" },
+      );
+      expect(blocked.status).toBe("blocked");
+      expect(blocked.error).toMatch(
+        /^The check command failed \(exit code \d+\)\.$/,
+      );
+      expect(blocked.verification!.command).toMatchObject({ timedOut: false });
+      expect(blocked.verification!.command!.exitCode).not.toBe(0);
+      expect(blocked.verification!.command!.output).toContain("boom");
+      // The work is still on its branch.
+      expect(git(repo.cwd, "log", "-1", "--format=%s", blocked.branch!)).toBe(
+        "Ship the report",
+      );
+      expect(existsSync(blocked.worktreeCwd!)).toBe(true);
+    },
+    SHELL_TEST_MS,
+  );
+
+  it(
+    "blocks a task whose check command runs past its time limit",
+    async () => {
+      const { review } = setup(1500);
+      const blocked = await review({
+        verifyCommand: "node -e \"setTimeout(() => {}, 60000)\"",
+      });
+      expect(blocked).toMatchObject({
+        status: "blocked",
+        error: "The check command timed out.",
+        verification: { command: { exitCode: null, timedOut: true } },
+      });
+    },
+    SHELL_TEST_MS,
+  );
+
+  it("moves to review when the reviewer passes the work", async () => {
+    const { reviewing, task, turns, store, finish, addRepo } = setup();
+    const repo = addRepo("repo");
+    const verifying = await reviewing({ projectId: repo.id });
+    expect(verifying.status).toBe("verifying");
+    const reviewer = verifying.reviewer!.sessionId!;
+    expect(reviewer).not.toBe(verifying.sessionId);
+    expect(store.session(reviewer).session).toMatchObject({
+      title: "Review: Ship the report",
+      cwd: verifying.worktreeCwd,
+      model: "claude:test",
+    });
+    const prompt = turns[1].input.text;
+    expect(prompt).toContain("Task: Ship the report");
+    expect(prompt).toContain("Write the weekly report");
+    expect(prompt).toContain(`git diff ${verifying.baseCommit}`);
+
+    await finish(reviewer, "The report covers the week.\n\nVERDICT: PASS");
+    expect(task()).toMatchObject({
+      status: "review",
+      verification: {
+        review: { verdict: "pass", note: "", sessionId: reviewer },
+      },
+    });
+    expect(task().reviewer).toBeUndefined();
+  });
+
+  it("blocks a task the reviewer fails, with its reason", async () => {
+    const { reviewing, task, turns, finish } = setup();
+    const verifying = await reviewing();
+    // Not on a branch: the reviewer looks at the uncommitted changes.
+    expect(turns[1].input.text).toContain("the uncommitted changes");
+    await finish(
+      verifying.reviewer!.sessionId!,
+      "Looked at it.\nVERDICT: FAIL - The report skips Friday.",
+    );
+    expect(task()).toMatchObject({
+      status: "blocked",
+      error: "Review failed: The report skips Friday.",
+      verification: {
+        review: { verdict: "fail", note: "The report skips Friday." },
+      },
+    });
+  });
+
+  it("blocks a task whose reviewer gave no verdict", async () => {
+    const { reviewing, task, finish } = setup();
+    const verifying = await reviewing();
+    await finish(verifying.reviewer!.sessionId!, "Looks fine to me.");
+    expect(task()).toMatchObject({
+      status: "blocked",
+      error: "Review failed: Reviewer gave no verdict",
+      verification: { review: { verdict: "fail" } },
+    });
+  });
+
+  it("holds the reviewer to the task's time limit", async () => {
+    const { tasks, reviewing, task, provider, settled, clock, advance } =
+      setup();
+    const verifying = await reviewing({ maxRunMinutes: 30 });
+    clock.now += 29 * MINUTE;
+    await tasks.tick();
+    expect(provider.cancel).not.toHaveBeenCalled();
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(provider.cancel).toHaveBeenCalledTimes(1);
+    await settled(verifying.reviewer!.sessionId!);
+    await advance();
+    expect(task()).toMatchObject({
+      status: "blocked",
+      error: "Review failed: Stopped: reached the 30-minute time limit.",
+    });
+  });
+
+  it("stops a task that is being verified", async () => {
+    const { tasks, reviewing, task, provider, settled, advance } = setup();
+    const verifying = await reviewing();
+    expect(await tasks.move("main", "blocked")).toMatchObject({
+      status: "blocked",
+      error: "Stopped by you.",
+    });
+    expect(provider.cancel).toHaveBeenCalledTimes(1);
+    await settled(verifying.reviewer!.sessionId!);
+    await advance();
+    expect(task().status).toBe("blocked");
+  });
+});

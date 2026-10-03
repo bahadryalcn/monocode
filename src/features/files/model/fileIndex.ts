@@ -214,7 +214,7 @@ export async function resolveOpenablePath(
   const fresh = await loadProjectFiles(cwd, true).catch(() => files);
   return (
     indexedFile(fresh, cwd, direct, relHint) ??
-    (await findInIgnoredFolders(cwd, relHint)) ??
+    (await findInIgnoredFolders(cwd, searchHint(relHint))) ??
     direct
   );
 }
@@ -263,6 +263,15 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return true;
   }
+}
+
+/**
+ * A path outside `cwd` (a remote path, or a drive path) can't be matched as a
+ * suffix of a folder entry, so only its file name is searched for.
+ */
+function searchHint(relHint: string): string {
+  if (!relHint.includes("://") && !/^[A-Za-z]:\//.test(relHint)) return relHint;
+  return relHint.split("/").filter(Boolean).pop() ?? "";
 }
 
 const IGNORED_SEARCH_MAX_FOLDERS = 40;

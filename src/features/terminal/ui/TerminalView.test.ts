@@ -168,7 +168,7 @@ it("does not hold a different terminal behind another one's teardown", async () 
       );
     });
     expect(pty.spawnPty).toHaveBeenCalledTimes(2);
-    expect(pty.spawnPty).toHaveBeenLastCalledWith("second", "/tmp", 80, 24);
+    expect(pty.spawnPty).toHaveBeenLastCalledWith("second", "/tmp", 80, 24, undefined);
   } finally {
     await act(async () => {
       root.unmount();

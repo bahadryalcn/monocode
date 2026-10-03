@@ -127,13 +127,15 @@ function release() {
   }, 500);
 }
 
+/** `profile` is a terminal profile id; without one the system default shell starts. */
 export async function spawnPty(
   id: string,
   cwd: string,
   cols: number,
   rows: number,
+  profile?: string,
 ): Promise<void> {
-  await invoke("pty_spawn", { id, cwd, cols, rows });
+  await invoke("pty_spawn", { id, cwd, cols, rows, profile: profile ?? null });
 }
 
 export async function writePty(id: string, data: string): Promise<void> {

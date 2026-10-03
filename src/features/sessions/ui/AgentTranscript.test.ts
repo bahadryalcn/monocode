@@ -24,6 +24,39 @@ function render(
   );
 }
 
+describe("AgentTranscript shell commands", () => {
+  const shell = (id: string, shell: Block["shell"]): Block => ({
+    id,
+    role: "system",
+    text: "",
+    shell,
+  });
+
+  it("shows a command the user ran and its output, before any message", () => {
+    const markup = render([
+      shell("run", { command: "git status", output: "nothing to commit\n", exitCode: 0 }),
+    ]);
+    expect(markup).toContain("data-shell-run");
+    expect(markup).toContain("git status");
+    expect(markup).toContain("nothing to commit");
+    expect(markup).not.toContain("exit 0");
+  });
+
+  it("keeps the command visible after a settled turn and marks a failure", () => {
+    const markup = render([
+      { id: "user", role: "user", text: "Inspect", startedAt: 1_000, durationMs: 2_000 },
+      tool("a"),
+      { id: "answer", role: "assistant", text: "Done" },
+      shell("run", { command: "npm test", output: "1 failed", exitCode: 1 }),
+      shell("slow", { command: "sleep 500", output: "", exitCode: null, timedOut: true }),
+    ]);
+    expect(markup).toContain("npm test");
+    expect(markup).toContain("1 failed");
+    expect(markup).toContain("exit 1");
+    expect(markup).toContain("timed out");
+  });
+});
+
 describe("AgentTranscript collapsed work", () => {
   it("keeps the completed time beside actions when a turn has no BTW control", () => {
     const markup = render([

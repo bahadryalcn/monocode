@@ -681,6 +681,7 @@ describe("settings navigation", () => {
       "connections",
       "appearance",
       "keybindings",
+      "terminal",
       "chat",
       "providers",
       "mcp",

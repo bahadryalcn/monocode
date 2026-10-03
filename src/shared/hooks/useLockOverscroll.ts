@@ -25,7 +25,7 @@ export function atScrollEdge(el: Edges, e: Delta): boolean {
     canScrollX &&
     el.scrollLeft + el.clientWidth >= el.scrollWidth - 1 &&
     e.deltaX > 0;
-  return atTop || atBottom || atLeft || atRight;
+  return (atTop || atBottom || atLeft || atRight) && !hasScrollRoom(el, e);
 }
 
 /** The scroller still has somewhere to go in the direction of the wheel. */
@@ -73,6 +73,7 @@ function innerScrollerTakes(el: HTMLElement, e: WheelEvent): boolean {
  */
 export function lockOverscroll(el: HTMLElement): () => void {
   const onWheel = (e: WheelEvent) => {
+    if (e.defaultPrevented || e.ctrlKey || e.shiftKey) return;
     if (!atScrollEdge(el, e)) return;
     if (innerScrollerTakes(el, e)) return;
     e.preventDefault();

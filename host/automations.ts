@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   automationLimits,
   dailyRunLimitSkip,
-  runLimitBreach,
 } from "../src/features/automations/model/automationLimits";
 import { nextAutomationRunAt } from "../src/features/automations/model/automationSchedule";
 import {
@@ -10,7 +9,13 @@ import {
   type HostAutomation,
   type HostAutomationRun,
 } from "../src/features/automations/model/hostAutomations";
-import type { HostEngine } from "./engine";
+import {
+  cancelSessionRun,
+  errorMessage,
+  launchSessionRun,
+  sessionRunState,
+  type SessionRunEngine,
+} from "./sessionRuns";
 import type { HostStore } from "./store";
 
 const TICK_MS = 30_000;
@@ -20,7 +25,6 @@ const MISSED_RUN_GRACE_MS = 12 * 60 * 60_000;
 
 export const MISSED_RUN_SKIP = "Skipped: missed while this machine was off.";
 export const PREVIOUS_RUN_SKIP = "Skipped: the previous run is still going.";
-const STOPPED_BY_USER = "Stopped by you.";
 
 /** Runs saved automations on this machine's own clock, so they keep going
  * with no desktop open. Each run is an ordinary host session. */
@@ -29,7 +33,7 @@ export class HostAutomations {
 
   constructor(
     private readonly store: HostStore,
-    private readonly engine: Pick<HostEngine, "command" | "updateSession">,
+    private readonly engine: SessionRunEngine,
     private readonly now: () => number = Date.now,
   ) {
     store.db.exec(`
@@ -79,6 +83,7 @@ export class HostAutomations {
       lastRunStatus: previous?.lastRunStatus,
       lastRunError: previous?.lastRunError,
       lastSessionId: previous?.lastSessionId,
+      needsInput: previous?.needsInput,
       createdAt: previous?.createdAt ?? now,
       updatedAt: now,
     });
@@ -102,7 +107,7 @@ export class HostAutomations {
       try {
         this.settle(run, now);
       } catch (error) {
-        console.error("Could not settle an automation run:", message(error));
+        console.error("Could not settle an automation run:", errorMessage(error));
       }
     }
     for (const automation of this.list()) {
@@ -118,7 +123,7 @@ export class HostAutomations {
           this.finish(run, "skipped", MISSED_RUN_SKIP, now);
         else this.launch(due, run, now);
       } catch (error) {
-        console.error("Could not start an automation:", message(error));
+        console.error("Could not start an automation:", errorMessage(error));
       }
     }
   }
@@ -183,78 +188,56 @@ export class HostAutomations {
         ? null
         : dailyRunLimitSkip(automationLimits(automation), history, run.id, now);
     if (skip) return this.finish(run, "skipped", skip, now);
-    let sessionId: string | undefined;
-    try {
-      sessionId = this.engine.command({
-        type: "create",
-        commandId: randomUUID(),
-        projectId: automation.projectId,
-        harness: automation.harness,
-        model: automation.model,
-        modelSettings: automation.modelSettings,
-        runtimeMode: automation.runtimeMode,
-      }).sessionId;
-      this.engine.updateSession(sessionId, { title: automation.name });
-      this.engine.command({
-        type: "send",
-        commandId: randomUUID(),
-        sessionId,
-        text: automation.prompt,
-      });
-      return this.writeRun({
-        ...run,
-        status: "running",
-        startedAt: now,
-        sessionId,
-        runId: this.store.session(sessionId).runId,
-      });
-    } catch (error) {
-      return this.finish({ ...run, sessionId }, "failed", message(error), now);
-    }
+    const started = launchSessionRun(this.store, this.engine, {
+      projectId: automation.projectId,
+      harness: automation.harness,
+      model: automation.model,
+      modelSettings: automation.modelSettings,
+      runtimeMode: automation.runtimeMode,
+      title: automation.name,
+      prompt: automation.prompt,
+    });
+    if (started.error !== undefined)
+      return this.finish(
+        { ...run, sessionId: started.sessionId },
+        "failed",
+        started.error,
+        now,
+      );
+    return this.writeRun({
+      ...run,
+      status: "running",
+      startedAt: now,
+      sessionId: started.sessionId,
+      runId: started.runId,
+    });
   }
 
   private settle(run: HostAutomationRun, now: number): void {
-    let session;
-    try {
-      session = this.store.session(run.sessionId ?? "");
-    } catch {
-      this.finish(run, "failed", "The run's session was deleted.", now);
+    const automation = this.find(run.automationId);
+    const outcome = sessionRunState(
+      this.store,
+      { ...run, startedAt: run.startedAt ?? run.createdAt },
+      automation ? automationLimits(automation).maxRunMinutes : 0,
+      now,
+    );
+    if (outcome.state === "running") {
+      if (outcome.needsInput !== Boolean(run.needsInput)) {
+        const needsInput = outcome.needsInput || undefined;
+        this.writeRun({ ...run, needsInput });
+        // Also on the automation, so a desktop sees it without asking for runs.
+        if (automation) this.write({ ...automation, needsInput });
+      }
       return;
     }
-    if (session.status === "running" && session.runId === run.runId) {
-      const automation = this.find(run.automationId);
-      const breach =
-        !run.error && automation
-          ? runLimitBreach(automationLimits(automation), {
-              startedAt: run.startedAt ?? run.createdAt,
-              now,
-            })
-          : null;
-      if (!breach) return;
+    if (outcome.state === "overLimit") {
       // The reason is saved first: the turn settles asynchronously, and a
       // later tick records it as the run's outcome.
-      this.writeRun({ ...run, error: breach });
-      this.engine.command({
-        type: "cancel",
-        commandId: randomUUID(),
-        sessionId: session.session.id,
-        runId: run.runId,
-      });
+      this.writeRun({ ...run, error: outcome.error });
+      cancelSessionRun(this.engine, run);
       return;
     }
-    if (run.error) {
-      this.finish(run, "failed", run.error, now);
-    } else if (session.status === "interrupted") {
-      this.finish(run, "failed", "The host stopped during this run.", now);
-    } else {
-      // The host ends a failed or stopped turn with a system note.
-      const last = session.session.blocks.at(-1);
-      const note = last?.role === "system" ? last.text.trim() : "";
-      if (!note) this.finish(run, "succeeded", undefined, now);
-      else if (note === STOPPED_BY_USER)
-        this.finish(run, "cancelled", undefined, now);
-      else this.finish(run, "failed", note, now);
-    }
+    this.finish(run, outcome.status, outcome.error, now);
   }
 
   private finish(
@@ -268,6 +251,7 @@ export class HostAutomations {
       status,
       completedAt: now,
       error: error || undefined,
+      needsInput: undefined,
     });
     const automation = this.find(run.automationId);
     if (automation)
@@ -277,6 +261,7 @@ export class HostAutomations {
         lastRunStatus: status,
         lastRunError: finished.error,
         lastSessionId: finished.sessionId ?? automation.lastSessionId,
+        needsInput: undefined,
       });
     this.store.db
       .prepare(
@@ -285,8 +270,4 @@ export class HostAutomations {
       .run(run.automationId, run.automationId, MAX_RUNS_PER_AUTOMATION);
     return finished;
   }
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

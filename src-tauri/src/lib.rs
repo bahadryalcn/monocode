@@ -47,6 +47,7 @@ mod skills;
 pub mod ssh_askpass;
 #[cfg(target_os = "windows")]
 mod tray;
+mod terminal_profiles;
 mod turn_probe;
 mod turn_steps;
 mod window;
@@ -491,6 +492,9 @@ pub fn run() {
             harness::harness_sse_open,
             harness::harness_sse_close,
             harness::harness_exec,
+            harness::run_shell_command,
+            terminal_profiles::terminal_profiles,
+            terminal_profiles::set_terminal_profile,
             harness_updates::harness_latest_version,
             harness_updates::harness_update_check_claim,
             harness_updates::harness_update,

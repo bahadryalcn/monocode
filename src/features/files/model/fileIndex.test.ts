@@ -120,6 +120,34 @@ describe("resolveOpenablePath", () => {
     await expect(resolveOpenablePath(cwd, "summary.pdf")).resolves.toBe(pdf);
   });
 
+  it("finds an ignored file on a remote machine from an absolute remote path", async () => {
+    const remote = "remote://env1/Users/me/project";
+    const png = `${remote}/Screenshots/lumisqa/ui.png`;
+    const entry = (path: string, isDir: boolean, ignored: boolean) => ({
+      name: path.split("/").pop()!,
+      path,
+      isDir,
+      ignored,
+    });
+    list.mockResolvedValue([
+      { name: "a.ts", path: `${remote}/a.ts`, relative: "a.ts" },
+    ]);
+    stat.mockResolvedValue([{ path: `${remote}/ui.png`, mtimeMs: null }]);
+    dir.mockImplementation(async (path) => {
+      if (path === remote) return [entry(`${remote}/Screenshots`, true, true)];
+      if (path === `${remote}/Screenshots`)
+        return [entry(`${remote}/Screenshots/lumisqa`, true, true)];
+      if (path === `${remote}/Screenshots/lumisqa`)
+        return [entry(png, false, false)];
+      throw new Error(`unexpected listing of ${path}`);
+    });
+    await expect(resolveOpenablePath(remote, `${remote}/ui.png`)).resolves.toBe(png);
+    // The session's folder need not be the project root the path sits under.
+    await expect(
+      resolveOpenablePath(`${remote}/Screenshots`, `${remote}/ui.png`),
+    ).resolves.toBe(png);
+  });
+
   it("finds a file created after the index was read", async () => {
     const created: ProjectFile = {
       name: "new.ts",

@@ -887,4 +887,71 @@ describe("remote host API", () => {
     expect(finalGroup.value).toEqual(winning.value);
     expect(finalGroup.value.name).toBe("From B");
   });
+
+  it("answers the task board commands, advertised as a capability", async () => {
+    const s = await setup();
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toContain("tasks");
+    const task = {
+      id: "main",
+      title: "Ship the report",
+      prompt: "Write the weekly report",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "auto",
+    };
+    const saved = await s.call("tasks.save", { task });
+    expect(saved.value.result).toMatchObject({ id: "main", status: "queued" });
+    expect((await s.call("tasks.list")).value.result).toEqual([
+      saved.value.result,
+    ]);
+    const refused = await s.call("tasks.move", { taskId: "main", to: "done" });
+    expect(refused.value.error).toBe("A queued task cannot be moved to done.");
+    expect(
+      (await s.call("tasks.delete", { taskId: "main" })).value.result,
+    ).toEqual({ deleted: true });
+    expect((await s.call("tasks.list")).value.result).toEqual([]);
+  });
+
+  it("answers the goal commands, advertised as a capability", async () => {
+    const s = await setup();
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toContain("goals");
+    const goal = {
+      id: "launch",
+      title: "Launch the beta",
+      prompt: "Ship the beta",
+      projectIds: [s.project.id],
+      leadProjectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "auto",
+    };
+    const created = await s.call("goals.create", { goal });
+    expect(created.value.result).toMatchObject({
+      id: "launch",
+      status: "planning",
+      taskIds: [],
+    });
+    expect((await s.call("goals.list")).value.result).toMatchObject([
+      { id: "launch", status: "planning" },
+    ]);
+    const refused = await s.call("goals.approve", { goalId: "launch" });
+    expect(refused.value.error).toBe(
+      "Only a plan waiting for approval can be approved.",
+    );
+    expect(
+      (await s.call("goals.replan", { goalId: "launch" })).value.error,
+    ).toBe("Only a goal whose plan was not started can be planned again.");
+    expect(
+      (await s.call("goals.cancel", { goalId: "launch" })).value.result,
+    ).toMatchObject({ status: "cancelled" });
+    expect(
+      (await s.call("goals.delete", { goalId: "launch" })).value.result,
+    ).toEqual({ deleted: true });
+    expect((await s.call("goals.list")).value.result).toEqual([]);
+  });
 });

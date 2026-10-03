@@ -23,6 +23,120 @@ import {
 } from "./workspace";
 
 const roots: string[] = [];
+
+function reviewRepo() {
+  const root = mkdtempSync(join(tmpdir(), "monocode-git-regression-"));
+  roots.push(root);
+  execFileSync("git", ["init", "-q"], { cwd: root, windowsHide: true });
+  execFileSync("git", ["config", "core.autocrlf", "false"], {
+    cwd: root,
+    windowsHide: true,
+  });
+  return root;
+}
+
+function reviewGit(root: string, ...args: string[]) {
+  return execFileSync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    windowsHide: true,
+  }).trim();
+}
+
+it("stages, unstages and discards literal paths without touching matching names", async () => {
+  const root = reviewRepo();
+  for (const file of ["a[1].txt", "a1.txt"])
+    writeFileSync(join(root, file), "old\n");
+  reviewGit(root, "add", ".");
+  reviewGit(
+    root,
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.com",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-qm",
+    "initial",
+  );
+  for (const file of ["a[1].txt", "a1.txt"])
+    writeFileSync(join(root, file), "new\n");
+  await hostGitAction(root, "stage", "a[1].txt");
+  expect(reviewGit(root, "diff", "--cached", "--name-only")).toBe("a[1].txt");
+  reviewGit(root, "add", ".");
+  await hostGitAction(root, "unstage", "a[1].txt");
+  expect(reviewGit(root, "diff", "--cached", "--name-only")).toBe("a1.txt");
+  writeFileSync(join(root, "a1.txt"), "keep me\n");
+  await hostGitAction(root, "discard", "a[1].txt");
+  expect(await readHostFile(root, "a[1].txt")).toBe("old\n");
+  expect(await readHostFile(root, "a1.txt")).toBe("keep me\n");
+});
+
+it("unstages files before the first commit without deleting disk contents", async () => {
+  const root = reviewRepo();
+  writeFileSync(join(root, "a.txt"), "a\n");
+  writeFileSync(join(root, "b.txt"), "b\n");
+  reviewGit(root, "add", ".");
+  await hostGitAction(root, "unstage", "a.txt");
+  expect(reviewGit(root, "ls-files")).toBe("b.txt");
+  await hostGitAction(root, "unstageAll");
+  await hostGitAction(root, "unstageAll");
+  expect(reviewGit(root, "ls-files")).toBe("");
+  expect(await readHostFile(root, "a.txt")).toBe("a\n");
+  expect(await readHostFile(root, "b.txt")).toBe("b\n");
+});
+
+it("pushes to the configured upstream and supports a first push without origin", async () => {
+  const root = reviewRepo();
+  const remote = reviewRepo();
+  const origin = reviewRepo();
+  reviewGit(remote, "config", "core.bare", "true");
+  reviewGit(origin, "config", "core.bare", "true");
+  writeFileSync(join(root, "a.txt"), "one\n");
+  reviewGit(root, "add", ".");
+  reviewGit(
+    root,
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.com",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-qm",
+    "initial",
+  );
+  reviewGit(root, "branch", "-M", "topic");
+  reviewGit(root, "remote", "add", "upstream", remote);
+  await hostGitAction(root, "push");
+  expect(reviewGit(root, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe(
+    "upstream/topic",
+  );
+  reviewGit(root, "remote", "add", "origin", origin);
+  writeFileSync(join(root, "a.txt"), "two\n");
+  reviewGit(root, "add", ".");
+  reviewGit(
+    root,
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@example.com",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "-qm",
+    "next",
+  );
+  await hostGitAction(root, "push");
+  expect(reviewGit(remote, "rev-parse", "refs/heads/topic")).toBe(
+    reviewGit(root, "rev-parse", "HEAD"),
+  );
+  expect(reviewGit(root, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe(
+    "upstream/topic",
+  );
+  expect(reviewGit(origin, "for-each-ref", "refs/heads")).toBe("");
+});
 afterEach(() => {
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
@@ -39,7 +153,9 @@ it("reports a broken Git index instead of searching ignored files", async () => 
 });
 
 it("lists host files and rejects paths escaping the project", async () => {
-  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "monocode-workspace-")));
+  const root = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "monocode-workspace-")),
+  );
   roots.push(root);
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "app.ts"), "source\n");

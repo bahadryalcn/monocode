@@ -1224,11 +1224,9 @@ pub async fn git_stage_all(cwd: String) -> Result<(), String> {
 /// Unstage every staged file.
 #[tauri::command]
 pub async fn git_unstage_all(cwd: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        git_checked(&expand_home(&cwd), &["restore", "--staged", "--", "."])
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || git_unstage_all_for(&expand_home(&cwd)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -3141,7 +3139,7 @@ pub(crate) fn git_stage_all_for(root: &Path) -> Result<(), String> {
 
 pub(crate) fn git_stage_file_for(root: &Path, relative: &str) -> Result<(), String> {
     let relative = resolve_repo_path(root, relative)?;
-    git_checked(root, &["add", "--", &relative])
+    git_checked(root, &["--literal-pathspecs", "add", "--", &relative])
 }
 
 fn git_stage_contents_for(root: &Path, relative: &str, contents: &[u8]) -> Result<(), String> {
@@ -3217,21 +3215,82 @@ fn git_hash_object(root: &Path, relative: &str, contents: &[u8]) -> Result<Strin
 
 fn git_unstage_file_for(root: &Path, relative: &str) -> Result<(), String> {
     let relative = resolve_repo_path(root, relative)?;
-    git_checked(root, &["restore", "--staged", "--", &relative])
+    if git_stdout(root, &["rev-parse", "--verify", "HEAD"]).is_some() {
+        git_checked(
+            root,
+            &[
+                "--literal-pathspecs",
+                "restore",
+                "--staged",
+                "--",
+                &relative,
+            ],
+        )
+    } else {
+        git_checked(
+            root,
+            &[
+                "--literal-pathspecs",
+                "rm",
+                "--cached",
+                "-f",
+                "--",
+                &relative,
+            ],
+        )
+    }
+}
+
+fn git_unstage_all_for(root: &Path) -> Result<(), String> {
+    git_work_tree_checked(root)?;
+    if git_stdout(root, &["rev-parse", "--verify", "HEAD"]).is_some() {
+        git_checked(root, &["restore", "--staged", "--", "."])
+    } else {
+        let files = git_run(root, &["ls-files", "--cached"])
+            .ok_or_else(|| "Could not read staged files".to_string())?;
+        if files.trim().is_empty() {
+            Ok(())
+        } else {
+            git_checked(root, &["rm", "--cached", "-r", "-f", "--", "."])
+        }
+    }
 }
 
 fn git_discard_file_for(root: &Path, relative: &str) -> Result<(), String> {
     let relative = resolve_repo_path(root, relative)?;
     let abs = root.join(&relative);
-    if git_checked(root, &["ls-files", "--error-unmatch", "--", &relative]).is_err() {
+    if git_checked(
+        root,
+        &[
+            "--literal-pathspecs",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            &relative,
+        ],
+    )
+    .is_err()
+    {
         if abs.is_file() {
             std::fs::remove_file(&abs).map_err(|e| e.to_string())?;
         } else if abs.exists() {
-            git_checked(root, &["clean", "-fd", "--", &relative])?;
+            git_checked(
+                root,
+                &["--literal-pathspecs", "clean", "-fd", "--", &relative],
+            )?;
         }
         return Ok(());
     }
-    git_checked(root, &["restore", "--worktree", "--", &relative])
+    git_checked(
+        root,
+        &[
+            "--literal-pathspecs",
+            "restore",
+            "--worktree",
+            "--",
+            &relative,
+        ],
+    )
 }
 
 fn git_discard_all_for(root: &Path) -> Result<(), String> {
@@ -5869,11 +5928,14 @@ pub(crate) fn git_resolve_conflict_for(
     // `checkout --ours/--theirs` fails when that side deleted the file; taking
     // the deletion is `git rm`.
     if !stage_has_side(stages, bit) {
-        return git_checked(root, &["rm", "-f", "--", &relative]);
+        return git_checked(root, &["--literal-pathspecs", "rm", "-f", "--", &relative]);
     }
     let flag = if side == "ours" { "--ours" } else { "--theirs" };
-    git_checked(root, &["checkout", flag, "--", &relative])?;
-    git_checked(root, &["add", "--", &relative])
+    git_checked(
+        root,
+        &["--literal-pathspecs", "checkout", flag, "--", &relative],
+    )?;
+    git_checked(root, &["--literal-pathspecs", "add", "--", &relative])
 }
 
 fn git_file_history_for(
@@ -5892,6 +5954,7 @@ fn git_file_history_for(
     let text = git_run(
         root,
         &[
+            "--literal-pathspecs",
             "log",
             "--follow",
             "--decorate=short",
@@ -5909,8 +5972,17 @@ fn git_file_history_for(
 fn git_blame_for(root: &Path, relative: &str) -> Result<Vec<GitBlameLine>, String> {
     git_work_tree_checked(root)?;
     let relative = resolve_repo_path(root, relative)?;
-    let text = git_run(root, &["blame", "--line-porcelain", "--", &relative])
-        .ok_or_else(|| "Could not blame this file".to_string())?;
+    let text = git_run(
+        root,
+        &[
+            "--literal-pathspecs",
+            "blame",
+            "--line-porcelain",
+            "--",
+            &relative,
+        ],
+    )
+    .ok_or_else(|| "Could not blame this file".to_string())?;
     Ok(parse_git_blame(&text))
 }
 
@@ -8824,6 +8896,66 @@ mod tests {
             .unwrap();
         assert!(!unstaged.staged);
         assert!(unstaged.unstaged);
+    }
+
+    #[test]
+    fn git_literal_file_actions_do_not_match_other_paths() {
+        let dir = tmp("git-literal-paths");
+        if !init_git_commit(&dir.0, &[("a[1].txt", "old\n"), ("a1.txt", "old\n")]) {
+            return;
+        }
+        for name in ["a[1].txt", "a1.txt"] {
+            std::fs::write(dir.0.join(name), "new\n").unwrap();
+        }
+        git_stage_file_for(&dir.0, "a[1].txt").unwrap();
+        assert_eq!(
+            git_stdout(&dir.0, &["diff", "--cached", "--name-only"])
+                .unwrap()
+                .trim(),
+            "a[1].txt"
+        );
+        git_stage_all_for(&dir.0).unwrap();
+        git_unstage_file_for(&dir.0, "a[1].txt").unwrap();
+        assert_eq!(
+            git_stdout(&dir.0, &["diff", "--cached", "--name-only"])
+                .unwrap()
+                .trim(),
+            "a1.txt"
+        );
+        std::fs::write(dir.0.join("a1.txt"), "keep me\n").unwrap();
+        git_discard_file_for(&dir.0, "a[1].txt").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("a[1].txt")).unwrap(),
+            "old\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("a1.txt")).unwrap(),
+            "keep me\n"
+        );
+    }
+
+    #[test]
+    fn git_unstage_before_first_commit_keeps_files() {
+        let dir = tmp("git-unborn-unstage");
+        assert!(git_unstage_all_for(&dir.0).is_err());
+        if !git(&dir.0, &["init"]) {
+            return;
+        }
+        std::fs::write(dir.0.join("a.txt"), "a\n").unwrap();
+        std::fs::write(dir.0.join("b.txt"), "b\n").unwrap();
+        git_stage_all_for(&dir.0).unwrap();
+        git_unstage_file_for(&dir.0, "a.txt").unwrap();
+        assert_eq!(git_stdout(&dir.0, &["ls-files"]).unwrap().trim(), "b.txt");
+        git_unstage_all_for(&dir.0).unwrap();
+        git_unstage_all_for(&dir.0).unwrap();
+        assert!(git_stdout(&dir.0, &["ls-files"])
+            .unwrap_or_default()
+            .trim()
+            .is_empty());
+        assert_eq!(std::fs::read_to_string(dir.0.join("a.txt")).unwrap(), "a\n");
+        assert_eq!(std::fs::read_to_string(dir.0.join("b.txt")).unwrap(), "b\n");
+        std::fs::write(dir.0.join(".git/index"), "broken").unwrap();
+        assert!(git_unstage_all_for(&dir.0).is_err());
     }
 
     #[test]

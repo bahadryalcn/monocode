@@ -282,6 +282,44 @@ export async function notifySession(
   });
 }
 
+/** Click targets of background work notifications, sent in place of a session
+ * ID. A click on one opens that view instead of a session. */
+export const BACKGROUND_NOTIFICATION_TARGETS = {
+  tasks: "background:tasks",
+  automations: "background:automations",
+} as const;
+
+/**
+ * A task or background automation on some machine changed in a way the owner
+ * should hear about. Sent whether or not the window is focused, since no view
+ * shows it unasked; the global switch and the event's own setting still apply.
+ */
+export async function notifyBackground(transition: {
+  target: keyof typeof BACKGROUND_NOTIFICATION_TARGETS;
+  kind: AttentionKind;
+  message: string;
+}): Promise<boolean> {
+  if (
+    !shouldNotify({
+      enabled:
+        loadNotificationsEnabled() && loadNotificationEvents()[transition.kind],
+      permission,
+      windowFocused,
+      sessionVisible: false,
+    })
+  )
+    return false;
+  return deliver({
+    sessionId: BACKGROUND_NOTIFICATION_TARGETS[transition.target],
+    kind: transition.kind,
+    title: transition.message,
+    subtitle: "",
+    body: transition.target === "tasks" ? "Background task" : "Background automation",
+    projectName: "",
+    sessionTitle: "",
+  });
+}
+
 /** Turns announced while their background commands still ran, by turn. */
 const announcedEarly = new Map<string, string>();
 

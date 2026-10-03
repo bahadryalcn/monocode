@@ -29,8 +29,12 @@ export const BACKGROUND_TRIGGER_ERROR =
 export const BACKGROUND_MACHINE_ERROR =
   "This project’s machine isn’t connected, or its MonoCode Host needs an update.";
 
-/** Machines whose host runs automations on its own, this computer's included. */
-export async function backgroundMachines(): Promise<RemoteMachine[]> {
+/** Machines whose host does background work on its own, this computer's
+ * included. `capability` is what the host must advertise: automations unless
+ * another kind of background work is asked for. */
+export async function backgroundMachines(
+  capability: string = HOST_AUTOMATIONS,
+): Promise<RemoteMachine[]> {
   const machines = await invoke<RemoteMachine[]>("remote_machines");
   const capable = await Promise.all(
     (Array.isArray(machines) ? machines : []).map(async (machine) => {
@@ -40,7 +44,7 @@ export async function backgroundMachines(): Promise<RemoteMachine[]> {
           "environment.describe",
         );
         return Array.isArray(host.capabilities) &&
-          host.capabilities.includes(HOST_AUTOMATIONS)
+          host.capabilities.includes(capability)
           ? machine
           : null;
       } catch {
@@ -72,6 +76,25 @@ export function hostProjectCwd(
   return isLocalSyncMachine(machine)
     ? project.cwd
     : remotePath(machine.environmentId, project.cwd);
+}
+
+/** The host's record of the project at `cwd`, registered there if it is new
+ * to that host. */
+export async function hostProjectFor(
+  machine: RemoteMachine,
+  cwd: string,
+): Promise<HostProject> {
+  const hostPath = parseRemotePath(cwd)?.hostPath ?? cwd;
+  const projects = await remoteRequest<HostProject[]>(
+    machine.id,
+    "projects.list",
+  );
+  return (
+    projects.find((entry) => pathKey(entry.cwd) === pathKey(hostPath)) ??
+    (await remoteRequest<HostProject>(machine.id, "projects.open", {
+      cwd: hostPath,
+    }))
+  );
 }
 
 export function automationFromHost(
@@ -120,6 +143,7 @@ export function automationFromHost(
       machineId: machine.id,
       machineName: isLocalSyncMachine(machine) ? "this computer" : machine.name,
       projectId: host.projectId,
+      ...(host.needsInput ? { needsInput: true } : {}),
     },
   };
 }
@@ -195,16 +219,7 @@ export async function saveHostAutomation(
 ): Promise<Automation> {
   const machine = backgroundMachineFor(machines, draft.cwd);
   if (!machine) throw new Error(BACKGROUND_MACHINE_ERROR);
-  const hostPath = parseRemotePath(draft.cwd)?.hostPath ?? draft.cwd;
-  const projects = await remoteRequest<HostProject[]>(
-    machine.id,
-    "projects.list",
-  );
-  const project =
-    projects.find((entry) => pathKey(entry.cwd) === pathKey(hostPath)) ??
-    (await remoteRequest<HostProject>(machine.id, "projects.open", {
-      cwd: hostPath,
-    }));
+  const project = await hostProjectFor(machine, draft.cwd);
   const saved = await remoteRequest<HostAutomation>(
     machine.id,
     "automations.save",

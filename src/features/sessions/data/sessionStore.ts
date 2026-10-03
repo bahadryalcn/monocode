@@ -893,8 +893,26 @@ function sanitizeBlock(
     if (block.notice === "error" || block.notice === "interrupt") {
       next.notice = block.notice;
     }
+    const shell = sanitizeShellRun(block.shell);
+    if (shell) next.shell = shell;
   }
   return next;
+}
+
+/** A run still in flight when it was saved did not survive the restart. */
+function sanitizeShellRun(value: Block["shell"]): Block["shell"] {
+  if (!value || typeof value !== "object") return undefined;
+  if (typeof value.command !== "string" || !value.command) return undefined;
+  return {
+    command: value.command,
+    output: typeof value.output === "string" ? value.output : "",
+    exitCode:
+      typeof value.exitCode === "number" && !value.running
+        ? value.exitCode
+        : null,
+    ...(value.timedOut ? { timedOut: true } : {}),
+    ...(value.truncated ? { truncated: true } : {}),
+  };
 }
 
 function sanitizeNestedId(value: unknown): string | undefined {

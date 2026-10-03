@@ -112,6 +112,7 @@ import {
   subscribeSessionFolders,
 } from "../../sessions/model/sessionFolders";
 import { loadModelControls, subscribeModelControls } from "../../settings/model/settings";
+import type { BackgroundSessionTarget } from "../../tasks/model/backgroundSession";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -135,6 +136,10 @@ type Props = {
     run: AutomationRun,
   ) => void | Promise<void>;
   onOpenSession: (sessionId: string) => void | Promise<void>;
+  /** Opens a session a machine's host ran for a background automation. */
+  onOpenBackgroundSession: (
+    target: BackgroundSessionTarget,
+  ) => void | Promise<void>;
 };
 
 const ACTION =
@@ -153,6 +158,7 @@ export function AutomationsView({
   onToggleSidebar,
   onLaunch,
   onOpenSession,
+  onOpenBackgroundSession,
 }: Props) {
   return (
     <div
@@ -184,6 +190,7 @@ export function AutomationsView({
         recents={recents}
         onLaunch={onLaunch}
         onOpenSession={onOpenSession}
+        onOpenBackgroundSession={onOpenBackgroundSession}
       />
     </div>
   );
@@ -194,7 +201,11 @@ function AutomationsContent({
   recents,
   onLaunch,
   onOpenSession,
-}: Pick<Props, "cwd" | "recents" | "onLaunch" | "onOpenSession">) {
+  onOpenBackgroundSession,
+}: Pick<
+  Props,
+  "cwd" | "recents" | "onLaunch" | "onOpenSession" | "onOpenBackgroundSession"
+>) {
   const [storedAutomations, setAutomations] = useState<Automation[]>(
     () => peekAutomations() ?? [],
   );
@@ -541,14 +552,15 @@ function AutomationsContent({
                 : undefined
             }
             onOpenSession={async (sessionId) => {
-              if (selected?.host && editorDraft.id) {
-                setError(
-                  `This run’s session is on ${selected.host.machineName}. Open the project there to read it.`,
-                );
-                return;
-              }
               try {
-                await onOpenSession(sessionId);
+                if (selected?.host && editorDraft.id)
+                  await onOpenBackgroundSession({
+                    machineId: selected.host.machineId,
+                    cwd: selected.cwd,
+                    projectId: selected.host.projectId,
+                    sessionId,
+                  });
+                else await onOpenSession(sessionId);
               } catch (reason: unknown) {
                 setError(
                   reason instanceof Error ? reason.message : String(reason),
@@ -826,7 +838,17 @@ function RunRow({
           {formatAutomationRunAt(run.scheduledFor || run.createdAt)}
         </span>
         <span>
-          <RunStatusPill status={run.status} />
+          {/* Still running, but stuck until the owner answers. */}
+          {run.status === "running" && run.needsInput ? (
+            <span
+              title="The session is waiting on an approval or a question"
+              className="inline-flex h-5 max-w-full items-center rounded-full bg-amber-500/12 px-2 text-[11px] font-medium text-amber-400"
+            >
+              Needs input
+            </span>
+          ) : (
+            <RunStatusPill status={run.status} />
+          )}
         </span>
         <span className="text-right tabular-nums text-content/55">
           {formatAutomationRunDuration(run)}

@@ -27,8 +27,10 @@ export function CommitDiff({ cwd, sha }: Props) {
   const [files, setFiles] = useState<GitChangedFile[] | null>(null);
   const [diffs, setDiffs] = useState<Map<string, LoadedDiff>>(new Map());
   const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
+    setError(null);
     if (!cwd || cwd === "~" || !sha) {
       setFiles([]);
       setDiffs(new Map());
@@ -94,7 +96,7 @@ export function CommitDiff({ cwd, sha }: Props) {
     return () => {
       disposed = true;
     };
-  }, [cwd, sha]);
+  }, [cwd, sha, retry]);
 
   const models = useMemo<UnifiedDiffFileModel[]>(() => {
     if (!files) return [];
@@ -148,6 +150,13 @@ export function CommitDiff({ cwd, sha }: Props) {
         <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
         <p className="text-[13px] text-content">Couldn’t load commit</p>
         <p className="mt-1 text-[12px] text-content/50">{error}</p>
+        <button
+          type="button"
+          onClick={() => setRetry((value) => value + 1)}
+          className="mt-3 text-[13px] text-content"
+        >
+          Retry
+        </button>
       </div>
     );
   }

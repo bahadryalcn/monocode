@@ -167,6 +167,7 @@ import {
   notifyGitChanged,
   openPathWithDefaultApp,
   pickCodeWorkspaceFile,
+  runShellCommand,
   pickFolders,
   readTextFile,
   type GitFileDiffKind,
@@ -497,6 +498,15 @@ import {
   usageLimitResumeDue,
 } from "../features/sessions/model/usageLimit";
 import { loadFreshRateLimits } from "../features/providers/model/rateLimitsCache";
+import { loadTerminalProfile } from "../features/terminal/model/terminalProfiles";
+import {
+  finishShellBlock,
+  parseShellCommand,
+  pendingShellRuns,
+  shellBlock,
+  withShellContext,
+  type ShellResult,
+} from "../features/sessions/model/shellRun";
 import { exhaustedWindowResetAt } from "../features/providers/model/rateLimits";
 import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
@@ -536,11 +546,16 @@ import { useUnseenFinishedSessions } from "../features/sessions/hooks/useUnseenF
 import {
   loadNotificationsEnabled,
   NOTIFICATION_CLICK_EVENT,
+  BACKGROUND_NOTIFICATION_TARGETS,
   announceSessionFinished,
   probeNotificationPermission,
   setWindowFocused,
 } from "../features/notifications/model/notifications";
 import { useInputNotifications } from "../features/notifications/hooks/useInputNotifications";
+import {
+  isLeadWindow,
+  useBackgroundNotifications,
+} from "../features/notifications/hooks/useBackgroundNotifications";
 import { useAttentionNotifications } from "../features/notifications/hooks/useAttentionNotifications";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
 import {
@@ -636,6 +651,7 @@ import {
   rememberRemoteSession,
   remotePendingWorktree,
   remoteTabCwd,
+  remoteRequest,
   remoteSessionFor,
   useRemoteRailSessions,
 } from "../features/connections/model/connections";
@@ -646,12 +662,26 @@ import {
 } from "../features/connections/model/remoteRailSessions";
 import { buildRemotePlan, remoteSessionActions } from "../features/connections/model/remoteSessionActions";
 import { remoteSessionState } from "../features/connections/model/remoteSessionState";
-import { remotePath, remoteProjectFor } from "../features/connections/model/remoteProjects";
+import {
+  parseRemotePath,
+  rememberRemoteProject,
+  remotePath,
+  remoteProjectFor,
+  remoteProjectsOn,
+} from "../features/connections/model/remoteProjects";
+import type { BackgroundSessionTarget } from "../features/tasks/model/backgroundSession";
+import { BackgroundSessionDialog } from "../features/tasks/ui/BackgroundSessionDialog";
 import { sessionHasBackgroundWork } from "../features/sessions/model/backgroundStop";
 import { reconnectRemoteMachine } from "../features/connections/model/remoteReconnect";
 import { startAppSync } from "../features/sync/model/useSync";
+import { useAdoptedSessions } from "../features/connections/model/useAdoptedSessions";
+import { useDesktopLive } from "../features/connections/model/useDesktopLive";
+import type { DesktopLiveHandlers } from "../features/connections/model/desktopLive";
 import { SyncMergedNotice } from "../features/sync/ui/SyncMergedNotice";
-import type { HostSession } from "../features/connections/model/protocol";
+import type {
+  HostProject,
+  HostSession,
+} from "../features/connections/model/protocol";
 import { AddRemoteProjectDialog } from "../features/connections/ui/AddRemoteProjectDialog";
 import {
   autoNameOnConflict,
@@ -795,6 +825,13 @@ const AutomationsView = lazySurface(
   async () => {
     const module = await import("../features/automations/ui/AutomationsView");
     return { default: module.AutomationsView };
+  },
+  { suspense: false },
+);
+const TasksView = lazySurface(
+  async () => {
+    const module = await import("../features/tasks/ui/TasksView");
+    return { default: module.TasksView };
   },
   { suspense: false },
 );
@@ -1005,6 +1042,9 @@ type AppProps = {
   historyCwd?: string | null;
 };
 
+/** How often a running session's stored copy follows it, for a local host. */
+const LIVE_PERSIST_MS = 1_500;
+
 export default function App(props: AppProps) {
   return (
     <Suspense fallback={null}>
@@ -1126,6 +1166,9 @@ function Workspace({
   const openingInboxSessions = useRef(new Map<string, Promise<string>>());
   const [notesViewOpen, setNotesViewOpen] = useState(false);
   const [automationsViewOpen, setAutomationsViewOpen] = useState(false);
+  // The task board opens in the Automations view's place, so whatever closes
+  // or restores that view does the same for the board.
+  const [taskBoardShown, setTaskBoardShown] = useState(false);
   const [inspectedWorkerId, setInspectedWorkerId] = useState<string | null>(
     null,
   );
@@ -1235,6 +1278,13 @@ function Workspace({
 
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  const localHostReachable = useAdoptedSessions(sessionsRef, setSessions);
+  const desktopLiveHandlers = useRef<DesktopLiveHandlers>({
+    stop: () => undefined,
+    approve: () => undefined,
+    answer: () => undefined,
+  });
+  useDesktopLive(sessionsRef, desktopLiveHandlers, localHostReachable);
   const linkedSessionUpdatesRef = useRef<
     ReadonlyMap<string, LinkedSessionUpdate>
   >(new Map());
@@ -1408,6 +1458,7 @@ function Workspace({
       preloadNavigationWhenIdle([
         InboxView.preload,
         AutomationsView.preload,
+        TasksView.preload,
         listAutomations,
         ...(notesEnabled ? [NotesView.preload, loadNotes] : []),
       ]),
@@ -1909,6 +1960,7 @@ function Workspace({
 
   useInputNotifications(sessions, activeSessionId);
   useAttentionNotifications(sessions, activeSessionId);
+  useBackgroundNotifications(automationsViewOpen && taskBoardShown);
 
   // Cache the OS decision so a turn ending later can skip a denied banner.
   useEffect(() => {
@@ -2224,6 +2276,31 @@ function Workspace({
     }, 650);
     return () => window.clearTimeout(timer);
   }, [persistSession, sessions]);
+
+  // A running turn is normally written once it settles. With a host on this
+  // machine, other computers watch this session through it, so keep the
+  // stored copy following the live one.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!localHostReachable.current) return;
+      for (const session of sessionsRef.current) {
+        if (
+          !session.busy ||
+          !shouldPersistSession(session) ||
+          removingSessionIds.current.has(session.id) ||
+          switchingWorktrees.current.has(session.id)
+        )
+          continue;
+        const fingerprint = persistFingerprint(session);
+        if (lastPersisted.current.get(session.id) === fingerprint) continue;
+        lastPersisted.current.set(session.id, fingerprint);
+        void upsertSession(session).catch(() => {
+          lastPersisted.current.delete(session.id);
+        });
+      }
+    }, LIVE_PERSIST_MS);
+    return () => window.clearInterval(timer);
+  }, [localHostReachable]);
 
   useEffect(() => {
     const refs = inFlightRefs(sessions, tabs);
@@ -2718,16 +2795,19 @@ function Workspace({
   }, []);
 
   const openProjectTerminal = useCallback(
-    (cwd: string) => {
+    (cwd: string, profile?: string) => {
       const workdir = cwd || projectCwdRef.current;
       const projectPath = projectCwdRef.current;
       if (!isLocalProject(projectPath)) return false;
+      // Chosen once, so the terminal keeps its shell when the default changes.
+      const shellProfile = profile ?? loadTerminalProfile();
       setProjectTerminals((prev) => {
         const existing = findProjectTerminal(prev, projectPath);
         const file = newTerminalFile(
           workdir,
           existing ? nextDockTerminalTitle(existing, workdir) : undefined,
           projectPath,
+          shellProfile,
         );
         if (!existing) {
           return [
@@ -2750,13 +2830,19 @@ function Workspace({
   );
 
   const onOpenTerminal = useCallback(
-    (cwd: string, asWorkspaceTab = false, occupySessionId?: string) => {
+    (
+      cwd: string,
+      asWorkspaceTab = false,
+      occupySessionId?: string,
+      profile?: string,
+    ) => {
       const workdir = cwd || gitCwd;
       if (!isLocalProject(projectCwdRef.current) || !isLocalProject(workdir)) return;
-      if (openProjectTerminal(workdir)) return;
+      if (openProjectTerminal(workdir, profile)) return;
+      const shellProfile = profile ?? loadTerminalProfile();
 
       if (asWorkspaceTab || !activeTab) {
-        const file = newTerminalFile(workdir, undefined, sidebarCwd);
+        const file = newTerminalFile(workdir, undefined, sidebarCwd, shellProfile);
         const tab = newTerminalWorkspaceTab(file);
         appendTab(tab, sidebarCwd);
         setActiveTabId(tab.id);
@@ -2781,6 +2867,7 @@ function Workspace({
         workdir,
         nextTerminalTitle(activeTab, workdir),
         sidebarCwd,
+        shellProfile,
       );
       setTabs((prev) =>
         prev.map((tab) =>
@@ -2797,6 +2884,14 @@ function Workspace({
   const onNewTerminal = useCallback(() => {
     onOpenTerminal(gitCwd);
   }, [gitCwd, onOpenTerminal]);
+
+  /** A terminal in a shell other than the default, picked from the profile menu. */
+  const onNewTerminalWithProfile = useCallback(
+    (profile: string) => {
+      onOpenTerminal(gitCwd, false, undefined, profile);
+    },
+    [gitCwd, onOpenTerminal],
+  );
 
   const onShowProjectTerminal = useCallback(() => {
     const dock = findProjectTerminal(projectTerminalsRef.current, projectCwd);
@@ -6556,6 +6651,56 @@ function Workspace({
     [invalidateLoadedSession],
   );
 
+  /** Runs a `!command` in the session's working copy and shows it in the
+   * transcript. The next message carries its output to the model. */
+  const runSessionShell = useCallback(
+    (sessionId: string, command: string): boolean => {
+      const session = sessionsRef.current.find((entry) => entry.id === sessionId);
+      if (
+        !session ||
+        session.worktreeRemoved ||
+        session.inboxAsk ||
+        session.orchestrationLeadId ||
+        removingSessionIds.current.has(sessionId)
+      )
+        return false;
+      const blockId = crypto.randomUUID();
+      setSessions((prev) =>
+        prev.map((entry) =>
+          entry.id === sessionId
+            ? { ...entry, blocks: [...entry.blocks, shellBlock(blockId, command)] }
+            : entry,
+        ),
+      );
+      void runShellCommand(sessionWorkCwd(session), command, loadTerminalProfile())
+        .catch(
+          (error): ShellResult => ({
+            output: error instanceof Error ? error.message : String(error),
+            exitCode: null,
+            timedOut: false,
+          }),
+        )
+        .then((result) =>
+          setSessions((prev) =>
+            prev.map((entry) =>
+              entry.id === sessionId
+                ? {
+                    ...entry,
+                    blocks: entry.blocks.map((block) =>
+                      block.id === blockId
+                        ? finishShellBlock(block, result)
+                        : block,
+                    ),
+                  }
+                : entry,
+            ),
+          ),
+        );
+      return true;
+    },
+    [],
+  );
+
   const submitSession = useCallback(
     (
       sessionId: string,
@@ -6566,6 +6711,20 @@ function Workspace({
       const remote = sessionsRef.current.find((session) => session.id === sessionId);
       if (remote && remoteProjectFor(remote.cwd))
         return !!remoteSessionActions(sessionId)?.submit(text, attachments, options);
+      // `!command` typed in the composer runs in the shell; it is not a turn,
+      // so nothing below about queues, drafts or a busy session applies.
+      const shellCommand =
+        attachments.length === 0 &&
+        !options?.managed &&
+        !options?.queuedMessageId &&
+        !options?.draftBlockId &&
+        !options?.resendEdited &&
+        !options?.appRequestId &&
+        !options?.ciRepair &&
+        (options?.intent ?? "default") === "default"
+          ? parseShellCommand(text)
+          : undefined;
+      if (shellCommand) return runSessionShell(sessionId, shellCommand);
       if (editedResends.isActive(sessionId)) return false;
       const controlError = orchestrator.submissionError(
         sessionId,
@@ -6741,9 +6900,16 @@ function Workspace({
         !operatorCommand.matched &&
         isNativeCommandPrompt(submittedText, current.harness);
       const ciContext = options?.ciRepair?.prompt ?? options?.ciContext;
+      // The `!commands` run since the last message go with this one, to the
+      // harness only; a native command has to arrive exactly as typed.
       const harnessText =
         options?.ciRepair?.prompt ??
-        (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
+        (rawCommand
+          ? submittedText
+          : withShellContext(
+              pendingShellRuns(current.blocks),
+              composeNoteMessage(noteCard, promptText),
+            ));
 
       const pendingSwitch =
         current.pendingSwitch && current.pendingSwitch.from !== current.harness
@@ -7710,6 +7876,7 @@ function Workspace({
       dismissNoticesForContinuedSession,
       enqueueHarnessEvent,
       flushHarnessEvents,
+      runSessionShell,
     ],
   );
   submitAfterProjectSyncRef.current = submitSession;
@@ -9385,6 +9552,12 @@ function Workspace({
     [],
   );
 
+  desktopLiveHandlers.current = {
+    stop: (sessionId) => onStop(sessionId),
+    approve: onApproval,
+    answer: onQuestionReply,
+  };
+
   const onQuestionInteraction = useCallback(
     (sessionId: string, requestId: number) => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
@@ -10558,6 +10731,19 @@ function Workspace({
       setSearchViewOpen(false);
       setInboxViewOpen(false);
       setNotesViewOpen(false);
+      setTaskBoardShown(false);
+      setAutomationsViewOpen(true);
+    });
+  }, []);
+
+  const onOpenTasks = useCallback(() => {
+    startTransition(() => {
+      setFilePickerOpen(false);
+      setSettingsOpen(false);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setTaskBoardShown(true);
       setAutomationsViewOpen(true);
     });
   }, []);
@@ -10583,6 +10769,41 @@ function Workspace({
       await onSelectHistorySession(sessionId);
     },
     [ensureOpenSession, onSelectHistorySession],
+  );
+
+  // A session a task or background automation ran on a machine's host. One on
+  // another machine opens like any session of its remote project; this
+  // computer's own host has no transcript view, so it gets a short summary.
+  const [backgroundSession, setBackgroundSession] =
+    useState<BackgroundSessionTarget | null>(null);
+  const onOpenBackgroundSession = useCallback(
+    async (target: BackgroundSessionTarget) => {
+      const remote = parseRemotePath(target.cwd);
+      if (!remote) {
+        setBackgroundSession(target);
+        return;
+      }
+      // By the host's project ID: a task's session may run in a worktree.
+      let project = remoteProjectsOn(remote.environmentId).find(
+        (entry) => entry.projectId === target.projectId,
+      );
+      if (!project) {
+        const listed = await remoteRequest<HostProject[]>(
+          target.machineId,
+          "projects.list",
+        );
+        const host = listed.find((entry) => entry.id === target.projectId);
+        if (!host) throw new Error("This project is no longer on that machine.");
+        project = rememberRemoteProject(remote.environmentId, host);
+      }
+      const knownBefore = loadRecents().map((item) => item.path);
+      setSettingsOpen(false);
+      setFilePickerOpen(false);
+      setRecents(rememberProject(project.key));
+      promptAddedProjectNames(knownBefore);
+      onSelectRemoteSession(project.key, target.sessionId);
+    },
+    [onSelectRemoteSession, promptAddedProjectNames],
   );
 
   const openSettings = useCallback(
@@ -10867,6 +11088,8 @@ function Workspace({
     onNavigateProjectList,
     openSettings,
     onOpenApprovalSession,
+    onOpenTasks,
+    onOpenAutomations,
   });
   actions.current = {
     onNew,
@@ -10899,6 +11122,8 @@ function Workspace({
     onNavigateProjectList,
     openSettings,
     onOpenApprovalSession,
+    onOpenTasks,
+    onOpenAutomations,
   };
 
   const debounce = useRef({ name: "", at: 0 });
@@ -11209,6 +11434,26 @@ function Workspace({
       }),
       // Every window hears the click; only the one holding the session acts.
       listen<string>(NOTIFICATION_CLICK_EVENT, ({ payload: sessionId }) => {
+        const background =
+          sessionId === BACKGROUND_NOTIFICATION_TARGETS.tasks
+            ? actions.current.onOpenTasks
+            : sessionId === BACKGROUND_NOTIFICATION_TARGETS.automations
+              ? actions.current.onOpenAutomations
+              : null;
+        if (background) {
+          // Background work is not held by a window: the one that announced
+          // it answers the click.
+          void isLeadWindow().then((lead) => {
+            if (!lead) return;
+            const win = getCurrentWindow();
+            void win
+              .unminimize()
+              .then(() => win.setFocus())
+              .catch(() => {});
+            background();
+          });
+          return;
+        }
         if (!sessionsRef.current.some((s) => s.id === sessionId)) return;
         const win = getCurrentWindow();
         // Windows leaves a minimized window minimized when it is only focused.
@@ -11497,11 +11742,13 @@ function Workspace({
               onOpenInboxItem={onOpenLinkedWorkItem}
               onOpenNotes={notesEnabled ? onOpenNotes : undefined}
               onOpenAutomations={onOpenAutomations}
+              onOpenTasks={onOpenTasks}
               onGoToFile={onGoToFile}
               searchActive={searchViewOpen}
               inboxActive={inboxViewOpen}
               notesActive={notesViewOpen}
-              automationsActive={automationsViewOpen}
+              automationsActive={automationsViewOpen && !taskBoardShown}
+              tasksActive={automationsViewOpen && taskBoardShown}
               notesEnabled={notesEnabled}
               projectRailOpen={projectRailOpen}
               compactProjectRail={compactProjectRail}
@@ -11612,6 +11859,8 @@ function Workspace({
                             onSizePaint={paintDockSize}
                             onSizeCommit={commitDockSize}
                             onAddTerminal={onNewTerminal}
+                            onAddTerminalWithProfile={onNewTerminalWithProfile}
+                            onSelectDefaultProfile={() => openSettings("terminal")}
                             onSelectTerminal={onSelectProjectTerminal}
                             onCloseTerminal={onCloseProjectTerminal}
                             onCloseOtherTerminals={onCloseOtherProjectTerminals}
@@ -11793,7 +12042,17 @@ function Workspace({
                   onToggleSidebar={onToggleSidebar}
                 />
               ) : null}
-              {automationsViewOpen ? (
+              {automationsViewOpen && taskBoardShown ? (
+                <TasksView
+                  besideRail={projectRailOpen || compactProjectRail}
+                  compactRail={compactRailActive}
+                  cwd={projectCwd}
+                  recents={visibleRecents}
+                  onClose={onLeaveAutomations}
+                  onToggleSidebar={onToggleSidebar}
+                  onOpenBackgroundSession={onOpenBackgroundSession}
+                />
+              ) : automationsViewOpen ? (
                 <AutomationsView
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
@@ -11805,6 +12064,7 @@ function Workspace({
                     launchAutomation(automation, run, true)
                   }
                   onOpenSession={onOpenAutomationSession}
+                  onOpenBackgroundSession={onOpenBackgroundSession}
                 />
               ) : null}
               {settingsOpen ? (
@@ -11955,6 +12215,12 @@ function Workspace({
           ) : null}
           <GitFileInspector onOpenCommit={onOpenCommit} />
           <SessionImportHost onImported={onSessionsImported} />
+          {backgroundSession ? (
+            <BackgroundSessionDialog
+              target={backgroundSession}
+              onClose={() => setBackgroundSession(null)}
+            />
+          ) : null}
           {remoteProjectDialogOpen ? (
             <AddRemoteProjectDialog
               onCancel={() => setRemoteProjectDialogOpen(false)}

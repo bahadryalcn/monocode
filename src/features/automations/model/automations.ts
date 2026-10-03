@@ -84,6 +84,8 @@ export type AutomationHost = {
   machineName: string;
   /** The host's ID for the project folder. */
   projectId: string;
+  /** A run is going and its session is waiting on an approval or a question. */
+  needsInput?: boolean;
 };
 
 export type AutomationUpsert = Omit<
@@ -110,6 +112,8 @@ export type AutomationRun = {
   status: AutomationRunStatus;
   sessionId?: string;
   error?: string;
+  /** A background run's session is waiting on an approval or a question. */
+  needsInput?: boolean;
   eventKey?: string;
   eventKind?: AutomationTriggerKind;
   event?: string;

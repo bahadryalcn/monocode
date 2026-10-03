@@ -207,6 +207,7 @@ function FilePaneComponent({
                 <TerminalView
                   id={file.id}
                   cwd={file.cwd}
+                  profile={file.shellProfile}
                   active={focused && file.id === pane.activeFileId}
                   onMetaChange={(patch) =>
                     onTerminalMetaChange?.(file.id, patch)

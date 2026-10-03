@@ -50,7 +50,11 @@ export function workspacePath(
   return path;
 }
 
-export async function existingPath(root: string, input: unknown, allowRoot = false) {
+export async function existingPath(
+  root: string,
+  input: unknown,
+  allowRoot = false,
+) {
   const path = workspacePath(root, input, allowRoot);
   const actual = await realpath(path);
   const rel = relative(root, actual);
@@ -65,16 +69,40 @@ export async function existingPath(root: string, input: unknown, allowRoot = fal
   return actual;
 }
 
-async function git(root: string, args: string[], maxBuffer = 4 * 1024 * 1024) {
-  return (
-    await exec("git", ["-c", "core.pager=cat", ...args], {
-      cwd: root,
-      timeout: 10_000,
-      maxBuffer,
-      encoding: "utf8",
-      env: { ...process.env, LC_ALL: "C" },
-    })
-  ).stdout;
+async function git(
+  root: string,
+  args: string[],
+  maxBuffer = 4 * 1024 * 1024,
+  timeout = 10_000,
+  literalPaths = args.includes("--") && args[0] !== "check-ignore" && args[0] !== "grep",
+) {
+  try {
+    return (
+      await exec(
+        "git",
+        [
+          ...(literalPaths ? ["--literal-pathspecs"] : []),
+          "-c",
+          "core.pager=cat",
+          ...args,
+        ],
+        {
+          cwd: root,
+          timeout,
+          maxBuffer,
+          encoding: "utf8",
+          windowsHide: true,
+          env: { ...process.env, LC_ALL: "C", GIT_TERMINAL_PROMPT: "0" },
+        },
+      )
+    ).stdout;
+  } catch (reason) {
+    if ((reason as { killed?: boolean }).killed)
+      throw new Error(
+        `git ${args[0]} timed out after ${timeout / 1000} seconds`,
+      );
+    throw reason;
+  }
 }
 
 function gitWithInput(
@@ -83,10 +111,15 @@ function gitWithInput(
   input: string,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", ["-c", "core.pager=cat", ...args], {
-      cwd: root,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    const child = spawn(
+      "git",
+      ["--literal-pathspecs", "-c", "core.pager=cat", ...args],
+      {
+        cwd: root,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     const timer = setTimeout(() => child.kill(), 10_000);
@@ -177,9 +210,15 @@ async function hostFilePaths(root: string): Promise<string[]> {
   let paths: string[];
   let repository = false;
   try {
-    repository = (await git(root, ["rev-parse", "--is-inside-work-tree"])).trim() === "true";
+    repository =
+      (await git(root, ["rev-parse", "--is-inside-work-tree"])).trim() ===
+      "true";
   } catch (error) {
-    if (!String((error as { stderr?: string }).stderr).includes("not a git repository"))
+    if (
+      !String((error as { stderr?: string }).stderr).includes(
+        "not a git repository",
+      )
+    )
       throw error;
   }
   if (repository) {
@@ -315,7 +354,8 @@ export async function searchHostContent(
     ...options.exclude.map((glob) => `:(exclude)${glob}`),
   );
   try {
-    const output = await git(root, args, 8 * 1024 * 1024);
+    // Search includes/excludes deliberately use glob and pathspec magic.
+    const output = await git(root, args, 8 * 1024 * 1024, 10_000, false);
     const matches: ProjectSearchMatch[] = [];
     let offset = 0;
     while (offset < output.length && matches.length < 501) {
@@ -525,7 +565,15 @@ export async function createHostPath(
 }
 
 /** `git status` codes for unmerged paths: UU, AA, DD, AU, UA, DU, UD. */
-const UNMERGED_CODES: ReadonlySet<string> = new Set(["UU", "AA", "DD", "AU", "UA", "DU", "UD"]);
+const UNMERGED_CODES: ReadonlySet<string> = new Set([
+  "UU",
+  "AA",
+  "DD",
+  "AU",
+  "UA",
+  "DU",
+  "UD",
+]);
 
 function statusName(code: string): string {
   if (code === "??") return "untracked";
@@ -626,13 +674,24 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
   }
   if (!upstreamText.trim() && defaultBranch) {
     const fallback = await git(root, [
-      "rev-list", "--left-right", "--count", `origin/${defaultBranch}...HEAD`,
+      "rev-list",
+      "--left-right",
+      "--count",
+      `origin/${defaultBranch}...HEAD`,
     ]).catch(() => "");
     [behind, ahead] = fallback.trim().split(/\s+/).map(Number);
   }
-  const headPushed = Boolean((await git(root, [
-    "for-each-ref", "--count=1", "--contains", "HEAD", "refs/remotes",
-  ]).catch(() => "")).trim());
+  const headPushed = Boolean(
+    (
+      await git(root, [
+        "for-each-ref",
+        "--count=1",
+        "--contains",
+        "HEAD",
+        "refs/remotes",
+      ]).catch(() => "")
+    ).trim(),
+  );
   const aheadOfDefault = defaultBranch
     ? Number(
         (
@@ -772,7 +831,9 @@ export async function hostGitAction(
   };
   switch (action) {
     case "stageContents": {
-      const path = relative(root, workspacePath(root, input)).split(sep).join("/");
+      const path = relative(root, workspacePath(root, input))
+        .split(sep)
+        .join("/");
       if (
         typeof contents !== "string" ||
         Buffer.byteLength(contents) > MAX_FILE
@@ -800,11 +861,19 @@ export async function hostGitAction(
     case "stage":
     case "unstage": {
       const path = relative(root, workspacePath(root, input));
+      const hasHead =
+        action === "unstage" &&
+        (await git(root, ["rev-parse", "--verify", "HEAD"]).then(
+          () => true,
+          () => false,
+        ));
       await git(
         root,
         action === "stage"
           ? ["add", "--", path]
-          : ["restore", "--staged", "--", path],
+          : hasHead
+            ? ["restore", "--staged", "--", path]
+            : ["rm", "--cached", "-f", "--", path],
       );
       return;
     }
@@ -816,22 +885,42 @@ export async function hostGitAction(
         await git(root, ["add", "-A", "--", "."]);
         return;
       }
-      const others = (await hostGitIndex(root)).files.map((file) => file.relative);
-      for (let start = 0; start < others.length; ) {
+      const others = (await hostGitIndex(root)).files.map(
+        (file) => file.relative,
+      );
+      for (let start = 0; start < others.length;) {
         let end = start;
         let length = 0;
-        while (end < others.length && (end === start || length + others[end].length < 16_000))
+        while (
+          end < others.length &&
+          (end === start || length + others[end].length < 16_000)
+        )
           length += others[end++].length + 1;
-        await git(root, ["--literal-pathspecs", "add", "-A", "--", ...others.slice(start, end)]);
+        await git(root, [
+          "--literal-pathspecs",
+          "add",
+          "-A",
+          "--",
+          ...others.slice(start, end),
+        ]);
         start = end;
       }
       return;
     }
-    case "unstageAll":
-      await git(root, ["reset", "-q", "--", "."]);
+    case "unstageAll": {
+      const hasHead = await git(root, ["rev-parse", "--verify", "HEAD"]).then(
+        () => true,
+        () => false,
+      );
+      if (hasHead) await git(root, ["restore", "--staged", "--", "."]);
+      else if ((await git(root, ["ls-files", "--cached"])).trim())
+        await git(root, ["rm", "--cached", "-r", "-f", "--", "."]);
       return;
+    }
     case "discard": {
-      const path = relative(root, workspacePath(root, input)).split(sep).join("/");
+      const path = relative(root, workspacePath(root, input))
+        .split(sep)
+        .join("/");
       const file = (await hostGitIndex(root)).files.find(
         (entry) => entry.relative === path && entry.unstaged,
       );
@@ -857,9 +946,28 @@ export async function hostGitAction(
       await git(root, ["commit", "-m", message], 1024 * 1024);
       return;
     }
-    case "push":
-      await git(root, ["push", "-u", "origin", "HEAD"]);
+    case "push": {
+      const hasUpstream = await git(root, [
+        "rev-parse",
+        "--abbrev-ref",
+        "@{upstream}",
+      ]).then(
+        () => true,
+        () => false,
+      );
+      let args = ["push"];
+      if (!hasUpstream) {
+        const remotes = (await git(root, ["remote"]))
+          .trim()
+          .split(/\r?\n/)
+          .filter(Boolean);
+        const remote = remotes.includes("origin") ? "origin" : remotes[0];
+        if (!remote) throw new Error("No git remote to push to");
+        args = ["push", "-u", remote, "HEAD"];
+      }
+      await git(root, args, 4 * 1024 * 1024, 120_000);
       return;
+    }
     case "createPr": {
       const output = await exec("gh", ["pr", "create", "--fill"], {
         cwd: root,
