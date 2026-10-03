@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../sessions/model/session";
 import {
+  desktopCopyOf,
   mergeAdoptedSession,
   mirrorAdoptedSessions,
   planAdoptedFetches,
@@ -116,11 +117,76 @@ describe("mirrorAdoptedSessions", () => {
     };
     await mirrorAdoptedSessions(deps);
     await mirrorAdoptedSessions(deps);
-    expect(stored).toHaveBeenCalledTimes(1);
+    // Once each: the running one only to learn it is already stored here.
+    expect(stored.mock.calls.map(([id]) => id)).toEqual(["s1", "busy"]);
     expect(save).toHaveBeenCalledTimes(1);
     expect(save.mock.calls[0]).toMatchObject([
       { id: "s1", cwd: "C:/proj", blocks: [{ id: "a" }, { id: "b" }] },
     ]);
+  });
+});
+
+describe("sessions started on this machine's host from another computer", () => {
+  it("are saved here once, even while their turn runs", async () => {
+    const adopt = vi.fn(async () => {});
+    const deps = {
+      list: async () => [entry({ id: "new", status: "running" as const })],
+      load: vi.fn(async () => host({})),
+      local: () => [],
+      apply: vi.fn(),
+      mirrored: new Map<string, number>(),
+      stored: vi.fn(async () => null),
+      save: vi.fn(async () => {}),
+      adopt,
+    };
+    await mirrorAdoptedSessions(deps);
+    await mirrorAdoptedSessions(deps);
+    expect(adopt).toHaveBeenCalledTimes(1);
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ id: "new" }));
+    expect(deps.save).not.toHaveBeenCalled();
+  });
+
+  it("then catch up like any shared session once the turn ends", async () => {
+    const save = vi.fn(async () => {});
+    const adopt = vi.fn(async () => {});
+    await mirrorAdoptedSessions({
+      list: async () => [entry({ revision: 7 })],
+      load: async () => host({ title: "Finished" }),
+      local: () => [],
+      apply: vi.fn(),
+      mirrored: new Map([["s1", 5]]),
+      stored: async () => local(),
+      save,
+      adopt,
+    });
+    expect(adopt).not.toHaveBeenCalled();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ title: "Finished" }));
+  });
+
+  it("are filed under the project folder, with the host's working copy as worktree", () => {
+    const same = (a: string, b: string) => a === b;
+    const inProject = desktopCopyOf(
+      host({ id: "h1", cwd: "/Users/me/clinic", busy: true }, "running"),
+      "/Users/me/clinic",
+      same,
+    );
+    expect(inProject).toMatchObject({
+      id: "h1",
+      cwd: "/Users/me/clinic",
+      worktreeCwd: undefined,
+      continuingElsewhere: true,
+    });
+    expect(inProject.busy).toBeUndefined();
+    const inWorktree = desktopCopyOf(
+      host({ cwd: "/Users/me/clinic-worktrees/fix" }),
+      "/Users/me/clinic",
+      same,
+    );
+    expect(inWorktree).toMatchObject({
+      cwd: "/Users/me/clinic",
+      worktreeCwd: "/Users/me/clinic-worktrees/fix",
+    });
+    expect(inWorktree.continuingElsewhere).toBeUndefined();
   });
 });
 

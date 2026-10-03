@@ -57,8 +57,9 @@ export type HostSession = {
   autoWorktreeBranch?: string;
   /** Host-only: the revision at which each block last changed. */
   blockRevisions?: Record<string, number>;
-  /** Taken over from this machine's desktop app: the desktop copy's last
-   * `updated_at` the host has caught up with. */
+  /** Shared with this machine's desktop app, whichever side started it: the
+   * desktop copy's last `updated_at` the host has caught up with (0 before
+   * the desktop has a copy). */
   desktop?: { updatedAt: number };
 };
 export type HostSessionSummary = Omit<

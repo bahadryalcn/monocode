@@ -315,6 +315,12 @@ export class HostEngine {
     // automatically after a crash; its external effects may already exist.
     for (const stored of store.sessions()) {
       let value = stored;
+      // Sessions started here before they were shared with this machine's
+      // desktop app become shared too, so the app on this machine lists them.
+      if (!value.desktop)
+        value = this.save({ ...value, desktop: { updatedAt: 0 } }, {
+          type: "desktopShared",
+        });
       // A `!command` cannot outlive the host process that started it.
       if (value.session.blocks.some((block) => block.shell?.running))
         value = this.save(
@@ -576,6 +582,9 @@ export class HostEngine {
         value = {
           projectId: project.id,
           autoWorktreeBranch: command.autoWorktreeBranch,
+          // Shared with this machine's desktop app from the start: it lists
+          // the session in its project, and turns it runs come back here.
+          desktop: { updatedAt: 0 },
           revision: 0,
           status: "idle",
           createdAt: now,

@@ -675,6 +675,7 @@ import { sessionHasBackgroundWork } from "../features/sessions/model/backgroundS
 import { reconnectRemoteMachine } from "../features/connections/model/remoteReconnect";
 import { startAppSync } from "../features/sync/model/useSync";
 import { useAdoptedSessions } from "../features/connections/model/useAdoptedSessions";
+import { ADOPTED_SESSION_ADDED } from "../features/connections/model/adoptedSessions";
 import { useDesktopLive } from "../features/connections/model/useDesktopLive";
 import type { DesktopLiveHandlers } from "../features/connections/model/desktopLive";
 import { SyncMergedNotice } from "../features/sync/ui/SyncMergedNotice";
@@ -2162,6 +2163,18 @@ function Workspace({
   useEffect(() => {
     void refreshHistory(sidebarCwd);
   }, [sidebarCwd, refreshHistory]);
+
+  // A session another computer started in this machine's project, through
+  // this machine's host, joins the list as soon as its copy is saved here.
+  useEffect(() => {
+    const onAdded = (event: Event) => {
+      const cwd = (event as CustomEvent<string>).detail;
+      if (cwd && sameProjectPath(cwd, sidebarCwdRef.current))
+        void refreshHistory(sidebarCwdRef.current);
+    };
+    window.addEventListener(ADOPTED_SESSION_ADDED, onAdded);
+    return () => window.removeEventListener(ADOPTED_SESSION_ADDED, onAdded);
+  }, [refreshHistory]);
 
   useEffect(() => {
     if (!inboxViewOpen) return;

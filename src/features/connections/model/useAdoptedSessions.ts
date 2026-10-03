@@ -9,6 +9,8 @@ import { getSession, upsertSession } from "../../sessions/data/sessionStore";
 import {
   ADOPTED_POLL_HIDDEN_MS,
   ADOPTED_POLL_VISIBLE_MS,
+  ADOPTED_SESSION_ADDED,
+  desktopCopyOf,
   mirrorAdoptedSessions,
   supportsAdoptedSessions,
   type AdoptedEntry,
@@ -19,7 +21,8 @@ import {
   remoteRequest,
 } from "./connections";
 import { isLocalSyncMachine } from "./localSync";
-import type { RemoteMachine } from "./protocol";
+import type { HostProject, RemoteMachine } from "./protocol";
+import { loadRecents, sameProjectPath } from "../../projects/model/recents";
 
 /** Mirrors sessions the local MonoCode Host adopted from this desktop (another
  * computer continued them there) back into the loaded local sessions.
@@ -50,6 +53,7 @@ export function useAdoptedSessions(
         const capabilities = await loadRemoteCapabilities(machine.environmentId);
         hostReachable.current = supportsAdoptedSessions(capabilities);
         if (!hostReachable.current || stopped) return;
+        let projects: HostProject[] | undefined;
         const held = await mirrorAdoptedSessions({
           list: () => remoteRequest<AdoptedEntry[]>(machine.id, "sessions.adopted", {}),
           load: (sessionId) => loadRemoteSession(machine.id, sessionId),
@@ -58,6 +62,20 @@ export function useAdoptedSessions(
           stored: getSession,
           save: async (merged) => {
             await upsertSession(merged);
+          },
+          adopt: async (entry) => {
+            projects ??= await remoteRequest<HostProject[]>(machine.id, "projects.list", {});
+            const project = projects.find((candidate) => candidate.id === entry.projectId);
+            // Only into a project this desktop has; a folder it never opened
+            // stays the host's alone.
+            if (!project || !loadRecents().some((recent) => sameProjectPath(recent.path, project.cwd)))
+              return;
+            const host = await loadRemoteSession(machine.id, entry.id);
+            const copy = desktopCopyOf(host, project.cwd, sameProjectPath);
+            if (!(await upsertSession(copy))) return;
+            window.dispatchEvent(
+              new CustomEvent<string>(ADOPTED_SESSION_ADDED, { detail: project.cwd }),
+            );
           },
           apply: (merged, previous) => {
             const swap = (list: Session[]) =>
