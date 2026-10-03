@@ -1,5 +1,8 @@
 import { listDir, type FsEntry } from "../../../platform/tauri/fs";
-import { classifyRemoteError, isConnectionFailure } from "../../connections/model/remoteFailure";
+import {
+  classifyRemoteError,
+  isConnectionFailure,
+} from "../../connections/model/remoteFailure";
 import { reportRemoteConnection } from "../../connections/model/remoteHealth";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import { pathSegments } from "./fileName";
@@ -8,7 +11,14 @@ import { joinPath, parentPath } from "../../../shared/lib/paths";
 const expandedByProject = new Map<string, Set<string>>();
 const selectedByProject = new Map<string, string | null>();
 const dirs = new Map<string, FsEntry[]>();
-const listeners = new Set<() => void>();
+const listeners = new Set<
+  (roots?: readonly string[], listingsChanged?: readonly string[]) => void
+>();
+const activeRoots = new Map<string, number>();
+const pendingRoots = new Set<string>();
+let refreshAll = false;
+let contentChange = false;
+const dirReads = new Map<string, Promise<FsEntry[]>>();
 
 const REFRESH_MS = 150;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -40,7 +50,10 @@ export function peekDir(path: string): FsEntry[] | null {
 export function listCachedDir(path: string): Promise<FsEntry[]> {
   const hit = dirs.get(path);
   if (hit) return Promise.resolve(hit);
-  return listDir(path).then(
+  const pending = dirReads.get(path);
+  if (pending) return pending;
+  const read = listDir(path)
+    .then(
     (entries) => {
       dirs.set(path, entries);
       reportRemoteConnection(path, "files");
@@ -50,7 +63,12 @@ export function listCachedDir(path: string): Promise<FsEntry[]> {
       reportRemoteConnection(path, "files", error);
       throw error;
     },
-  );
+    )
+    .finally(() => {
+      if (dirReads.get(path) === read) dirReads.delete(path);
+    });
+  dirReads.set(path, read);
+  return read;
 }
 
 /** A folder on a machine that cannot be reached keeps showing what it last held. */
@@ -72,29 +90,75 @@ export function forgetDir(path: string) {
   }
 }
 
-/** Re-list every cached folder. Agent writes and window focus use this. */
-export async function refreshCachedDirs(): Promise<void> {
-  const paths = [...dirs.keys()];
-  if (paths.length === 0) return;
-  await Promise.all(
-    paths.map((path) =>
-      refreshDir(path).catch((error: unknown) => {
-        if (!keepsLastListing(path, error)) forgetDir(path);
-      }),
-    ),
-  );
+export function dirBelongsToRoot(path: string, root: string): boolean {
+  const normalize = (value: string) =>
+    value.replace(/\\/g, "/").replace(/\/+$/, "");
+  const base = normalize(root);
+  const name = normalize(path);
+  return name === base || name.startsWith(`${base}/`);
 }
 
-export function subscribeDirsChanged(listener: () => void): () => void {
-  listeners.add(listener);
+/** Only current roots are polled; old machine/project caches stay passive. */
+export async function refreshCachedDirs(
+  roots?: readonly string[],
+): Promise<string[]> {
+  const paths = [...dirs.keys()].filter(
+    (path) => !roots || roots.some((root) => dirBelongsToRoot(path, root)),
+  );
+  const changed: string[] = [];
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(4, paths.length) }, async () => {
+      while (cursor < paths.length) {
+        const path = paths[cursor++];
+        const previous = JSON.stringify(dirs.get(path));
+        try {
+          const next = await refreshDir(path);
+          if (JSON.stringify(next) !== previous) changed.push(path);
+        } catch (error) {
+          if (!keepsLastListing(path, error)) {
+            forgetDir(path);
+            changed.push(path);
+          }
+        }
+      }
+    }),
+  );
+  return changed;
+}
+
+export function subscribeDirsChanged(
+  listener: (
+    roots?: readonly string[],
+    listingsChanged?: readonly string[],
+  ) => void,
+  root?: string,
+): () => void {
+  const notify = (
+    paths?: readonly string[],
+    listingsChanged?: readonly string[],
+  ) => {
+    if (!root || !paths || paths.some((path) => dirBelongsToRoot(path, root)))
+      listener(paths, listingsChanged);
+  };
+  listeners.add(notify);
+  if (root) activeRoots.set(root, (activeRoots.get(root) ?? 0) + 1);
   return () => {
-    listeners.delete(listener);
+    listeners.delete(notify);
+    if (root) {
+      const count = (activeRoots.get(root) ?? 1) - 1;
+      if (count) activeRoots.set(root, count);
+      else activeRoots.delete(root);
+    }
   };
 }
 
 /** Reload the explorer cache after an agent/shell write (debounced). */
-export function notifyDirsChanged() {
+export function notifyDirsChanged(root?: string, pollOnly = false) {
   if (typeof document !== "undefined" && document.hidden) return;
+  if (root) pendingRoots.add(root);
+  else refreshAll = true;
+  if (!pollOnly) contentChange = true;
   scheduleRefresh();
 }
 
@@ -113,8 +177,19 @@ async function runRefresh() {
   }
   refreshing = true;
   try {
-    await refreshCachedDirs();
-    for (const listener of listeners) listener();
+    const roots = refreshAll ? [...activeRoots.keys()] : [...pendingRoots];
+    const unscoped = refreshAll && roots.length === 0;
+    const content = contentChange;
+    refreshAll = false;
+    contentChange = false;
+    pendingRoots.clear();
+    const changed = await refreshCachedDirs(unscoped ? undefined : roots);
+    if (changed.length || unscoped || content)
+      for (const listener of listeners)
+        listener(
+          unscoped ? undefined : content ? roots : changed,
+          unscoped ? undefined : changed,
+        );
   } finally {
     refreshing = false;
     if (refreshAgain) {

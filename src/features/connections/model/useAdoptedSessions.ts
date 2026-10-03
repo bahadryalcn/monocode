@@ -45,41 +45,74 @@ export function useAdoptedSessions(
       running = true;
       try {
         const machines = await invoke<RemoteMachine[]>("remote_machines");
-        const machine = (Array.isArray(machines) ? machines : []).find(isLocalSyncMachine);
+        const machine = (Array.isArray(machines) ? machines : []).find(
+          isLocalSyncMachine,
+        );
         if (!machine || stopped) {
           hostReachable.current = false;
           return;
         }
-        const capabilities = await loadRemoteCapabilities(machine.environmentId);
+        const capabilities = await loadRemoteCapabilities(
+          machine.environmentId,
+        );
         hostReachable.current = supportsAdoptedSessions(capabilities);
         if (!hostReachable.current || stopped) return;
         let projects: HostProject[] | undefined;
         const held = await mirrorAdoptedSessions({
-          list: () => remoteRequest<AdoptedEntry[]>(machine.id, "sessions.adopted", {}),
+          list: () =>
+            remoteRequest<AdoptedEntry[]>(machine.id, "sessions.adopted", {}),
           load: (sessionId) => loadRemoteSession(machine.id, sessionId),
           local: () => sessionsRef.current,
           mirrored,
+          conflict: (current) => {
+            if (stopped || current.adoptedSyncConflict) return;
+            const flag = (list: Session[]) =>
+              list.map((session) =>
+                session.id === current.id
+                  ? { ...session, adoptedSyncConflict: true }
+                  : session,
+              );
+            sessionsRef.current = flag(sessionsRef.current);
+            setSessions(flag);
+          },
           stored: getSession,
           save: async (merged) => {
             await upsertSession(merged);
           },
           adopt: async (entry) => {
-            projects ??= await remoteRequest<HostProject[]>(machine.id, "projects.list", {});
-            const project = projects.find((candidate) => candidate.id === entry.projectId);
+            projects ??= await remoteRequest<HostProject[]>(
+              machine.id,
+              "projects.list",
+              {},
+            );
+            const project = projects.find(
+              (candidate) => candidate.id === entry.projectId,
+            );
             // Only into a project this desktop has; a folder it never opened
             // stays the host's alone.
-            if (!project || !loadRecents().some((recent) => sameProjectPath(recent.path, project.cwd)))
-              return;
+            if (
+              !project ||
+              !loadRecents().some((recent) =>
+                sameProjectPath(recent.path, project.cwd),
+              )
+            )
+              return false;
             const host = await loadRemoteSession(machine.id, entry.id);
             const copy = desktopCopyOf(host, project.cwd, sameProjectPath);
-            if (!(await upsertSession(copy))) return;
+            if (stopped || !(await upsertSession(copy))) return false;
             window.dispatchEvent(
-              new CustomEvent<string>(ADOPTED_SESSION_ADDED, { detail: project.cwd }),
+              new CustomEvent<string>(ADOPTED_SESSION_ADDED, {
+                detail: project.cwd,
+              }),
             );
+            return true;
           },
           apply: (merged, previous) => {
+            if (stopped) return;
             const swap = (list: Session[]) =>
-              list.map((session) => (session.id === merged.id ? merged : session));
+              list.map((session) =>
+                session.id === merged.id ? merged : session,
+              );
             sessionsRef.current = swap(sessionsRef.current);
             setSessions(swap);
             if (

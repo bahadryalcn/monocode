@@ -45,6 +45,58 @@ function render(onRemove?: () => void) {
 }
 
 describe("AttachmentChip image preview", () => {
+  it("loads a remote history image only on click and releases the preview on close", async () => {
+    const loadPreview = vi.fn(async () => btoa("image"));
+    act(() =>
+      root.render(
+        createElement(AttachmentChip, {
+          attachment: { ...attachment, previewUrl: undefined, loadPreview },
+        }),
+      ),
+    );
+    expect(loadPreview).not.toHaveBeenCalled();
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+      '[aria-label="Open diagram.png full screen"]',
+        )!
+        .click();
+    });
+    expect(loadPreview).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[role="dialog"] img')?.getAttribute("src")).toBe(`data:image/png;base64,${btoa("image")}`);
+
+    act(() =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    );
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("shows a retryable error when a remote preview fails", async () => {
+    const loadPreview = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(btoa("image"));
+    act(() =>
+      root.render(
+        createElement(AttachmentChip, {
+          attachment: { ...attachment, previewUrl: undefined, loadPreview },
+        }),
+      ),
+    );
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Open diagram.png full screen"]',
+    )!;
+    await act(async () => trigger.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Try again",
+    );
+    expect(trigger.disabled).toBe(false);
+    await act(async () => trigger.click());
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+  });
   it("opens the image full screen and closes it with Escape", () => {
     render();
     const trigger = container.querySelector<HTMLButtonElement>(

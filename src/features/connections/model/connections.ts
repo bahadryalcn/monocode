@@ -20,6 +20,7 @@ import {
 } from "./remoteHealth";
 import { loadRemoteAutoReconnect } from "../../settings/model/settings";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
+import { RemoteSessionLists } from "./remoteSessionLists";
 
 const CHANGE = "monocode:remote-machines";
 export const REMOTE_HISTORY_CHANGE = "monocode:remote-history";
@@ -44,7 +45,9 @@ export function requestMachineReconnect(machineId: string) {
 }
 
 /** The machine a view asked to reconnect, once, if it is one of `machines`. */
-export function takeReconnectRequest(machines: RemoteMachine[]): RemoteMachine | undefined {
+export function takeReconnectRequest(
+  machines: RemoteMachine[],
+): RemoteMachine | undefined {
   const machine = machines.find((entry) => entry.id === reconnectRequest);
   if (machine) reconnectRequest = undefined;
   return machine;
@@ -66,7 +69,9 @@ export function requestMachineEdit(machineId: string) {
 }
 
 /** The machine a view asked to edit, once, if it is one of `machines`. */
-export function takeEditRequest(machines: RemoteMachine[]): RemoteMachine | undefined {
+export function takeEditRequest(
+  machines: RemoteMachine[],
+): RemoteMachine | undefined {
   const machine = machines.find((entry) => entry.id === editRequest);
   if (machine) editRequest = undefined;
   return machine;
@@ -82,7 +87,9 @@ const capabilityListeners = new Set<() => void>();
 const capabilityLookups = new Map<string, Promise<string[] | undefined>>();
 
 /** What a machine's host last advertised in `environment.describe`. */
-export function cachedRemoteCapabilities(environmentId: string): string[] | undefined {
+export function cachedRemoteCapabilities(
+  environmentId: string,
+): string[] | undefined {
   return capabilitiesByEnvironment.get(environmentId);
 }
 
@@ -91,25 +98,36 @@ export function subscribeRemoteCapabilities(listener: () => void): () => void {
   return () => capabilityListeners.delete(listener);
 }
 
-export function recordRemoteCapabilities(environmentId: string, advertised: unknown) {
+export function recordRemoteCapabilities(
+  environmentId: string,
+  advertised: unknown,
+) {
   const next = Array.isArray(advertised)
     ? advertised.filter((entry): entry is string => typeof entry === "string")
     : [];
   const previous = capabilitiesByEnvironment.get(environmentId);
-  if (previous?.length === next.length && previous.every((entry, i) => entry === next[i]))
+  if (
+    previous?.length === next.length &&
+    previous.every((entry, i) => entry === next[i])
+  )
     return;
   capabilitiesByEnvironment.set(environmentId, next);
   capabilityListeners.forEach((listener) => listener());
 }
 
 /** Asks a machine for its capabilities, to learn whether its host is new enough. */
-export function loadRemoteCapabilities(environmentId: string): Promise<string[] | undefined> {
+export function loadRemoteCapabilities(
+  environmentId: string,
+): Promise<string[] | undefined> {
   const pending = capabilityLookups.get(environmentId);
   if (pending) return pending;
   const lookup = (async () => {
     const machine = await remoteMachineFor(environmentId);
     if (!machine) return undefined;
-    const host = await remoteRequest<{ capabilities?: unknown }>(machine.id, "environment.describe");
+    const host = await remoteRequest<{ capabilities?: unknown }>(
+      machine.id,
+      "environment.describe",
+    );
     recordRemoteCapabilities(environmentId, host.capabilities);
     return cachedRemoteCapabilities(environmentId);
   })().finally(() => capabilityLookups.delete(environmentId));
@@ -131,12 +149,16 @@ export function remotePendingWorktree(shellId: string): string | undefined {
 }
 
 /** The host checkout currently used by a remote tab. */
-export function remoteTabCwd(project: string, shellId?: string): string | undefined {
+export function remoteTabCwd(
+  project: string,
+  shellId?: string,
+): string | undefined {
   if (!shellId) return undefined;
   const sessionId = remoteSessionFor(shellId);
   return (
-    (sessionId ? cachedRemoteSessionSummary(project, sessionId)?.cwd : undefined) ??
-    remotePendingWorktree(shellId)
+    (sessionId
+      ? cachedRemoteSessionSummary(project, sessionId)?.cwd
+      : undefined) ?? remotePendingWorktree(shellId)
   );
 }
 
@@ -172,7 +194,12 @@ export function rememberRemoteSession(shellId: string, sessionId?: string) {
   window.dispatchEvent(new Event(REMOTE_HISTORY_CHANGE));
 }
 
-export { pendingRemoteCommand, pendingRemoteFollowup, savePendingRemoteCommand, clearPendingRemoteCommand } from "./remoteOutbox";
+export {
+  pendingRemoteCommand,
+  pendingRemoteFollowup,
+  savePendingRemoteCommand,
+  clearPendingRemoteCommand,
+} from "./remoteOutbox";
 
 /** Whether a request may start a missing SSH tunnel. Always, unless the user
  * turned automatic reconnecting off: then only what the user did (`fresh`, or
@@ -185,8 +212,12 @@ export function mayStartTunnel(
   userInitiated: boolean,
 ): boolean {
   if (fresh || userInitiated || loadRemoteAutoReconnect()) return true;
-  const environmentId = cachedMachines.find((entry) => entry.id === machineId)?.environmentId;
-  return !environmentId || !blocksSending(readRemoteConnection(environmentId).status);
+  const environmentId = cachedMachines.find(
+    (entry) => entry.id === machineId,
+  )?.environmentId;
+  return (
+    !environmentId || !blocksSending(readRemoteConnection(environmentId).status)
+  );
 }
 
 /** `fresh` makes a dropped SSH tunnel be restarted now instead of answering
@@ -205,7 +236,9 @@ export function remoteRequest<T>(
     method,
     params,
     ...(fresh ? { fresh } : {}),
-    ...(mayStartTunnel(machineId, fresh, userInitiated) ? {} : { allowConnect: false }),
+    ...(mayStartTunnel(machineId, fresh, userInitiated)
+      ? {}
+      : { allowConnect: false }),
   });
 }
 
@@ -253,8 +286,9 @@ export async function loadRemoteSession(
   } catch {
     snapshot = applySessionSync(undefined, await sync());
   }
-  return withRemoteAttachmentPreviews(machineId, snapshot, known,
-    (params) => remoteRequest(machineId, "attachments.read", params));
+  return withRemoteAttachmentPreviews(machineId, snapshot, known, (params) =>
+    remoteRequest(machineId, "attachments.read", params),
+  );
 }
 
 /** The connected machine for an environment, from the last machine list read. */
@@ -300,7 +334,12 @@ export async function connectMachine(
  * closes the old tunnel and the machine's connection status starts over. */
 export async function updateMachine(
   machine: RemoteMachine,
-  edit: { name: string; target: string; port: number | null; alternate?: string | null },
+  edit: {
+    name: string;
+    target: string;
+    port: number | null;
+    alternate?: string | null;
+  },
   reconnect: boolean,
 ): Promise<RemoteMachine> {
   const saved = await invoke<RemoteMachine>("remote_machine_update", {
@@ -310,7 +349,9 @@ export async function updateMachine(
     port: edit.port,
     alternate: edit.alternate ?? null,
   });
-  cachedMachines = cachedMachines.map((entry) => (entry.id === saved.id ? saved : entry));
+  cachedMachines = cachedMachines.map((entry) =>
+    entry.id === saved.id ? saved : entry,
+  );
   if (reconnect) {
     machineOnline.delete(saved.id);
     resetRemoteConnection(saved.environmentId);
@@ -373,10 +414,19 @@ const statusWatchers = new Map<
 
 /** Records whether a machine answered its latest request, for every view
  * that shows its connection state. `error` is why it did not. */
-export function reportRemoteMachineStatus(machineId: string, online: boolean, error?: unknown) {
-  const environmentId = cachedMachines.find((entry) => entry.id === machineId)?.environmentId;
+export function reportRemoteMachineStatus(
+  machineId: string,
+  online: boolean,
+  error?: unknown,
+) {
+  const environmentId = cachedMachines.find(
+    (entry) => entry.id === machineId,
+  )?.environmentId;
   if (environmentId)
-    recordRemoteConnection(environmentId, online ? undefined : (error ?? "Machine is unreachable"));
+    recordRemoteConnection(
+      environmentId,
+      online ? undefined : (error ?? "Machine is unreachable"),
+    );
   const wasOffline = machineOnline.get(machineId) === false;
   if (machineOnline.get(machineId) === online) return;
   machineOnline.set(machineId, online);
@@ -390,17 +440,19 @@ function watchMachineStatus(machineId: string): () => void {
   if (existing) {
     existing.count++;
   } else {
-    const watcher: { count: number; timer?: ReturnType<typeof setTimeout> } =
-      { count: 1 };
+    const watcher: { count: number; timer?: ReturnType<typeof setTimeout> } = {
+      count: 1,
+    };
     statusWatchers.set(machineId, watcher);
     let failures = 0;
     const poll = async () => {
       try {
-        const host = await remoteRequest<{ environmentId?: string; capabilities?: unknown }>(
-          machineId,
-          "environment.describe",
-        );
-        if (host?.environmentId) recordRemoteCapabilities(host.environmentId, host.capabilities);
+        const host = await remoteRequest<{
+          environmentId?: string;
+          capabilities?: unknown;
+        }>(machineId, "environment.describe");
+        if (host?.environmentId)
+          recordRemoteCapabilities(host.environmentId, host.capabilities);
         failures = 0;
         reportRemoteMachineStatus(machineId, true);
       } catch (reason) {
@@ -424,7 +476,9 @@ function watchMachineStatus(machineId: string): () => void {
 }
 
 /** Whether a machine is reachable; undefined until the first check returns. */
-export function useRemoteMachineOnline(machineId?: string): boolean | undefined {
+export function useRemoteMachineOnline(
+  machineId?: string,
+): boolean | undefined {
   const [online, setOnline] = useState(() =>
     machineId ? machineOnline.get(machineId) : undefined,
   );
@@ -463,8 +517,17 @@ export function cachedRemoteSessionSummary(project: string, sessionId: string) {
 
 /** The last `sessions.list` answer per remote project, so the rail and the
  * open project's sidebar share one request instead of each asking. */
-const recentSessionLists = new Map<string, { at: number; sessions: HostSessionSummary[] }>();
-const SHARED_LIST_MAX_AGE_MS = 5_000;
+const sharedSessionLists = new RemoteSessionLists((machineId, projectId) =>
+  remoteRequest<HostSessionSummary[]>(machineId, "sessions.list", {
+    projectId,
+  }),
+);
+if (typeof window !== "undefined") {
+  window.addEventListener(REMOTE_HISTORY_CHANGE, () =>
+    sharedSessionLists.invalidate(),
+  );
+  window.addEventListener(CHANGE, () => sharedSessionLists.invalidate());
+}
 
 export type RemoteProjectSessions = {
   /** Undefined when this machine is not connected on this computer. */
@@ -511,20 +574,21 @@ export function useRemoteProjectSessions(
     let failures = 0;
     const poll = async () => {
       try {
-        const next = await remoteRequest<HostSessionSummary[]>(
+        const next = await sharedSessionLists.load(
           machine.id,
-          "sessions.list",
-          { projectId: remote.projectId },
+          remote.projectId,
         );
         if (disposed) return;
         failures = 0;
-        recentSessionLists.set(project, { at: Date.now(), sessions: next });
         setSessions(next);
         setLoaded(true);
         setFailed(false);
         try {
-          localStorage.setItem(historyKey(project), JSON.stringify(next));
-          window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
+          const serialized = JSON.stringify(next);
+          if (localStorage.getItem(historyKey(project)) !== serialized) {
+            localStorage.setItem(historyKey(project), serialized);
+            window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
+          }
         } catch {
           /* the list is refetched next time */
         }
@@ -560,9 +624,9 @@ export function useRemoteRailSessions(
   useEffect(() => {
     const targets = (key ? key.split("\n") : []).flatMap((project) => {
       const remote = remoteProjectFor(project);
-      const machine = remote && machines.find(
-        (entry) => entry.environmentId === remote.environmentId,
-      );
+      const machine =
+        remote &&
+        machines.find((entry) => entry.environmentId === remote.environmentId);
       return remote && machine ? [{ project, remote, machine }] : [];
     });
     if (targets.length === 0) {
@@ -573,18 +637,21 @@ export function useRemoteRailSessions(
     let timer: ReturnType<typeof setTimeout>;
     let failures = 0;
     // The cached list may be old: nothing in it counts as running until the host says so.
-    const lists = new Map<string, HostSessionSummary[]>(targets.map(({ project }) => [
-      project,
-      cachedSessions(project).map((session) => ({
-        ...session,
-        status: "idle" as const,
-        needsInput: false,
-      })),
-    ]));
+    const lists = new Map<string, HostSessionSummary[]>(
+      targets.map(({ project }) => [
+        project,
+        cachedSessions(project).map((session) => ({
+          ...session,
+          status: "idle" as const,
+          needsInput: false,
+        })),
+      ]),
+    );
     let shown = "";
     const publish = () => {
       const next = [...lists].flatMap(([project, list]) =>
-        list.map((session) => ({ project, session })));
+        list.map((session) => ({ project, session })),
+      );
       const serialized = JSON.stringify(next);
       if (serialized === shown) return;
       shown = serialized;
@@ -592,24 +659,20 @@ export function useRemoteRailSessions(
     };
     publish();
     const poll = async () => {
-      const results = await Promise.all(targets.map(async ({ project, remote, machine }) => {
-        // The open project's sidebar lists it every few seconds already.
-        const recent = recentSessionLists.get(project);
-        if (recent && Date.now() - recent.at < SHARED_LIST_MAX_AGE_MS)
-          return { project, next: recent.sessions };
-        try {
-          const next = await remoteRequest<HostSessionSummary[]>(
-            machine.id,
-            "sessions.list",
-            { projectId: remote.projectId },
-          );
-          if (Array.isArray(next))
-            recentSessionLists.set(project, { at: Date.now(), sessions: next });
-          return Array.isArray(next) ? { project, next } : undefined;
-        } catch {
-          return undefined;
-        }
-      }));
+      const results = await Promise.all(
+        targets.map(async ({ project, remote, machine }) => {
+          // The open project's sidebar lists it every few seconds already.
+          try {
+            const next = await sharedSessionLists.load(
+              machine.id,
+              remote.projectId,
+            );
+            return Array.isArray(next) ? { project, next } : undefined;
+          } catch {
+            return undefined;
+          }
+        }),
+      );
       if (disposed) return;
       let historyChanged = false;
       for (const result of results) {
@@ -625,14 +688,20 @@ export function useRemoteRailSessions(
           /* the list is refetched next time */
         }
       }
-      if (historyChanged) window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
+      if (historyChanged)
+        window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
       publish();
       failures = results.some(Boolean) ? 0 : Math.min(4, failures + 1);
       const active = [...lists.values()].some((list) =>
-        list.some((session) => session.status === "running"));
+        list.some((session) => session.status === "running"),
+      );
       timer = setTimeout(
         () => void poll(),
-        failures ? Math.min(30_000, 3_000 * 2 ** failures) : active ? 4_000 : 10_000,
+        failures
+          ? Math.min(30_000, 3_000 * 2 ** failures)
+          : active
+            ? 4_000
+            : 10_000,
       );
     };
     void poll();

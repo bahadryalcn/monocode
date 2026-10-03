@@ -18,6 +18,7 @@ export type DesktopCommand = {
 };
 
 type LiveSession = {
+  clientId: string;
   busy: boolean;
   pending: Block[];
   patch: Partial<Session>;
@@ -32,7 +33,7 @@ type LiveSession = {
  * calls in (`sessions.desktopLive`); the host can't reach it otherwise.
  */
 export class DesktopLive {
-  private beatAt: number | undefined;
+  private clients = new Map<string, number>();
   private sessions = new Map<string, LiveSession>();
   private commands: DesktopCommand[] = [];
 
@@ -51,27 +52,47 @@ export class DesktopLive {
       input && typeof input === "object" && !Array.isArray(input)
         ? (input as Record<string, unknown>)
         : {};
-    if (!Array.isArray(value.sessions)) throw new Error("Invalid desktop sessions");
+    if (!Array.isArray(value.sessions))
+      throw new Error("Invalid desktop sessions");
+    const clientId =
+      typeof value.clientId === "string" && value.clientId
+        ? value.clientId
+        : "legacy";
     const acked = new Set(
       Array.isArray(value.acked) ? value.acked.map(String) : [],
     );
-    const next = new Map<string, LiveSession>();
+    const next = new Map(this.sessions);
+    const reported = new Set<string>();
     for (const raw of value.sessions) {
       if (!raw || typeof raw !== "object") continue;
       const entry = raw as Record<string, unknown>;
       if (typeof entry.id !== "string" || !entry.id) continue;
+      const owner = this.sessions.get(entry.id);
+      // Another live window owns this turn. An idle copy of its tab cannot
+      // take over command delivery; a crashed owner can be replaced.
+      if (
+        owner &&
+        owner.clientId !== clientId &&
+        (owner.busy || owner.fingerprint !== "[[],{}]") &&
+        this.clientAlive(owner.clientId)
+      )
+        continue;
+      reported.add(entry.id);
       const pending = Array.isArray(entry.pending)
         ? (entry.pending as Block[])
             .filter((block) => block && typeof block.id === "string")
             .slice(0, MAX_PENDING_BLOCKS)
         : [];
       const patch =
-        entry.patch && typeof entry.patch === "object" && !Array.isArray(entry.patch)
+        entry.patch &&
+        typeof entry.patch === "object" &&
+        !Array.isArray(entry.patch)
           ? livePatch(entry.patch as Partial<Session>)
           : {};
       const fingerprint = JSON.stringify([pending, patch]);
       const previous = this.sessions.get(entry.id);
       next.set(entry.id, {
+        clientId,
         busy: entry.busy === true,
         pending,
         patch,
@@ -84,8 +105,13 @@ export class DesktopLive {
     }
     // A session that just went idle changed too: its prompt is gone.
     for (const [id, previous] of this.sessions)
-      if (!next.has(id) && previous.fingerprint !== "[[],{}]")
+      if (
+        previous.clientId === clientId &&
+        !reported.has(id) &&
+        (previous.busy || previous.fingerprint !== "[[],{}]")
+      )
         next.set(id, {
+          clientId,
           busy: false,
           pending: [],
           patch: {},
@@ -93,16 +119,37 @@ export class DesktopLive {
           changedAt: this.changeStamp(),
         });
     this.sessions = next;
-    this.beatAt = this.now();
-    this.commands = this.commands.filter((command) => !acked.has(command.id));
-    return { commands: this.commands };
+    // ACKs are scoped to the owner too, including retries sent by old clients.
+    this.commands = this.commands.filter(
+      (command) =>
+        !acked.has(command.id) ||
+        this.sessions.get(command.sessionId)?.clientId !== clientId,
+    );
+    this.clients.set(clientId, this.now());
+    for (const [id, beatAt] of this.clients) {
+      if (this.now() - beatAt <= DESKTOP_BEAT_STALE_MS) continue;
+      this.clients.delete(id);
+      for (const [sessionId, session] of this.sessions)
+        if (session.clientId === id) this.sessions.delete(sessionId);
+    }
+    return {
+      commands: this.commands.filter(
+        (command) =>
+          this.sessions.get(command.sessionId)?.clientId === clientId,
+      ),
+    };
+  }
+
+  private clientAlive(clientId: string): boolean {
+    const beatAt = this.clients.get(clientId);
+    return beatAt !== undefined && this.now() - beatAt <= DESKTOP_BEAT_STALE_MS;
   }
 
   /** Whether the desktop reports itself alive; undefined if it never has
    * (an older app: fall back to what its database says). */
   alive(): boolean | undefined {
-    if (this.beatAt === undefined) return undefined;
-    return this.now() - this.beatAt <= DESKTOP_BEAT_STALE_MS;
+    if (this.clients.size === 0) return undefined;
+    return [...this.clients.keys()].some((id) => this.clientAlive(id));
   }
 
   /** Running per the heartbeat; `stored` is the database's in-flight mark,
@@ -110,19 +157,28 @@ export class DesktopLive {
   running(id: string, stored: boolean): boolean {
     const alive = this.alive();
     if (alive === undefined) return stored;
-    return alive && !!this.sessions.get(id)?.busy;
+    const session = this.sessions.get(id);
+    return alive && !!session?.busy && this.clientAlive(session.clientId);
   }
 
   /** Live prompts laid over a stored session, and when they last changed. */
-  overlay(id: string): { pending: Block[]; patch: Partial<Session>; changedAt: number } | undefined {
-    if (!this.alive()) return undefined;
-    return this.sessions.get(id);
+  overlay(
+    id: string,
+  ):
+    | { pending: Block[]; patch: Partial<Session>; changedAt: number }
+    | undefined {
+    const session = this.sessions.get(id);
+    return session && this.clientAlive(session.clientId) ? session : undefined;
   }
 
   /** Leaves a watcher's stop, approval or answer for the desktop to run. */
-  enqueue(command: Extract<HostCommand, { type: "cancel" | "approve" | "answer" }>): void {
+  enqueue(
+    command: Extract<HostCommand, { type: "cancel" | "approve" | "answer" }>,
+  ): void {
     if (this.commands.length >= MAX_COMMANDS)
-      throw new Error("Too many commands waiting for the MonoCode app on that computer");
+      throw new Error(
+        "Too many commands waiting for the MonoCode app on that computer",
+      );
     this.commands.push({
       id: randomUUID(),
       sessionId: command.sessionId,
@@ -156,7 +212,10 @@ export function withOverlay(
   session: Session,
   overlay: { pending: Block[]; patch: Partial<Session> } | undefined,
 ): Session {
-  if (!overlay || (!overlay.pending.length && !Object.keys(overlay.patch).length))
+  if (
+    !overlay ||
+    (!overlay.pending.length && !Object.keys(overlay.patch).length)
+  )
     return session;
   const pending = new Map(overlay.pending.map((block) => [block.id, block]));
   const blocks = session.blocks.map((block) => {

@@ -3,8 +3,8 @@
 use crate::remote_ssh::{self, Job, JobView, SshTarget, Tunnel, Tunnels};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -101,7 +101,44 @@ fn endpoint(value: &str) -> Result<String, String> {
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
+struct CachedMachines {
+    path: PathBuf,
+    modified: std::time::SystemTime,
+    length: u64,
+    machines: Vec<StoredMachine>,
+}
+
+static MACHINE_CACHE: Mutex<Option<CachedMachines>> = Mutex::new(None);
+
 fn read(path: &Path) -> Result<Vec<StoredMachine>, String> {
+    let mut cache = MACHINE_CACHE
+        .lock()
+        .map_err(|_| "Connection cache is locked")?;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            *cache = None;
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let modified = metadata.modified().ok();
+    if let Some(hit) = cache.as_ref() {
+        if hit.path == path && Some(hit.modified) == modified && hit.length == metadata.len() {
+            return Ok(hit.machines.clone());
+        }
+    }
+    let machines = read_uncached(path)?;
+    *cache = modified.map(|modified| CachedMachines {
+        path: path.to_path_buf(),
+        modified,
+        length: metadata.len(),
+        machines: machines.clone(),
+    });
+    Ok(machines)
+}
+
+fn read_uncached(path: &Path) -> Result<Vec<StoredMachine>, String> {
     match std::fs::read(path) {
         Ok(bytes) => {
             serde_json::from_slice(&bytes).map_err(|_| "Remote connection store is invalid".into())
@@ -133,12 +170,30 @@ fn write(path: &Path, machines: &[StoredMachine]) -> Result<(), String> {
     if result.is_err() {
         let _ = std::fs::remove_file(temporary);
     }
+    // Writes include edits, disconnects and credential replacements. Do not
+    // rely on timestamp precision when this process changes the store.
+    if let Ok(mut cache) = MACHINE_CACHE.lock() {
+        *cache = None;
+    }
     result
 }
 
 /// Hosts split large session syncs into pieces below this cap
 /// (`host/sync-transfer.ts`), so it bounds memory without limiting transcripts.
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+static RPC_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+
+fn rpc_agent() -> &'static ureq::Agent {
+    RPC_AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .redirects(0)
+            .max_idle_connections(32)
+            .max_idle_connections_per_host(4)
+            .timeout_connect(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+    })
+}
 
 fn rpc(
     endpoint: &str,
@@ -147,11 +202,7 @@ fn rpc(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    let agent = ureq::AgentBuilder::new()
-        .redirects(0)
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(30))
-        .build();
+    let agent = rpc_agent();
     let payload = json!({ "version": 1, "environmentId": environment_id, "method": method, "params": params });
     let response = agent
         .post(&format!("{endpoint}/rpc"))
@@ -830,6 +881,80 @@ pub fn remote_ssh_cancel(
 mod tests {
     use super::*;
     #[test]
+    fn rpc_reuses_a_connection_without_reusing_request_credentials() {
+        use std::io::{BufRead, BufReader};
+        use std::{net::TcpListener, thread, time::Duration};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut authorizations = Vec::new();
+            for _ in 0..2 {
+                let mut size = 0;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if lower.starts_with("content-length:") {
+                        size = line
+                            .split(':')
+                            .nth(1)
+                            .unwrap()
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap();
+                    }
+                    if lower.starts_with("authorization:") {
+                        authorizations.push(line.trim().to_string());
+                    }
+                }
+                let mut body = vec![0; size];
+                reader.read_exact(&mut body).unwrap();
+                let body = r#"{"result":{"ok":true}}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+            authorizations
+        });
+        assert_eq!(
+            rpc(
+                &url,
+                "first",
+                Some("env"),
+                "environment.describe",
+                json!({})
+            )
+            .unwrap(),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            rpc(
+                &url,
+                "second",
+                Some("env"),
+                "environment.describe",
+                json!({})
+            )
+            .unwrap(),
+            json!({"ok": true})
+        );
+        let headers = server.join().unwrap();
+        assert!(headers[0].ends_with("Bearer first"));
+        assert!(headers[1].ends_with("Bearer second"));
+    }
+    #[test]
     fn a_slow_host_does_not_look_like_a_dead_tunnel() {
         use std::{net::TcpListener, thread, time::Duration};
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -934,8 +1059,15 @@ mod tests {
         assert_eq!(ssh.alternate.as_deref(), Some("me@100.64.0.5"));
         // Only the edited machine changed, and a blank name keeps the old one.
         assert_eq!(machines[1].ssh.as_ref().unwrap().target, "me@other");
-        let again =
-            apply_edit(&mut machines, "a", "  ", "me@new.local".into(), Some(2222), None).unwrap();
+        let again = apply_edit(
+            &mut machines,
+            "a",
+            "  ",
+            "me@new.local".into(),
+            Some(2222),
+            None,
+        )
+        .unwrap();
         assert_eq!(again.name, "Mac");
     }
 

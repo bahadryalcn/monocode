@@ -13,6 +13,8 @@ import { isLocalSyncMachine } from "./localSync";
 import type { RemoteMachine } from "./protocol";
 
 const MACHINE_RECHECK_MS = 15_000;
+// One identity per WebView, stable across StrictMode effect remounts.
+const desktopClientId = crypto.randomUUID();
 
 /** Tells the local host this desktop is alive and which sessions are busy or
  * waiting on input, and runs the stop/approve/answer commands watchers sent
@@ -49,6 +51,7 @@ export function useDesktopLive(
         }
         const id = machineId;
         await runDesktopLiveTick({
+          clientId: desktopClientId,
           request: (payload) =>
             remoteRequest<{ commands?: DesktopLiveCommand[] }>(id, "sessions.desktopLive", payload),
           sessions: () => sessionsRef.current,

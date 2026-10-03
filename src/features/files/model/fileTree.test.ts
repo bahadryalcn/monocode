@@ -32,6 +32,57 @@ vi.mock("../../../platform/tauri/fs", async (importOriginal) => {
 });
 
 describe("fileTree cache", () => {
+  it("refreshes only the requested root and bounds concurrent folder reads", async () => {
+    const current = `${root}/current`;
+    const old = `${root}/old`;
+    listDir.mockResolvedValue([]);
+    await Promise.all(
+      [old, ...Array.from({ length: 10 }, (_, i) => `${current}/${i}`)].map(
+        listCachedDir,
+      ),
+    );
+    listDir.mockClear();
+    let active = 0;
+    let peak = 0;
+    listDir.mockImplementation(async () => {
+      peak = Math.max(peak, ++active);
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      active--;
+      return [];
+    });
+    expect(await refreshCachedDirs([current])).toEqual([]);
+    expect(listDir).toHaveBeenCalledTimes(10);
+    expect(listDir.mock.calls.some(([path]) => path === old)).toBe(false);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it("does not publish unchanged listings or notify unrelated roots", async () => {
+    vi.useFakeTimers();
+    const a = `${root}/A`;
+    const b = `${root}/B`;
+    listDir.mockResolvedValue([]);
+    await listCachedDir(a);
+    await listCachedDir(b);
+    const changedA = vi.fn();
+    const changedB = vi.fn();
+    const stopA = subscribeDirsChanged(changedA, a);
+    const stopB = subscribeDirsChanged(changedB, b);
+    try {
+      notifyDirsChanged(a, true);
+      await vi.runAllTimersAsync();
+      expect(changedA).not.toHaveBeenCalled();
+      listDir.mockImplementation(async (path) =>
+        path === a ? [entry("new.ts")] : [],
+      );
+      notifyDirsChanged(a, true);
+      await vi.runAllTimersAsync();
+      expect(changedA).toHaveBeenCalledTimes(1);
+      expect(changedB).not.toHaveBeenCalled();
+    } finally {
+      stopA();
+      stopB();
+    }
+  });
   beforeEach(() => {
     forgetDir(root);
     listDir.mockReset();

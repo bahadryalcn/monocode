@@ -267,6 +267,8 @@ export type Attachment = {
   data?: string;
   /** Object URL for in-session thumbnails. Not persisted. */
   previewUrl?: string;
+  /** Remote history preview loaded on explicit user action. Never persisted. */
+  loadPreview?: () => Promise<string>;
   /** Restored from a saved queue, and the file (or pasted data) is gone. */
   missing?: boolean;
 };
@@ -507,6 +509,8 @@ export type Session = {
   pendingQuestion?: UserQuestionPrompt;
   /** The local host is running a turn for this session for another computer; Send is held. In-memory. */
   continuingElsewhere?: boolean;
+  /** A host mirror was rejected; the local transcript is intact. In-memory. */
+  adoptedSyncConflict?: boolean;
 };
 
 export type PendingHarnessSwitch = {

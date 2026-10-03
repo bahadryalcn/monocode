@@ -16,6 +16,7 @@ export type DesktopLiveSession = {
 };
 
 export type DesktopLivePayload = {
+  clientId?: string;
   sessions: DesktopLiveSession[];
   acked?: string[];
 };
@@ -101,6 +102,7 @@ export function applyDesktopLiveCommand(
  * since last time, then execute the commands it returns. `unacked` keeps ids
  * until a call succeeds; `handled` dedupes re-sent commands. */
 export async function runDesktopLiveTick(deps: {
+  clientId?: string;
   request: (payload: DesktopLivePayload) => Promise<{ commands?: DesktopLiveCommand[] } | undefined>;
   sessions: () => readonly Session[];
   handlers: DesktopLiveHandlers;
@@ -109,6 +111,7 @@ export async function runDesktopLiveTick(deps: {
 }): Promise<void> {
   const acked = [...deps.unacked];
   const payload: DesktopLivePayload = {
+    ...(deps.clientId ? { clientId: deps.clientId } : {}),
     sessions: buildDesktopLiveSessions(deps.sessions()),
     ...(acked.length > 0 ? { acked } : {}),
   };
@@ -117,20 +120,25 @@ export async function runDesktopLiveTick(deps: {
   const commands = Array.isArray(result?.commands) ? result.commands : [];
   for (const command of commands) {
     if (!command || typeof command.id !== "string") continue;
+    // Older hosts return all windows' commands. Never acknowledge a session
+    // this window doesn't have, or it will disappear before its owner sees it.
+    if (!deps.sessions().some((session) => session.id === command.sessionId))
+      continue;
     if (deps.handled.has(command.id)) {
       deps.unacked.add(command.id);
       continue;
+    }
+    try {
+      applyDesktopLiveCommand(command, deps.sessions(), deps.handlers);
+    } catch (error) {
+      console.error(error);
+      continue; // Keep the command pending if its handler failed.
     }
     deps.handled.add(command.id);
     // Bound the dedupe set; insertion order makes the oldest go first.
     if (deps.handled.size > 500) {
       const oldest = deps.handled.values().next().value;
       if (oldest !== undefined) deps.handled.delete(oldest);
-    }
-    try {
-      applyDesktopLiveCommand(command, deps.sessions(), deps.handlers);
-    } catch (error) {
-      console.error(error);
     }
     deps.unacked.add(command.id);
   }

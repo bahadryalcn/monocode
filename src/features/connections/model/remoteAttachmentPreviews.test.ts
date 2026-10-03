@@ -1,5 +1,8 @@
 import { expect, it, vi } from "vitest";
-import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
+import {
+  PREVIEW_BUDGET_BYTES,
+  withRemoteAttachmentPreviews,
+} from "./remoteAttachmentPreviews";
 import type { HostSession } from "./protocol";
 
 const snapshot = (): HostSession => ({
@@ -63,7 +66,73 @@ it("keeps the transcript available when an image is missing", async () => {
   const read = vi.fn(async () => {
     throw new Error("Image no longer available");
   });
+  const result =
+    await withRemoteAttachmentPreviews("machine", value, undefined, read);
+  expect(result.session.blocks[0].text).toBe(value.session.blocks[0].text);
+  expect(result.session.blocks[0].attachments?.[0].loadPreview).toBeTypeOf(
+    "function",
+  );
+});
+
+it("backs off a missing image across unchanged syncs", async () => {
+  vi.useFakeTimers();
+  try {
+    const read = vi.fn(async () => {
+      throw new Error("missing");
+    });
+    let known: HostSession | undefined;
+    for (let i = 0; i < 5; i++)
+      known = await withRemoteAttachmentPreviews(
+        "backoff-machine",
+        snapshot(),
+        known,
+        read,
+      );
+    expect(read).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(30_001);
+    await withRemoteAttachmentPreviews(
+      "backoff-machine",
+      snapshot(),
+      known,
+      read,
+    );
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("limits concurrent reads and favors recent previews within the byte budget", async () => {
+  const value = snapshot();
+  const template = value.session.blocks[0].attachments![0];
+  value.session.blocks[0].attachments = Array.from({ length: 6 }, (_, i) => ({
+    ...template,
+    id: `image${i}`,
+  }));
+  let active = 0;
+  let peak = 0;
+  const read = vi.fn(async () => {
+    peak = Math.max(peak, ++active);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    active--;
+    return { offset: 5, size: 5, data: btoa("abcde") };
+  });
+  await withRemoteAttachmentPreviews("bounded-machine", value, undefined, read);
+  expect(peak).toBe(2);
+  const oldData = "already downloaded";
+  value.session.blocks[0].attachments = Array.from({ length: 3 }, (_, i) => ({
+    ...template,
+    id: `large${i}`,
+    size: PREVIEW_BUDGET_BYTES / 2,
+    data: oldData,
+  }));
+  const bounded = await withRemoteAttachmentPreviews(
+    "bounded-machine",
+    value,
+    undefined,
+    read,
+  );
   expect(
-    await withRemoteAttachmentPreviews("machine", value, undefined, read),
-  ).toBe(value);
+    bounded.session.blocks[0].attachments!.map((file) => file.data),
+  ).toEqual([undefined, oldData, oldData]);
 });

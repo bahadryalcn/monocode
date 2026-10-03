@@ -4,11 +4,14 @@ import {
   statFiles,
   type ProjectFile,
 } from "../../../platform/tauri/fs";
-import { subscribeDirsChanged } from "./fileTree";
+import { dirBelongsToRoot, subscribeDirsChanged } from "./fileTree";
 import { scorePath, type FuzzyHit } from "../../../shared/lib/fuzzy";
 import { resolveWorkspacePath, slash } from "../../../shared/lib/paths";
 import { looksLikeProject } from "../../projects/model/recents";
-import { normalizeEditorPath, type FileOpenOptions } from "../../search/model/search";
+import {
+  normalizeEditorPath,
+  type FileOpenOptions,
+} from "../../search/model/search";
 
 const MAX_RECENTS = 30;
 const MAX_RESULTS = 80;
@@ -385,7 +388,13 @@ function pickOpenableFile(
   return candidates.sort((a, b) => a.relative.length - b.relative.length)[0];
 }
 
-subscribeDirsChanged(scheduleIndexRefresh);
+subscribeDirsChanged((_roots, paths) => {
+  if (
+    !paths ||
+    (lastCwd && paths.some((path) => dirBelongsToRoot(path, lastCwd!)))
+  )
+    scheduleIndexRefresh();
+});
 
 if (typeof document !== "undefined") {
   window.addEventListener("focus", () => {

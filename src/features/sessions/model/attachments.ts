@@ -169,6 +169,7 @@ export function displayAttachments(files: Attachment[]): Attachment[] {
     ...(file.path ? { copyFromPath: true } : {}),
     ...(file.previewUrl ? { previewUrl: file.previewUrl } : {}),
     ...(file.data ? { data: file.data } : {}),
+    ...(file.loadPreview ? { loadPreview: file.loadPreview } : {}),
   }));
 }
 

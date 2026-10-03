@@ -84,15 +84,58 @@ export type SyncOp = {
   value: SyncRecordValue | null;
 };
 
-export type SyncPullResult = { rev: number; records: SyncRecord[] };
+export const SYNC_PUSH_BATCH_BYTES = 1024 * 1024;
+
+/** Batches leave room for the RPC envelope under the host's 4 MiB limit. */
+export function syncPushBatches(ops: readonly SyncOp[]): {
+  batches: SyncOp[][];
+  invalid: SyncOp[];
+} {
+  const batches: SyncOp[][] = [];
+  const invalid: SyncOp[] = [];
+  let batch: SyncOp[] = [];
+  let bytes = 256;
+  const encoder = new TextEncoder();
+  for (const op of ops) {
+    const size = encoder.encode(JSON.stringify(op)).byteLength + 1;
+    if (size + 256 > SYNC_PUSH_BATCH_BYTES) {
+      invalid.push(op);
+      continue;
+    }
+    if (
+      batch.length &&
+      (bytes + size > SYNC_PUSH_BATCH_BYTES || batch.length >= 100)
+    ) {
+      batches.push(batch);
+      batch = [];
+      bytes = 256;
+    }
+    batch.push(op);
+    bytes += size;
+  }
+  if (batch.length) batches.push(batch);
+  return { batches, invalid };
+}
+
+export type SyncPullResult = {
+  rev: number;
+  records: SyncRecord[];
+  more?: boolean;
+  /** Fixed end of a paginated pass. Writes beyond this are read next cycle. */
+  untilRev?: number;
+};
 export type SyncPushResult = {
   rev: number;
   applied: { table: SyncTable; id: string; rev: number }[];
   rejected: { table: SyncTable; id: string; current: SyncRecord }[];
+  invalid?: { table: string; id: string; error: string }[];
 };
 
 function isSyncTable(value: unknown): value is SyncTable {
-  return typeof value === "string" && (SYNC_TABLES as readonly string[]).includes(value);
+  return (
+    typeof value === "string" &&
+    (SYNC_TABLES as readonly string[]).includes(value)
+  );
 }
 
 /** A record read back from the host, or `null` when it is malformed. The
@@ -104,7 +147,15 @@ export function parseSyncRecord(value: unknown): SyncRecord | null {
   if (!isSyncTable(raw.table)) return null;
   if (typeof raw.id !== "string" || !raw.id) return null;
   if (!Number.isInteger(raw.rev)) return null;
-  if (raw.value !== null && (typeof raw.value !== "object" || Array.isArray(raw.value)))
+  if (
+    raw.value !== null &&
+    (typeof raw.value !== "object" || Array.isArray(raw.value))
+  )
     return null;
-  return { table: raw.table, id: raw.id, rev: raw.rev as number, value: raw.value ?? null };
+  return {
+    table: raw.table,
+    id: raw.id,
+    rev: raw.rev as number,
+    value: raw.value ?? null,
+  };
 }

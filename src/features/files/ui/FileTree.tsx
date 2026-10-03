@@ -47,8 +47,14 @@ import {
 } from "../model/fileTree";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
-import { GIT_ACTIONS, useRemoteSupports } from "../../connections/model/remoteCapabilities";
-import { remotePollDue, useRemoteLoadFailure } from "../../connections/model/remoteHealth";
+import {
+  GIT_ACTIONS,
+  useRemoteSupports,
+} from "../../connections/model/remoteCapabilities";
+import {
+  remotePollDue,
+  useRemoteLoadFailure,
+} from "../../connections/model/remoteHealth";
 import { RemoteLoadError } from "../../connections/ui/RemoteLoadError";
 import { dragPointToClient } from "../../../shared/lib/dragPoint";
 import {
@@ -832,9 +838,9 @@ export const FileTree = memo(function FileTree({
   }, [cwd]);
 
   useEffect(() => {
-    const unsub = subscribeDirsChanged(() => setEpoch((n) => n + 1));
+    const unsub = subscribeDirsChanged(() => setEpoch((n) => n + 1), cwd);
     const onResume = () => {
-      if (!document.hidden) notifyDirsChanged();
+      if (!document.hidden) notifyDirsChanged(cwd, true);
     };
     window.addEventListener("focus", onResume);
     document.addEventListener("visibilitychange", onResume);
@@ -843,12 +849,12 @@ export const FileTree = memo(function FileTree({
       window.removeEventListener("focus", onResume);
       document.removeEventListener("visibilitychange", onResume);
     };
-  }, []);
+  }, [cwd]);
 
   useEffect(() => {
     if (!cwd.startsWith(REMOTE_PATH_PREFIX)) return;
     const timer = window.setInterval(() => {
-      if (!document.hidden && remotePollDue(cwd)) notifyDirsChanged();
+      if (!document.hidden && remotePollDue(cwd)) notifyDirsChanged(cwd, true);
     }, 5000);
     return () => window.clearInterval(timer);
   }, [cwd]);

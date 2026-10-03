@@ -22,9 +22,29 @@ export function AttachmentChip({
   onInsertToken,
 }: Props) {
   const [previewOpen, setPreviewOpen] = useState(false);
-  const preview = attachmentPreviewSrc(attachment);
+  const [loadedPreview, setLoadedPreview] = useState<string>();
+  const [loading, setLoading] = useState(false);
+  const [previewError, setPreviewError] = useState(false);
+  const preview = loadedPreview ?? attachmentPreviewSrc(attachment);
+  const loadPreview = async () => {
+    if (!attachment.loadPreview || loading) return;
+    setLoading(true);
+    setPreviewError(false);
+    try {
+      const data = await attachment.loadPreview();
+      setLoadedPreview(attachmentPreviewSrc({ ...attachment, data }));
+      setPreviewOpen(true);
+    } catch {
+      setPreviewError(true);
+    } finally {
+      setLoading(false);
+    }
+  };
   // A gone image has no picture worth showing; it reads as a marked file chip.
-  const image = attachment.kind === "image" && !attachment.missing && preview;
+  const image =
+    attachment.kind === "image" &&
+    !attachment.missing &&
+    attachmentPreviewSrc(attachment);
   const label = token ? tokenLabel(token) : null;
   const labelClass = image
     ? "absolute inset-x-0 bottom-0 truncate rounded-b-lg bg-black/60 px-0.5 text-center text-[9px] leading-3.5 text-white"
@@ -89,8 +109,28 @@ export function AttachmentChip({
               />
             </span>
             <span className="min-w-0 max-w-[140px] truncate text-[11px] leading-none text-content/80">
-              {attachment.name}
+              {attachment.loadPreview ? (
+                <button
+                  type="button"
+                  disabled={loading}
+              aria-label={`Open ${attachment.name} full screen`}
+                  onClick={(event) => {
+                event.stopPropagation();
+                    void loadPreview();
+                  }}
+                  className="cursor-zoom-in hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  {loading ? "Loading…" : attachment.name}
+                </button>
+              ) : (
+                attachment.name
+              )}
             </span>
+            {previewError ? (
+              <span role="alert" className="text-[10px] text-amber-400">
+                Preview unavailable. Try again.
+              </span>
+            ) : null}
             {attachment.missing ? (
               <span className="shrink-0 text-[10px] leading-none text-amber-400">
                 missing
@@ -117,11 +157,14 @@ export function AttachmentChip({
           </button>
         ) : null}
       </div>
-      {image && previewOpen ? (
+      {preview && previewOpen ? (
         <ImageLightbox
           src={preview}
           alt={attachment.name}
-          onClose={() => setPreviewOpen(false)}
+          onClose={() => {
+            setPreviewOpen(false);
+            setLoadedPreview(undefined);
+          }}
         />
       ) : null}
     </>

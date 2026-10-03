@@ -1,21 +1,34 @@
-import { applyRemoteAppearanceRecords, captureLocalAppearanceChanges } from "./syncAppearance";
-import { applyRemoteGroupRecords, captureLocalGroupChanges } from "./syncGroups";
+import {
+  applyRemoteAppearanceRecords,
+  captureLocalAppearanceChanges,
+} from "./syncAppearance";
+import {
+  applyRemoteGroupRecords,
+  captureLocalGroupChanges,
+} from "./syncGroups";
 import { applyRemoteLockRecords, captureLocalLockChanges } from "./syncLock";
-import { applyRemoteProjectRecords, captureLocalProjectChanges, localProjectIdsByPath } from "./syncProjects";
-import { adoptLocalProjects, autoAddRemoteProjects, nameAutoAddedProjects } from "./syncRemoteProjects";
+import {
+  applyRemoteProjectRecords,
+  captureLocalProjectChanges,
+  localProjectIdsByPath,
+} from "./syncProjects";
+import {
+  adoptLocalProjects,
+  autoAddRemoteProjects,
+  nameAutoAddedProjects,
+} from "./syncRemoteProjects";
 import { canonicalJson } from "./canonicalJson";
 import {
   applyPushResult,
-  hasPendingOp,
   hasPulled,
   markPullCompleted,
   markPulled,
+  loadPeerState,
   peerRev,
-  setPeerRev,
   takeOutbox,
 } from "./syncPeerState";
 import { remoteErrorText } from "../../connections/model/remoteFailure";
-import { parseSyncRecord } from "./syncProtocol";
+import { parseSyncRecord, syncPushBatches } from "./syncProtocol";
 import type { SyncPushResult, SyncRecord } from "./syncProtocol";
 
 const mergedListeners = new Set<() => void>();
@@ -26,11 +39,18 @@ export function subscribeSyncMerged(listener: () => void): () => void {
   return () => void mergedListeners.delete(listener);
 }
 
-export const SYNC_MERGED_MESSAGE = "This change was merged with an update from your other machine.";
+export const SYNC_MERGED_MESSAGE =
+  "This change was merged with an update from your other machine.";
 export const SYNC_UNSUPPORTED_MESSAGE = "Update the host on this machine";
 
-export type SyncState = "idle" | "syncing" | "ok" | "error" | "unsupported" | "unlinked";
-export type SyncStatus = { state: SyncState; lastSyncAt?: number; lastError?: string; pendingOps: number };
+export type SyncState =
+  "idle" | "syncing" | "ok" | "error" | "unsupported" | "unlinked";
+export type SyncStatus = {
+  state: SyncState;
+  lastSyncAt?: number;
+  lastError?: string;
+  pendingOps: number;
+};
 
 const NOT_STARTED: SyncStatus = { state: "idle", pendingOps: 0 };
 const statuses = new Map<string, SyncStatus>();
@@ -47,7 +67,10 @@ export function subscribeSyncStatus(listener: () => void): () => void {
 }
 
 /** Merges a change into a machine's status; lastSyncAt and lastError carry over unless overridden. */
-export function recordSyncStatus(machineId: string, patch: Partial<SyncStatus> & { state: SyncState }): void {
+export function recordSyncStatus(
+  machineId: string,
+  patch: Partial<SyncStatus> & { state: SyncState },
+): void {
   statuses.set(machineId, { ...getSyncStatus(machineId), ...patch });
   for (const listener of [...statusListeners]) listener();
 }
@@ -80,7 +103,10 @@ function duringSyncWrite<T>(run: () => T): T {
   }
 }
 
-function applyIncoming(machineId: string, records: readonly SyncRecord[]): void {
+function applyIncoming(
+  machineId: string,
+  records: readonly SyncRecord[],
+): void {
   duringSyncWrite(() => {
     applyRemoteProjectRecords(machineId, records);
     applyRemoteGroupRecords(machineId, records);
@@ -98,22 +124,41 @@ function asObject(result: unknown, method: string): Record<string, unknown> {
 
 function parsePushResult(result: unknown): SyncPushResult {
   const raw = asObject(result, "sync.push");
-  const applied = (Array.isArray(raw.applied) ? raw.applied : []).flatMap((entry) => {
-    const record = parseSyncRecord({ ...(entry as object), value: null });
-    return record ? [{ table: record.table, id: record.id, rev: record.rev }] : [];
-  });
-  const rejected = (Array.isArray(raw.rejected) ? raw.rejected : []).flatMap((entry) => {
-    const current = parseSyncRecord((entry as { current?: unknown } | null)?.current);
-    return current ? [{ table: current.table, id: current.id, current }] : [];
-  });
-  return { rev: Number.isInteger(raw.rev) ? (raw.rev as number) : 0, applied, rejected };
+  const applied = (Array.isArray(raw.applied) ? raw.applied : []).flatMap(
+    (entry) => {
+      const record = parseSyncRecord({ ...(entry as object), value: null });
+      return record
+        ? [{ table: record.table, id: record.id, rev: record.rev }]
+        : [];
+    },
+  );
+  const rejected = (Array.isArray(raw.rejected) ? raw.rejected : []).flatMap(
+    (entry) => {
+      const current = parseSyncRecord(
+        (entry as { current?: unknown } | null)?.current,
+      );
+      return current ? [{ table: current.table, id: current.id, current }] : [];
+    },
+  );
+  const invalid = Array.isArray(raw.invalid)
+    ? (raw.invalid as SyncPushResult["invalid"])
+    : undefined;
+  return {
+    rev: Number.isInteger(raw.rev) ? (raw.rev as number) : 0,
+    applied,
+    rejected,
+    invalid,
+  };
 }
 
 /** One push-then-pull round for a single peer (pull first on first contact,
  * so local state never overwrites host state this machine has not read).
  * Project/rail capture always runs before group capture, so an assignment
  * for a path captured in this same cycle is queued immediately. */
-export async function runSyncCycle(machineId: string, request: SyncRequest): Promise<void> {
+export async function runSyncCycle(
+  machineId: string,
+  request: SyncRequest,
+): Promise<void> {
   recordSyncStatus(machineId, { state: "syncing" });
   try {
     await runSyncCycleInner(machineId, request);
@@ -131,7 +176,9 @@ export async function runSyncCycle(machineId: string, request: SyncRequest): Pro
   const adopted = await adoptLocalProjects().catch(() => []);
   const added = await autoAddRemoteProjects().catch(() => []);
   // After this cycle's apply step, so a label that came with it wins.
-  duringSyncWrite(() => nameAutoAddedProjects(machineId, [...adopted, ...added]));
+  duringSyncWrite(() =>
+    nameAutoAddedProjects(machineId, [...adopted, ...added]),
+  );
   recordSyncStatus(machineId, {
     state: "ok",
     lastSyncAt: Date.now(),
@@ -140,21 +187,105 @@ export async function runSyncCycle(machineId: string, request: SyncRequest): Pro
   });
 }
 
-async function pullAndApply(machineId: string, request: SyncRequest): Promise<void> {
-  const pullRaw = asObject(await request("sync.pull", { sinceRev: peerRev(machineId) }), "sync.pull");
-  const records = (Array.isArray(pullRaw.records) ? pullRaw.records : []).flatMap((entry) => {
-    const record = parseSyncRecord(entry);
-    return record ? [record] : [];
-  });
-  if (records.length > 0) {
-    applyIncoming(machineId, records.filter((record) => !hasPendingOp(machineId, record.table, record.id)));
-    markPulled(machineId, records);
+async function pullAndApply(
+  machineId: string,
+  request: SyncRequest,
+): Promise<void> {
+  let untilRev: number | undefined;
+  const initial = !hasPulled(machineId);
+  for (;;) {
+    const sinceRev = peerRev(machineId);
+    const pullRaw = asObject(
+      await request("sync.pull", {
+        sinceRev,
+        paginated: true,
+        ...(untilRev === undefined ? {} : { untilRev }),
+      }),
+      "sync.pull",
+    );
+    if (!Number.isSafeInteger(pullRaw.rev) || Number(pullRaw.rev) < sinceRev)
+      throw new Error("sync.pull returned an invalid revision");
+    if (pullRaw.more === true && Number(pullRaw.rev) <= sinceRev)
+      throw new Error("sync.pull did not advance its cursor");
+    if (
+      pullRaw.more === true &&
+      (!Number.isSafeInteger(pullRaw.untilRev) ||
+        Number(pullRaw.untilRev) < Number(pullRaw.rev) ||
+        (untilRev !== undefined && Number(pullRaw.untilRev) !== untilRev))
+    )
+      throw new Error("sync.pull returned an invalid page boundary");
+    const records = (
+      Array.isArray(pullRaw.records) ? pullRaw.records : []
+    ).flatMap((entry) => {
+      const record = parseSyncRecord(entry);
+      return record ? [record] : [];
+    });
+    const pending = new Set(
+      takeOutbox(machineId).map((op) => `${op.table}:${op.id}`),
+    );
+    if (records.length > 0) {
+      applyIncoming(
+        machineId,
+        records.filter(
+          (record) => !pending.has(`${record.table}:${record.id}`),
+        ),
+      );
+    }
+    if (
+      !markPulled(machineId, records, {
+        rev: Number(pullRaw.rev),
+        complete: false,
+      })
+    )
+      throw new Error(
+        "Library sync progress could not be saved. Free storage and retry.",
+      );
+    if (pullRaw.more !== true) break;
+    untilRev = Number(pullRaw.untilRev);
   }
-  if (Number.isInteger(pullRaw.rev)) setPeerRev(machineId, pullRaw.rev as number);
+  // A layout/assignment can arrive before the groups or folders it references.
+  // Reapply dependency records from the durable peer cache after all pages,
+  // including when an earlier pass stopped between pages.
+  if (initial || untilRev !== undefined) {
+    const state = loadPeerState(machineId);
+    const pending = new Set(state.outbox.map((op) => `${op.table}:${op.id}`));
+    const dependencies = Object.entries(state.recordValues).flatMap(
+      ([key, json]) => {
+        const split = key.indexOf(":");
+        const table = key.slice(0, split);
+        if (
+          !["groupOrder", "railLayout", "assignment", "appearance"].includes(
+            table,
+          ) ||
+          pending.has(key)
+        )
+          return [];
+        try {
+          const record = parseSyncRecord({
+            table,
+            id: key.slice(split + 1),
+            rev: state.recordRevs[key],
+            value: JSON.parse(json),
+          });
+          return record ? [record] : [];
+        } catch {
+          return [];
+        }
+      },
+    );
+    if (dependencies.length) applyIncoming(machineId, dependencies);
+  }
   markPullCompleted(machineId);
+  if (!hasPulled(machineId))
+    throw new Error(
+      "Library sync completion could not be saved. Free storage and retry.",
+    );
 }
 
-async function runSyncCycleInner(machineId: string, request: SyncRequest): Promise<void> {
+async function runSyncCycleInner(
+  machineId: string,
+  request: SyncRequest,
+): Promise<void> {
   if (!hasPulled(machineId)) await pullAndApply(machineId, request);
 
   duringSyncWrite(() => {
@@ -165,18 +296,31 @@ async function runSyncCycleInner(machineId: string, request: SyncRequest): Promi
   });
 
   const outbox = takeOutbox(machineId);
-  if (outbox.length > 0) {
-    const pushResult = parsePushResult(await request("sync.push", { ops: outbox }));
-    const toAdopt = applyPushResult(machineId, pushResult, outbox);
+  const { batches, invalid } = syncPushBatches(outbox);
+  let invalidOps = invalid.length;
+  for (const batch of batches) {
+    const pushResult = parsePushResult(
+      await request("sync.push", { ops: batch }),
+    );
+    const toAdopt = applyPushResult(machineId, pushResult, batch);
     if (toAdopt.length > 0) {
       const overwrote = toAdopt.some((record) => {
-        const sent = outbox.find((op) => op.table === record.table && op.id === record.id);
-        return !!sent && canonicalJson(sent.value) !== canonicalJson(record.value);
+        const sent = batch.find(
+          (op) => op.table === record.table && op.id === record.id,
+        );
+        return (
+          !!sent && canonicalJson(sent.value) !== canonicalJson(record.value)
+        );
       });
       applyIncoming(machineId, toAdopt);
       if (overwrote) for (const listener of [...mergedListeners]) listener();
     }
+    invalidOps += pushResult.invalid?.length ?? 0;
   }
+  if (invalidOps)
+    throw new Error(
+      "Some library changes exceed the sync limit or are invalid. They remain pending on this computer.",
+    );
 
   await pullAndApply(machineId, request);
 }
@@ -224,11 +368,18 @@ export function startSyncLoop(
         if (only && !eligible.includes(only)) {
           const state = getSyncStatus(only).state;
           if (state !== "unsupported" && state !== "unlinked") {
-            recordSyncStatus(only, { state: "unsupported", lastError: SYNC_UNSUPPORTED_MESSAGE });
+            recordSyncStatus(only, {
+              state: "unsupported",
+              lastError: SYNC_UNSUPPORTED_MESSAGE,
+            });
           }
         }
-        for (const machineId of only ? eligible.filter((id) => id === only) : eligible) {
-          await runSyncCycle(machineId, requestFor(machineId)).catch(() => undefined);
+        for (const machineId of only
+          ? eligible.filter((id) => id === only)
+          : eligible) {
+          await runSyncCycle(machineId, requestFor(machineId)).catch(
+            () => undefined,
+          );
         }
       } finally {
         running = false;
