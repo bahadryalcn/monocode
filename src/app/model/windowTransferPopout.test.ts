@@ -59,8 +59,11 @@ describe("planTabMoveRemainder", () => {
   ];
 
   it("activates a remaining tab of the same project", () => {
-    expect(planTabMoveRemainder(tabs, sessions, ["ta"], "ta", "/p/one")).toEqual({
+    expect(
+      planTabMoveRemainder(tabs, sessions, ["ta"], "ta", "/p/one"),
+    ).toEqual({
       remaining: [tabs[1], tabs[2]],
+      closeWindow: false,
       needsSeed: false,
       nextActiveTabId: "tb",
     });
@@ -84,6 +87,35 @@ describe("planTabMoveRemainder", () => {
       planTabMoveRemainder(tabs, sessions, ["tb"], "ta", "/p/one")
         .nextActiveTabId,
     ).toBeNull();
+  });
+
+  it("closes a drained secondary window without creating a new session", () => {
+    const plan = planTabMoveRemainder(
+      [tabs[0]],
+      sessions,
+      ["ta"],
+      "ta",
+      "/p/one",
+      true,
+    );
+    expect(plan).toMatchObject({
+      remaining: [],
+      closeWindow: true,
+      needsSeed: false,
+    });
+  });
+
+  it("keeps a secondary window that still owns another project", () => {
+    const plan = planTabMoveRemainder(
+      tabs,
+      sessions,
+      ["ta", "tb"],
+      "ta",
+      "/p/one",
+      true,
+    );
+    expect(plan.closeWindow).toBe(false);
+    expect(plan.remaining).toEqual([tabs[2]]);
   });
 });
 

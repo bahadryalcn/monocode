@@ -138,7 +138,9 @@ type Props = {
   /** Pops the tab into its own window; `position` is the screen drop point. */
   onMoveToNewWindow?: (
     tabId: string,
-    opts?: { position?: { x: number; y: number } },
+    opts?: {
+      position?: { x: number; y: number; clientX?: number; clientY?: number };
+    },
   ) => void;
   /** Drops a move that is waiting for a running response to finish. */
   onCancelMoveToNewWindow?: (tabId: string) => void;
@@ -775,7 +777,11 @@ function TitleBarComponent({
                 )
               ) {
                 onMoveToNewWindow(tabId, {
-                  position: popOutPosition(event.screenX, event.screenY),
+                  position: {
+                    ...popOutPosition(event.screenX, event.screenY),
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                  },
                 });
                 return true;
               }

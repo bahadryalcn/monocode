@@ -9,6 +9,7 @@ import { createProjectTerminal } from "../../features/projects/model/projectTerm
 import type { Session } from "../../features/sessions/model/session";
 import {
   collectWindowTransfer,
+  mergeWindowTransfer,
   restoreTransferredDrafts,
 } from "./windowTransfer";
 import {
@@ -32,6 +33,45 @@ function session(id: string, cwd: string): Session {
 }
 
 describe("collectWindowTransfer", () => {
+  it("reattaches a tab while retaining the destination's tabs and drafts", () => {
+    const existing = newTab("existing");
+    const moved = newTab("moved");
+    const payload = collectWindowTransfer(
+      [moved],
+      [session("moved", "/p")],
+      [moved.id],
+      moved.id,
+      new Set(),
+      "/p",
+    )!;
+    const merged = mergeWindowTransfer(
+      [existing],
+      [session("existing", "/p")],
+      [],
+      payload,
+    );
+    expect(merged.tabs).toEqual([existing, moved]);
+    expect(merged.sessions.map((s) => s.id)).toEqual(["existing", "moved"]);
+    expect(() =>
+      mergeWindowTransfer(merged.tabs, merged.sessions, [], payload),
+    ).toThrow("already open");
+  });
+
+  it("rejects a duplicate conversation under a different tab ID", () => {
+    const incoming = newTab("shared");
+    const existing = newTab("shared");
+    const payload = collectWindowTransfer(
+      [incoming],
+      [session("shared", "/p")],
+      [incoming.id],
+      incoming.id,
+      new Set(),
+      "/p",
+    )!;
+    expect(() => mergeWindowTransfer([existing], [], [], payload)).toThrow(
+      "already open",
+    );
+  });
   it("moves the latest unsent text and leaves unrelated drafts alone", () => {
     setComposerDraft("moving", "message not sent yet");
     setComposerDraft("staying", "keep here");

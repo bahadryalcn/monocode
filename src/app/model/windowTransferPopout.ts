@@ -14,7 +14,9 @@ export function isPointerOutsideWindow(
   height: number,
   margin = POP_OUT_MARGIN,
 ): boolean {
-  return x < -margin || y < -margin || x > width + margin || y > height + margin;
+  return (
+    x < -margin || y < -margin || x > width + margin || y > height + margin
+  );
 }
 
 /** Top-left of the new window so the dropped tab lands under the pointer. */
@@ -43,6 +45,7 @@ export function busySessionsInTabs(
 
 export type TabMoveRemainder = {
   remaining: WorkspaceTab[];
+  closeWindow: boolean;
   /** The project has no tab left here, so a blank session must be seeded. */
   needsSeed: boolean;
   /** Tab to show next when the active tab moved away; null keeps the current. */
@@ -56,18 +59,25 @@ export function planTabMoveRemainder(
   movingIds: string[],
   activeTabId: string,
   projectCwd: string,
+  secondaryWindow = false,
 ): TabMoveRemainder {
   const moving = new Set(movingIds);
   const remaining = tabs.filter((tab) => !moving.has(tab.id));
   const inProject = filterTabsForProject(remaining, sessions, projectCwd);
-  const needsSeed = inProject.length === 0;
+  const closeWindow = secondaryWindow && remaining.length === 0;
+  const needsSeed = !closeWindow && inProject.length === 0;
   const nextActiveTabId = moving.has(activeTabId)
     ? (inProject[0]?.id ?? null)
     : null;
-  return { remaining, needsSeed, nextActiveTabId };
+  return { remaining, closeWindow, needsSeed, nextActiveTabId };
 }
 
-export type WindowMovePosition = { x: number; y: number };
+export type WindowMovePosition = {
+  x: number;
+  y: number;
+  clientX?: number;
+  clientY?: number;
+};
 
 /** Tabs waiting for a running response to finish before moving windows. */
 export type PendingWindowMoves = Record<string, WindowMovePosition | null>;
@@ -102,7 +112,8 @@ export function settlePendingWindowMoves(
   const gone: string[] = [];
   for (const id of Object.keys(pending)) {
     if (!tabs.some((tab) => tab.id === id)) gone.push(id);
-    else if (busySessionsInTabs(tabs, sessions, [id]).length === 0) ready.push(id);
+    else if (busySessionsInTabs(tabs, sessions, [id]).length === 0)
+      ready.push(id);
   }
   return { ready, gone };
 }

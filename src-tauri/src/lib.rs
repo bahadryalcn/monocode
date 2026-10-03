@@ -610,6 +610,8 @@ pub fn run() {
             quick_composer::git_popup::quick_composer_dismiss,
             window_transfer::take_window_transfer,
             window_transfer::window_transfer_ready,
+            window_transfer::reject_window_transfer,
+            window_transfer::move_window_tabs,
             chat_background::save_chat_background,
             chat_background::remove_chat_background,
             chat_background::save_project_chat_background,

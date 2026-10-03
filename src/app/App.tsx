@@ -62,6 +62,7 @@ import {
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { appName } from "../shared/lib/appName";
 import {
@@ -272,6 +273,8 @@ import {
 } from "../features/workspace/model/tabGroups";
 import {
   collectWindowTransfer,
+  mergeWindowTransfer,
+  restoreTransferredDrafts,
   type WindowTransferPayload,
 } from "./model/windowTransfer";
 import {
@@ -806,6 +809,8 @@ import {
   hasInFlightSessions,
   hideCurrentWindow,
   isAppQuitting,
+  abortQuit,
+  relinquishTransferredWindow,
   persistLiveTranscripts,
   persistQuitState,
   reapUnloadRuntime,
@@ -3476,6 +3481,89 @@ function Workspace({
   const [pendingWindowMoves, setPendingWindowMoves] =
     useState<PendingWindowMoves>({});
 
+  useEffect(() => {
+    // Scope this listener to the receiving webview; a global listener would
+    // let every open window consume the same move notification.
+    const listening = getCurrentWebviewWindow().listen<string>(
+      "window_transfer_available",
+      async ({ payload: transferId }) => {
+        let rollback: (() => void) | undefined;
+        try {
+          const raw = await invoke<string | null>("take_window_transfer", {
+            transferId,
+          });
+          if (!raw) return;
+          const incoming = JSON.parse(raw) as WindowTransferPayload;
+          const merged = mergeWindowTransfer(
+            tabsRef.current,
+            sessionsRef.current,
+            projectTerminalsRef.current,
+            incoming,
+          );
+          const priorActive = activeTabIdRef.current;
+          const priorCwd = projectCwdRef.current;
+          const incomingTabIds = new Set(incoming.tabs.map((tab) => tab.id));
+          const incomingSessionIds = new Set(
+            incoming.sessions.map((session) => session.id),
+          );
+          const addedDockIds = new Set(
+            merged.projectTerminals
+              .filter((dock) => !projectTerminalsRef.current.includes(dock))
+              .map((dock) => dock.pane.id),
+          );
+          restoreTransferredDrafts(incoming);
+          for (const session of incoming.sessions) {
+            observedSessions.current.set(session.id, session);
+            lastPersisted.current.set(session.id, persistFingerprint(session));
+            if (session.providerSessionId)
+              lastBoundProvider.current.set(
+                session.id,
+                session.providerSessionId,
+              );
+          }
+          flushSync(() => {
+            setSessions(merged.sessions);
+            setTabs(merged.tabs);
+            setProjectTerminals(merged.projectTerminals);
+            setProjectCwd(incoming.projectCwd);
+            activateTab(incoming.activeTabId);
+          });
+          rollback = () => {
+            for (const id of incomingSessionIds)
+              skipForgetSessionIds.current.add(id);
+            flushSync(() => {
+              setTabs((prev) =>
+                prev.filter((tab) => !incomingTabIds.has(tab.id)),
+              );
+              setSessions((prev) =>
+                prev.filter((session) => !incomingSessionIds.has(session.id)),
+              );
+              setProjectTerminals((prev) =>
+                prev.filter((dock) => !addedDockIds.has(dock.pane.id)),
+              );
+              if (incomingTabIds.has(activeTabIdRef.current)) {
+                setProjectCwd(priorCwd);
+                activateTab(priorActive);
+              }
+            });
+            for (const id of incomingSessionIds)
+              skipForgetSessionIds.current.delete(id);
+          };
+          await invoke("window_transfer_ready", { transferId });
+        } catch (error) {
+          rollback?.();
+          await invoke("reject_window_transfer", {
+            transferId,
+            reason: String(error),
+          }).catch(console.error);
+        }
+      },
+    );
+    return () => {
+      void listening.then((unlisten) => unlisten());
+    };
+  }, [activateTab]);
+
   /** Pops tabs out into a new window. Tabs, their sessions and project
    * terminal docks are handed to the new window's boot, then removed here.
    * Tabs with a turn in flight are queued: their stream is parsed by this
@@ -3483,7 +3571,9 @@ function Workspace({
   const onMoveTabsToNewWindow = useCallback(
     async (
       tabIds: string[],
-      opts?: { position?: { x: number; y: number } },
+      opts?: {
+        position?: { x: number; y: number; clientX?: number; clientY?: number };
+      },
     ) => {
       const movingTabs = tabsRef.current.filter((tab) =>
         tabIds.includes(tab.id),
@@ -3555,6 +3645,7 @@ function Workspace({
           movingIds,
           activeTabIdRef.current,
           projectCwdRef.current,
+          getCurrentWindow().label !== "main",
         );
         const splitDocks = splitProjectTerminalsForMove(
           projectTerminalsRef.current,
@@ -3578,11 +3669,21 @@ function Workspace({
         );
         for (const id of sessionIds) skipForgetSessionIds.current.add(id);
         try {
-          await invoke("open_new_window", {
+          const outcome = await invoke<string>("move_window_tabs", {
             transfer: JSON.stringify(payload),
             x: opts?.position?.x ?? null,
             y: opts?.position?.y ?? null,
+            clientX: opts?.position?.clientX ?? null,
+            clientY: opts?.position?.clientY ?? null,
+            relocate:
+              getCurrentWindow().label !== "main" &&
+              plan.remaining.length === 0,
           });
+          if (outcome === "relocated") {
+            for (const id of sessionIds)
+              skipForgetSessionIds.current.delete(id);
+            return;
+          }
         } catch (error) {
           for (const id of sessionIds) skipForgetSessionIds.current.delete(id);
           void message(
@@ -3592,6 +3693,7 @@ function Workspace({
           return;
         }
 
+        let closeDrainedWindow = false;
         flushSync(() => {
           const currentPlan = planTabMoveRemainder(
             tabsRef.current,
@@ -3599,6 +3701,7 @@ function Workspace({
             movingIds,
             activeTabIdRef.current,
             projectCwdRef.current,
+            getCurrentWindow().label !== "main",
           );
           setProjectTerminals(
             (prev) =>
@@ -3611,7 +3714,8 @@ function Workspace({
           );
           let remainingTabs = currentPlan.remaining;
           let nextActive = currentPlan.nextActiveTabId;
-          if (currentPlan.needsSeed) {
+          closeDrainedWindow = currentPlan.closeWindow;
+          if (currentPlan.needsSeed && !closeDrainedWindow) {
             const seedSession = sessionsRef.current.find((session) =>
               sessionIds.has(session.id),
             );
@@ -3642,6 +3746,18 @@ function Workspace({
             return next;
           });
         });
+        if (closeDrainedWindow) {
+          relinquishTransferredWindow();
+          try {
+            await getCurrentWindow().destroy();
+          } catch (error) {
+            abortQuit();
+            void message(
+              `The tab was moved, but its empty window could not close.\n\n${String(error)}`,
+              { title: "Move tab" },
+            );
+          }
+        }
         for (const id of sessionIds) skipForgetSessionIds.current.delete(id);
       } finally {
         for (const id of movingIds) movingTabIds.current.delete(id);
@@ -11788,14 +11904,16 @@ function Workspace({
       listen("split_down", () =>
         run("split-down", () => actions.current.onSplit("down")),
       ),
-      ...([
-        ["layout_columns", "columns"],
-        ["layout_rows", "rows"],
-        ["layout_grid", "grid"],
-        ["layout_main_left", "main-left"],
-        ["layout_main_top", "main-top"],
-        ["layout_equalize", "equalize"],
-      ] as const).map(([event, preset]) =>
+      ...(
+        [
+          ["layout_columns", "columns"],
+          ["layout_rows", "rows"],
+          ["layout_grid", "grid"],
+          ["layout_main_left", "main-left"],
+          ["layout_main_top", "main-top"],
+          ["layout_equalize", "equalize"],
+        ] as const
+      ).map(([event, preset]) =>
         listen(event, () =>
           run(event, () => actions.current.onArrangeActiveTab(preset)),
         ),

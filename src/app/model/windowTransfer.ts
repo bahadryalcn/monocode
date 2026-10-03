@@ -21,6 +21,43 @@ export type WindowTransferPayload = {
   composerDrafts?: Record<string, ReturnType<typeof composerDraftOf>>;
 };
 
+/** Receiving a tab must preserve the destination's existing conversations. */
+export function mergeWindowTransfer(
+  tabs: WorkspaceTab[],
+  sessions: Session[],
+  projectTerminals: ProjectTerminalDock[],
+  incoming: WindowTransferPayload,
+) {
+  const paneIds = new Set(tabs.flatMap((tab) => leafIds(tab.layout)));
+  if (
+    incoming.tabs.some(
+      (tab) =>
+        tabs.some((existing) => existing.id === tab.id) ||
+        leafIds(tab.layout).some((id) => paneIds.has(id)),
+    ) ||
+    incoming.sessions.some((session) =>
+      sessions.some((existing) => existing.id === session.id),
+    )
+  ) {
+    throw new Error(
+      "This conversation is already open in the destination window.",
+    );
+  }
+  return {
+    tabs: [...tabs, ...incoming.tabs],
+    sessions: [...sessions, ...incoming.sessions],
+    projectTerminals: [
+      ...projectTerminals,
+      ...(incoming.projectTerminals ?? []).filter(
+        (dock) =>
+          !projectTerminals.some(
+            (existing) => existing.projectPath === dock.projectPath,
+          ),
+      ),
+    ],
+  };
+}
+
 export function restoreTransferredDrafts(payload: WindowTransferPayload): void {
   for (const session of payload.sessions) {
     const draft = payload.composerDrafts?.[session.id];

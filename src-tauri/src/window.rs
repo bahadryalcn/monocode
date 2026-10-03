@@ -92,6 +92,7 @@ pub fn open_transfer_window(
         let _ = window.destroy();
         return Err("The new window did not become ready. Your conversation remains in the original window.".into());
     }
+    result.unwrap()?;
     Ok(())
 }
 
@@ -113,7 +114,7 @@ fn build_session_window(
     app: &AppHandle,
     reveal: bool,
     seed: Option<WindowSeed>,
-) -> Result<(WebviewWindow, Option<std::sync::mpsc::Receiver<()>>), String> {
+) -> Result<(WebviewWindow, Option<crate::window_transfer::WindowReady>), String> {
     let mut config = app
         .config()
         .app
