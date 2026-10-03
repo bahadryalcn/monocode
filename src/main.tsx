@@ -1,6 +1,8 @@
 import React, { useLayoutEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { restoreTransferredDrafts } from "./app/model/windowTransfer";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   activateWindowAppearance,
@@ -65,10 +67,27 @@ function dismissBootSplash() {
   });
 }
 
-function BootGate({ children }: { children: React.ReactNode }) {
+function BootGate({
+  children,
+  transferred,
+}: {
+  children: React.ReactNode;
+  transferred: boolean;
+}) {
   useLayoutEffect(() => {
     dismissBootSplash();
-  }, []);
+    if (!transferred) return;
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        void invoke("window_transfer_ready").catch(console.error);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [transferred]);
   return children;
 }
 
@@ -113,9 +132,10 @@ void bootstrap(
   ]) => {
     performance.mark("monocode:workspace-ready");
     const installedUpdate = windowTransfer ? null : consumeInstalledUpdate();
+    if (windowTransfer) restoreTransferredDrafts(windowTransfer);
     appRoot.render(
       <React.StrictMode>
-        <BootGate>
+        <BootGate transferred={!!windowTransfer}>
           <App
             windowTransfer={windowTransfer}
             resumed={resumed}

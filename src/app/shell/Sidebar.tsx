@@ -137,6 +137,7 @@ import {
   filterSessionsByTime,
   harnessesInSessions,
   hasActiveSessionFilters,
+  DEFAULT_SESSION_SIDEBAR_FILTERS,
   loadSessionSidebarFilters,
   saveSessionSidebarFilters,
   type SessionSidebarFilters,
@@ -714,6 +715,17 @@ function SidebarComponent({
     ),
   ].sort(compareSessionSummaries);
   const filtersActive = hasActiveSessionFilters(sessionFilters);
+  const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!openingSessionId) return;
+    if (openingSessionId === activeListedSessionId) {
+      setOpeningSessionId(null);
+      return;
+    }
+    // A load that fails or is cancelled must not leave the card spinning.
+    const timer = window.setTimeout(() => setOpeningSessionId(null), 20_000);
+    return () => window.clearTimeout(timer);
+  }, [activeListedSessionId, openingSessionId]);
   const searchNarrowed = Boolean(searchQuery.trim());
   // Summaries for the whole project stay in `sessions` so filters still work.
   // Folders sit above the ungrouped list. Only a page of ungrouped cards
@@ -1636,6 +1648,9 @@ function SidebarComponent({
     }
     setSelectedSessionIds(new Set());
     setDrawerOpen(false);
+    // Opening reads the conversation first (from disk, or over SSH for a
+    // remote one); the card says so until it is the open session.
+    if (sessionId !== activeListedSessionId) setOpeningSessionId(sessionId);
     onSelectSession(sessionId);
   };
 
@@ -1716,6 +1731,7 @@ function SidebarComponent({
         isSelected={selectedSessionIds.has(session.id)}
         selectionMode={selectionMode}
         busy={listedBusySessionIds.has(session.id)}
+        opening={openingSessionId === session.id}
         done={unseenFinishedIds.has(session.id)}
         linkedUpdate={linkedSessionUpdateIds.has(session.id)}
         needsApproval={listedApprovalSessionIds.has(session.id)}
@@ -2136,11 +2152,25 @@ function SidebarComponent({
                 // just typed, so it stays a quiet line of text. Only the genuine
                 // "this project has nothing in it" case earns the illustration.
                 narrowedByUser ? (
-                  <p className="px-3 py-2 text-[12px] text-content/50">
-                    {searchNarrowed
-                      ? "No matching sessions"
-                      : "No sessions match these filters"}
-                  </p>
+                  <div className="flex flex-col items-start gap-1.5 px-3 py-2 text-[12px] text-content/50">
+                    <p>
+                      {searchNarrowed
+                        ? "No matching sessions"
+                        : "No sessions match these filters"}
+                    </p>
+                    {filtersActive && listedSessions.length > 0 ? (
+                      <button
+                        type="button"
+                        className="rounded-md bg-content/8 px-2 py-1 text-[11px] text-content/80 hover:bg-content/15 hover:text-content"
+                        onClick={() =>
+                          onSessionFiltersChange(DEFAULT_SESSION_SIDEBAR_FILTERS)
+                        }
+                      >
+                        Clear filters ({listedSessions.length}{" "}
+                        {listedSessions.length === 1 ? "session" : "sessions"} hidden)
+                      </button>
+                    ) : null}
+                  </div>
                 ) : remoteProject && !remote.machine ? (
                   <p className="px-3 py-2 text-[12px] text-content/45">
                     This project’s machine isn’t connected on this computer.
@@ -3493,6 +3523,7 @@ const SessionCard = memo(function SessionCard({
   isSelected,
   selectionMode = false,
   busy,
+  opening = false,
   done,
   linkedUpdate,
   needsApproval,
@@ -3515,6 +3546,8 @@ const SessionCard = memo(function SessionCard({
   isSelected: boolean;
   selectionMode?: boolean;
   busy: boolean;
+  /** Clicked and still loading before it opens. */
+  opening?: boolean;
   done: boolean;
   linkedUpdate: boolean;
   needsApproval: boolean;
@@ -3583,6 +3616,11 @@ const SessionCard = memo(function SessionCard({
         <>
           <TerminalSpinner className="inline-block w-3 select-none text-center text-[11px] leading-none text-accent" />
           <span>Working...</span>
+        </>
+      ) : opening ? (
+        <>
+          <Loader className="size-3 animate-spin" strokeWidth={1.75} aria-hidden />
+          <span>Opening…</span>
         </>
       ) : done ? (
         <>

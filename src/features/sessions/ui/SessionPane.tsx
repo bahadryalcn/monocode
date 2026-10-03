@@ -1,4 +1,10 @@
-import { ChevronDown, File, GripVertical, X } from "../../../shared/ui/icons";
+import {
+  ChevronDown,
+  File,
+  GripVertical,
+  Loader,
+  X,
+} from "../../../shared/ui/icons";
 import {
   memo,
   useCallback,
@@ -117,6 +123,7 @@ import { ADOPTED_RUNNING_REASON } from "../../connections/model/adoptedSessions"
 export type SessionPaneProps = {
   session: Session;
   workspaceSwitchingSessionId?: string;
+  windowMovingSessionIds?: ReadonlySet<string>;
   reviewUndoLocked?: boolean;
   visible: boolean;
   focused: boolean;
@@ -282,6 +289,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   allowedModelHarnesses,
   session,
   workspaceSwitchingSessionId,
+  windowMovingSessionIds,
   reviewUndoLocked = false,
   visible,
   focused,
@@ -622,11 +630,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const composer = (
     <Composer
       key={session.id}
-      disabled={workspaceSwitchingSessionId === session.id}
+      disabled={
+        workspaceSwitchingSessionId === session.id ||
+        windowMovingSessionIds?.has(session.id)
+      }
       remoteSession={remoteSession}
       sendBlockedReason={sendBlockedReason}
       sendHeldReason={
-        session.continuingElsewhere ? ADOPTED_RUNNING_REASON : undefined
+        windowMovingSessionIds?.has(session.id)
+          ? "Opening new window… Your draft will move with the conversation."
+          : session.continuingElsewhere
+            ? ADOPTED_RUNNING_REASON
+            : undefined
       }
       remoteFeatures={remoteFeatures}
       allowedModelHarnesses={allowedModelHarnesses}
@@ -803,7 +818,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
       !isAutoContinueDue(session.id) ? (
         <InterruptedNotice
           message={
-            remote ? "The host stopped this turn before it finished." : undefined
+            remote
+              ? "The host stopped this turn before it finished."
+              : undefined
           }
           onContinue={() => onSubmit(session.id, CONTINUE_PROMPT, [])}
         />
@@ -915,7 +932,19 @@ const LocalSessionPane = memo(function LocalSessionPane({
               }
             />
           ) : null}
-          {remoteSessionLoading ? null : isEmpty ? (
+          {remoteSessionLoading ? (
+            <div
+              role="status"
+              className="flex h-full min-h-0 items-center justify-center gap-2 text-[13px] text-content/50"
+            >
+              <Loader
+                className="size-4 shrink-0 animate-spin"
+                strokeWidth={1.75}
+                aria-hidden
+              />
+              Loading conversation…
+            </div>
+          ) : isEmpty ? (
             session.inboxAsk ? (
               <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
                 <DiscussionEmpty message="Explore this item with your agent." />

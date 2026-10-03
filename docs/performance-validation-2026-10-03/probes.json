@@ -1,0 +1,63 @@
+{
+  "generatedAt": "2026-10-03T15:46:40.147Z",
+  "scope": "Synthetic local probes; no real host, credentials, provider, or user database accessed",
+  "results": [
+    {
+      "id": "P05",
+      "probe": "Project sidebar and rail start duplicate in-flight sessions.list calls",
+      "callsForOneProject": 2
+    },
+    {
+      "id": "P11",
+      "probe": "One directory refresh re-reads cached folders of unrelated projects/machines",
+      "refreshed": [
+        "remote://old-machine/project/closed-folder",
+        "remote://current-machine/project/open-folder",
+        "synthetic-local-folder"
+      ]
+    },
+    {
+      "id": "P02",
+      "probe": "Interleaved window heartbeats",
+      "beforeOtherWindow": true,
+      "afterOtherWindow": false
+    },
+    {
+      "id": "P02",
+      "probe": "Wrong window acknowledges another window's Stop",
+      "stopCount": 0,
+      "remainingCommands": 0
+    },
+    {
+      "id": "P13",
+      "probe": "Unchanged revision repeatedly downloads missing image",
+      "polls": 5,
+      "failedImageReads": 5
+    },
+    {
+      "id": "P23",
+      "probe": "Equal block count does not protect newer local content",
+      "newerLocalTextPreserved": false
+    },
+    {
+      "id": "P21",
+      "probe": "64 KiB value guard counts characters instead of UTF-8 bytes",
+      "chars": 30032,
+      "bytes": 90032,
+      "accepted": true
+    },
+    {
+      "id": "P20",
+      "probe": "Unpaginated library pull exceeds desktop RPC response cap",
+      "records": 200,
+      "pullBytes": 18020083,
+      "desktopCap": 16777216
+    },
+    {
+      "id": "P14",
+      "probe": "Small changes retain full snapshot writes",
+      "changedField": "title",
+      "snapshotBytes": 1048917
+    }
+  ]
+}

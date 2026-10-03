@@ -66,3 +66,43 @@ export function planTabMoveRemainder(
     : null;
   return { remaining, needsSeed, nextActiveTabId };
 }
+
+export type WindowMovePosition = { x: number; y: number };
+
+/** Tabs waiting for a running response to finish before moving windows. */
+export type PendingWindowMoves = Record<string, WindowMovePosition | null>;
+
+export function queueWindowMoves(
+  pending: PendingWindowMoves,
+  tabIds: string[],
+  position?: WindowMovePosition,
+): PendingWindowMoves {
+  const next = { ...pending };
+  for (const id of tabIds) next[id] = position ?? null;
+  return next;
+}
+
+export function dropWindowMoves(
+  pending: PendingWindowMoves,
+  tabIds: string[],
+): PendingWindowMoves {
+  if (!tabIds.some((id) => id in pending)) return pending;
+  const next = { ...pending };
+  for (const id of tabIds) delete next[id];
+  return next;
+}
+
+/** Queued tabs that can move now (`ready`) or no longer exist (`gone`). */
+export function settlePendingWindowMoves(
+  pending: PendingWindowMoves,
+  tabs: WorkspaceTab[],
+  sessions: Session[],
+): { ready: string[]; gone: string[] } {
+  const ready: string[] = [];
+  const gone: string[] = [];
+  for (const id of Object.keys(pending)) {
+    if (!tabs.some((tab) => tab.id === id)) gone.push(id);
+    else if (busySessionsInTabs(tabs, sessions, [id]).length === 0) ready.push(id);
+  }
+  return { ready, gone };
+}

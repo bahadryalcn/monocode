@@ -17,11 +17,49 @@ import {
 const REMOVED = "#f87171";
 const ADDED = "#34d399";
 
+const splitScroll = EditorView.domEventHandlers({
+  wheel(event, view) {
+    if (event.defaultPrevented || event.ctrlKey || event.shiftKey || !event.deltaY)
+      return false;
+    const scroller = view.dom.closest<HTMLElement>(".cm-mergeView");
+    if (!scroller || scroller.scrollHeight <= scroller.clientHeight) return false;
+    const lineHeight =
+      parseFloat(getComputedStyle(view.scrollDOM).lineHeight) || 20;
+    const scale =
+      event.deltaMode === 1
+        ? lineHeight
+        : event.deltaMode === 2
+          ? scroller.clientHeight
+          : 1;
+    // A pane is a horizontal scroll container even when its lines wrap. Route
+    // vertical gestures explicitly so browsers cannot latch them to that pane.
+    scroller.scrollTop = Math.max(
+      0,
+      Math.min(
+        scroller.scrollHeight - scroller.clientHeight,
+        scroller.scrollTop + event.deltaY * scale,
+      ),
+    );
+    if (event.deltaX) {
+      view.scrollDOM.scrollLeft +=
+        event.deltaX *
+        (event.deltaMode === 2 ? view.scrollDOM.clientWidth : scale);
+    }
+    event.preventDefault();
+    return true;
+  },
+});
+
 /**
  * Before/after panes with the same red and green as the inline layout. The
  * merge package's own colors are faint and tuned for a light page.
  */
 const splitTheme = EditorView.theme({
+  "&.cm-merge-a .cm-scroller, &.cm-merge-b .cm-scroller": {
+    // The shared merge container owns vertical scrolling. The regular editor
+    // theme's overscroll lock would trap wheel/touchpad gestures in each pane.
+    overscrollBehaviorY: "auto",
+  },
   "&.cm-merge-a .cm-changedLine": {
     backgroundColor: `color-mix(in srgb, ${REMOVED} 16%, transparent)`,
   },
@@ -75,6 +113,7 @@ export function createSplitDiff(options: {
         EditorState.readOnly.of(true),
         EditorView.contentAttributes.of({ "aria-label": "Before (read-only)" }),
         splitTheme,
+        splitScroll,
       ],
     },
     b: {
@@ -83,6 +122,7 @@ export function createSplitDiff(options: {
         options.extensions,
         EditorView.contentAttributes.of({ "aria-label": "After" }),
         splitTheme,
+        splitScroll,
       ],
     },
     diffConfig: DIFF_CONFIG,

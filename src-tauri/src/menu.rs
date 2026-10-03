@@ -136,7 +136,12 @@ pub fn dispatch(app: &AppHandle, id: &str) {
             );
         }
         "new_window" => {
-            let _ = crate::window::open_new_window(app);
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = crate::window::open_new_window(&app) {
+                    eprintln!("Could not open workspace window: {error}");
+                }
+            });
         }
         #[cfg(target_os = "macos")]
         "toggle_autosave" => {

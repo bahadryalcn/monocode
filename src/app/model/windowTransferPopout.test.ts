@@ -3,9 +3,12 @@ import { newTab } from "../../features/workspace/model/layout";
 import type { Session } from "../../features/sessions/model/session";
 import {
   busySessionsInTabs,
+  dropWindowMoves,
   isPointerOutsideWindow,
   planTabMoveRemainder,
   popOutPosition,
+  queueWindowMoves,
+  settlePendingWindowMoves,
 } from "./windowTransferPopout";
 
 function session(id: string, cwd: string, busy = false): Session {
@@ -99,5 +102,34 @@ describe("busySessionsInTabs", () => {
     expect(
       busySessionsInTabs(tabs, sessions, ["ta", "tb"]).map((s) => s.id),
     ).toEqual(["a"]);
+  });
+});
+
+describe("pending window moves", () => {
+  it("queues a busy tab and releases it once its turn ends", () => {
+    const tab = newTab("s1");
+    const pending = queueWindowMoves({}, [tab.id], { x: 10, y: 20 });
+    expect(pending).toEqual({ [tab.id]: { x: 10, y: 20 } });
+
+    expect(
+      settlePendingWindowMoves(pending, [tab], [session("s1", "/p", true)]),
+    ).toEqual({ ready: [], gone: [] });
+    expect(
+      settlePendingWindowMoves(pending, [tab], [session("s1", "/p")]),
+    ).toEqual({ ready: [tab.id], gone: [] });
+  });
+
+  it("forgets a queued tab that was closed meanwhile", () => {
+    const pending = queueWindowMoves({}, ["closed"]);
+    expect(settlePendingWindowMoves(pending, [], [])).toEqual({
+      ready: [],
+      gone: ["closed"],
+    });
+  });
+
+  it("drops entries without touching an unrelated queue", () => {
+    const pending = queueWindowMoves({}, ["a", "b"]);
+    expect(dropWindowMoves(pending, ["a"])).toEqual({ b: null });
+    expect(dropWindowMoves(pending, ["z"])).toBe(pending);
   });
 });

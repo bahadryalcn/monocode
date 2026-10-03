@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { leaf, newTab, newTerminalFile, type WorkspaceTab } from "../../features/workspace/model/layout";
+import {
+  leaf,
+  newTab,
+  newTerminalFile,
+  type WorkspaceTab,
+} from "../../features/workspace/model/layout";
 import { createProjectTerminal } from "../../features/projects/model/projectTerminal";
 import type { Session } from "../../features/sessions/model/session";
-import { collectWindowTransfer } from "./windowTransfer";
+import {
+  collectWindowTransfer,
+  restoreTransferredDrafts,
+} from "./windowTransfer";
+import {
+  composerDraftOf,
+  clearComposerDraft,
+  setComposerDraft,
+} from "../../features/sessions/model/draftCache";
 
 function session(id: string, cwd: string): Session {
   return {
@@ -19,6 +32,26 @@ function session(id: string, cwd: string): Session {
 }
 
 describe("collectWindowTransfer", () => {
+  it("moves the latest unsent text and leaves unrelated drafts alone", () => {
+    setComposerDraft("moving", "message not sent yet");
+    setComposerDraft("staying", "keep here");
+    const tab = { ...newTab("moving"), id: "moving-tab" };
+    const payload = collectWindowTransfer(
+      [tab],
+      [session("moving", "/p"), session("staying", "/p")],
+      [tab.id],
+      tab.id,
+      new Set(),
+      "/p",
+    )!;
+    expect(Object.keys(payload.composerDrafts!)).toEqual(["moving"]);
+    clearComposerDraft("moving");
+    restoreTransferredDrafts(payload);
+    expect(composerDraftOf("moving").text).toBe("message not sent yet");
+    expect(composerDraftOf("staying").text).toBe("keep here");
+    clearComposerDraft("moving");
+    clearComposerDraft("staying");
+  });
   it("collects tabs, sessions, and dirty files for a group", () => {
     const s1 = session("s1", "/Users/me/agent-terminal");
     const s2 = session("s2", "/Users/me/agent-terminal");
@@ -40,7 +73,10 @@ describe("collectWindowTransfer", () => {
       projectCwd: "/Users/me/agent-terminal",
     });
     expect(payload?.tabs.map((tab) => tab.id)).toEqual(["t1", "t2"]);
-    expect(payload?.sessions.map((session) => session.id)).toEqual(["s1", "s2"]);
+    expect(payload?.sessions.map((session) => session.id)).toEqual([
+      "s1",
+      "s2",
+    ]);
     expect(payload?.projectTerminals).toBeUndefined();
   });
 

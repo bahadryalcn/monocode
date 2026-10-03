@@ -1,18 +1,17 @@
 import { getIdentifier, getVersion } from "@tauri-apps/api/app";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { check, type DownloadEvent, type Update } from "@tauri-apps/plugin-updater";
+import {
+  check,
+  type DownloadEvent,
+  type Update,
+} from "@tauri-apps/plugin-updater";
 import { announceUpdateAvailable } from "../../features/settings/model/sounds";
 import { rememberInstalledUpdate } from "./updateNotice";
 import { appName } from "../../shared/lib/appName";
 
 export type UpdaterPhase =
-  | "idle"
-  | "checking"
-  | "current"
-  | "available"
-  | "downloading"
-  | "error";
+  "idle" | "checking" | "current" | "available" | "downloading" | "error";
 
 export type UpdaterSnapshot = {
   phase: UpdaterPhase;
@@ -29,15 +28,15 @@ function isUpdaterNotConfiguredError(error: unknown): boolean {
   return /updater does not have any endpoints set/i.test(text);
 }
 
-// Only the official build may talk to the release feed. The fork and dev
-// builds use other identifiers, so a fork can never download or install the
-// official release over itself. Any failure reading the identifier counts as
-// "not official": the safe default is no updates.
+// Each installed build has its own signed feed in its Tauri config.
+// Development and unknown identities must never contact a release feed.
 const OFFICIAL_IDENTIFIER = "com.monocode.desktop";
+const FORK_IDENTIFIER = "com.monocode.desktop.fork";
 
 export async function isUpdaterEnabled(): Promise<boolean> {
   try {
-    return (await getIdentifier()) === OFFICIAL_IDENTIFIER;
+    const identifier = await getIdentifier();
+    return identifier === OFFICIAL_IDENTIFIER || identifier === FORK_IDENTIFIER;
   } catch {
     return false;
   }
@@ -118,7 +117,7 @@ export async function runUpdateFlow(
       onProgress?.(idle);
       if (manual) {
         await message(
-          "Automatic updates aren't configured for this build.\n\nDownload releases at https://github.com/hardbeat920/monocode/releases/latest",
+          `Automatic updates aren't configured for this build.\n\nDownload releases at https://github.com/${(await getIdentifier()) === FORK_IDENTIFIER ? "bahadryalcn" : "hardbeat920"}/monocode/releases/latest`,
           { title: appName() },
         );
       }
@@ -197,7 +196,9 @@ export async function installPendingUpdate(
       error,
     };
     onProgress?.(failed);
-    await message(`Couldn't install the update.\n\n${error}`, { title: appName() });
+    await message(`Couldn't install the update.\n\n${error}`, {
+      title: appName(),
+    });
     return failed;
   }
 }

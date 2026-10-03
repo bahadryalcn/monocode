@@ -461,6 +461,11 @@ export function cachedRemoteSessionSummary(project: string, sessionId: string) {
   return cachedSessions(project).find((session) => session.id === sessionId);
 }
 
+/** The last `sessions.list` answer per remote project, so the rail and the
+ * open project's sidebar share one request instead of each asking. */
+const recentSessionLists = new Map<string, { at: number; sessions: HostSessionSummary[] }>();
+const SHARED_LIST_MAX_AGE_MS = 5_000;
+
 export type RemoteProjectSessions = {
   /** Undefined when this machine is not connected on this computer. */
   machine?: RemoteMachine;
@@ -513,6 +518,7 @@ export function useRemoteProjectSessions(
         );
         if (disposed) return;
         failures = 0;
+        recentSessionLists.set(project, { at: Date.now(), sessions: next });
         setSessions(next);
         setLoaded(true);
         setFailed(false);
@@ -587,12 +593,18 @@ export function useRemoteRailSessions(
     publish();
     const poll = async () => {
       const results = await Promise.all(targets.map(async ({ project, remote, machine }) => {
+        // The open project's sidebar lists it every few seconds already.
+        const recent = recentSessionLists.get(project);
+        if (recent && Date.now() - recent.at < SHARED_LIST_MAX_AGE_MS)
+          return { project, next: recent.sessions };
         try {
           const next = await remoteRequest<HostSessionSummary[]>(
             machine.id,
             "sessions.list",
             { projectId: remote.projectId },
           );
+          if (Array.isArray(next))
+            recentSessionLists.set(project, { at: Date.now(), sessions: next });
           return Array.isArray(next) ? { project, next } : undefined;
         } catch {
           return undefined;

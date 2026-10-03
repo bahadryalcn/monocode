@@ -1,4 +1,5 @@
 import {
+  AppWindow,
   CheckCircle,
   ChevronLeft,
   ChevronRight,
@@ -47,16 +48,16 @@ import {
 import { WindowControls } from "./WindowControls";
 import { IS_MAC, IS_WIN, MOD, SHIFT } from "../../platform/tauri/platform";
 import type { RecentProject } from "../../features/projects/model/recents";
-import { ExplorerMenu, type ExplorerMenuItem } from "../../features/files/ui/ExplorerMenu";
+import {
+  ExplorerMenu,
+  type ExplorerMenuItem,
+} from "../../features/files/ui/ExplorerMenu";
 import {
   paneDropFromPoint,
   setExternalPaneDrop,
   useExternalTitleTabDrop,
 } from "../../features/workspace/model/paneDrop";
-import type {
-  PaneEdge,
-  SplitDir,
-} from "../../features/workspace/model/layout";
+import type { PaneEdge, SplitDir } from "../../features/workspace/model/layout";
 import type { LayoutPreset } from "../../features/workspace/model/layoutPresets";
 import { keybindingShortcutLabel } from "../../features/settings/model/settings";
 import {
@@ -102,6 +103,9 @@ export type Tab = {
   terminal?: boolean;
   /** A shell pane lives in this tab; ptys cannot change windows. */
   hasTerminal?: boolean;
+  /** Queued to move to a new window once its running response finishes. */
+  pendingWindowMove?: boolean;
+  movingWindow?: boolean;
   /** File id when the whole tab is one preview file; double-click pins it. */
   previewFileId?: string;
 };
@@ -136,6 +140,8 @@ type Props = {
     tabId: string,
     opts?: { position?: { x: number; y: number } },
   ) => void;
+  /** Drops a move that is waiting for a running response to finish. */
+  onCancelMoveToNewWindow?: (tabId: string) => void;
   onGoToFile?: () => void;
   onPinFile?: (fileId: string) => void;
   recents?: RecentProject[];
@@ -215,8 +221,9 @@ export function titleTabClosable(tab: Tab, tabCount: number): boolean {
 
 /** Busy tabs stay: their stream is handled by this window's listeners, and a
  * shell cannot change windows. */
+/** Busy tabs may move too: the move is queued until their response finishes. */
 export function titleTabCanMoveToNewWindow(tab: Tab): boolean {
-  return tab.busyHarnesses.length === 0 && !tab.hasTerminal && !tab.terminal;
+  return !tab.hasTerminal && !tab.terminal && !tab.movingWindow;
 }
 
 export type TitleTabContextAction = "others" | "right" | "left";
@@ -408,6 +415,23 @@ function TitleTabItem({
             >
               {headline}
             </span>
+            {tab.pendingWindowMove || tab.movingWindow ? (
+              <span
+                className="shrink-0 text-accent"
+                title={
+                  tab.movingWindow
+                    ? "Opening new window…"
+                    : "Moves to a new window when the response finishes"
+                }
+                aria-label={
+                  tab.movingWindow
+                    ? "Opening new window…"
+                    : "Moves to a new window when the response finishes"
+                }
+              >
+                <AppWindow className="size-3" strokeWidth={1.75} />
+              </span>
+            ) : null}
             {tab.dirty ? (
               <span
                 className="size-1.5 shrink-0 rounded-full bg-content/70"
@@ -663,6 +687,7 @@ function TitleBarComponent({
   onReorder,
   onPlaceOnPane,
   onMoveToNewWindow,
+  onCancelMoveToNewWindow,
   onGoToFile,
   onPinFile,
   recents = [],
@@ -683,10 +708,8 @@ function TitleBarComponent({
               keybindingShortcutLabel("Pane: Split Right", `${MOD}D`) ??
               undefined,
             splitDownShortcut:
-              keybindingShortcutLabel(
-                "Pane: Split Down",
-                `${MOD}${SHIFT}D`,
-              ) ?? undefined,
+              keybindingShortcutLabel("Pane: Split Down", `${MOD}${SHIFT}D`) ??
+              undefined,
           })
         : [],
     [layout],
@@ -884,18 +907,26 @@ function TitleBarComponent({
         },
         ...(onMoveToNewWindow
           ? [
-              {
-                kind: "item" as const,
-                id: "new-window",
-                label: "Move to New Window",
-                disabled: !titleTabCanMoveToNewWindow(contextTab),
-                description:
-                  contextTab.busyHarnesses.length > 0
-                    ? "Wait for the running response to finish"
-                    : contextTab.hasTerminal || contextTab.terminal
-                      ? "Terminals cannot move between windows"
-                      : undefined,
-              },
+              contextTab.pendingWindowMove
+                ? {
+                    kind: "item" as const,
+                    id: "cancel-new-window",
+                    label: "Cancel Move to New Window",
+                    description: "Waiting for the running response to finish",
+                  }
+                : {
+                    kind: "item" as const,
+                    id: "new-window",
+                    label: "Move to New Window",
+                    disabled: !titleTabCanMoveToNewWindow(contextTab),
+                    description: contextTab.movingWindow
+                      ? "Opening new window…"
+                      : contextTab.hasTerminal || contextTab.terminal
+                        ? "Terminals cannot move between windows"
+                        : contextTab.busyHarnesses.length > 0
+                          ? "Moves once the running response finishes"
+                          : undefined,
+                  },
             ]
           : []),
         { kind: "sep" },
@@ -961,6 +992,10 @@ function TitleBarComponent({
     }
     if (id === "new-window") {
       onMoveToNewWindow?.(contextTab.id);
+      return;
+    }
+    if (id === "cancel-new-window") {
+      onCancelMoveToNewWindow?.(contextTab.id);
       return;
     }
     if (id === "archive") {

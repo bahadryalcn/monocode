@@ -1,0 +1,782 @@
+{
+  "scope": "Passive process sample; user interaction and window visibility not controlled; working sets may share pages",
+  "logicalProcessors": 32,
+  "elapsedSeconds": 16.68,
+  "samples": [
+    {
+      "time": "2026-10-03T18:37:27.4636437+03:00",
+      "processes": [
+        {
+          "id": 64260,
+          "parentId": 15304,
+          "name": "monocode",
+          "cpuSeconds": 58.75,
+          "workingSetMB": 77.3,
+          "privateMB": 45.5
+        },
+        {
+          "id": 76600,
+          "parentId": 64260,
+          "name": "msedgewebview2",
+          "cpuSeconds": 30.484,
+          "workingSetMB": 145.2,
+          "privateMB": 49.0
+        },
+        {
+          "id": 47336,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 15.5,
+          "privateMB": 4.4
+        },
+        {
+          "id": 54568,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 555.219,
+          "workingSetMB": 155.0,
+          "privateMB": 283.1
+        },
+        {
+          "id": 43076,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 3.391,
+          "workingSetMB": 42.6,
+          "privateMB": 14.8
+        },
+        {
+          "id": 58964,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 0.094,
+          "workingSetMB": 24.2,
+          "privateMB": 9.5
+        },
+        {
+          "id": 11084,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 922.844,
+          "workingSetMB": 867.0,
+          "privateMB": 805.0
+        },
+        {
+          "id": 60140,
+          "parentId": 38216,
+          "name": "node",
+          "cpuSeconds": 0.125,
+          "workingSetMB": 37.5,
+          "privateMB": 17.7
+        },
+        {
+          "id": 57616,
+          "parentId": 60140,
+          "name": "codex",
+          "cpuSeconds": 8.891,
+          "workingSetMB": 178.3,
+          "privateMB": 106.0
+        },
+        {
+          "id": 22148,
+          "parentId": 57616,
+          "name": "node",
+          "cpuSeconds": 0.094,
+          "workingSetMB": 41.1,
+          "privateMB": 21.9
+        },
+        {
+          "id": 81040,
+          "parentId": 57616,
+          "name": "laya-mcp-server",
+          "cpuSeconds": 0.016,
+          "workingSetMB": 8.6,
+          "privateMB": 2.2
+        },
+        {
+          "id": 10748,
+          "parentId": 81040,
+          "name": "python",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 8.8,
+          "privateMB": 2.4
+        },
+        {
+          "id": 80120,
+          "parentId": 10748,
+          "name": "python",
+          "cpuSeconds": 17.547,
+          "workingSetMB": 1641.6,
+          "privateMB": 2437.5
+        },
+        {
+          "id": 80608,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 2.844,
+          "workingSetMB": 27.5,
+          "privateMB": 9.7
+        },
+        {
+          "id": 3720,
+          "parentId": 33064,
+          "name": "node",
+          "cpuSeconds": 0.125,
+          "workingSetMB": 37.5,
+          "privateMB": 17.8
+        },
+        {
+          "id": 68988,
+          "parentId": 3720,
+          "name": "codex",
+          "cpuSeconds": 7.219,
+          "workingSetMB": 166.4,
+          "privateMB": 93.2
+        },
+        {
+          "id": 34600,
+          "parentId": 68988,
+          "name": "laya-mcp-server",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 8.5,
+          "privateMB": 2.2
+        },
+        {
+          "id": 29540,
+          "parentId": 68988,
+          "name": "node",
+          "cpuSeconds": 0.219,
+          "workingSetMB": 41.2,
+          "privateMB": 22.1
+        },
+        {
+          "id": 70444,
+          "parentId": 34600,
+          "name": "python",
+          "cpuSeconds": 0.016,
+          "workingSetMB": 8.7,
+          "privateMB": 2.4
+        },
+        {
+          "id": 70804,
+          "parentId": 70444,
+          "name": "python",
+          "cpuSeconds": 18.375,
+          "workingSetMB": 1650.1,
+          "privateMB": 2463.2
+        },
+        {
+          "id": 12800,
+          "parentId": 3596,
+          "name": "node",
+          "cpuSeconds": 0.281,
+          "workingSetMB": 45.4,
+          "privateMB": 54.6
+        },
+        {
+          "id": 68800,
+          "parentId": 81540,
+          "name": "node",
+          "cpuSeconds": 0.891,
+          "workingSetMB": 60.9,
+          "privateMB": 68.2
+        },
+        {
+          "id": 47824,
+          "parentId": 51216,
+          "name": "node",
+          "cpuSeconds": 0.172,
+          "workingSetMB": 73.6,
+          "privateMB": 46.3
+        },
+        {
+          "id": 76512,
+          "parentId": 65440,
+          "name": "node",
+          "cpuSeconds": 0.203,
+          "workingSetMB": 48.4,
+          "privateMB": 54.8
+        },
+        {
+          "id": 59604,
+          "parentId": 45392,
+          "name": "node",
+          "cpuSeconds": 22.453,
+          "workingSetMB": 734.1,
+          "privateMB": 726.8
+        }
+      ]
+    },
+    {
+      "time": "2026-10-03T18:37:35.8235431+03:00",
+      "processes": [
+        {
+          "id": 64260,
+          "parentId": 15304,
+          "name": "monocode",
+          "cpuSeconds": 58.844,
+          "workingSetMB": 72.5,
+          "privateMB": 40.5
+        },
+        {
+          "id": 76600,
+          "parentId": 64260,
+          "name": "msedgewebview2",
+          "cpuSeconds": 30.547,
+          "workingSetMB": 142.5,
+          "privateMB": 46.2
+        },
+        {
+          "id": 47336,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 15.5,
+          "privateMB": 4.4
+        },
+        {
+          "id": 54568,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 561.828,
+          "workingSetMB": 154.4,
+          "privateMB": 271.3
+        },
+        {
+          "id": 43076,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 3.406,
+          "workingSetMB": 42.2,
+          "privateMB": 14.5
+        },
+        {
+          "id": 58964,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 0.094,
+          "workingSetMB": 24.2,
+          "privateMB": 9.5
+        },
+        {
+          "id": 11084,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 932.094,
+          "workingSetMB": 839.6,
+          "privateMB": 776.8
+        },
+        {
+          "id": 60140,
+          "parentId": 38216,
+          "name": "node",
+          "cpuSeconds": 0.125,
+          "workingSetMB": 37.5,
+          "privateMB": 17.7
+        },
+        {
+          "id": 57616,
+          "parentId": 60140,
+          "name": "codex",
+          "cpuSeconds": 8.891,
+          "workingSetMB": 178.3,
+          "privateMB": 106.0
+        },
+        {
+          "id": 22148,
+          "parentId": 57616,
+          "name": "node",
+          "cpuSeconds": 0.094,
+          "workingSetMB": 41.1,
+          "privateMB": 21.9
+        },
+        {
+          "id": 81040,
+          "parentId": 57616,
+          "name": "laya-mcp-server",
+          "cpuSeconds": 0.016,
+          "workingSetMB": 8.6,
+          "privateMB": 2.2
+        },
+        {
+          "id": 10748,
+          "parentId": 81040,
+          "name": "python",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 8.8,
+          "privateMB": 2.4
+        },
+        {
+          "id": 80120,
+          "parentId": 10748,
+          "name": "python",
+          "cpuSeconds": 17.547,
+          "workingSetMB": 1641.6,
+          "privateMB": 2437.5
+        },
+        {
+          "id": 80608,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 2.844,
+          "workingSetMB": 27.5,
+          "privateMB": 9.7
+        },
+        {
+          "id": 3720,
+          "parentId": 33064,
+          "name": "node",
+          "cpuSeconds": 0.125,
+          "workingSetMB": 37.5,
+          "privateMB": 17.8
+        },
+        {
+          "id": 68988,
+          "parentId": 3720,
+          "name": "codex",
+          "cpuSeconds": 7.234,
+          "workingSetMB": 166.4,
+          "privateMB": 93.2
+        },
+        {
+          "id": 34600,
+          "parentId": 68988,
+          "name": "laya-mcp-server",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 8.5,
+          "privateMB": 2.2
+        },
+        {
+          "id": 29540,
+          "parentId": 68988,
+          "name": "node",
+          "cpuSeconds": 0.219,
+          "workingSetMB": 41.2,
+          "privateMB": 22.1
+        },
+        {
+          "id": 70444,
+          "parentId": 34600,
+          "name": "python",
+          "cpuSeconds": 0.016,
+          "workingSetMB": 8.7,
+          "privateMB": 2.4
+        },
+        {
+          "id": 70804,
+          "parentId": 70444,
+          "name": "python",
+          "cpuSeconds": 18.375,
+          "workingSetMB": 1650.1,
+          "privateMB": 2463.2
+        },
+        {
+          "id": 12800,
+          "parentId": 3596,
+          "name": "node",
+          "cpuSeconds": 0.281,
+          "workingSetMB": 45.4,
+          "privateMB": 54.6
+        },
+        {
+          "id": 68800,
+          "parentId": 81540,
+          "name": "node",
+          "cpuSeconds": 0.891,
+          "workingSetMB": 60.9,
+          "privateMB": 68.2
+        },
+        {
+          "id": 47824,
+          "parentId": 51216,
+          "name": "node",
+          "cpuSeconds": 0.172,
+          "workingSetMB": 73.6,
+          "privateMB": 46.3
+        },
+        {
+          "id": 76512,
+          "parentId": 65440,
+          "name": "node",
+          "cpuSeconds": 0.203,
+          "workingSetMB": 48.4,
+          "privateMB": 54.8
+        }
+      ]
+    },
+    {
+      "time": "2026-10-03T18:37:44.143407+03:00",
+      "processes": [
+        {
+          "id": 64260,
+          "parentId": 15304,
+          "name": "monocode",
+          "cpuSeconds": 59.047,
+          "workingSetMB": 75.7,
+          "privateMB": 44.5
+        },
+        {
+          "id": 76600,
+          "parentId": 64260,
+          "name": "msedgewebview2",
+          "cpuSeconds": 30.641,
+          "workingSetMB": 143.5,
+          "privateMB": 47.3
+        },
+        {
+          "id": 47336,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 15.5,
+          "privateMB": 4.4
+        },
+        {
+          "id": 54568,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 568.641,
+          "workingSetMB": 154.2,
+          "privateMB": 277.1
+        },
+        {
+          "id": 43076,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 3.406,
+          "workingSetMB": 42.6,
+          "privateMB": 14.9
+        },
+        {
+          "id": 58964,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 0.094,
+          "workingSetMB": 24.2,
+          "privateMB": 9.5
+        },
+        {
+          "id": 11084,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 941.141,
+          "workingSetMB": 808.2,
+          "privateMB": 746.0
+        },
+        {
+          "id": 60140,
+          "parentId": 38216,
+          "name": "node",
+          "cpuSeconds": 0.125,
+          "workingSetMB": 37.5,
+          "privateMB": 17.7
+        },
+        {
+          "id": 57616,
+          "parentId": 60140,
+          "name": "codex",
+          "cpuSeconds": 8.906,
+          "workingSetMB": 178.3,
+          "privateMB": 106.0
+        },
+        {
+          "id": 22148,
+          "parentId": 57616,
+          "name": "node",
+          "cpuSeconds": 0.094,
+          "workingSetMB": 41.1,
+          "privateMB": 21.9
+        },
+        {
+          "id": 81040,
+          "parentId": 57616,
+          "name": "laya-mcp-server",
+          "cpuSeconds": 0.016,
+          "workingSetMB": 8.6,
+          "privateMB": 2.2
+        },
+        {
+          "id": 10748,
+          "parentId": 81040,
+          "name": "python",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 8.8,
+          "privateMB": 2.4
+        },
+        {
+          "id": 80120,
+          "parentId": 10748,
+          "name": "python",
+          "cpuSeconds": 17.547,
+          "workingSetMB": 1641.6,
+          "privateMB": 2437.5
+        },
+        {
+          "id": 80608,
+          "parentId": 76600,
+          "name": "msedgewebview2",
+          "cpuSeconds": 2.844,
+          "workingSetMB": 27.5,
+          "privateMB": 9.7
+        },
+        {
+          "id": 3720,
+          "parentId": 33064,
+          "name": "node",
+          "cpuSeconds": 0.125,
+          "workingSetMB": 37.5,
+          "privateMB": 17.8
+        },
+        {
+          "id": 68988,
+          "parentId": 3720,
+          "name": "codex",
+          "cpuSeconds": 7.297,
+          "workingSetMB": 166.5,
+          "privateMB": 93.3
+        },
+        {
+          "id": 34600,
+          "parentId": 68988,
+          "name": "laya-mcp-server",
+          "cpuSeconds": 0.031,
+          "workingSetMB": 8.5,
+          "privateMB": 2.2
+        },
+        {
+          "id": 29540,
+          "parentId": 68988,
+          "name": "node",
+          "cpuSeconds": 0.219,
+          "workingSetMB": 41.2,
+          "privateMB": 22.1
+        },
+        {
+          "id": 70444,
+          "parentId": 34600,
+          "name": "python",
+          "cpuSeconds": 0.016,
+          "workingSetMB": 8.7,
+          "privateMB": 2.4
+        },
+        {
+          "id": 70804,
+          "parentId": 70444,
+          "name": "python",
+          "cpuSeconds": 18.375,
+          "workingSetMB": 1650.1,
+          "privateMB": 2463.2
+        },
+        {
+          "id": 12800,
+          "parentId": 3596,
+          "name": "node",
+          "cpuSeconds": 0.281,
+          "workingSetMB": 45.4,
+          "privateMB": 54.6
+        },
+        {
+          "id": 68800,
+          "parentId": 81540,
+          "name": "node",
+          "cpuSeconds": 0.891,
+          "workingSetMB": 60.9,
+          "privateMB": 68.2
+        },
+        {
+          "id": 47824,
+          "parentId": 51216,
+          "name": "node",
+          "cpuSeconds": 0.172,
+          "workingSetMB": 73.6,
+          "privateMB": 46.3
+        },
+        {
+          "id": 76512,
+          "parentId": 65440,
+          "name": "node",
+          "cpuSeconds": 0.203,
+          "workingSetMB": 48.4,
+          "privateMB": 54.8
+        }
+      ]
+    }
+  ],
+  "cpu": [
+    {
+      "id": 64260,
+      "name": "monocode",
+      "cpuDeltaSeconds": 0.297,
+      "oneCorePercent": 1.8
+    },
+    {
+      "id": 76600,
+      "name": "msedgewebview2",
+      "cpuDeltaSeconds": 0.157,
+      "oneCorePercent": 0.9
+    },
+    {
+      "id": 47336,
+      "name": "msedgewebview2",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 54568,
+      "name": "msedgewebview2",
+      "cpuDeltaSeconds": 13.422,
+      "oneCorePercent": 80.5
+    },
+    {
+      "id": 43076,
+      "name": "msedgewebview2",
+      "cpuDeltaSeconds": 0.015,
+      "oneCorePercent": 0.1
+    },
+    {
+      "id": 58964,
+      "name": "msedgewebview2",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 11084,
+      "name": "msedgewebview2",
+      "cpuDeltaSeconds": 18.297,
+      "oneCorePercent": 109.7
+    },
+    {
+      "id": 60140,
+      "name": "node",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 57616,
+      "name": "codex",
+      "cpuDeltaSeconds": 0.015,
+      "oneCorePercent": 0.1
+    },
+    {
+      "id": 22148,
+      "name": "node",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 81040,
+      "name": "laya-mcp-server",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 10748,
+      "name": "python",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 80120,
+      "name": "python",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 80608,
+      "name": "msedgewebview2",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 3720,
+      "name": "node",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 68988,
+      "name": "codex",
+      "cpuDeltaSeconds": 0.078,
+      "oneCorePercent": 0.5
+    },
+    {
+      "id": 34600,
+      "name": "laya-mcp-server",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 29540,
+      "name": "node",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 70444,
+      "name": "python",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 70804,
+      "name": "python",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 12800,
+      "name": "node",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 68800,
+      "name": "node",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 47824,
+      "name": "node",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    },
+    {
+      "id": 76512,
+      "name": "node",
+      "cpuDeltaSeconds": 0.0,
+      "oneCorePercent": 0.0
+    }
+  ],
+  "webviewTypes": [
+    {
+      "id": 76600,
+      "type": ""
+    },
+    {
+      "id": 47336,
+      "type": "crashpad-handler"
+    },
+    {
+      "id": 54568,
+      "type": "gpu-process"
+    },
+    {
+      "id": 43076,
+      "type": "utility"
+    },
+    {
+      "id": 58964,
+      "type": "utility"
+    },
+    {
+      "id": 11084,
+      "type": "renderer"
+    },
+    {
+      "id": 80608,
+      "type": "utility"
+    }
+  ]
+}

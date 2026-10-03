@@ -549,7 +549,8 @@ it("keeps an unopened remote conversation docked while its transcript loads", as
   await render();
   const composer = container.querySelector("[data-session-composer]");
   expect(composer?.classList.contains("max-w-4xl")).toBe(true);
-  expect(container.textContent).not.toContain("Loading conversation…");
+  // Says it is loading instead of a blank pane, and never offers a new chat.
+  expect(container.textContent).toContain("Loading conversation…");
   expect(container.textContent).not.toContain("What should we work on?");
 
   await act(async () => {
@@ -558,6 +559,7 @@ it("keeps an unopened remote conversation docked while its transcript loads", as
   });
   await settle();
   expect(container.textContent).toContain("Earlier message");
+  expect(container.textContent).not.toContain("Loading conversation…");
   expect(container.querySelector("[data-session-composer]")).toBe(composer);
 });
 

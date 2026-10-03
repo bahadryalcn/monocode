@@ -20,12 +20,14 @@
     ]
   },
   "bundle": {
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": true
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
-      "endpoints": []
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdGOUY3M0UyQzlBRDI3NUMKUldSY0o2M0o0bk9mZjJobmpSb1dJWkk1YlI5azVYTW1lTEtqSEFCUk9rOTNWYUZJblJ6TTE2bDAK",
+      "endpoints": [
+        "https://github.com/bahadryalcn/monocode/releases/latest/download/latest.json"
+      ]
     }
   }
 }

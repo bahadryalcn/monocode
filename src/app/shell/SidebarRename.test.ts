@@ -2034,3 +2034,44 @@ it("labels preserved sessions as having no branch selected", () => {
   expect(card().textContent).not.toContain("No branch selected");
   expect(card().textContent).toContain("project/main");
 });
+
+describe("sessions hidden by a filter", () => {
+  it("offers to clear the filters that hide every session", () => {
+    localStorage.setItem(
+      "monocode.sessionSidebarFilters",
+      JSON.stringify({ status: { working: false, needsApproval: true, done: false } }),
+    );
+    props.busySessionIds = new Set();
+    act(() => render());
+    expect(card()).toBeNull();
+    const clear = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.startsWith("Clear filters"),
+    );
+    expect(clear?.textContent).toBe("Clear filters (1 session hidden)");
+    act(() => clear!.click());
+    expect(card()).not.toBeNull();
+    expect(JSON.parse(localStorage.getItem("monocode.sessionSidebarFilters")!).status.needsApproval)
+      .toBe(false);
+  });
+});
+
+describe("opening a session", () => {
+  it("shows the clicked card is opening until it is the open session", () => {
+    props.sessions = [1, 2].map((n) => ({
+      ...props.sessions[0],
+      id: `session-${n}`,
+      updatedAt: 100 - n,
+    }));
+    props.busySessionIds = new Set();
+    act(() => render());
+    const second = () =>
+      container.querySelector<HTMLElement>('[data-session-card="session-2"]')!;
+    act(() => second().click());
+    expect(props.onSelectSession).toHaveBeenCalledWith("session-2");
+    expect(second().textContent).toContain("Opening…");
+
+    props = { ...props, activeSessionId: "session-2" };
+    act(() => render());
+    expect(second().textContent).not.toContain("Opening…");
+  });
+});

@@ -34,8 +34,7 @@ describe("tabCopy", () => {
     expect(focusedSession).toEqual({
       headline: "Add custom project logos",
       meta: "opencodeAdapter.ts",
-      tooltip:
-        "agent-terminal · Add custom project logos · opencodeAdapter.ts",
+      tooltip: "agent-terminal · Add custom project logos · opencodeAdapter.ts",
     });
 
     const focusedFile = tabCopy(
@@ -49,8 +48,7 @@ describe("tabCopy", () => {
     expect(focusedFile).toEqual({
       headline: "opencodeAdapter.ts",
       meta: "Add custom project logos",
-      tooltip:
-        "agent-terminal · Add custom project logos · opencodeAdapter.ts",
+      tooltip: "agent-terminal · Add custom project logos · opencodeAdapter.ts",
     });
   });
 
@@ -87,7 +85,10 @@ describe("tabCopy", () => {
 
 describe("tabStripOverflow", () => {
   it("hides both chevrons when the strip fits", () => {
-    expect(tabStripOverflow(0, 400, 400)).toEqual({ left: false, right: false });
+    expect(tabStripOverflow(0, 400, 400)).toEqual({
+      left: false,
+      right: false,
+    });
   });
 
   it("shows only the right chevron at the start", () => {
@@ -95,11 +96,17 @@ describe("tabStripOverflow", () => {
   });
 
   it("shows both chevrons in the middle", () => {
-    expect(tabStripOverflow(200, 400, 800)).toEqual({ left: true, right: true });
+    expect(tabStripOverflow(200, 400, 800)).toEqual({
+      left: true,
+      right: true,
+    });
   });
 
   it("shows only the left chevron at the end", () => {
-    expect(tabStripOverflow(400, 400, 800)).toEqual({ left: true, right: false });
+    expect(tabStripOverflow(400, 400, 800)).toEqual({
+      left: true,
+      right: false,
+    });
   });
 });
 
@@ -146,14 +153,20 @@ describe("titleTabContextCloseIds", () => {
 });
 
 describe("titleTabCanMoveToNewWindow", () => {
+  it("disables another move while the destination is opening", () => {
+    expect(titleTabCanMoveToNewWindow(tab({ movingWindow: true }))).toBe(false);
+  });
   it("allows idle conversation and file tabs", () => {
     expect(titleTabCanMoveToNewWindow(tab())).toBe(true);
   });
 
-  it("keeps tabs with a running response or a terminal", () => {
+  it("allows a busy tab, whose move is queued until the response finishes", () => {
     expect(titleTabCanMoveToNewWindow(tab({ busyHarnesses: ["claude"] }))).toBe(
-      false,
+      true,
     );
+  });
+
+  it("keeps tabs with a terminal", () => {
     expect(titleTabCanMoveToNewWindow(tab({ hasTerminal: true }))).toBe(false);
     expect(titleTabCanMoveToNewWindow(tab({ terminal: true }))).toBe(false);
   });
