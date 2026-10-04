@@ -1416,6 +1416,50 @@ const openRunningChat = () => {
   openExistingChat({ status: "running", runId: "run-1" });
   host!.session.busy = true;
 };
+
+slow(
+  "configures the restored queued model and effort before dispatch",
+  async () => {
+    openExistingChat();
+    providers = ["codex", "cursor"];
+    harnessSwitchSupported = true;
+    catalog = { models: { codex: [gpt], cursor: [cursor] }, errors: {} };
+    host!.session = { ...host!.session, harness: "cursor", model: cursor.id };
+    savedQueue = [
+      {
+        id: "saved-target",
+        text: "use my original effort",
+        attachments: [],
+        modelTarget: {
+          harness: "codex",
+          model: gpt.id,
+          modelSettings: { reasoningEffort: "high" },
+        },
+      },
+    ];
+    await render();
+    await vi.waitFor(() =>
+      expect(queueCard()?.textContent).toContain("restored"),
+    );
+    await act(async () =>
+      [...queueCard()!.querySelectorAll("button")]
+        .find((button) => button.textContent?.includes("Send next"))!
+        .click(),
+    );
+    await vi.waitFor(() => expect(sends()).toHaveLength(1), { timeout: 8_000 });
+    expect(commands[0]).toMatchObject({
+      type: "configure",
+      harness: "codex",
+      model: gpt.id,
+      modelSettings: { reasoningEffort: "high" },
+    });
+    expect(commands[1]).toMatchObject({
+      type: "send",
+      text: "use my original effort",
+    });
+    expect(host!.session.modelSettings).toEqual({ reasoningEffort: "high" });
+  },
+);
 it("shows a host turn as running from its status without requiring the transcript busy flag", async () => {
   openExistingChat({ status: "running", runId: "run-1" });
   host!.session.busy = false;
@@ -1473,6 +1517,8 @@ it("refreshes an adopted conversation without remounting or clearing its unsent 
   expect(composer.value).toBe("my unsent draft");
   expect(container.textContent).toContain("latest host conversation");
   expect(container.textContent).toContain("(local copy)");
+  // Composer drafts survive mounts; leave the next test an empty composer.
+  await type("");
 });
 const whenStopShown = () =>
   vi.waitFor(() => expect(byLabel("Stop")).not.toBeNull(), { timeout: 4_000 });
@@ -1551,7 +1597,16 @@ slow(
     expect(container.querySelector("textarea")!.value).toBe("");
     expect(queueWrites.at(-1)).toMatchObject({
       sessionId: "host-session",
-      queue: [expect.objectContaining({ text: "Also update the docs" })],
+      queue: [
+        expect.objectContaining({
+          text: "Also update the docs",
+          modelTarget: {
+            harness: "codex",
+            model: gpt.id,
+            modelSettings: { ...host!.session.modelSettings },
+          },
+        }),
+      ],
     });
 
     endTurn();

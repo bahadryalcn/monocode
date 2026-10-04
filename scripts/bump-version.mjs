@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const version = process.argv[2];
 if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
-  console.error("usage: npm run set-version -- 0.1.1");
+  console.error("usage: pnpm run set-version 0.1.1");
   process.exit(1);
 }
 

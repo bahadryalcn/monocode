@@ -53,6 +53,7 @@ import {
   sendAfterReconnect,
 } from "../model/remoteConnection";
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
+import { sameQueuedModelTarget } from "../../sessions/model/messageQueue";
 import {
   nextRemoteQueuedMessage,
   queueSessionFields,
@@ -1196,6 +1197,11 @@ function ConnectedRemoteSession({
         text,
         attachments,
         intent: options?.intent,
+        modelTarget: {
+          harness: configuration.harness,
+          model: configuration.model,
+          modelSettings: { ...configuration.settings },
+        },
       });
       return true;
     }
@@ -1249,6 +1255,34 @@ function ConnectedRemoteSession({
   // reachable. A held queue loses nothing: it simply waits for both.
   useEffect(() => {
     if (!nextQueued) return;
+    const target = nextQueued.modelTarget;
+    if (
+      target &&
+      saved &&
+      !sameQueuedModelTarget(target, {
+        harness: saved.harness,
+        model: saved.model,
+        modelSettings: saved.settings,
+      })
+    ) {
+      if (
+        !providers.includes(target.harness as RemoteProvider) ||
+        (target.harness !== saved.harness &&
+          !descriptor?.capabilities.includes("sessions.harnessSwitch"))
+      ) {
+        setError(
+          "The queued message's provider is unavailable on this machine.",
+        );
+        return;
+      }
+      setChanges({
+        harness: target.harness as RemoteProvider,
+        model: target.model,
+        settings: { ...target.modelSettings },
+        mode: saved.mode,
+      });
+      return;
+    }
     const timer = setTimeout(() => {
       const accepted = submitRef.current(
         nextQueued.text,
@@ -1261,7 +1295,15 @@ function ConnectedRemoteSession({
       else setDrainRetry((value) => value + 1);
     }, 0);
     return () => clearTimeout(timer);
-  }, [nextQueued?.id, drainRetry]);
+  }, [
+    nextQueued,
+    drainRetry,
+    saved?.harness,
+    saved?.model,
+    saved?.settings,
+    providers,
+    descriptor?.capabilities,
+  ]);
 
   // After a restart or a reconnect: a run this app saw working that the host
   // now reports as lost is continued once, when the setting says so.

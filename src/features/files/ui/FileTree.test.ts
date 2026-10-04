@@ -198,6 +198,26 @@ describe("FileTree render isolation", () => {
     expect(row("added.ts")).not.toBeNull();
     expect(row("first.ts")).toBeNull();
   });
+
+  it("reads a collapsed folder again when it reopens", async () => {
+    directories.set(cwd, [folder("src")]);
+    const nested = (name: string): FsEntry => ({
+      name,
+      path: `${cwd}/src/${name}`,
+      isDir: false,
+      ignored: false,
+    });
+    directories.set(`${cwd}/src`, [nested("old.ts")]);
+    await refreshDir(cwd);
+    await act(async () => render());
+    await act(async () => row("src").click());
+    expect(row("src/old.ts")).not.toBeNull();
+    await act(async () => row("src").click());
+    directories.set(`${cwd}/src`, [nested("new.ts")]);
+    await act(async () => row("src").click());
+    expect(row("src/new.ts")).not.toBeNull();
+    expect(row("src/old.ts")).toBeNull();
+  });
 });
 
 describe("FileTree excluded files", () => {

@@ -276,6 +276,8 @@ export type Attachment = {
 };
 
 export type QueuedMessage = {
+  /** Enqueue-time selection; absent only on queues saved by older versions. */
+  modelTarget?: ModelTarget;
   id: string;
   text: string;
   attachments: Attachment[];
@@ -447,6 +449,8 @@ export type Session = {
   blocks: Block[];
   /** True while a harness turn is in flight. */
   busy?: boolean;
+  /** Selection of the running turn, separate from the composer's next choice. In-memory only. */
+  runningModelTarget?: ModelTarget;
   /**
    * What the live turn is waiting on after the agent yielded with work still
    * running in the background. In-memory only.

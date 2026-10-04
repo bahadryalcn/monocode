@@ -8,15 +8,15 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-npm ci
+# Dependencies are prepared separately; local installs use update-local.sh.
 
 for target in aarch64-apple-darwin x86_64-apple-darwin; do
-  npx tauri build --target "$target" --bundles app,dmg \
+  pnpm exec tauri build --target "$target" --bundles app,dmg \
     --config src-tauri/tauri.fork.macos.conf.json
 done
 
 # Remote (SSH) projects download these for the app's own version.
-npm run host:package -- --all
+pnpm run host:package --all
 
 out=build/release-artifacts
 rm -rf "$out"

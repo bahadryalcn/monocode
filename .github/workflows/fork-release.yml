@@ -25,26 +25,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.8.2
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - run: npm ci
+      - run: pnpm install --frozen-lockfile
       - name: Validate release version
         run: node scripts/fork-release.mjs validate
       - name: Check frontend
         run: |
-          npm test -- --run src/app/model/updaterConfig.test.ts src/app/model/updater.test.ts src/app/shell/SidebarUpdate.test.ts src/app/shell/SidebarUpdatePolling.test.ts --maxWorkers=2
+          pnpm test --run src/app/model/updaterConfig.test.ts src/app/model/updater.test.ts src/app/shell/SidebarUpdate.test.ts src/app/shell/SidebarUpdatePolling.test.ts --maxWorkers=2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npx tsc --noEmit
+          pnpm exec tsc --noEmit
       - name: Build signed installer
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) { throw 'Missing signing key' }
-          npm run build:windows
+          pnpm run build:windows
       - name: Generate update feed
         run: node scripts/fork-release.mjs feed
       - name: Create draft release and upload all assets before publishing

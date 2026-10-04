@@ -1,4 +1,5 @@
 import { removeAttachmentFromText } from "./attachmentTokens";
+import { HARNESSES, type ModelTarget } from "./session";
 import type {
   Attachment,
   AttachmentKind,
@@ -51,6 +52,14 @@ export function persistableQueue(
     ...(message.noteCard ? { noteCard: message.noteCard } : {}),
     ...(message.handoffCard ? { handoffCard: message.handoffCard } : {}),
     ...(message.intent ? { intent: message.intent } : {}),
+    ...(message.modelTarget
+      ? {
+          modelTarget: {
+            ...message.modelTarget,
+            modelSettings: { ...message.modelTarget.modelSettings },
+          },
+        }
+      : {}),
   }));
 }
 
@@ -85,8 +94,26 @@ export function restoreQueuedMessages(raw: unknown): QueuedMessage[] {
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
     const value = entry as Partial<QueuedMessage>;
-    if (typeof value.id !== "string" || typeof value.text !== "string") continue;
-    const attachments = (Array.isArray(value.attachments) ? value.attachments : [])
+    if (typeof value.id !== "string" || typeof value.text !== "string")
+      continue;
+    const target = value.modelTarget as Partial<ModelTarget> | undefined;
+    if (
+      target !== undefined &&
+      (!target ||
+        !HARNESSES.includes(target.harness!) ||
+        typeof target.model !== "string" ||
+        !target.model ||
+        !target.modelSettings ||
+        typeof target.modelSettings !== "object" ||
+        Array.isArray(target.modelSettings) ||
+        Object.values(target.modelSettings).some(
+          (setting) => typeof setting !== "string",
+        ))
+    )
+      continue;
+    const attachments = (
+      Array.isArray(value.attachments) ? value.attachments : []
+    )
       .map(restoreAttachment)
       .filter((file): file is Attachment => file != null);
     if (!value.text.trim() && attachments.length === 0 && !value.noteCard && !value.handoffCard) {
@@ -96,7 +123,18 @@ export function restoreQueuedMessages(raw: unknown): QueuedMessage[] {
       id: value.id,
       text: value.text,
       attachments,
-      ...(value.noteCard && typeof value.noteCard === "object" ? { noteCard: value.noteCard } : {}),
+      ...(target
+        ? {
+            modelTarget: {
+              harness: target.harness!,
+              model: target.model!,
+              modelSettings: { ...target.modelSettings! },
+            },
+          }
+        : {}),
+      ...(value.noteCard && typeof value.noteCard === "object"
+        ? { noteCard: value.noteCard }
+        : {}),
       ...(value.handoffCard && typeof value.handoffCard === "object"
         ? { handoffCard: value.handoffCard }
         : {}),

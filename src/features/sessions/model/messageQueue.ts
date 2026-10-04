@@ -2,7 +2,34 @@ import { isPreparingHandoff } from "./handoff";
 import type { FollowUpBehavior } from "../../settings/model/settings";
 import { moveItem, orderByIds } from "../../../shared/lib/reorder";
 import { hasMissingAttachment } from "./queuePersistence";
-import type { QueuedMessage, Session, TurnIntent } from "./session";
+import type {
+  ModelTarget,
+  QueuedMessage,
+  Session,
+  TurnIntent,
+} from "./session";
+
+export function queuedModelTarget(
+  session: Pick<Session, "harness" | "model" | "modelSettings">,
+): ModelTarget {
+  return {
+    harness: session.harness,
+    model: session.model,
+    modelSettings: { ...session.modelSettings },
+  };
+}
+
+export function sameQueuedModelTarget(a: ModelTarget, b: ModelTarget): boolean {
+  return (
+    a.harness === b.harness &&
+    a.model === b.model &&
+    Object.keys(a.modelSettings).length ===
+      Object.keys(b.modelSettings).length &&
+    Object.entries(a.modelSettings).every(
+      ([key, value]) => b.modelSettings[key] === value,
+    )
+  );
+}
 
 export function queuedHead(session: Session): QueuedMessage | undefined {
   return session.queuedMessages?.[0];
@@ -75,7 +102,10 @@ export function reorderSessionQueue(session: Session, ids: string[]): Session {
  * A queued row was sent: take it out, and let a queue restored after a restart
  * go back to draining, since the user has just chosen to send from it.
  */
-export function sentQueuedMessage(session: Session, messageId: string): Session {
+export function sentQueuedMessage(
+  session: Session,
+  messageId: string,
+): Session {
   const next = dequeueQueuedMessage(session, messageId);
   return next.queueStatus === "restored"
     ? { ...next, queueStatus: "active" }
@@ -115,7 +145,18 @@ export function queuedMessageForSubmit(
     (entry) => entry.id === messageId,
   );
   if (!message || hasMissingAttachment(message)) return undefined;
-  if (mode === "steer") return message;
+  if (mode === "steer") {
+    if (
+      session.busy &&
+      message.modelTarget &&
+      !sameQueuedModelTarget(
+        message.modelTarget,
+        session.runningModelTarget ?? queuedModelTarget(session),
+      )
+    )
+      return undefined;
+    return message;
+  }
   if (queuedHead(session)?.id !== messageId) return undefined;
   if (!canDispatchQueuedHead(session)) return undefined;
   return message;

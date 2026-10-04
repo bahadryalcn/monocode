@@ -1,0 +1,9 @@
+{
+  "stateRoot": "~/.monocode-build",
+  "windows": { "cargoTarget": "target" },
+  "mac": {
+    "ssh": "macbook",
+    "python": "/opt/homebrew/bin/python3.12",
+    "cargoTarget": "~/projects/monocode/target"
+  }
+}

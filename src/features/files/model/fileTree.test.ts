@@ -7,6 +7,7 @@ import {
   peekDir,
   refreshCachedDirs,
   refreshDir,
+  saveExpanded,
   subscribeDirListings,
   subscribeDirsChanged,
   windowEntries,
@@ -34,6 +35,122 @@ vi.mock("../../../platform/tauri/fs", async (importOriginal) => {
 });
 
 describe("fileTree cache", () => {
+  it("retires an uncached read when its folder is collapsed", async () => {
+    const folder = `${root}/pending`;
+    saveExpanded(root, new Set([root, folder]));
+    let resolve!: (entries: FsEntry[]) => void;
+    listDir.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const pending = listCachedDir(folder);
+    saveExpanded(root, new Set([root]));
+    resolve([entry("late.ts")]);
+    await pending;
+    expect(peekDir(folder)).toBeNull();
+  });
+
+  it("keeps the last remote listing on connection loss, but not after eviction", async () => {
+    const remote = "remote://env/home/project";
+    try {
+      listDir.mockResolvedValueOnce([entry("offline.ts")]);
+      await listCachedDir(remote);
+      listDir.mockRejectedValueOnce(new Error("Machine is unreachable. Check the host and SSH tunnel, then reconnect."));
+      await expect(refreshDir(remote)).rejects.toThrow("unreachable");
+      expect(peekDir(remote)).toEqual([entry("offline.ts")]);
+      let reject!: (error: Error) => void;
+      listDir.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+      const pending = refreshDir(remote);
+      forgetDir(remote);
+      reject(new Error("Machine is unreachable. Check the host and SSH tunnel, then reconnect."));
+      await expect(pending).rejects.toThrow("unreachable");
+      expect(peekDir(remote)).toBeNull();
+    } finally { forgetDir(remote); }
+  });
+  it("drops collapsed descendants and refreshes only visible folders", async () => {
+    const folder = `${root}/folder`;
+    const child = `${folder}/child`;
+    saveExpanded(root, new Set([root, folder, child]));
+    const stop = subscribeDirsChanged(() => {}, root);
+    try {
+      listDir.mockResolvedValue([]);
+      await Promise.all([root, folder, child].map(listCachedDir));
+      saveExpanded(root, new Set([root, child]));
+      expect(peekDir(folder)).toBeNull();
+      expect(peekDir(child)).toBeNull();
+      listDir.mockClear();
+      await refreshCachedDirs([root]);
+      expect(listDir.mock.calls).toEqual([[root]]);
+      saveExpanded(root, new Set([root, folder, child]));
+      await listCachedDir(folder);
+      expect(listDir.mock.calls).toEqual([[root], [folder]]);
+      saveExpanded(root, new Set([folder, child]));
+      expect(peekDir(folder)).toBeNull();
+      expect(peekDir(root)).toEqual([]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("retains a shared root until its last explorer unmounts", async () => {
+    const a = subscribeDirsChanged(() => {}, root);
+    const b = subscribeDirsChanged(() => {}, root);
+    listDir.mockResolvedValue([]);
+    await listCachedDir(root);
+    a();
+    expect(peekDir(root)).toEqual([]);
+    b();
+    expect(peekDir(root)).toBeNull();
+  });
+
+  it("deduplicates reads but a refresh supersedes the old response", async () => {
+    let resolveOld!: (entries: FsEntry[]) => void;
+    listDir.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        }),
+    );
+    const old = listCachedDir(root);
+    expect(listCachedDir(root)).toBe(old);
+    listDir.mockResolvedValueOnce([entry("new.ts")]);
+    await refreshDir(root);
+    resolveOld([entry("old.ts")]);
+    await old;
+    expect(peekDir(root)).toEqual([entry("new.ts")]);
+  });
+
+  it("never restores a forgotten pending read or an unchanged refresh", async () => {
+    listDir.mockResolvedValueOnce([]);
+    await listCachedDir(root);
+    let resolve!: (entries: FsEntry[]) => void;
+    listDir.mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const refreshing = refreshCachedDirs();
+    forgetDir(root);
+    resolve([]);
+    expect(await refreshing).toEqual([]);
+    expect(peekDir(root)).toBeNull();
+  });
+
+  it("a stale failure cannot remove a newer listing", async () => {
+    listDir.mockResolvedValueOnce([]);
+    await listCachedDir(root);
+    let reject!: (error: Error) => void;
+    listDir.mockImplementationOnce(
+      () =>
+        new Promise((_, fail) => {
+          reject = fail;
+        }),
+    );
+    const stale = refreshCachedDirs();
+    listDir.mockResolvedValueOnce([entry("fresh.ts")]);
+    await refreshDir(root);
+    reject(new Error("gone"));
+    expect(await stale).toEqual([]);
+    expect(peekDir(root)).toEqual([entry("fresh.ts")]);
+  });
   it("refreshes only the requested root and bounds concurrent folder reads", async () => {
     const current = `${root}/current`;
     const old = `${root}/old`;

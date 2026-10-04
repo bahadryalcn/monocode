@@ -41,6 +41,7 @@ const ps = (script) =>
       ).toString("base64"),
     ],
     {
+      windowsHide: true,
       // Avoid loading inherited PowerShell 7 modules in Windows PowerShell 5.1.
       env: Object.fromEntries(
         Object.entries(process.env).filter(
@@ -55,7 +56,7 @@ const target = args.includes("--target")
   : `${process.platform}-${process.arch}`;
 const targets = args.includes("--all") ? Object.keys(runtimes) : [target];
 const output = resolve("build/host-packages");
-const cache = resolve("build/host-runtime-cache");
+const cache = resolve(process.env.MONOCODE_HOST_RUNTIME_CACHE ?? "build/host-runtime-cache");
 await mkdir(output, { recursive: true });
 await mkdir(cache, { recursive: true });
 const { version } = JSON.parse(await readFile("package.json", "utf8"));
@@ -151,10 +152,16 @@ for (const target of targets) {
       [join(folder, "host.mjs"), "--version"],
       {
         encoding: "utf8",
+        windowsHide: true,
       },
     ).trim();
     if (actual !== version)
       throw new Error("Packaged host failed its executable smoke test");
+  }
+  // Local installation consumes this directory directly: no ZIP/tar round trip.
+  if (args.includes("--directory-only")) {
+    console.log(`${folder} (${version}, Node ${nodeVersion})`);
+    continue;
   }
   const filename = `monocode-host-${target}.${extension}`;
   await rm(join(output, filename), { force: true });

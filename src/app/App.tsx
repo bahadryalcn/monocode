@@ -512,6 +512,7 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   queuedMessageForSubmit,
+  queuedModelTarget,
   reorderSessionQueue,
   resolveFollowUpRoute,
   sentQueuedMessage,
@@ -7197,6 +7198,8 @@ function Workspace({
             resolved.id,
             modelSettings,
           );
+          if (s.busy && !s.runningModelTarget)
+            next.runningModelTarget = queuedModelTarget(s);
           if (plan.kind === "arm") {
             return { ...next, pendingSwitch: plan.pending };
           }
@@ -7226,7 +7229,17 @@ function Workspace({
     (sessionId: string, modelSettings: Record<string, string>) => {
       saveLastModelSettings(modelSettings);
       setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, modelSettings } : s)),
+        prev.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                modelSettings,
+                runningModelTarget: s.busy
+                  ? (s.runningModelTarget ?? queuedModelTarget(s))
+                  : undefined,
+              }
+            : s,
+        ),
       );
     },
     [],
@@ -7499,6 +7512,21 @@ function Workspace({
       let current = options?.buildTarget
         ? withPlanBuildTarget(draftCleared, options.buildTarget)
         : draftCleared;
+      const queuedMessage = options?.queuedMessageId
+        ? queuedMessageForSubmit(
+            current,
+            options.queuedMessageId,
+            options.followUpBehavior === "steer" ? "steer" : "dispatch",
+          )
+        : undefined;
+      if (options?.queuedMessageId && !queuedMessage) return false;
+      const submitTarget = queuedMessage?.modelTarget ?? options?.buildTarget;
+      if (queuedMessage?.modelTarget) {
+        current =
+          current.busy && options?.followUpBehavior === "steer"
+            ? { ...current, ...queuedMessage.modelTarget }
+            : withPlanBuildTarget(current, queuedMessage.modelTarget);
+      }
       const editedResend = options?.resendEdited
         ? createEditedResendAttempt(current, options.onResendRejected)
         : undefined;
@@ -7666,6 +7694,9 @@ function Workspace({
                         noteCard,
                         handoffCard,
                         intent,
+                        modelTarget: queuedModelTarget(
+                          options?.buildTarget ?? storedCurrent,
+                        ),
                       },
                     ],
                     queueStatus:
@@ -7884,12 +7915,13 @@ function Workspace({
                   ),
                 }
               : s;
-            const selected = options?.buildTarget
-              ? withPlanBuildTarget(draftRemoved, options.buildTarget)
+            const selected = submitTarget
+              ? withPlanBuildTarget(draftRemoved, submitTarget)
               : draftRemoved;
             const titled = isFirstTurn ? titleSeed : selected.title;
             let next: Session = {
               ...selected,
+              runningModelTarget: queuedModelTarget(current),
               providerAccountId,
               usageLimit: undefined,
               worktreePreparing: createDraftWorktree
@@ -9169,7 +9201,21 @@ function Workspace({
       const message = session
         ? queuedMessageForSubmit(session, messageId, "steer")
         : undefined;
-      if (!session || !message) return;
+      if (!session) return;
+      if (!message) {
+        if (
+          session.queuedMessages?.some(
+            (entry) => entry.id === messageId && entry.modelTarget && !entry.attachments.some((file) => file.missing),
+          )
+        ) {
+          enqueueHarnessEvent(sessionId, {
+            type: "status",
+            text: "This queued message uses a different model or effort. Resume the queue to send it as a new turn with its saved settings.",
+          });
+          flushHarnessEvents();
+        }
+        return;
+      }
       if (message.intent === "orchestrate" && session.busy) {
         enqueueHarnessEvent(sessionId, {
           type: "status",
