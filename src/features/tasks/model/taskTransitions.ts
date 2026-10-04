@@ -11,6 +11,8 @@ export type TaskSnapshotEntry = {
   status: TaskStatus;
   needsInput: boolean;
   error?: string;
+  /** The host merged the task on its own. */
+  autoMerged?: boolean;
 };
 
 /** What it remembers of one background automation between polls. */
@@ -70,6 +72,7 @@ export function backgroundSnapshot(
       status: task.status,
       needsInput: Boolean(task.needsInput),
       ...(task.error ? { error: task.error } : {}),
+      ...(task.autoMerged ? { autoMerged: true } : {}),
     });
   for (const automation of automations) {
     if (!automation.host) continue;
@@ -128,6 +131,12 @@ export function backgroundTransitions(
         target: "tasks",
         kind: "finished",
         message: `Ready for review: ${task.title} on ${task.machineName}`,
+      });
+    else if (task.status === "done" && task.autoMerged && before.status !== "done")
+      transitions.push({
+        target: "tasks",
+        kind: "finished",
+        message: `Merged automatically: ${task.title} on ${task.machineName}`,
       });
     else if (task.status === "blocked" && before.status !== "blocked")
       transitions.push({

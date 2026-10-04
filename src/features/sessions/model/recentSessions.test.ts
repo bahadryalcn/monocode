@@ -117,6 +117,16 @@ describe("buildRecentSessions", () => {
 });
 
 describe("liveSessionInfos", () => {
+  it("shows an adopted turn as working despite a transcript conflict", () => {
+    const session = newSession("claude", "/work/a");
+    session.blocks = [{ id: "u1", role: "user", text: "go" }];
+    session.continuingElsewhere = true;
+    session.adoptedSyncConflict = true;
+    expect(liveSessionInfos([session])[0].status).toBe("working");
+    session.continuingElsewhere = undefined;
+    expect(liveSessionInfos([session])[0].status).toBeUndefined();
+  });
+
   function chat(patch: Partial<Session> = {}): Session {
     const session = newSession("claude", "/work/a");
     return {

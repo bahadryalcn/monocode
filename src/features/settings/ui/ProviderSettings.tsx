@@ -39,6 +39,7 @@ import {
   loadLastModelChoice,
   modelsFor,
   resolveModel,
+  modelEffortSetting,
   saveDefaultModel,
   saveLastModelChoice,
   savePickerProviderVisible,
@@ -54,6 +55,10 @@ import {
   HARNESSES,
   HARNESS_TITLE,
   type HarnessId,
+  type RuntimeMode,
+  RUNTIME_MODES,
+  RUNTIME_MODE_LABEL,
+  runtimeModeUnavailableReason,
 } from "../../sessions/model/session";
 import {
   loadProjectProviderSettings,
@@ -62,7 +67,15 @@ import {
   setProjectDefaultProvider,
   setProjectProviderHidden,
   subscribeProjectProviders,
+  setProjectSessionDefaults,
+  type ProviderSessionDefaults,
 } from "../../sessions/model/projectProviders";
+import {
+  providerSessionDefaults,
+  providerSessionDefaultsSnapshot,
+  saveGlobalSessionDefaults,
+  subscribeProviderSessionDefaults,
+} from "../../sessions/model/providerSessionDefaults";
 
 import {
   saveMaskEmails,
@@ -126,6 +139,11 @@ export function ProvidersPage({
     projectProvidersRevision,
   );
   void providersRevision;
+  useSyncExternalStore(
+    subscribeProviderSessionDefaults,
+    providerSessionDefaultsSnapshot,
+    providerSessionDefaultsSnapshot,
+  );
   const [choice, setChoice] = useState(loadLastModelChoice);
   const [defaultModels, setDefaultModels] = useState(loadDefaultModels);
   const [claudeHooks, setClaudeHooks] = useState(loadClaudeHooks);
@@ -240,7 +258,7 @@ export function ProvidersPage({
         description={
           project
             ? `Defaults for ${projectName(project)} only. CLI paths stay global.`
-            : "Pick the model each CLI starts with and which one is the default. CLIs not found on your PATH are left out of the picker."
+            : "Choose the default model, effort and permissions for new conversations. CLIs not found on your PATH are left out of the picker."
         }
       >
         <div className="max-h-[480px] overflow-y-auto">
@@ -277,6 +295,23 @@ export function ProvidersPage({
                 isDefault={isDefault}
                 inPicker={inPicker}
                 pickerLocked={pickerLocked}
+                sessionDefaults={providerSessionDefaults(
+                  harness,
+                  project ?? undefined,
+                )}
+                inheritedDefaults={
+                  project ? providerSessionDefaults(harness) : undefined
+                }
+                scopeDefaults={
+                  project
+                    ? projectSettings.defaults?.[harness]
+                    : providerSessionDefaults(harness)
+                }
+                onSessionDefaultsChange={(next) =>
+                  project
+                    ? setProjectSessionDefaults(project, harness, next)
+                    : saveGlobalSessionDefaults(harness, next)
+                }
                 onDefault={onDefault}
                 onModelChange={onModelChange}
                 onPickerVisible={(visible) => onPickerVisible(harness, visible)}
@@ -597,6 +632,10 @@ export function ProviderRow({
   onDefault,
   onModelChange,
   onPickerVisible,
+  sessionDefaults = {},
+  inheritedDefaults,
+  scopeDefaults = {},
+  onSessionDefaultsChange,
 }: {
   harness: HarnessId;
   selectedModel: string;
@@ -607,6 +646,10 @@ export function ProviderRow({
   onDefault: (harness: HarnessId, model: string) => void;
   onModelChange: (harness: HarnessId, model: string) => void;
   onPickerVisible: (visible: boolean) => void;
+  sessionDefaults?: ProviderSessionDefaults;
+  inheritedDefaults?: ProviderSessionDefaults;
+  scopeDefaults?: ProviderSessionDefaults;
+  onSessionDefaultsChange?: (next: ProviderSessionDefaults) => void;
 }) {
   const models = modelsFor(harness);
   const available = isHarnessAvailable(harness);
@@ -619,6 +662,10 @@ export function ProviderRow({
             : defaultModelId(harness),
         )
       : null;
+  const effort = current ? modelEffortSetting(current) : undefined;
+  const validEffort = effort?.options.some(
+    (option) => option.value === sessionDefaults.effort,
+  );
 
   useEffect(() => {
     if (!available || models.length > 0) return;
@@ -645,36 +692,99 @@ export function ProviderRow({
           : harnessUnavailableHint(harness)
       }
     >
-      {current ? (
-        <Select
-          label={`${HARNESS_TITLE[harness]} model`}
-          value={current.id}
-          onChange={(next) => onModelChange(harness, next)}
-          options={models.map((item) => ({
-            value: item.id,
-            label: item.name,
-          }))}
-        />
-      ) : null}
-      <SecondaryButton
-        onClick={() => current && onDefault(harness, current.id)}
-        disabled={isDefault || !current}
-      >
-        {isDefault ? "Default" : "Use by default"}
-      </SecondaryButton>
-      {available ? (
-        <div className="flex items-center gap-2">
-          <span className="text-[12px] text-content/50">
-            {pickerLocked ? "Hidden globally" : "In picker"}
-          </span>
-          <Toggle
-            label={`Show ${HARNESS_TITLE[harness]} in the model picker`}
-            on={inPicker}
-            onChange={onPickerVisible}
-            disabled={pickerLocked}
-          />
+      <div className="flex flex-col items-end gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {current ? (
+            <Select
+              label={`${HARNESS_TITLE[harness]} model`}
+              value={current.id}
+              onChange={(next) => onModelChange(harness, next)}
+              options={models.map((item) => ({
+                value: item.id,
+                label: item.name,
+              }))}
+            />
+          ) : null}
+          <SecondaryButton
+            onClick={() => current && onDefault(harness, current.id)}
+            disabled={isDefault || !current}
+          >
+            {isDefault ? "Default" : "Use by default"}
+          </SecondaryButton>
+          {available ? (
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-content/50">
+                {pickerLocked ? "Hidden globally" : "In picker"}
+              </span>
+              <Toggle
+                label={`Show ${HARNESS_TITLE[harness]} in the model picker`}
+                on={inPicker}
+                onChange={onPickerVisible}
+                disabled={pickerLocked}
+              />
+            </div>
+          ) : null}
         </div>
-      ) : null}
+        {onSessionDefaultsChange ? (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {effort ? (
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-content/50">Effort</span>
+                <Select
+                  label={`${HARNESS_TITLE[harness]} default effort`}
+                  value={
+                    scopeDefaults.effort && validEffort
+                      ? scopeDefaults.effort
+                      : ""
+                  }
+                  options={[
+                    {
+                      value: "",
+                      label: inheritedDefaults
+                        ? `Global (${inheritedDefaults.effort ?? "automatic"})`
+                        : "Automatic",
+                    },
+                    ...effort.options,
+                  ]}
+                  onChange={(next) =>
+                    onSessionDefaultsChange({
+                      ...scopeDefaults,
+                      effort: next || undefined,
+                    })
+                  }
+                />
+              </div>
+            ) : null}
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-content/50">Permissions</span>
+              <Select
+                label={`${HARNESS_TITLE[harness]} default permissions`}
+                value={scopeDefaults.runtimeMode ?? ""}
+                options={[
+                  {
+                    value: "",
+                    label: inheritedDefaults
+                      ? `Global (${inheritedDefaults.runtimeMode ? RUNTIME_MODE_LABEL[inheritedDefaults.runtimeMode] : "inherit"})`
+                      : "Inherit / Supervised",
+                  },
+                  ...RUNTIME_MODES.filter(
+                    (mode) => !runtimeModeUnavailableReason(harness, mode),
+                  ).map((mode) => ({
+                    value: mode,
+                    label: RUNTIME_MODE_LABEL[mode],
+                  })),
+                ]}
+                onChange={(next) =>
+                  onSessionDefaultsChange({
+                    ...scopeDefaults,
+                    runtimeMode: (next || undefined) as RuntimeMode | undefined,
+                  })
+                }
+              />
+            </div>
+          </div>
+        ) : null}
+      </div>
     </Row>
   );
 }

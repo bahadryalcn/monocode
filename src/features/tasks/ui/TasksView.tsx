@@ -10,10 +10,12 @@ import { AccessPicker } from "../../sessions/ui/AccessPicker";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 import {
   AlertCircle,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
   DashboardSquare,
+  Gauge,
   GitBranch,
   GitMerge,
   LoaderCircle,
@@ -21,6 +23,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RefreshCw,
   RotateCcw,
   Sparkles,
   Square,
@@ -28,6 +31,11 @@ import {
   Undo2,
   X,
 } from "../../../shared/ui/icons";
+import {
+  AUTOMATION_WEEKDAYS,
+  automationScheduleLabel,
+  nextRunPreview,
+} from "../../automations/model/automations";
 import { RUNTIME_MODE_LABEL } from "../../sessions/model/session";
 import { ModelPicker } from "../../sessions/ui/ModelPicker";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
@@ -47,6 +55,14 @@ import type { RemoteMachine } from "../../connections/model/protocol";
 import { parseRemotePath } from "../../connections/model/remoteProjects";
 import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
 import { isProjectLockedIn } from "../../group-lock/model/lockState";
+import {
+  DAILY_SUMMARY_OPEN_EVENT,
+  DAILY_SUMMARY_STORED_EVENT,
+  gatherDailySummary,
+  loadStoredDailySummary,
+  takeSummaryPanelRequest,
+} from "../model/dailySummaryClient";
+import type { DailySummary, SummaryTask } from "../model/dailySummary";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import {
   looksLikeProject,
@@ -105,6 +121,7 @@ import {
   newTaskDraft,
   saveTask,
   probeTaskMachines,
+  formatTaskSpan,
   taskTimeLabel,
   tasksInColumn,
   todoMachines,
@@ -112,6 +129,39 @@ import {
   type BoardTask,
   type TaskDraft,
 } from "../model/taskClient";
+import {
+  MAX_OPEN_LIMIT,
+  MAX_PROPOSALS_LIMIT,
+} from "../model/hostStewards";
+import {
+  STEWARD_STATUS_LABELS,
+  declineProposal,
+  deleteSteward,
+  draftFromSteward,
+  isStewardProposal,
+  listBoardStewardResults,
+  newStewardDraft,
+  runStewardNow,
+  saveSteward,
+  setStewardEnabled,
+  stewardMachines,
+  stewardProjectName,
+  type BoardSteward,
+  type StewardDraft,
+} from "../model/stewardClient";
+import {
+  DAILY_LIMIT_CHOICES,
+  MAX_RUNNING_TASKS_LIMIT,
+  formatAgentMinutes,
+  type HostSettings,
+} from "../model/hostSettings";
+import {
+  dailyLimitNotice,
+  listMachineLimits,
+  saveMachineLimits,
+  settingsMachines,
+  type MachineLimits,
+} from "../model/settingsClient";
 import type { BackgroundSessionTarget } from "../model/backgroundSession";
 
 type Props = {
@@ -257,6 +307,21 @@ function TasksContent({
   const [storedGoals, setGoals] = useState<BoardGoal[]>([]);
   const [goalDraft, setGoalDraft] = useState<GoalDraft | null>(null);
   const [goalFilter, setGoalFilter] = useState(ALL_GOALS);
+  // Machines whose host runs project stewards, and their stewards.
+  const [stewardCapable, setStewardCapable] = useState<RemoteMachine[]>([]);
+  const [storedStewards, setStewards] = useState<BoardSteward[]>([]);
+  const [stewardDraft, setStewardDraft] = useState<StewardDraft | null>(null);
+  const [stewardsOpen, setStewardsOpen] = useState(false);
+  // Machines whose host keeps work limits, and what each reports.
+  const [limitCapable, setLimitCapable] = useState<RemoteMachine[]>([]);
+  const [limits, setLimits] = useState<MachineLimits[]>([]);
+  const [limitsOpen, setLimitsOpen] = useState(false);
+  // The daily summary: the last one sent, or a fresh one built on request.
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [storedSummary, setStoredSummary] = useState(loadStoredDailySummary);
+  const [freshSummary, setFreshSummary] = useState<DailySummary | null>(null);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
 
   const visibleTasks = useMemo(
     () => storedTasks.filter((task) => !isProjectLockedIn(lock, task.cwd)),
@@ -270,6 +335,12 @@ function TasksContent({
       ),
     [lock, storedGoals],
   );
+  const stewards = useMemo(
+    () =>
+      storedStewards.filter((steward) => !isProjectLockedIn(lock, steward.cwd)),
+    [lock, storedStewards],
+  );
+  const dailyNotice = useMemo(() => dailyLimitNotice(limits), [limits]);
   const goalTitles = useMemo(
     () =>
       new Map(goals.map((goal) => [goalKey(goal.machineId, goal.id), goal.title])),
@@ -286,25 +357,66 @@ function TasksContent({
     [goalFilter, visibleTasks],
   );
 
+  // A click on the summary notification opens the panel, also when the view
+  // was not showing yet.
+  useEffect(() => {
+    const open = () => {
+      if (takeSummaryPanelRequest()) setSummaryOpen(true);
+    };
+    const stored = () => setStoredSummary(loadStoredDailySummary());
+    open();
+    window.addEventListener(DAILY_SUMMARY_OPEN_EVENT, open);
+    window.addEventListener(DAILY_SUMMARY_STORED_EVENT, stored);
+    return () => {
+      window.removeEventListener(DAILY_SUMMARY_OPEN_EVENT, open);
+      window.removeEventListener(DAILY_SUMMARY_STORED_EVENT, stored);
+    };
+  }, []);
+  const onRefreshSummary = async () => {
+    setSummaryBusy(true);
+    setSummaryError(null);
+    try {
+      const at = Date.now();
+      setFreshSummary(await gatherDailySummary(at - 24 * 60 * 60 * 1000, at));
+    } catch (cause) {
+      setSummaryError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSummaryBusy(false);
+    }
+  };
+
   const refreshBoard = useCallback(async (isCurrent: () => boolean) => {
     try {
-      const [reach, goalHosts, todoHosts] = await Promise.all([
-        probeTaskMachines(),
-        goalMachines(),
-        todoMachines(),
-      ]);
+      const [reach, goalHosts, todoHosts, stewardHosts, limitHosts] =
+        await Promise.all([
+          probeTaskMachines(),
+          goalMachines(),
+          todoMachines(),
+          stewardMachines(),
+          settingsMachines(),
+        ]);
       if (!isCurrent()) return;
       const capable = reach.capable;
       setMachines(capable);
       setTodoCapable(todoHosts);
       setGoalCapable(goalHosts);
-      const [taskResults, goalResults] = await Promise.all([
-        listBoardTaskResults(capable, reach.unreachableMachines),
-        listBoardGoalResults(goalHosts, reach.unreachableMachines),
-      ]);
+      setStewardCapable(stewardHosts);
+      setLimitCapable(limitHosts);
+      const [taskResults, goalResults, stewardResults, limitResults] =
+        await Promise.all([
+          listBoardTaskResults(capable, reach.unreachableMachines),
+          listBoardGoalResults(goalHosts, reach.unreachableMachines),
+          listBoardStewardResults(stewardHosts, reach.unreachableMachines),
+          listMachineLimits(
+            limitHosts.filter(
+              (machine) =>
+                !reach.unreachableMachines.some((down) => down.id === machine.id),
+            ),
+          ),
+        ]);
       if (!isCurrent()) return;
       // A machine that does not answer keeps its last known cards, marked stale.
-      const results = [...taskResults, ...goalResults];
+      const results = [...taskResults, ...goalResults, ...stewardResults];
       setMissingNotice(
         missingMachinesNotice(
           {
@@ -318,6 +430,8 @@ function TasksContent({
       );
       setTasks(taskResults.flatMap((result) => result.data));
       setGoals(goalResults.flatMap((result) => result.data));
+      setStewards(stewardResults.flatMap((result) => result.data));
+      setLimits(limitResults);
       setNow(Date.now());
     } catch {
       // A board that cannot be read keeps what it shows.
@@ -372,6 +486,67 @@ function TasksContent({
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const beginSteward = () => {
+    const project =
+      cwd && looksLikeProject(cwd) ? cwd : (recents[0]?.path ?? "~");
+    const preferred = defaultSessionChoice(project);
+    const harness = firstEnabledHarness(project, preferred.harness);
+    const model =
+      (preferred.harness === harness ? preferred.model : undefined) ??
+      modelsFor(harness)[0]?.id ??
+      preferredModelId(harness);
+    setError(null);
+    setStewardDraft(newStewardDraft(project, harness, model));
+  };
+
+  const onSaveSteward = async (event: FormEvent) => {
+    event.preventDefault();
+    if (saving || !stewardDraft) return;
+    setSaving(true);
+    try {
+      await saveSteward(stewardCapable, stewardDraft);
+      setStewardDraft(null);
+      setError(null);
+      await refresh();
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const actOnSteward = (
+    steward: BoardSteward,
+    action: () => Promise<unknown>,
+  ) => act({ id: `steward:${steward.machineId}:${steward.id}` }, action);
+
+  const onDeleteSteward = (steward: BoardSteward) => {
+    if (
+      !window.confirm(
+        `Delete the steward for ${stewardProjectName(steward)}? Its suggestions stay on the board.`,
+      )
+    )
+      return;
+    void actOnSteward(steward, () => deleteSteward(steward));
+  };
+
+  const onChangeLimits = async (
+    machineId: string,
+    settings: Partial<HostSettings>,
+  ) => {
+    const machine = limitCapable.find((entry) => entry.id === machineId);
+    if (!machine) return;
+    try {
+      const saved = await saveMachineLimits(machine, settings);
+      setLimits((current) =>
+        current.map((entry) => (entry.machineId === machineId ? saved : entry)),
+      );
+      setError(null);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -516,6 +691,7 @@ function TasksContent({
     onMove: (to: TaskStatus) => onMove(task, to),
     onEdit: () => onEdit(task),
     onDelete: () => onDelete(task),
+    onDecline: () => void act(task, () => declineProposal(task)),
     onOpenSession: task.sessionId ? () => void onOpenSession(task) : undefined,
   });
   const selected = selectedKey
@@ -555,6 +731,42 @@ function TasksContent({
             onChange={setGoalFilter}
           />
         ) : null}
+        {stewardCapable.length > 0 ? (
+          <button
+            type="button"
+            aria-expanded={stewardsOpen}
+            onClick={() => setStewardsOpen((open) => !open)}
+            className={ACTION_OUTLINE}
+          >
+            <Bot className="size-3.5" strokeWidth={1.75} />
+            Stewards
+            {stewards.length > 0 ? (
+              <span className="tabular-nums text-content/45">
+                {stewards.length}
+              </span>
+            ) : null}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          aria-expanded={summaryOpen}
+          onClick={() => setSummaryOpen((open) => !open)}
+          className={ACTION_OUTLINE}
+        >
+          <Check className="size-3.5" strokeWidth={1.75} />
+          Summary
+        </button>
+        {limits.length > 0 ? (
+          <button
+            type="button"
+            aria-expanded={limitsOpen}
+            onClick={() => setLimitsOpen((open) => !open)}
+            className={ACTION_OUTLINE}
+          >
+            <Gauge className="size-3.5" strokeWidth={1.75} />
+            Limits
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={beginGoal}
@@ -586,6 +798,27 @@ function TasksContent({
           <span>{missingNotice}</span>
         </div>
       ) : null}
+      {dailyNotice ? (
+        <div
+          role="status"
+          className="mx-4 mt-4 flex shrink-0 items-start gap-2 rounded-lg border border-amber-400/20 bg-amber-400/8 px-3 py-2 text-[12px] text-amber-400"
+        >
+          <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+          <span>{dailyNotice}</span>
+        </div>
+      ) : null}
+      {summaryOpen ? (
+        <SummaryPanel
+          summary={freshSummary ?? storedSummary}
+          busy={summaryBusy}
+          error={summaryError}
+          onRefresh={() => void onRefreshSummary()}
+          onOpenTask={setSelectedKey}
+        />
+      ) : null}
+      {limitsOpen && limits.length > 0 ? (
+        <LimitsPanel limits={limits} onChange={onChangeLimits} />
+      ) : null}
       {draft ? (
         <TaskForm
           key={draft.id ?? "new"}
@@ -616,6 +849,38 @@ function TasksContent({
           onChange={setGoalDraft}
           onCancel={() => setGoalDraft(null)}
           onSubmit={onCreateGoal}
+        />
+      ) : null}
+      {stewardsOpen && stewardCapable.length > 0 ? (
+        <StewardsPanel
+          stewards={stewards}
+          draft={stewardDraft}
+          recents={recents}
+          machine={
+            stewardDraft
+              ? machineName(stewardCapable, stewardDraft.cwd)
+              : undefined
+          }
+          saving={saving}
+          acting={acting}
+          now={now}
+          onAdd={beginSteward}
+          onEdit={(steward) => {
+            setError(null);
+            setStewardDraft(draftFromSteward(steward));
+          }}
+          onChange={setStewardDraft}
+          onCancel={() => setStewardDraft(null)}
+          onSubmit={onSaveSteward}
+          onToggle={(steward) =>
+            void actOnSteward(steward, () =>
+              setStewardEnabled(steward, !steward.enabled),
+            )
+          }
+          onRunNow={(steward) =>
+            void actOnSteward(steward, () => runStewardNow(steward))
+          }
+          onDelete={onDeleteSteward}
         />
       ) : null}
       {goals.length > 0 ? (
@@ -792,6 +1057,16 @@ function TaskCard({
           <span className="min-w-0 truncate">{goal}</span>
         </p>
       ) : null}
+      {task.source === "steward" ? (
+        <p
+          data-task-suggested
+          title="Suggested by a project steward"
+          className="mb-1 inline-flex h-4 items-center gap-1 rounded-full bg-violet-500/12 px-1.5 text-[10px] font-medium text-violet-400"
+        >
+          <Bot className="size-2.5 shrink-0" />
+          Suggested
+        </p>
+      ) : null}
       <h3
         title={task.prompt}
         className="line-clamp-2 text-[13px] font-semibold leading-snug text-content"
@@ -830,6 +1105,14 @@ function TaskCard({
               ? `${task.branch} merged into ${task.baseBranch}`
               : task.branch}
           </span>
+        </p>
+      ) : null}
+      {task.autoMerged ? (
+        <p
+          data-task-auto-merged
+          className="mt-1 inline-flex h-4 items-center rounded-full bg-emerald-500/12 px-1.5 text-[10px] font-medium text-emerald-400"
+        >
+          Merged automatically
         </p>
       ) : null}
       {waitingFor.length > 0 ? (
@@ -882,6 +1165,8 @@ type TaskActionHandlers = {
   onMove: (to: TaskStatus) => void;
   onEdit: () => void;
   onDelete: () => void;
+  /** Deletes a steward's to-do suggestion and keeps it from coming back. */
+  onDecline: () => void;
   /** Missing while the task has no session yet. */
   onOpenSession?: () => void;
 };
@@ -894,6 +1179,7 @@ function TaskActions({
   onMove,
   onEdit,
   onDelete,
+  onDecline,
   onOpenSession,
 }: { task: BoardTask } & TaskActionHandlers) {
   const can = (to: TaskStatus) => canMoveTask(task.status, to);
@@ -968,7 +1254,11 @@ function TaskActions({
           <Pencil className="size-3" />
         </CardAction>
       ) : null}
-      {task.status === "running" || task.status === "verifying" ? null : (
+      {isStewardProposal(task) ? (
+        <CardAction label="Decline" disabled={busy} onClick={onDecline}>
+          <X className="size-3" />
+        </CardAction>
+      ) : task.status === "running" || task.status === "verifying" ? null : (
         <CardAction label="Delete" disabled={busy} onClick={onDelete}>
           <Trash2 className="size-3" />
         </CardAction>
@@ -1080,6 +1370,14 @@ function TaskDetail({
             Needs input
           </span>
         ) : null}
+        {task.source === "steward" ? (
+          <span
+            data-task-suggested
+            className="inline-flex h-5 items-center rounded-full bg-violet-500/12 px-2 text-[11px] font-medium text-violet-400"
+          >
+            Suggested
+          </span>
+        ) : null}
         <button
           type="button"
           aria-label="Close details"
@@ -1187,6 +1485,12 @@ function TaskDetail({
           ) : null}
           {task.baseBranch ? (
             <DetailRow label="Base branch">{task.baseBranch}</DetailRow>
+          ) : null}
+          {task.autoMerged ? (
+            <DetailRow label="Merge">
+              Merged automatically
+              {task.mergedAt ? ` · ${formatTime(task.mergedAt)}` : ""}
+            </DetailRow>
           ) : null}
           {waitingFor.length > 0 ? (
             <DetailRow label="Waiting for">{waitingFor.join(", ")}</DetailRow>
@@ -1535,6 +1839,11 @@ function TaskForm({
               />
               Review with a second agent
             </label>
+            <AutoMergeField
+              checked={draft.autoMerge && draft.isolate}
+              disabled={!draft.isolate}
+              onChange={(checked) => update("autoMerge", checked)}
+            />
             <label className="flex min-w-[220px] flex-1 items-center gap-2">
               <span className="shrink-0">Check command</span>
               <input
@@ -1550,6 +1859,271 @@ function TaskForm({
         </div>
       ) : null}
     </form>
+  );
+}
+
+/** The option to merge a task's branch once every check passes. */
+function AutoMergeField({
+  checked,
+  disabled,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label
+      className={`flex items-center gap-1.5 ${disabled ? "opacity-50" : "cursor-pointer"}`}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        className={CHECKBOX}
+      />
+      Merge automatically
+      <span className="text-[11px] text-content/40">
+        Merges into the base branch when every check passes
+      </span>
+    </label>
+  );
+}
+
+const DAILY_LIMIT_LABELS: Record<number, string> = {
+  0: "No limit",
+  60: "1 hour",
+  120: "2 hours",
+  240: "4 hours",
+  480: "8 hours",
+  720: "12 hours",
+};
+
+/** Each machine's work limits: how many tasks run at once, how much agent time
+ * a day may use, and how much of today's is gone. */
+const SUMMARY_TIME = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+const SUMMARY_HEADING =
+  "text-[11px] font-medium uppercase tracking-wide text-content/45";
+
+/** What the agents did over a period, across every machine. */
+function SummaryPanel({
+  summary,
+  busy,
+  error,
+  onRefresh,
+  onOpenTask,
+}: {
+  summary: DailySummary | null;
+  busy: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  onOpenTask: (key: string) => void;
+}) {
+  const taskSection = (
+    label: string,
+    items: readonly SummaryTask[],
+    note = "",
+  ) =>
+    items.length ? (
+      <section aria-label={label} className="flex flex-col gap-1">
+        <h3 className={SUMMARY_HEADING}>
+          {label} · {items.length}
+          {note}
+        </h3>
+        <ul className="flex flex-col gap-0.5">
+          {items.map((item) => (
+            <li key={item.key} className="min-w-0 text-[12px] text-content/60">
+              <button
+                type="button"
+                onClick={() => onOpenTask(item.key)}
+                className="max-w-full truncate text-left font-medium text-content/85 hover:text-content hover:underline"
+              >
+                {item.title}
+              </button>{" "}
+              <span className="text-content/45">
+                {item.project} · {item.machineName}
+                {item.detail ? ` · ${item.detail}` : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ) : null;
+  const goalSection = (label: string, goals: DailySummary["goals"]) =>
+    goals.length ? (
+      <section aria-label={label} className="flex flex-col gap-1">
+        <h3 className={SUMMARY_HEADING}>
+          {label} · {goals.length}
+        </h3>
+        <ul className="flex flex-col gap-0.5">
+          {goals.map((goal) => (
+            <li
+              key={`${goal.machineName}:${goal.title}`}
+              className="text-[12px] text-content/60"
+            >
+              <span className="font-medium text-content/85">{goal.title}</span>{" "}
+              <span className="text-content/45">
+                {goal.done} of {goal.total} tasks done · {goal.machineName}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ) : null;
+  const empty =
+    summary != null &&
+    !summary.finished.length &&
+    !summary.blocked.length &&
+    !summary.waiting.length &&
+    !summary.suggestions.length &&
+    !summary.goals.length &&
+    !summary.goalsFinished.length;
+  return (
+    <section
+      aria-label="Summary"
+      className="mx-4 mt-4 flex max-h-[45%] shrink-0 flex-col gap-3 overflow-y-auto rounded-lg border border-content/10 bg-content/3 p-3"
+    >
+      <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 text-[12px] text-content/50">
+          {summary
+            ? `From ${SUMMARY_TIME.format(summary.since)} to ${SUMMARY_TIME.format(summary.until)}`
+            : "No summary yet. One is sent every day at the time set in Settings."}
+        </p>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={busy}
+          className={ACTION_OUTLINE}
+        >
+          <RefreshCw className="size-3.5" strokeWidth={1.75} />
+          {busy ? "Refreshing…" : "Refresh now"}
+        </button>
+      </div>
+      {error ? <p className="text-[12px] text-red-300">{error}</p> : null}
+      {summary ? (
+        <>
+          {empty ? (
+            <p className="text-[12px] text-content/50">No background activity.</p>
+          ) : null}
+          {taskSection(
+            "Finished",
+            summary.finished,
+            summary.autoMerged
+              ? ` (${summary.autoMerged} merged automatically)`
+              : "",
+          )}
+          {taskSection("Blocked", summary.blocked)}
+          {taskSection("Waiting for you", summary.waiting)}
+          {taskSection("New suggestions", summary.suggestions)}
+          {goalSection("Goals in progress", summary.goals)}
+          {goalSection("Goals finished", summary.goalsFinished)}
+          {summary.usage.length ? (
+            <section aria-label="Agent time" className="flex flex-col gap-1">
+              <h3 className={SUMMARY_HEADING}>Agent time today</h3>
+              <ul className="flex flex-col gap-0.5">
+                {summary.usage.map((entry) => (
+                  <li
+                    key={entry.machineName}
+                    className="text-[12px] text-content/60"
+                  >
+                    <span className="font-medium text-content/85">
+                      {entry.machineName}
+                    </span>{" "}
+                    {formatAgentMinutes(entry.usedMinutes)}
+                    {entry.dailyAgentMinutes
+                      ? ` of ${formatAgentMinutes(entry.dailyAgentMinutes)}`
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+          {summary.unreachable.length || summary.outdated.length ? (
+            <p className="text-[12px] text-content/50">
+              Not included:{" "}
+              {[
+                ...summary.unreachable.map((name) => `${name} (not reachable)`),
+                ...summary.outdated.map(
+                  (name) => `${name} (host needs an update)`,
+                ),
+              ].join(", ")}
+            </p>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function LimitsPanel({
+  limits,
+  onChange,
+}: {
+  limits: readonly MachineLimits[];
+  onChange: (machineId: string, settings: Partial<HostSettings>) => void;
+}) {
+  // A limit set some other way stays selectable.
+  const choices = (current: number) =>
+    [...new Set([...DAILY_LIMIT_CHOICES, current])]
+      .sort((a, b) => (a === 0 ? -1 : b === 0 ? 1 : a - b))
+      .map((minutes) => ({
+        value: String(minutes),
+        label: DAILY_LIMIT_LABELS[minutes] ?? formatAgentMinutes(minutes),
+      }));
+  return (
+    <ul
+      aria-label="Work limits"
+      className="mx-4 mt-4 flex shrink-0 flex-col gap-2 rounded-lg border border-content/10 bg-content/3 p-3"
+    >
+      {limits.map((entry) => (
+        <li
+          key={entry.machineId}
+          className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-content/60"
+        >
+          <span className="min-w-24 font-medium text-content/80">
+            {entry.machineName}
+          </span>
+          <span className="flex items-center gap-2">
+            Max concurrent tasks
+            <SearchableSelect
+              variant="pill"
+              searchable={false}
+              label={`Max concurrent tasks on ${entry.machineName}`}
+              value={String(entry.maxRunningTasks)}
+              options={Array.from({ length: MAX_RUNNING_TASKS_LIMIT }, (_, i) => ({
+                value: String(i + 1),
+                label: String(i + 1),
+              }))}
+              onChange={(value) =>
+                onChange(entry.machineId, { maxRunningTasks: Number(value) })
+              }
+            />
+          </span>
+          <span className="flex items-center gap-2">
+            Daily agent time
+            <SearchableSelect
+              variant="pill"
+              searchable={false}
+              label={`Daily agent time on ${entry.machineName}`}
+              value={String(entry.dailyAgentMinutes)}
+              options={choices(entry.dailyAgentMinutes)}
+              onChange={(value) =>
+                onChange(entry.machineId, { dailyAgentMinutes: Number(value) })
+              }
+            />
+          </span>
+          <span className="tabular-nums text-content/50">
+            Used today: {formatAgentMinutes(entry.usedMinutes)}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1898,9 +2472,401 @@ function GoalForm({
           />
           Review each task with a second agent
         </label>
+        <AutoMergeField
+          checked={draft.autoMerge}
+          onChange={(checked) => update("autoMerge", checked)}
+        />
         <span className="text-[11px] text-content/40">
-          Each task runs on its own branch and waits for you to merge it.
+          {draft.autoMerge
+            ? "Each task runs on its own branch."
+            : "Each task runs on its own branch and waits for you to merge it."}
         </span>
+      </div>
+    </form>
+  );
+}
+
+function scheduleOf(draft: StewardDraft) {
+  return {
+    scheduleKind: draft.scheduleKind,
+    minute: draft.minute,
+    time: draft.time,
+    dayOfWeek: draft.dayOfWeek,
+  };
+}
+
+const SCHEDULE_OPTIONS = [
+  { value: "hourly", label: "Hourly" },
+  { value: "daily", label: "Daily" },
+  { value: "weekdays", label: "Weekdays" },
+  { value: "weekly", label: "Weekly" },
+] as const;
+
+/** The stewards above the board: one row per project with its schedule and
+ * last run, and the form that adds or edits one. */
+function StewardsPanel({
+  stewards,
+  draft,
+  recents,
+  machine,
+  saving,
+  acting,
+  now,
+  onAdd,
+  onEdit,
+  onChange,
+  onCancel,
+  onSubmit,
+  onToggle,
+  onRunNow,
+  onDelete,
+}: {
+  stewards: readonly BoardSteward[];
+  draft: StewardDraft | null;
+  recents: RecentProject[];
+  /** The machine that would run the draft's steward, when it is connected. */
+  machine?: string;
+  saving: boolean;
+  acting: string | null;
+  now: number;
+  onAdd: () => void;
+  onEdit: (steward: BoardSteward) => void;
+  onChange: (draft: StewardDraft) => void;
+  onCancel: () => void;
+  onSubmit: (event: FormEvent) => void;
+  onToggle: (steward: BoardSteward) => void;
+  onRunNow: (steward: BoardSteward) => void;
+  onDelete: (steward: BoardSteward) => void;
+}) {
+  return (
+    <section
+      aria-label="Stewards"
+      className="flex max-h-[45%] shrink-0 flex-col gap-1.5 overflow-y-auto border-b border-stroke p-3"
+    >
+      <div className="flex items-center gap-2">
+        <p className="min-w-0 flex-1 text-[12px] text-content/50">
+          A steward reads its project on a schedule and suggests the next work as
+          To do items. Nothing runs until you start it.
+        </p>
+        <button
+          type="button"
+          onClick={onAdd}
+          disabled={draft != null}
+          className={ACTION_OUTLINE}
+        >
+          <Plus className="size-3.5" strokeWidth={1.75} />
+          Add steward
+        </button>
+      </div>
+      {draft ? (
+        <StewardForm
+          draft={draft}
+          recents={recents}
+          machine={machine}
+          saving={saving}
+          onChange={onChange}
+          onCancel={onCancel}
+          onSubmit={onSubmit}
+        />
+      ) : null}
+      <ul aria-label="Steward list" className="flex flex-col gap-1.5">
+        {stewards.map((steward) => {
+          const busy = acting === `steward:${steward.machineId}:${steward.id}`;
+          const running = steward.run != null;
+          return (
+            <li key={`${steward.machineId}:${steward.id}`}>
+              <article
+                aria-label={`Steward for ${stewardProjectName(steward)}`}
+                data-steward-status={steward.lastRunStatus}
+                className="rounded-md border border-content/10 bg-content/3 px-3 py-2"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <Bot className="size-3.5 shrink-0 text-content/45" />
+                  <h3
+                    title={steward.focus || undefined}
+                    className="min-w-0 truncate text-[13px] font-semibold text-content"
+                  >
+                    {stewardProjectName(steward)}
+                  </h3>
+                  <span className="min-w-0 truncate text-[11px] text-content/40">
+                    on {steward.machineName}
+                    {steward.stale ? " (offline, last known)" : ""} ·{" "}
+                    {automationScheduleLabel(steward)}
+                  </span>
+                  <div className="ml-auto flex shrink-0 items-center gap-0.5">
+                    {busy ? (
+                      <LoaderCircle className="mx-1.5 size-3 animate-spin text-content/40" />
+                    ) : null}
+                    <label className="flex cursor-pointer items-center gap-1.5 px-1.5 text-[11px] text-content/60">
+                      <input
+                        type="checkbox"
+                        aria-label="Enabled"
+                        checked={steward.enabled}
+                        disabled={busy}
+                        onChange={() => onToggle(steward)}
+                        className={CHECKBOX}
+                      />
+                      Enabled
+                    </label>
+                    <CardAction
+                      label="Run now"
+                      disabled={busy || running}
+                      onClick={() => onRunNow(steward)}
+                    >
+                      <Play className="size-3" />
+                    </CardAction>
+                    <CardAction
+                      label="Edit"
+                      disabled={busy}
+                      onClick={() => onEdit(steward)}
+                    >
+                      <Pencil className="size-3" />
+                    </CardAction>
+                    <CardAction
+                      label="Delete"
+                      disabled={busy}
+                      onClick={() => onDelete(steward)}
+                    >
+                      <Trash2 className="size-3" />
+                    </CardAction>
+                  </div>
+                </div>
+                <p className="mt-1 break-words text-[11px] leading-snug text-content/50">
+                  {steward.lastRunStatus ? (
+                    <>
+                      Last run: {STEWARD_STATUS_LABELS[steward.lastRunStatus]}
+                      {steward.lastRunAt
+                        ? ` ${formatTaskSpan(now - steward.lastRunAt)} ago`
+                        : ""}
+                      {steward.lastRunStatus === "succeeded" &&
+                      steward.lastProposed !== undefined
+                        ? ` · ${steward.lastProposed} new suggestion${steward.lastProposed === 1 ? "" : "s"}`
+                        : ""}
+                    </>
+                  ) : (
+                    "Has not run yet"
+                  )}
+                  {steward.enabled
+                    ? ` · ${nextRunPreview(steward.nextRunAt)}`
+                    : " · Paused"}
+                </p>
+                {steward.lastRunError &&
+                (steward.lastRunStatus === "failed" ||
+                  steward.lastRunStatus === "skipped") ? (
+                  <p
+                    className={`mt-0.5 break-words text-[11px] leading-snug ${
+                      steward.lastRunStatus === "failed"
+                        ? "text-rose-400"
+                        : "text-content/45"
+                    }`}
+                  >
+                    {steward.lastRunError}
+                  </p>
+                ) : null}
+              </article>
+            </li>
+          );
+        })}
+        {stewards.length === 0 && !draft ? (
+          <li className="px-1 py-2 text-[11px] text-content/35">
+            No stewards yet.
+          </li>
+        ) : null}
+      </ul>
+    </section>
+  );
+}
+
+/** The steward form: the project, what to look for, when to look, and the
+ * agent that does it. */
+function StewardForm({
+  draft,
+  recents,
+  machine,
+  saving,
+  onChange,
+  onCancel,
+  onSubmit,
+}: {
+  draft: StewardDraft;
+  recents: RecentProject[];
+  machine?: string;
+  saving: boolean;
+  onChange: (draft: StewardDraft) => void;
+  onCancel: () => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  const update = <K extends keyof StewardDraft>(
+    key: K,
+    value: StewardDraft[K],
+  ) => onChange({ ...draft, [key]: value });
+  const valid =
+    looksLikeProject(draft.cwd) && draft.model.length > 0 && machine != null;
+  const number = (
+    label: string,
+    value: number,
+    max: number,
+    key: "maxProposals" | "maxOpen" | "minute",
+    min = 1,
+  ) => (
+    <label className="flex items-center gap-2">
+      <span className="shrink-0">{label}</span>
+      <input
+        type="number"
+        aria-label={label}
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => {
+          const next = Math.trunc(Number(event.target.value));
+          if (Number.isFinite(next))
+            update(key, Math.min(max, Math.max(min, next)));
+        }}
+        className="h-7 w-16 rounded-md border border-content/10 bg-content/3 px-2 text-[12px] text-content outline-none focus:border-content/20"
+      />
+    </label>
+  );
+  return (
+    <form
+      aria-label={draft.id ? "Edit steward" : "New steward"}
+      onSubmit={onSubmit}
+      className="rounded-md border border-content/10 bg-background-base px-3 py-2"
+    >
+      <div className="flex min-w-0 flex-wrap items-center gap-2 text-[12px] text-content/50">
+        {draft.id ? (
+          // A steward stays with the project it was created for.
+          <span className="truncate">{projectName(draft.cwd)}</span>
+        ) : (
+          <SearchableProjectPicker
+            cwd={draft.cwd}
+            recents={recents}
+            onSelectProject={(cwd) => update("cwd", cwd)}
+          />
+        )}
+        <span aria-hidden className="h-3 w-px shrink-0 bg-content/15" />
+        {machine ? (
+          <span className="truncate">Runs on {machine}</span>
+        ) : (
+          <span role="alert" className="text-amber-400">
+            {TASK_MACHINE_ERROR}
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <button type="button" onClick={onCancel} className={ACTION_OUTLINE}>
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!valid || saving}
+            className={ACTION_FILLED}
+          >
+            {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
+            Save
+          </button>
+        </div>
+      </div>
+      <textarea
+        aria-label="Focus"
+        value={draft.focus}
+        onChange={(event) => update("focus", event.target.value)}
+        placeholder="What should it look for? e.g. follow docs/ROADMAP.md, or find bugs and missing tests"
+        rows={2}
+        className="mt-2 block w-full resize-y rounded-md border border-content/10 bg-content/3 px-2 py-1.5 text-[13px] leading-relaxed text-content outline-none placeholder:text-content/35 focus:border-content/20"
+      />
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-[12px] text-content/60">
+        <span className="shrink-0">Look</span>
+        <SearchableSelect
+          variant="pill"
+          searchable={false}
+          label="Schedule"
+          value={draft.scheduleKind}
+          options={SCHEDULE_OPTIONS}
+          onChange={(value) =>
+            update("scheduleKind", value as StewardDraft["scheduleKind"])
+          }
+        />
+        {draft.scheduleKind === "weekly" ? (
+          <SearchableSelect
+            variant="pill"
+            searchable={false}
+            label="Day of week"
+            value={String(draft.dayOfWeek)}
+            options={AUTOMATION_WEEKDAYS.map((day, index) => ({
+              value: String(index),
+              label: day,
+            }))}
+            onChange={(value) => update("dayOfWeek", Number(value))}
+          />
+        ) : null}
+        {draft.scheduleKind === "hourly" ? (
+          number("Minute", draft.minute, 59, "minute", 0)
+        ) : (
+          <input
+            type="time"
+            aria-label="Time"
+            value={draft.time}
+            onChange={(event) => {
+              if (event.target.value) update("time", event.target.value);
+            }}
+            className="h-7 rounded-md border border-content/10 bg-content/3 px-2 text-[12px] text-content outline-none focus:border-content/20"
+          />
+        )}
+        <span className="text-[11px] text-content/40">
+          {automationScheduleLabel(scheduleOf(draft))}
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1 rounded-md border border-content/10 bg-content/3 px-2 py-2">
+        <ModelPicker
+          harness={draft.harness}
+          model={draft.model}
+          values={draft.modelSettings}
+          project={draft.cwd}
+          onChange={(harness, model) => onChange({ ...draft, harness, model })}
+          onSettingsChange={(modelSettings) =>
+            update("modelSettings", modelSettings)
+          }
+        />
+        {draft.harness !== "fx" ? (
+          <AccessPicker
+            value={draft.runtimeMode}
+            onChange={(runtimeMode) => update("runtimeMode", runtimeMode)}
+          />
+        ) : null}
+      </div>
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-content/60">
+        {number(
+          "Max suggestions per run",
+          draft.maxProposals,
+          MAX_PROPOSALS_LIMIT,
+          "maxProposals",
+        )}
+        {number(
+          "Pause at open suggestions",
+          draft.maxOpen,
+          MAX_OPEN_LIMIT,
+          "maxOpen",
+        )}
+        <label className="flex cursor-pointer items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={draft.autoStart}
+            onChange={(event) => update("autoStart", event.target.checked)}
+            className={CHECKBOX}
+          />
+          Start suggestions automatically
+        </label>
+        <AutoMergeField
+          checked={draft.autoMerge}
+          onChange={(checked) => update("autoMerge", checked)}
+        />
+        {draft.autoStart ? (
+          <span role="status" className="text-[11px] text-amber-400">
+            Suggestions will run without you reviewing the idea first.
+            {draft.autoMerge
+              ? ""
+              : " Each still waits for your review before it is merged."}
+          </span>
+        ) : null}
       </div>
     </form>
   );

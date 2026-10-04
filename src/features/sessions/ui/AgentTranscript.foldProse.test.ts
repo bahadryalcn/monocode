@@ -37,45 +37,96 @@ function tool(id: string): Block {
   };
 }
 
-describe("prose folded into the work trail", () => {
-  it("marks a mid-turn note as process, leaving the answer at full strength", () => {
-    const blocks: Block[] = [
-      { id: "user", role: "user", text: "Keep me posted" },
-      tool("t1"),
-      { id: "note", role: "assistant", text: "Trying the other config." },
-      tool("t2"),
-      {
-        id: "answer",
-        role: "assistant",
-        text: "The investigation is complete.",
-      },
-    ];
-    act(() => root.render(createElement(AgentTranscript, { blocks })));
+describe("assistant messages remain visible around folded work", () => {
+  it.each([true, false])(
+    "keeps every message visible with collapsed tools (busy=%s)",
+    (busy) => {
+      const blocks: Block[] = [
+        { id: "user", role: "user", text: "Keep me posted" },
+        tool("t1"),
+        { id: "note", role: "assistant", text: "Trying the other config." },
+        tool("t2"),
+        {
+          id: "answer",
+          role: "assistant",
+          text: "The investigation is complete.",
+        },
+      ];
+      act(() => root.render(createElement(AgentTranscript, { blocks, busy })));
 
-    // The trail stays collapsed until asked for, so none of what it holds —
-    // the note included — is in the DOM yet.
-    expect(container.querySelector(".zen-fold-prose")).toBeNull();
-    const toggle = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Show the work"]',
-    )!;
-    expect(toggle).not.toBeNull();
+      expect(container.textContent).toContain("Trying the other config.");
+      expect(container.textContent).toContain("The investigation is complete.");
+      expect(container.querySelector(".zen-fold-prose")).toBeNull();
+      const toggle = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Show the work"]',
+      )!;
+      expect(toggle).not.toBeNull();
 
-    act(() => toggle.click());
+      act(() => toggle.click());
 
-    // Only the mid-turn note carries the marker; the tool rows it sits
-    // between stay ordinary rail entries.
-    const prose = container.querySelectorAll(".zen-fold-prose");
-    expect(prose).toHaveLength(1);
-    expect(prose[0].textContent).toContain("Trying the other config.");
-    expect(prose[0].textContent).not.toContain(
-      "The investigation is complete.",
-    );
+      expect(container.querySelectorAll(".zen-fold-prose")).toHaveLength(0);
+      expect(
+        container.textContent?.match(/Trying the other config\./g),
+      ).toHaveLength(1);
+      expect(container.textContent).toContain("Inspect t1");
+      expect(container.textContent).toContain("Inspect t2");
+      act(() => toggle.click());
+      expect(container.textContent).toContain("Trying the other config.");
 
-    // The answer renders the same markdown root, outside the demoted wrapper.
-    const answer = Array.from(
-      container.querySelectorAll(".agent-markdown"),
-    ).find((el) => el.textContent?.includes("The investigation is complete."));
-    expect(answer).not.toBeUndefined();
-    expect(answer?.closest(".zen-fold-prose")).toBeNull();
+      // The answer renders the same markdown root, outside the demoted wrapper.
+      const answer = Array.from(
+        container.querySelectorAll(".agent-markdown"),
+      ).find((el) =>
+        el.textContent?.includes("The investigation is complete."),
+      );
+      expect(answer).not.toBeUndefined();
+      expect(answer?.closest(".zen-fold-prose")).toBeNull();
+    },
+  );
+
+  it("retains earlier updates when more Codex messages and tools arrive", () => {
+    const user: Block = {
+      id: "u",
+      role: "user",
+      text: "Fix the missing messages",
+    };
+    const first: Block = {
+      id: "a1",
+      role: "assistant",
+      text: "Inspecting session history.",
+    };
+    const second: Block = {
+      id: "a2",
+      role: "assistant",
+      text: "Found the cause. Checking the fix.",
+    };
+    const final: Block = {
+      id: "a3",
+      role: "assistant",
+      text: "The fix is verified.",
+    };
+    for (const [blocks, busy] of [
+      [[user, first, tool("t1")], true],
+      [[user, first, tool("t1"), second, tool("t2")], true],
+      [[user, first, tool("t1"), second, tool("t2"), final], false],
+    ] as [Block[], boolean][]) {
+      act(() =>
+        root.render(
+          createElement(AgentTranscript, { blocks, busy, harness: "codex" }),
+        ),
+      );
+      const texts = Array.from(
+        container.querySelectorAll(".agent-markdown"),
+        (el) => el.textContent,
+      );
+      expect(texts).toContain(first.text);
+      if (blocks.includes(second)) expect(texts).toContain(second.text);
+      if (blocks.includes(final)) expect(texts).toContain(final.text);
+      expect(texts.indexOf(first.text)).toBeLessThan(
+        texts.indexOf(second.text) < 0
+          ? texts.length
+          : texts.indexOf(second.text),
+      );
+    }
   });
 });

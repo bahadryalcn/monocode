@@ -82,6 +82,9 @@ export const HOST_COMMANDS = new Set([
   "git_worktrees",
   "search_project",
   "list_skills",
+  "skill_export",
+  "skill_delete",
+  "skill_import",
 ]);
 /** Arguments that hold paths; everything else is passed through untouched. */
 const PATH_ARGS = ["path", "cwd", "parent", "from", "destParent", "paths"];
@@ -91,6 +94,7 @@ const PATH_RESULTS = new Set([
   "rename_path",
   "copy_path",
   "move_path",
+  "skill_import",
 ]);
 /** Commands whose result entries carry a `path`. */
 const ENTRY_RESULTS = new Set([
@@ -103,18 +107,52 @@ const ENTRY_RESULTS = new Set([
 const UNAVAILABLE = "This isn’t available for projects on another machine yet.";
 const OUTDATED =
   "Update MonoCode Host in Connections settings to use this project’s files.";
+const OUTDATED_SKILLS =
+  "The other machine’s MonoCode Host needs updating to copy skills. Update it in Connections settings.";
+const OUTDATED_SKILL_DELETE =
+  "The other machine’s MonoCode Host needs updating to delete skills. Update it in Connections settings.";
 
 /** Runs a file command whose paths are `remote://` paths on the machine that
  * owns them, translating paths both ways so callers never see host paths. */
-export async function runRemoteCommand(
+export function runRemoteCommand(
   command: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
+  return runOnMachine(command, args);
+}
+
+/** Skill commands that need no project path: a machine's personal skills are
+ * addressed by the machine alone (an empty `cwd` means "no project"). */
+const MACHINE_COMMANDS = new Set([
+  "list_skills",
+  "skill_export",
+  "skill_import",
+  "skill_delete",
+]);
+
+/** Runs a skill command on a given machine without a project path, with the
+ * same argument and result translation as `runRemoteCommand`. */
+export function runMachineCommand(
+  environmentId: string,
+  command: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  if (!MACHINE_COMMANDS.has(command)) return Promise.reject(new Error(UNAVAILABLE));
+  return runOnMachine(command, args, environmentId);
+}
+
+async function runOnMachine(
+  command: string,
+  args: Record<string, unknown>,
+  addressed?: string,
+): Promise<unknown> {
   if (!HOST_COMMANDS.has(command)) throw new Error(UNAVAILABLE);
-  let environmentId: string | undefined;
+  let environmentId: string | undefined = addressed;
   const toHost = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(toHost);
     if (typeof value !== "string") return value;
+    // An empty path argument is "no path", not another machine's path.
+    if (value === "") return value;
     const parsed = parseRemotePath(value);
     if (!parsed || (environmentId && parsed.environmentId !== environmentId))
       throw new Error(
@@ -145,8 +183,18 @@ export async function runRemoteCommand(
       args: hostArgs,
     });
   } catch (reason) {
-    if (/Unsupported (host method|remote operation|workspace command)/i.test(String(reason)))
-      throw new Error(OUTDATED);
+    if (
+      /Unsupported (host method|remote operation|workspace command)/i.test(
+        String(reason),
+      )
+    )
+      throw new Error(
+        command === "skill_delete"
+          ? OUTDATED_SKILL_DELETE
+          : command.startsWith("skill_")
+            ? OUTDATED_SKILLS
+            : OUTDATED,
+      );
     throw reason;
   }
   const fromHost = (path: string) => remotePath(env, path);

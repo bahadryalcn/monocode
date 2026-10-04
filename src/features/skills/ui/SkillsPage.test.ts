@@ -2,6 +2,7 @@
 import { act, createElement, Profiler } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SkillsPage } from "./SkillsPage";
 import { SettingsView } from "../../settings/ui/SettingsView";
@@ -9,6 +10,7 @@ import type { DiscoveredSkill } from "../../../platform/tauri/fs";
 import { loadDisabledSkillPaths, saveDisabledSkillPaths } from "../model/skills";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     isMaximized: async () => false,
@@ -87,6 +89,8 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
   vi.mocked(invoke).mockReset();
+  vi.mocked(ask).mockReset();
+  vi.mocked(ask).mockResolvedValue(false);
   vi.mocked(invoke).mockImplementation(async (command) => {
     if (command === "list_skills") return skills;
     if (command === "read_text_file") return markdown;
@@ -105,6 +109,68 @@ afterEach(() => {
 });
 
 describe("Settings skill preview", () => {
+  it("does not delete a skill when confirmation is cancelled", async () => {
+    await render();
+    await click("Delete Project guide");
+    expect(ask).toHaveBeenCalledWith(
+      expect.stringContaining("entire folder"),
+      expect.objectContaining({ okLabel: "Delete" }),
+    );
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.some(([command]) => command === "skill_delete"),
+    ).toBe(false);
+    expect(button("Project guide")).toBeDefined();
+  });
+
+  it("deletes after confirmation, closes its preview, clears hidden preferences and refreshes", async () => {
+    let deleted = false;
+    vi.mocked(ask).mockResolvedValue(true);
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_skills") return deleted ? skills.slice(1) : skills;
+      if (command === "read_text_file") return markdown;
+      if (command === "skill_delete") {
+        deleted = true;
+        return;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    saveDisabledSkillPaths([skills[0].path, skills[1].path]);
+    await render();
+    await click("Project guide");
+    await click("Delete Project guide");
+    expect(invoke).toHaveBeenCalledWith("skill_delete", {
+      path: skills[0].path,
+      cwd: "D:/repo",
+    });
+    expect(container.querySelector('[aria-label="Skill preview"]')).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Delete Project guide"]'),
+    ).toBeNull();
+    expect(loadDisabledSkillPaths()).toEqual([skills[1].path]);
+  });
+
+  it("retains a skill and reports deletion failure, preventing duplicate requests while busy", async () => {
+    const pending = deferred<void>();
+    vi.mocked(ask).mockResolvedValue(true);
+    await render();
+    vi.mocked(invoke).mockImplementationOnce(() => pending.promise);
+    await click("Delete Project guide");
+    expect(button("Delete Project guide").disabled).toBe(true);
+    await click("Delete Personal guide");
+    expect(
+      vi
+        .mocked(invoke)
+        .mock.calls.filter(([command]) => command === "skill_delete"),
+    ).toHaveLength(1);
+    await act(async () => pending.reject(new Error("Access denied")));
+    expect(container.textContent).toContain(
+      "Could not delete Project guide. Access denied",
+    );
+    expect(button("Project guide")).toBeDefined();
+    expect(button("Delete Project guide").disabled).toBe(false);
+  });
   it.each(["document", "error"])(
     "never shows the previous %s under a newly selected skill while its read is pending",
     async (previousState) => {
@@ -523,62 +589,212 @@ describe("Settings skill preview", () => {
   });
 });
 
-describe("Skills for a project on another machine", () => {
-  it("lists this computer's own skills and the other machine's, each with its switch", async () => {
-    const { setRemoteCommandRunner } = await import("../../../platform/tauri/fs");
-    const { rememberRemoteProject } = await import(
-      "../../connections/model/remoteProjects"
-    );
+describe("Skills on connected machines", () => {
+  const macSkills: DiscoveredSkill[] = [
+    {
+      name: "mac-notes",
+      description: "Notes from the Mac",
+      path: "/Users/me/.agents/skills/notes/SKILL.md",
+      scope: "user",
+      source: "agents",
+    },
+    {
+      name: "kit:plan",
+      description: "A plugin skill",
+      path: "/Users/me/.claude/plugins/kit/skills/plan/SKILL.md",
+      scope: "user",
+      source: "claude",
+    },
+  ];
+  const machine = (id: string, name: string) => ({
+    id: `machine-${id}`,
+    name,
+    endpoint: `http://${id}.example`,
+    environmentId: `env-${id}`,
+  });
+  const b64 = (text: string) => btoa(text);
+  let hostCalls: { machineId: string; command: string; args: Record<string, unknown> }[];
+
+  /** The desktop's own commands plus a `workspace.run` per machine. */
+  function connect(
+    machines: ReturnType<typeof machine>[],
+    host: (
+      environmentId: string,
+      command: string,
+      args: Record<string, unknown>,
+    ) => unknown | Promise<unknown>,
+  ) {
+    hostCalls = [];
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const input = (args ?? {}) as Record<string, unknown>;
+      if (command === "remote_machines") return machines;
+      if (command === "list_skills") return [skills[1]];
+      if (command === "skill_import") return "C:/Users/test/.agents/skills/mac-notes/SKILL.md";
+      if (command === "remote_request") {
+        const found = machines.find((entry) => entry.id === input.machineId)!;
+        const params = input.params as { command: string; args: Record<string, unknown> };
+        hostCalls.push({ machineId: found.id, command: params.command, args: params.args });
+        return host(found.environmentId, params.command, params.args);
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+  }
+
+  async function renderLocalProject() {
+    await act(async () => root.render(createElement(SkillsPage, { cwd: "D:/repo" })));
+    await act(async () => {});
+    await act(async () => {});
+  }
+
+  it("deletes a personal remote skill on its machine and protects plugin rows", async () => {
+    let deleted = false;
+    connect([machine("mac", "Mac mini")], (_environment, command) => {
+      if (command === "list_skills")
+        return deleted ? macSkills.slice(1) : macSkills;
+      if (command === "skill_delete") {
+        deleted = true;
+        return;
+      }
+      throw new Error(`Unexpected host command: ${command}`);
+    });
+    vi.mocked(ask).mockResolvedValue(true);
+    await renderLocalProject();
+    expect(
+      container.querySelector('[aria-label="Delete kit:plan"]'),
+    ).toBeNull();
+    await click("Delete mac-notes");
+    expect(hostCalls).toContainEqual({
+      machineId: "machine-mac",
+      command: "skill_delete",
+      args: { path: macSkills[0].path, cwd: "" },
+    });
+    expect(
+      container.querySelector('[aria-label="Delete mac-notes"]'),
+    ).toBeNull();
+    expect(container.textContent).toContain("kit:plan");
+  });
+
+  it("lists a machine's skill names with a Transfer button while the open project is local", async () => {
+    connect([machine("mac", "Mac mini")], () => macSkills);
+    await renderLocalProject();
+
+    expect(hostCalls).toMatchObject([
+      { command: "list_skills", args: { cwd: "" } },
+    ]);
+    const text = container.textContent ?? "";
+    expect(text).toContain("This computer");
+    expect(text).toContain("Mac mini");
+    expect(text).toContain("mac-notes");
+    expect(text).toContain("kit:plan");
+    expect(text).toContain("Personal guide");
+    // 1 on this computer + 2 on the Mac.
+    expect(text).toContain("3 skills");
+    // Names only: no description line, no catalog switch on the other machine's rows.
+    expect(text).not.toContain("Notes from the Mac");
+    expect(container.querySelector('[aria-label="Include mac-notes in MonoCode catalog"]')).toBeNull();
+    expect(button("Copy mac-notes to this computer").textContent).toBe("Transfer");
+    // A plugin skill belongs to its plugin: nothing to transfer.
+    expect(container.querySelector('[aria-label="Copy kit:plan to this computer"]')).toBeNull();
+    // Rows on this computer can be copied to the single connected machine.
+    expect(button("Copy Personal guide to Mac mini")).toBeDefined();
+  });
+
+  it("lists the open remote project's skills in its machine's section", async () => {
+    const { rememberRemoteProject } = await import("../../connections/model/remoteProjects");
     const project = rememberRemoteProject("env-mac", {
       id: "p1",
       cwd: "/Users/me/clinic",
       name: "clinic",
     });
-    const remoteCalls: Record<string, unknown>[] = [];
-    setRemoteCommandRunner(async (command, args) => {
-      remoteCalls.push({ command, ...args });
-      return [
-        {
-          name: "clinic-deploy",
-          description: "Deploys the clinic",
-          path: "remote://env-mac/Users/me/clinic/.agents/skills/deploy/SKILL.md",
-          scope: "project",
-          source: "agents",
-        },
-      ];
-    });
-    vi.mocked(invoke).mockImplementation(async (command, args) => {
-      if (command === "list_skills") {
-        // Only this computer's own skills: there is no local project folder.
-        expect((args as { cwd: string }).cwd).toBe("");
-        return [skills[1]];
-      }
-      throw new Error(`Unexpected command: ${command}`);
-    });
-    await act(async () =>
-      root.render(createElement(SkillsPage, { cwd: project.key })),
+    connect([machine("mac", "Mac mini"), machine("pc", "Office PC")], (env, _command, args) =>
+      env === "env-mac"
+        ? [
+            ...macSkills,
+            {
+              name: "clinic-deploy",
+              description: "Deploys the clinic",
+              path: "/Users/me/clinic/.agents/skills/deploy/SKILL.md",
+              scope: "project",
+              source: "agents",
+            },
+          ]
+        : (expect(args.cwd).toBe(""), []),
     );
+    await act(async () => root.render(createElement(SkillsPage, { cwd: project.key })));
+    await act(async () => {});
     await act(async () => {});
 
-    expect(remoteCalls).toMatchObject([{ command: "list_skills", cwd: project.key }]);
+    expect(hostCalls.find((call) => call.machineId === "machine-mac")?.args).toEqual({
+      cwd: "/Users/me/clinic",
+    });
     const text = container.textContent ?? "";
-    expect(text).toContain("This computer");
-    expect(text).toContain("Personal guide");
-    expect(text).toContain("Other machine");
     expect(text).toContain("clinic-deploy");
-    expect(text).toContain("2 skills");
-    expect(text).not.toContain("isn’t available");
-    // Its files are on the other machine: no local folder to reveal.
-    expect(
-      container.querySelector('[aria-label="Reveal clinic-deploy in file explorer"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector('[aria-label="Reveal Personal guide in file explorer"]'),
-    ).not.toBeNull();
+    expect(text).toContain("Office PC");
+    expect(text).toContain("No skills on this machine.");
+    // Several machines: the local rows offer a choice instead of one target.
+    expect(button("Copy Personal guide to another machine")).toBeDefined();
+  });
 
-    await click("Include clinic-deploy in MonoCode catalog");
-    expect(loadDisabledSkillPaths()).toEqual([
-      "remote://env-mac/Users/me/clinic/.agents/skills/deploy/SKILL.md",
-    ]);
+  it("opens a machine's skill by asking that machine for its SKILL.md", async () => {
+    connect([machine("mac", "Mac mini")], (_env, command) =>
+      command === "list_skills"
+        ? macSkills
+        : { name: "notes", files: [{ path: "SKILL.md", data: b64("# Mac notes\n\nRemote body.") }] },
+    );
+    await renderLocalProject();
+    await click("mac-notes");
+    await act(async () => {});
+
+    expect(hostCalls.at(-1)).toMatchObject({
+      command: "skill_export",
+      args: { path: "/Users/me/.agents/skills/notes/SKILL.md", cwd: "" },
+    });
+    const panel = container.querySelector('[aria-label="Skill preview"]')!;
+    expect(panel.textContent).toContain("Mac mini");
+    expect(panel.textContent).toContain("Remote body.");
+    expect(button("Copy mac-notes to this computer", panel)).toBeDefined();
+  });
+
+  it("transfers a machine's skill to this computer", async () => {
+    connect([machine("mac", "Mac mini")], (_env, command) =>
+      command === "list_skills"
+        ? macSkills
+        : { name: "notes", files: [{ path: "SKILL.md", data: b64("# Mac notes") }] },
+    );
+    await renderLocalProject();
+    await click("Copy mac-notes to this computer");
+    await act(async () => {});
+
+    expect(hostCalls.some((call) => call.command === "skill_export")).toBe(true);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("skill_import", {
+      cwd: "",
+      name: "notes",
+      files: [{ path: "SKILL.md", data: b64("# Mac notes") }],
+      overwrite: false,
+    });
+  });
+
+  it("explains an outdated host in its own section only", async () => {
+    connect([machine("mac", "Mac mini"), machine("old", "Old box")], (env, command) => {
+      if (env === "env-old") throw "Host rejected request: Invalid workspace path";
+      return command === "list_skills" ? macSkills : [];
+    });
+    await renderLocalProject();
+
+    const old = container.querySelector('[aria-label="Skills on Old box"]')!;
+    expect(old.textContent).toContain("needs updating");
+    expect(old.querySelector('[role="alert"]')).not.toBeNull();
+    const mac = container.querySelector('[aria-label="Skills on Mac mini"]')!;
+    expect(mac.textContent).toContain("mac-notes");
+    expect(mac.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("says when a machine cannot be reached", async () => {
+    connect([machine("mac", "Mac mini")], () => {
+      throw "Machine is unreachable";
+    });
+    await renderLocalProject();
+    expect(container.textContent).toContain("Couldn't reach Mac mini.");
+    expect(container.textContent).toContain("Personal guide");
   });
 });

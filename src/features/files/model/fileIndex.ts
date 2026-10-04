@@ -215,6 +215,10 @@ export async function resolveOpenablePath(
   const direct = resolveWorkspacePath(href, cwd);
   if (!direct) return undefined;
 
+  // An existing file or folder wins over a same-named file in the index.
+  const exists = await fileExists(direct);
+  if (exists === true) return direct;
+
   let files: ProjectFile[];
   try {
     files = await loadProjectFiles(cwd);
@@ -228,7 +232,7 @@ export async function resolveOpenablePath(
   const relHint = relativePathHint(href, cwd, direct);
   const indexed = indexedFile(files, cwd, direct, relHint);
   if (indexed) return indexed;
-  if (await fileExists(direct)) return direct;
+  if (exists === undefined) return direct;
 
   // Nothing is at the direct path. The file may be newer than the index, or
   // generated into an ignored folder, which the index leaves out.
@@ -276,13 +280,13 @@ function indexedFile(
   return pickOpenableFile(byName, cwd, relHint).path;
 }
 
-/** Unknown counts as existing, so a failed check leaves the path as it was. */
-async function fileExists(path: string): Promise<boolean> {
+/** Unknown leaves fuzzy lookup available without forcing an expensive rescan. */
+async function fileExists(path: string): Promise<boolean | undefined> {
   try {
     const [stat] = await statFiles([path]);
-    return !stat || stat.mtimeMs != null;
+    return stat ? stat.isDir === true || stat.mtimeMs != null : undefined;
   } catch {
-    return true;
+    return undefined;
   }
 }
 

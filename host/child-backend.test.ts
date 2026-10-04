@@ -8,6 +8,72 @@ import { join, resolve } from "node:path";
 import { HostChildBackend } from "./child-backend";
 import { REMOTE_PROVIDERS } from "../src/features/connections/model/protocol";
 
+it.each(["stdout", "stderr"])(
+  "bridges large %s output with explicit overflow diagnostics",
+  async (stream) => {
+    const directory = mkdtempSync(join(tmpdir(), "monocode-large-frame-"));
+    const file = join(directory, "provider.cjs");
+    writeFileSync(
+      file,
+      `
+const output = process.${stream};
+const frame = JSON.stringify({ id: 2, result: 'a'.repeat(9 * 1024 * 1024) }) + '\\n';
+output.write(frame);
+setInterval(() => {}, 1000);
+`,
+    );
+    const backend = new HostChildBackend();
+    const lines: string[] = [];
+    const exits: Array<{ code: number | null; reason?: string }> = [];
+    const unlisten = await backend.listen<{ line: string }>(
+      `harness-${stream}`,
+      ({ payload }) => lines.push(payload.line),
+    );
+    const unlistenExit = await backend.listen<{
+      code: number | null;
+      reason?: string;
+    }>("harness-exit", ({ payload }) => exits.push(payload));
+    try {
+      await backend.invoke("harness_spawn", {
+        sessionId: "large",
+        command: file,
+        args: [],
+        cwd: process.cwd(),
+      });
+      if (stream === "stdout") {
+        await vi.waitFor(() => expect(lines).toHaveLength(1), {
+          timeout: 5000,
+        });
+        expect(JSON.parse(lines[0]).result.length).toBe(9 * 1024 * 1024);
+        expect(exits).toEqual([]);
+        await backend.kill("large");
+        await vi.waitFor(() => expect(exits).toHaveLength(1), {
+          timeout: 5000,
+        });
+        expect(exits[0].reason).toBeUndefined();
+      } else {
+        await vi.waitFor(() => expect(exits).toHaveLength(1), {
+          timeout: 5000,
+        });
+        expect(lines).toEqual([]);
+        expect(exits[0].reason).toBe(
+          "Provider stderr message exceeded the 8 MiB limit; MonoCode host stopped the process.",
+        );
+      }
+    } finally {
+      unlisten();
+      unlistenExit();
+      await backend.close();
+      rmSync(directory, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 100,
+      });
+    }
+  },
+);
+
 it("resolves every provider and runs only allowed catalog commands", async () => {
   const directory = mkdtempSync(join(tmpdir(), "monocode-catalog-test-"));
   const file = join(directory, "provider.cjs");
@@ -136,41 +202,43 @@ const child = spawn(process.execPath, ['-e', ${JSON.stringify(`${stubborn ? "pro
 child.stdout.once('data', () => console.log(JSON.stringify({ child: child.pid })));
 setInterval(() => {}, 1000);
 `,
-  );
-  const backend = new HostChildBackend();
-  let descendant: number | undefined;
-  const stopListening = await backend.listen<{ line: string }>(
-    "harness-stdout",
-    ({ payload }) => {
-      descendant = JSON.parse(payload.line).child;
-    },
-  );
-  try {
-    await backend.invoke("harness_spawn", {
-      sessionId: "tree",
-      command: file,
-      args: [],
-      cwd: directory,
-    });
-    await vi.waitFor(() => expect(descendant).toBeTruthy());
-    await backend.kill("tree");
-    await vi.waitFor(
-      () => expect(() => process.kill(descendant!, 0)).toThrow(),
-      { timeout: 5000 },
     );
-  } finally {
-    stopListening();
-    await backend.close();
-    if (descendant) {
-      try {
-        process.kill(descendant, "SIGKILL");
-      } catch {
-        /* gone */
+    const backend = new HostChildBackend();
+    let descendant: number | undefined;
+    const stopListening = await backend.listen<{ line: string }>(
+      "harness-stdout",
+      ({ payload }) => {
+        descendant = JSON.parse(payload.line).child;
+      },
+    );
+    try {
+      await backend.invoke("harness_spawn", {
+        sessionId: "tree",
+        command: file,
+        args: [],
+        cwd: directory,
+      });
+      await vi.waitFor(() => expect(descendant).toBeTruthy(), { timeout: 5000 });
+      await backend.kill("tree");
+      await vi.waitFor(
+        () => expect(() => process.kill(descendant!, 0)).toThrow(),
+        { timeout: 5000 },
+      );
+    } finally {
+      stopListening();
+      await backend.close();
+      if (descendant) {
+        try {
+          process.kill(descendant, "SIGKILL");
+        } catch {
+          /* gone */
+        }
       }
+      rmSync(directory, { recursive: true, force: true });
     }
-    rmSync(directory, { recursive: true, force: true });
-  }
-}, 15_000);
+  },
+  15_000,
+);
 
 it("stops a provider tree when its host pipe closes unexpectedly", async () => {
   const directory = mkdtempSync(join(tmpdir(), "monocode-provider-crash-"));
@@ -201,7 +269,7 @@ setInterval(() => {}, 1000);
   });
   let tree: { provider: number; descendant: number } | undefined;
   try {
-    await vi.waitFor(() => expect(existsSync(treeFile)).toBe(true));
+    await vi.waitFor(() => expect(existsSync(treeFile)).toBe(true), { timeout: 5000 });
     tree = JSON.parse(readFileSync(treeFile, "utf8"));
     guard.stdio[3]?.destroy();
     await vi.waitFor(

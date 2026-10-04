@@ -45,6 +45,9 @@ export type TaskVerification = {
   review?: { verdict: "pass" | "fail"; note: string; sessionId: string };
 };
 
+export const TASK_SOURCES = ["manual", "goal", "steward"] as const;
+export type TaskSource = (typeof TASK_SOURCES)[number];
+
 export type HostTaskInput = {
   id: string;
   title: string;
@@ -64,8 +67,16 @@ export type HostTaskInput = {
   verifyCommand?: string;
   /** Have a second agent review the result. Counts as true when absent. */
   review?: boolean;
+  /** Merge the task's branch as soon as it reaches review with every
+   * configured check passed, without waiting for approval. Only an isolated
+   * task can; absent counts as false. */
+  autoMerge?: boolean;
   /** The goal this task was planned for. */
   goalId?: string;
+  /** Where the task came from. Absent counts as manual or planned by a goal. */
+  source?: TaskSource;
+  /** The steward that proposed this task. */
+  stewardId?: string;
   /** Tasks that must be done (merged) before this one starts. */
   dependsOn?: string[];
 };
@@ -87,6 +98,9 @@ export type HostTask = HostTaskInput & {
   baseCommit?: string;
   /** The task branch was merged into `baseBranch` and removed. */
   merged?: boolean;
+  /** The merge happened on its own, and when. */
+  autoMerged?: boolean;
+  mergedAt?: number;
   verification?: TaskVerification;
   /** The reviewer's session turn while it is still running. */
   reviewer?: {
@@ -218,7 +232,8 @@ export function parseHostTask(input: unknown): HostTaskInput {
     throw new Error("Invalid task run limit");
   if (
     (v.isolate !== undefined && typeof v.isolate !== "boolean") ||
-    (v.review !== undefined && typeof v.review !== "boolean")
+    (v.review !== undefined && typeof v.review !== "boolean") ||
+    (v.autoMerge !== undefined && typeof v.autoMerge !== "boolean")
   )
     throw new Error("Invalid task options");
   const check = v.verifyCommand ?? "";
@@ -229,6 +244,16 @@ export function parseHostTask(input: unknown): HostTaskInput {
     (typeof v.goalId !== "string" || !ID.test(v.goalId))
   )
     throw new Error("Invalid task goal");
+  if (
+    v.source !== undefined &&
+    !TASK_SOURCES.some((source) => source === v.source)
+  )
+    throw new Error("Invalid task source");
+  if (
+    v.stewardId !== undefined &&
+    (typeof v.stewardId !== "string" || !ID.test(v.stewardId))
+  )
+    throw new Error("Invalid task steward");
   if (
     v.dependsOn !== undefined &&
     (!Array.isArray(v.dependsOn) ||
@@ -251,9 +276,33 @@ export function parseHostTask(input: unknown): HostTaskInput {
     isolate: v.isolate !== false,
     ...(check.trim() ? { verifyCommand: check.trim() } : {}),
     review: v.review !== false,
+    ...(v.autoMerge === true ? { autoMerge: true } : {}),
     ...(typeof v.goalId === "string" ? { goalId: v.goalId } : {}),
+    ...(typeof v.source === "string" ? { source: v.source as TaskSource } : {}),
+    ...(typeof v.stewardId === "string" ? { stewardId: v.stewardId } : {}),
     ...(Array.isArray(v.dependsOn) && v.dependsOn.length
       ? { dependsOn: [...new Set(v.dependsOn as string[])] }
       : {}),
   };
+}
+
+/** Why a task in review cannot be merged on its own, or undefined when every
+ * configured check ran and passed. */
+export const NO_CHECKS_NOTE = "Not merged automatically: no checks configured";
+
+export function autoMergeBlocker(
+  task: Pick<HostTask, "verifyCommand" | "review" | "verification">,
+): string | undefined {
+  const command = Boolean(task.verifyCommand);
+  const reviewer = task.review !== false;
+  if (!command && !reviewer) return NO_CHECKS_NOTE;
+  const { verification } = task;
+  if (command) {
+    const result = verification?.command;
+    if (!result || result.timedOut || result.exitCode !== 0)
+      return "Not merged automatically: the check command did not pass";
+  }
+  if (reviewer && verification?.review?.verdict !== "pass")
+    return "Not merged automatically: the reviewer did not pass it";
+  return undefined;
 }

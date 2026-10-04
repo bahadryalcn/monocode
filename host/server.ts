@@ -19,6 +19,7 @@ import { HostEngine, parseCommand } from "./engine";
 import { HostAutomations } from "./automations";
 import { HostTasks } from "./tasks";
 import { HostGoals } from "./goals";
+import { HostStewards } from "./stewards";
 import { DesktopSessions } from "./desktopSessions";
 import { branchCache } from "./git-actions";
 import { withOverlay } from "./desktopLive";
@@ -160,6 +161,7 @@ export function createHostServer(
   tasks = new HostTasks(engine.store, engine),
   desktop = new DesktopSessions(),
   goals = new HostGoals(engine.store, engine, tasks),
+  stewards = new HostStewards(engine.store, engine, tasks),
 ) {
   const inHost = (id: string) => {
     try {
@@ -449,6 +451,7 @@ export function createHostServer(
               ),
               capabilities: [
                 "sessions",
+                "sessions.harnessSwitch",
                 "projects.browse",
                 "models.list",
                 "approvals",
@@ -485,6 +488,8 @@ export function createHostServer(
                 "tasks",
                 "tasks.todo",
                 "goals",
+                "stewards",
+                "host.settings",
               ],
             };
             break;
@@ -813,6 +818,31 @@ export function createHostServer(
               params.withTasks === true,
             );
             result = { deleted: true };
+            break;
+          case "host.settings.get":
+            result = tasks.limits.state();
+            break;
+          case "host.settings.save":
+            tasks.limits.save(params.settings);
+            result = tasks.limits.state();
+            void tasks.tick();
+            break;
+          case "stewards.list":
+            result = stewards.list();
+            break;
+          case "stewards.save":
+            result = stewards.save(params.steward);
+            break;
+          case "stewards.delete":
+            await stewards.delete(String(params.stewardId ?? ""));
+            result = { deleted: true };
+            break;
+          case "stewards.runNow":
+            result = await stewards.runNow(String(params.stewardId ?? ""));
+            break;
+          case "stewards.decline":
+            await stewards.decline(String(params.taskId ?? ""));
+            result = { declined: true };
             break;
           case "attachments.upload":
             result = writeAttachmentChunk(engine.store, params);

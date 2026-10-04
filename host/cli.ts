@@ -26,6 +26,7 @@ import { createHostServer } from "./server";
 import { HostAutomations } from "./automations";
 import { HostTasks } from "./tasks";
 import { HostGoals } from "./goals";
+import { HostStewards } from "./stewards";
 import {
   REMOTE_PROVIDERS,
   type RemoteProvider,
@@ -245,6 +246,7 @@ Connect another computer using an SSH forward to the loopback port.`);
     const tasks = new HostTasks(store, engine);
     // Goals run on the task board's timer.
     const goals = new HostGoals(store, engine, tasks);
+    const stewards = new HostStewards(store, engine, tasks);
     const secret = randomBytes(32).toString("base64url");
     let stopping = false;
     let stop: () => Promise<void>;
@@ -277,12 +279,13 @@ Connect another computer using an SSH forward to the loopback port.`);
           response.writeHead(400).end();
         }
       });
-    }, automations, tasks, undefined, goals);
+    }, automations, tasks, undefined, goals, stewards);
     stop = async () => {
       if (stopping) return;
       stopping = true;
       automations.stop();
       tasks.stop();
+      stewards.stop();
       server.close();
       server.closeAllConnections();
       await engine.close();
@@ -296,6 +299,7 @@ Connect another computer using an SSH forward to the loopback port.`);
     });
     automations.start();
     tasks.start();
+    stewards.start();
     writeFileSync(
       statePath,
       JSON.stringify({ pid: process.pid, port, secret }),

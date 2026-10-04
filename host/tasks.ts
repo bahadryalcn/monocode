@@ -3,19 +3,23 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { promisify } from "node:util";
 import {
+  autoMergeBlocker,
   canEditTask,
   canMoveTask,
   EMPTY_PROMPT_ERROR,
   hasUnmergedBranch,
   isNewTaskStatus,
   isTaskStatus,
+  NO_VERDICT,
   parseHostTask,
   parseReviewVerdict,
   unfinishedDependencies,
   type HostTask,
   type TaskVerification,
 } from "../src/features/tasks/model/hostTasks";
+import { DEFAULT_MAX_RUNNING_TASKS } from "../src/features/tasks/model/hostSettings";
 import { createHostWorktree } from "./git-worktrees";
+import { HostLimits } from "./limits";
 import {
   STOPPED_BY_USER,
   cancelSessionRun,
@@ -28,8 +32,8 @@ import { runHostShell } from "./shell";
 import type { HostStore } from "./store";
 
 const TICK_MS = 30_000;
-/** How many tasks this machine works on at once. */
-export const MAX_RUNNING_TASKS = 2;
+/** How many tasks a machine works on at once until its owner changes it. */
+export const MAX_RUNNING_TASKS = DEFAULT_MAX_RUNNING_TASKS;
 /** How long a task's check command may run. */
 export const VERIFY_TIMEOUT_MS = 15 * 60_000;
 const VERIFY_OUTPUT_LIMIT = 4000;
@@ -167,6 +171,8 @@ function reviewPrompt(task: HostTask): string {
       : "the uncommitted changes in this folder (`git status`, `git diff`)";
   return [
     "You are reviewing work another agent just finished. Only inspect: do not edit, create or delete files, and do not commit.",
+    "This is an unattended task review. Review both correctness and repository standards yourself, in one agent; do not spawn subagents or invoke a multi-agent review workflow. The task below is the complete spec, so do not set up an issue tracker or ask for another spec.",
+    "Read the changed files and only the relevant dependencies and guidance. Reuse evidence within this review. Run focused checks once; repeat only after a change, failure or unresolved concern. Check whether added gates break development workflows. Report incomplete acceptance checks explicitly; passing this task does not imply release or physical-device approval.",
     "",
     `Task: ${task.title}`,
     "",
@@ -180,6 +186,34 @@ function reviewPrompt(task: HostTask): string {
     "or",
     "VERDICT: FAIL - <one sentence saying why>",
   ].join("\n");
+}
+
+/** The task's prompt, led by where to work when the task has a worktree of
+ * its own: an agent told to work in the project folder would otherwise edit
+ * the main checkout, leaving the task's branch empty. */
+function workerPrompt(task: HostTask, projectCwd: string): string {
+  if (!task.worktreeCwd) return task.prompt;
+  return [
+    `You are working in ${task.worktreeCwd}, a separate checkout of the project at ${projectCwd}${task.branch ? ` on the branch ${task.branch}` : ""}. Make every change in this folder. Do not edit, commit in or switch branches in ${projectCwd}: paths under it in the task below mean the same files under this folder.`,
+    "",
+    task.prompt,
+  ].join("\n");
+}
+
+/** The verdict of the reviewer's last turn: from its latest message that
+ * ends with one, since a short message may follow the verdict. */
+function reviewerVerdict(
+  blocks: ReturnType<HostStore["session"]>["session"]["blocks"],
+): ReturnType<typeof parseReviewVerdict> {
+  const lastUser = blocks.findLastIndex((block) => block.role === "user");
+  const replies = blocks
+    .slice(lastUser + 1)
+    .filter((block) => block.role === "assistant" && block.text.trim());
+  for (const reply of replies.reverse()) {
+    const review = parseReviewVerdict(reply.text);
+    if (review.note !== NO_VERDICT) return review;
+  }
+  return parseReviewVerdict("");
 }
 
 /** Works through this machine's task backlog with no desktop open. Each task
@@ -196,6 +230,9 @@ export class HostTasks {
   /** Runs on every tick once running tasks are settled, before queued ones
    * start, so work it queues can start in the same tick. */
   private beforeStart?: () => Promise<void> | void;
+  /** This machine's work limits and its ledger of agent time, shared with
+   * goals and stewards. */
+  readonly limits: HostLimits;
 
   constructor(
     private readonly store: HostStore,
@@ -205,6 +242,16 @@ export class HostTasks {
   ) {
     store.db.exec(
       "CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    );
+    this.limits = new HostLimits(store, now);
+    this.limits.track(() =>
+      this.list().flatMap((task) =>
+        task.status === "running"
+          ? [task.startedAt ?? task.createdAt]
+          : task.status === "verifying" && task.reviewer
+            ? [task.reviewer.startedAt]
+            : [],
+      ),
     );
   }
 
@@ -267,7 +314,7 @@ export class HostTasks {
     if (previous.status === "queued" && !input.prompt.trim())
       throw new Error(EMPTY_PROMPT_ERROR);
     this.store.project(previous.projectId);
-    const { verifyCommand, ...kept } = previous;
+    const { verifyCommand, autoMerge, ...kept } = previous;
     return this.write({
       ...kept,
       ...input,
@@ -323,6 +370,8 @@ export class HostTasks {
         reviewer,
         diffStat,
         mergeError,
+        autoMerged,
+        mergedAt,
         ...rest
       } = task;
       if (!task.merged) return this.write({ ...rest, status: to, updatedAt: now });
@@ -337,13 +386,17 @@ export class HostTasks {
         if (
           task.reviewer &&
           sessionRunState(this.store, task.reviewer, 0, now).state === "running"
-        )
+        ) {
           cancelSessionRun(this.engine, task.reviewer);
+          this.limits.record(task.reviewer.startedAt, now);
+        }
         return this.block(task, STOPPED_BY_USER, now);
       }
       const run = { ...task, startedAt: task.startedAt ?? task.createdAt };
-      if (sessionRunState(this.store, run, 0, now).state === "running")
+      if (sessionRunState(this.store, run, 0, now).state === "running") {
         cancelSessionRun(this.engine, run);
+        this.limits.record(run.startedAt, now);
+      }
       return this.block(task, STOPPED_BY_USER, now);
     }
     if (to === "done" && hasUnmergedBranch(task)) return this.deliver(task);
@@ -411,9 +464,12 @@ export class HostTasks {
     const active = tasks.filter(
       (task) => task.status === "running" || task.status === "verifying",
     );
+    const { maxRunningTasks } = this.limits.settings();
     for (const task of tasks) {
-      if (active.length >= MAX_RUNNING_TASKS) break;
+      if (active.length >= maxRunningTasks) break;
       if (task.status !== "queued") continue;
+      // Used-up daily time holds queued work back; running work finishes.
+      if (this.limits.reached()) break;
       // A task waits for every task it depends on to be merged, and then
       // starts from the project as it is, with their work in it.
       if (unfinishedDependencies(task, tasks).length) continue;
@@ -503,7 +559,10 @@ export class HostTasks {
       )
     )
       return task;
-    const started = launchSessionRun(this.store, this.engine, ready);
+    const started = launchSessionRun(this.store, this.engine, {
+      ...ready,
+      prompt: workerPrompt(ready, this.store.project(ready.projectId).cwd),
+    });
     const next = {
       ...ready,
       sessionId: started.sessionId,
@@ -534,6 +593,7 @@ export class HostTasks {
       this.write({ ...task, error: outcome.error });
       cancelSessionRun(this.engine, task);
     } else if (outcome.status === "succeeded") {
+      this.limits.record(task.startedAt ?? task.createdAt, now);
       this.verify(
         this.write({
           ...task,
@@ -544,6 +604,7 @@ export class HostTasks {
         }),
       );
     } else {
+      this.limits.record(task.startedAt ?? task.createdAt, now);
       this.block(
         task,
         outcome.status === "cancelled"
@@ -600,7 +661,7 @@ export class HostTasks {
       if (task.review === false) {
         const diffStat = await this.diffStat(task);
         const latest = current();
-        if (latest) this.enterReview({ ...latest, verification, diffStat });
+        if (latest) await this.enterReview({ ...latest, verification, diffStat });
         return;
       }
       const latest = current();
@@ -673,6 +734,7 @@ export class HostTasks {
       cancelSessionRun(this.engine, task.reviewer);
       return;
     }
+    this.limits.record(task.reviewer.startedAt, now);
     if (outcome.status === "cancelled") {
       this.block(task, STOPPED_BY_USER, now);
       return;
@@ -680,14 +742,7 @@ export class HostTasks {
     const sessionId = task.reviewer.sessionId ?? "";
     const review =
       outcome.status === "succeeded"
-        ? parseReviewVerdict(
-            this.store
-              .session(sessionId)
-              .session.blocks.filter(
-                (block) => block.role === "assistant" && block.text.trim(),
-              )
-              .at(-1)?.text ?? "",
-          )
+        ? reviewerVerdict(this.store.session(sessionId).session.blocks)
         : {
             verdict: "fail" as const,
             note: outcome.error ?? "The reviewer’s run failed.",
@@ -703,19 +758,33 @@ export class HostTasks {
     const diffStat = await this.diffStat(task);
     const latest = this.find(task.id);
     if (latest?.status === "verifying" && latest.updatedAt === task.updatedAt)
-      this.enterReview({ ...latest, verification, diffStat });
+      await this.enterReview({ ...latest, verification, diffStat });
   }
 
-  private enterReview(task: HostTask): HostTask {
+  /** Moves a verified task to review. An isolated task set to merge on its
+   * own is merged right away, when every configured check passed; it then goes
+   * straight to done. When it cannot be merged it waits in review, with why. */
+  private async enterReview(task: HostTask): Promise<HostTask> {
     const now = this.now();
-    return this.write({
+    const reviewing: HostTask = {
       ...task,
       status: "review",
       needsInput: undefined,
       reviewer: undefined,
       completedAt: now,
       updatedAt: now,
-    });
+    };
+    if (!task.autoMerge || !hasUnmergedBranch(task)) return this.write(reviewing);
+    const blocker = autoMergeBlocker(task);
+    if (blocker) return this.write({ ...reviewing, mergeError: blocker });
+    try {
+      return await this.deliver(
+        { ...task, completedAt: now, updatedAt: now },
+        true,
+      );
+    } catch (error) {
+      return this.write({ ...reviewing, mergeError: errorMessage(error) });
+    }
   }
 
   /** What the task branch changes since it left the project's branch. */
@@ -735,7 +804,7 @@ export class HostTasks {
 
   /** Merges an approved task's branch into the project, then removes the
    * branch and its worktree. A failed merge leaves the task in review. */
-  private async deliver(task: HostTask): Promise<HostTask> {
+  private async deliver(task: HostTask, auto = false): Promise<HostTask> {
     if (this.delivering.has(task.id))
       throw new Error("This task is already being merged.");
     this.delivering.add(task.id);
@@ -764,11 +833,14 @@ export class HostTasks {
         console.error("Could not delete a task branch:", gitError(error)),
       );
       const { worktreeCwd: removed, mergeError, ...rest } = task;
+      const now = this.now();
       return this.write({
         ...rest,
         status: "done",
         merged: true,
-        updatedAt: this.now(),
+        mergedAt: now,
+        ...(auto ? { autoMerged: true } : {}),
+        updatedAt: now,
       });
     } finally {
       this.delivering.delete(task.id);

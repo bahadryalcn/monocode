@@ -209,6 +209,32 @@ async function advance(milliseconds = 250) {
 }
 
 describe("orchestration worker detachment", () => {
+  it("keeps a host-owned turn attached after its tab closes until the host finishes", async () => {
+    const adopted = chat("adopted", {
+      continuingElsewhere: true,
+      adoptedSyncConflict: true,
+    });
+    const workspace = mountWorkspace({
+      sessions: [adopted, chat("other")],
+      tabs: [newTab("other")],
+      orchestrationRuns: [],
+      busySessionIds: new Set(["adopted"]),
+      liveAgentsEnabled: false,
+    });
+    await advance();
+    expect(workspace.snapshot().sessions.map((session) => session.id)).toContain("adopted");
+    expect(workspace.persistSession).not.toHaveBeenCalled();
+    workspace.update({
+      sessions: [{ ...adopted, continuingElsewhere: undefined }, chat("other")],
+      busySessionIds: new Set(),
+    });
+    await advance();
+    expect(workspace.snapshot().sessions.map((session) => session.id)).not.toContain("adopted");
+    expect(workspace.persistSession).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "adopted", adoptedSyncConflict: true }),
+    );
+  });
+
   it("retains finished workers until their lead closes, then persists and forgets them", async () => {
     const workspace = mountWorkspace();
     await advance();

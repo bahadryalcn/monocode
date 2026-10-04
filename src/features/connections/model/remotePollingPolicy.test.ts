@@ -6,7 +6,7 @@ it("slows hidden active tabs and minimized windows while retaining fast foregrou
   expect(remoteSessionPollDelay(true, false, false)).toBe(3_000);
   expect(remoteSessionPollDelay(true, true, true)).toBe(5_000);
   expect(remoteSessionPollDelay(false, true, true)).toBe(30_000);
-  expect(remoteSessionPollDelay(false, true, false)).toBe(3_000);
+  expect(remoteSessionPollDelay(false, true, false)).toBe(1_500);
   expect(remoteSessionPollDelay(true, false, true, 6)).toBe(30_000);
 });
 

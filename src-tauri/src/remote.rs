@@ -616,6 +616,13 @@ fn supported_remote_method(method: &str) -> bool {
             | "goals.replan"
             | "goals.cancel"
             | "goals.delete"
+            | "stewards.list"
+            | "stewards.save"
+            | "stewards.delete"
+            | "stewards.runNow"
+            | "stewards.decline"
+            | "host.settings.get"
+            | "host.settings.save"
     )
 }
 

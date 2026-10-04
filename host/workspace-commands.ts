@@ -25,7 +25,12 @@ import {
   type GitActionCommand,
 } from "./git-actions";
 import type { HostStore } from "./store";
-import { listHostSkills } from "./skills";
+import {
+  deleteHostSkill,
+  exportHostSkill,
+  importHostSkill,
+  listHostSkills,
+} from "./skills";
 import {
   createHostPath,
   existingPath,
@@ -87,6 +92,9 @@ export const WORKSPACE_COMMANDS = [
   "git_worktrees",
   "search_project",
   "list_skills",
+  "skill_export",
+  "skill_delete",
+  "skill_import",
 ] as const;
 export type WorkspaceCommand = (typeof WORKSPACE_COMMANDS)[number];
 
@@ -215,6 +223,13 @@ export class WorkspaceCommands {
         return this.searchProject(input.options);
       case "list_skills":
         return this.listSkills(input.cwd);
+      case "skill_export":
+        return this.exportSkill(input.path, input.cwd);
+      case "skill_delete":
+        return this.deleteSkill(input.path, input.cwd);
+      case "skill_import":
+        // `cwd` only routes the call here; skills land in this machine's home.
+        return Promise.resolve().then(() => importHostSkill(input));
     }
   }
 
@@ -369,11 +384,14 @@ export class WorkspaceCommands {
       throw new Error("Too many paths");
     return Promise.all(
       input.map(async (path) => {
-        const mtimeMs = await this.existing(path)
+        const info = await this.existing(path, true)
           .then(({ path: actual }) => stat(actual))
-          .then((info) => (info.isFile() ? Math.floor(info.mtimeMs) : null))
           .catch(() => null);
-        return { path: String(path), mtimeMs };
+        return {
+          path: String(path),
+          mtimeMs: info?.isFile() ? Math.floor(info.mtimeMs) : null,
+          isDir: info?.isDirectory() ?? false,
+        };
       }),
     );
   }
@@ -471,8 +489,24 @@ export class WorkspaceCommands {
   /** This machine's skills for a project folder here; the desktop drops
    * the ones it hides, as it does for its own. */
   private async listSkills(input: unknown) {
+    // An empty `cwd` is "no project": this machine's personal skills only.
+    if (input === "") return listHostSkills(null);
     const { path } = await this.existing(input, true);
     return listHostSkills(path);
+  }
+
+  /** A listed skill's files. The skill may live in the home folder, outside
+   * every project, so it is checked against the listing, not the roots. */
+  private async exportSkill(skill: unknown, cwd: unknown) {
+    if (cwd === "") return exportHostSkill(skill, null);
+    const { path } = await this.existing(cwd, true);
+    return exportHostSkill(skill, path);
+  }
+
+  private async deleteSkill(skill: unknown, cwd: unknown) {
+    if (cwd === "") return deleteHostSkill(skill, null);
+    const { path } = await this.existing(cwd, true);
+    return deleteHostSkill(skill, path);
   }
 
   private async searchProject(input: unknown) {

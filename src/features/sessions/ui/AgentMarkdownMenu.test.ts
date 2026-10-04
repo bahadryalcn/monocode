@@ -9,6 +9,7 @@ const actions = vi.hoisted(() => ({
   openPathWithDefaultApp: vi.fn(async () => {}),
   openUrl: vi.fn(async () => {}),
   revealPath: vi.fn(async () => {}),
+  isLocalDirectory: vi.fn(async () => false),
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -23,6 +24,7 @@ vi.mock("../../../platform/tauri/fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../platform/tauri/fs")>()),
   openPathWithDefaultApp: actions.openPathWithDefaultApp,
   revealPath: actions.revealPath,
+  isLocalDirectory: actions.isLocalDirectory,
 }));
 
 let container: HTMLDivElement;
@@ -57,6 +59,7 @@ async function pick(label: string, link = container.querySelector("a")!) {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
+  actions.isLocalDirectory.mockResolvedValue(false);
   props = {
     text: "[Guide](/repo/docs/guide.md)",
     cwd: "/repo",
@@ -76,6 +79,34 @@ afterEach(() => {
 });
 
 describe("AgentMarkdown file link context menu", () => {
+  it("opens a folder from its visible action without opening an editor", async () => {
+    props = { ...props, text: "`/repo/My Folder`" };
+    render();
+    actions.isLocalDirectory.mockResolvedValue(true);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Open containing folder"]',
+        )!
+        .click(),
+    );
+    expect(actions.openPathWithDefaultApp).toHaveBeenCalledWith(
+      "/repo/My Folder",
+    );
+    expect(props.onOpenFile).not.toHaveBeenCalled();
+  });
+
+  it("reveals a file from its visible action without opening an editor", async () => {
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Open containing folder"]',
+        )!
+        .click(),
+    );
+    expect(actions.revealPath).toHaveBeenCalledWith("/repo/docs/guide.md");
+    expect(props.onOpenFile).not.toHaveBeenCalled();
+  });
   it("offers file-aware actions for a local Markdown link", () => {
     const menu = openMenu(container.querySelector("a")!);
 
@@ -94,7 +125,9 @@ describe("AgentMarkdown file link context menu", () => {
     expect(props.onOpenFile).toHaveBeenCalledWith("/repo/docs/guide.md");
 
     await pick("Open in Default App");
-    expect(actions.openPathWithDefaultApp).toHaveBeenCalledWith("/repo/docs/guide.md");
+    expect(actions.openPathWithDefaultApp).toHaveBeenCalledWith(
+      "/repo/docs/guide.md",
+    );
 
     const revealLabel = /Mac/.test(navigator.platform)
       ? "Reveal in Finder"
@@ -189,7 +222,9 @@ describe("AgentMarkdown file link context menu", () => {
 
   it("shows the reason when the default app cannot open a file", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    actions.openPathWithDefaultApp.mockRejectedValueOnce("No application can open this file");
+    actions.openPathWithDefaultApp.mockRejectedValueOnce(
+      "No application can open this file",
+    );
 
     await pick("Open in Default App");
 

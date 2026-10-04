@@ -144,3 +144,20 @@ describe("goal client", () => {
     ).toThrow(TASK_AGENT_ERROR);
   });
 });
+
+describe("merging automatically in the goal draft", () => {
+  it("sends autoMerge only when asked for", () => {
+    const draft = {
+      ...newGoalDraft("G:/app", "claude", "claude:test"),
+      title: "Launch",
+      prompt: "Ship",
+    };
+    expect(draft.autoMerge).toBe(false);
+    expect(
+      hostGoalFromDraft(draft, "id", ["p-app"], "p-app").autoMerge,
+    ).toBeUndefined();
+    expect(
+      hostGoalFromDraft({ ...draft, autoMerge: true }, "id", ["p-app"], "p-app"),
+    ).toMatchObject({ autoMerge: true });
+  });
+});

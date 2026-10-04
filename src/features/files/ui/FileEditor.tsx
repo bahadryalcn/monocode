@@ -7,7 +7,7 @@ import { isRemoteProjectPath } from "../../projects/model/recents";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MarkdownViewShell, useMarkdownMode } from "../../sessions/ui/MarkdownModeToggle";
 
-import { basename, gitDiffFiles, gitFileDiff, gitStageContents, notifyGitChanged, readTextFile, revealPath, subscribeGitChanged, writeTextFile, type GitFileDiffKind } from "../../../platform/tauri/fs";
+import { basename, gitDiffFiles, gitFileDiff, gitStageContents, notifyGitChanged, openHtmlInChrome, readTextFile, revealPath, subscribeGitChanged, writeTextFile, type GitFileDiffKind } from "../../../platform/tauri/fs";
 import { syncWatchedMtime, watchFile } from "../model/fileWatch";
 import { displayPath } from "../../../shared/lib/paths";
 import type { EditorNavigation } from "../../search/model/search";
@@ -83,6 +83,35 @@ export function FileEditor({
   } | null>(null);
   const markdown = isMarkdownPath(path);
   const svg = isSvgPath(path);
+  const html = /\.html?$/i.test(basename(path));
+  const saveRequestRef = useRef<(() => Promise<boolean>) | null>(null);
+  const openingRef = useRef(false);
+  const [openingChrome, setOpeningChrome] = useState(false);
+  const [chromeError, setChromeError] = useState<string | null>(null);
+  useEffect(() => setChromeError(null), [path]);
+  const goLive = async () => {
+    if (openingRef.current) return;
+    openingRef.current = true;
+    setOpeningChrome(true);
+    setChromeError(null);
+    try {
+      if (pendingDiskRef.current) {
+        throw new Error(
+          "This file changed on disk. Reload or save it before opening Chrome.",
+        );
+      }
+      if (dirtyRef.current && !(await saveRequestRef.current?.())) {
+        throw new Error("Save the file successfully before opening Chrome.");
+      }
+      await saveQueue.current;
+      await openHtmlInChrome(path);
+    } catch (error) {
+      setChromeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      openingRef.current = false;
+      setOpeningChrome(false);
+    }
+  };
   const [mode, setMode] = useMarkdownMode(path);
   const sourceNavigationToken = useRef<number | undefined>(undefined);
   useEffect(() => {
@@ -511,6 +540,7 @@ export function FileEditor({
           showDiff={showDiff}
           gitOriginal={gitOriginal}
           active={active}
+          saveRequestRef={saveRequestRef}
           navigation={navigation}
           onDirtyChange={dirtyChange}
           onErrorCountChange={errorCountChange}
@@ -522,10 +552,33 @@ export function FileEditor({
           onOpenFile={onOpenFile}
         />
       )}
+      {chromeError ? (
+        <p
+          role="alert"
+          className="shrink-0 border-t border-stroke px-2.5 py-1 text-[12px] text-red-400"
+        >
+          {chromeError}
+        </p>
+      ) : null}
       <footer className="flex h-6 shrink-0 items-center border-t border-stroke px-2.5 font-mono text-[10.5px] text-content/40">
         <span className="min-w-0 flex-1 truncate" title={path}>
           {relativePath}
         </span>
+        {html ? (
+          <button
+            type="button"
+            disabled={openingChrome || isRemoteProjectPath(path)}
+            onClick={() => void goLive()}
+            title={
+              isRemoteProjectPath(path)
+                ? "Go Live is available for local HTML files."
+                : "Save and open this HTML file in Google Chrome"
+            }
+            className="mr-2 shrink-0 rounded px-1.5 py-0.5 font-sans text-[11px] text-content/75 hover:bg-content/10 hover:text-content disabled:opacity-40"
+          >
+            {openingChrome ? "Opening…" : "Go Live"}
+          </button>
+        ) : null}
         <InlineBlameToggle reason={footerBlameReason} />
         {saveState.status === "saving" ? (
           <span>Saving…</span>

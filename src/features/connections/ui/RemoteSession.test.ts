@@ -8,12 +8,20 @@ import {
   type SessionPaneProps,
 } from "../../sessions/ui/SessionPane";
 import type { Block, Session } from "../../sessions/model/session";
+import { SHELL_FOLLOW_UP_PROMPT } from "../../sessions/model/shellRun";
 import type { AgentModel } from "../../sessions/model/models";
+import {
+  resetDisabledModels,
+  saveModelEnabled,
+} from "../../sessions/model/models";
 import { rememberRemoteProject } from "../model/remoteProjects";
 import { preloadRemoteSession } from "./RemoteSession";
 import { rememberRemoteSession, remoteSessionFor } from "../model/connections";
 import "../model/remoteCommands";
-import { notifyRemoteRecovered, resetRemoteHealth } from "../model/remoteHealth";
+import {
+  notifyRemoteRecovered,
+  resetRemoteHealth,
+} from "../model/remoteHealth";
 import { claimAutoContinue } from "../../sessions/model/autoContinue";
 import { forgetRemoteQueue } from "../model/useRemoteQueue";
 import { watchKey, watchRun, watchedRun } from "../model/remoteTurnWatch";
@@ -48,8 +56,14 @@ vi.mock("../../sessions/ui/AgentTranscript", () => ({
     createElement(
       "ol",
       { "aria-label": "Transcript", "data-busy": busy },
-      createElement("button", { "aria-label": "Open transcript file", onClick: () => onOpenFile?.("src/app.ts") }),
-      createElement("button", { "aria-label": "Open transcript diff", onClick: () => onOpenDiff?.("src/app.ts") }),
+      createElement("button", {
+        "aria-label": "Open transcript file",
+        onClick: () => onOpenFile?.("src/app.ts"),
+      }),
+      createElement("button", {
+        "aria-label": "Open transcript diff",
+        onClick: () => onOpenDiff?.("src/app.ts"),
+      }),
       blocks.map((block) =>
         createElement(
           "li",
@@ -116,6 +130,7 @@ let container: HTMLDivElement;
 let host: HostSession | undefined;
 let catalog: HostModelCatalog | Error;
 let providers: HostDescriptor["providers"];
+let harnessSwitchSupported = false;
 let commands: HostCommand[];
 let projectKey: string;
 let syncDelay: Promise<void> | undefined;
@@ -131,11 +146,14 @@ let savedQueue: unknown;
 let queueWrites: { sessionId: string; queue: unknown }[];
 /** While set, every request to the machine fails with this error. */
 let machineDown: string | undefined;
-const unreachable = "Machine is unreachable. Check the host and SSH tunnel, then reconnect.";
+const unreachable =
+  "Machine is unreachable. Check the host and SSH tunnel, then reconnect.";
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
+  resetDisabledModels();
+  harnessSwitchSupported = false;
   localStorage.setItem("monocode.modelControls", "beside");
   commands = [];
   host = undefined;
@@ -174,9 +192,13 @@ beforeEach(() => {
       method: string;
       params: HostCommand & { sessionId?: string };
     };
-    const workspace = method === "workspace.run"
-      ? params as unknown as { command: string; args: Record<string, unknown> }
-      : undefined;
+    const workspace =
+      method === "workspace.run"
+        ? (params as unknown as {
+            command: string;
+            args: Record<string, unknown>;
+          })
+        : undefined;
     const operation = workspace?.command ?? method;
     const commandParams = workspace?.args ?? params;
     if (method === "environment.describe")
@@ -189,6 +211,7 @@ beforeEach(() => {
           "attachments.upload",
           "sessions.plan",
           "sessions.draft",
+          ...(harnessSwitchSupported ? ["sessions.harnessSwitch"] : []),
           ...(shellSupported ? ["sessions.shell"] : []),
         ],
       };
@@ -198,12 +221,20 @@ beforeEach(() => {
     }
     if (operation === "git.branches" || operation === "git_branches") {
       if (branchFailure) throw new Error(branchFailure);
-      if (workspace) return {
-        current: currentBranch,
-        detached: false,
-        branches: ["main", "dev", ...(createdBranch ? [createdBranch] : [])]
-          .map((name) => ({ name, current: name === currentBranch, remote: null })),
-      };
+      if (workspace)
+        return {
+          current: currentBranch,
+          detached: false,
+          branches: [
+            "main",
+            "dev",
+            ...(createdBranch ? [createdBranch] : []),
+          ].map((name) => ({
+            name,
+            current: name === currentBranch,
+            remote: null,
+          })),
+        };
       return {
         current: currentBranch,
         branches: ["main", "dev", ...(createdBranch ? [createdBranch] : [])],
@@ -251,11 +282,18 @@ beforeEach(() => {
         missing: false,
       };
     }
-    if (operation === "git.switch" || operation === "git.createBranch" ||
-        operation === "git_checkout" || operation === "git_create_branch") {
+    if (
+      operation === "git.switch" ||
+      operation === "git.createBranch" ||
+      operation === "git_checkout" ||
+      operation === "git_create_branch"
+    ) {
       if (branchActionFailure) throw new Error(branchActionFailure);
-      currentBranch = String(operation.startsWith("git_") ? commandParams.name : params.branch);
-      if (operation === "git.createBranch" || operation === "git_create_branch") createdBranch = currentBranch;
+      currentBranch = String(
+        operation.startsWith("git_") ? commandParams.name : params.branch,
+      );
+      if (operation === "git.createBranch" || operation === "git_create_branch")
+        createdBranch = currentBranch;
       if (workspace) return currentBranch;
       return {
         current: params.branch,
@@ -320,6 +358,7 @@ function dispatch(command: HostCommand) {
       revision: host.revision + 1,
       session: {
         ...host.session,
+        ...(command.harness ? { harness: command.harness } : {}),
         model: command.model,
         modelSettings: command.modelSettings,
         runtimeMode: command.runtimeMode,
@@ -492,8 +531,12 @@ it("opens transcript files and diffs through the shared remote tabs", async () =
   await send("Inspect files");
   await act(async () => byLabel("Open transcript file")!.click());
   await act(async () => byLabel("Open transcript diff")!.click());
-  expect(onOpenFile).toHaveBeenCalledWith("remote://env/home/me/repo/src/app.ts");
-  expect(onOpenDiff).toHaveBeenCalledWith("remote://env/home/me/repo/src/app.ts");
+  expect(onOpenFile).toHaveBeenCalledWith(
+    "remote://env/home/me/repo/src/app.ts",
+  );
+  expect(onOpenDiff).toHaveBeenCalledWith(
+    "remote://env/home/me/repo/src/app.ts",
+  );
 });
 
 it("opens a host conversation in an already mounted empty tab", async () => {
@@ -657,6 +700,89 @@ it("keeps a new session on its selected remote provider", async () => {
   });
 });
 
+it("lets an existing Claude host session select another installed provider", async () => {
+  providers = ["claude", "codex"];
+  harnessSwitchSupported = true;
+  const claude = {
+    id: "claude:opus-5",
+    name: "Opus",
+    harness: "claude" as const,
+  };
+  catalog = { models: { claude: [claude], codex: [gpt] }, errors: {} };
+  host = {
+    projectId: "project",
+    revision: 1,
+    status: "idle",
+    updatedAt: 0,
+    session: {
+      id: "host-session",
+      cwd: "/home/me/repo",
+      harness: "claude",
+      model: claude.id,
+      runtimeMode: "supervised",
+      title: "Earlier Claude chat",
+      blocks: [{ id: "earlier", role: "user", text: "Earlier work" }],
+    },
+  };
+  rememberRemoteSession("shell", "host-session");
+  await render();
+  await act(async () => byLabel("Claude Code Opus")!.click());
+  const codexTab = document.querySelector<HTMLButtonElement>(
+    '[role="tab"][aria-label="Codex"]',
+  );
+  expect(codexTab).not.toBeNull();
+  await act(async () => codexTab!.click());
+  const option = document.querySelector<HTMLButtonElement>('[role="option"]');
+  await act(async () => option!.click());
+  await settle();
+  expect(commands.at(-1)).toMatchObject({
+    type: "configure",
+    harness: "codex",
+    model: gpt.id,
+  });
+  expect(host?.session.harness).toBe("codex");
+  expect(container.textContent).toContain("Earlier work");
+});
+
+it("applies the local model visibility settings to a historical host chat", async () => {
+  const visible = {
+    id: "claude:sonnet-5",
+    name: "Sonnet",
+    harness: "claude" as const,
+  };
+  const disabled = {
+    id: "claude:opus-4-6",
+    name: "Opus 4.6",
+    harness: "claude" as const,
+  };
+  providers = ["claude"];
+  catalog = { models: { claude: [visible, disabled] }, errors: {} };
+  saveModelEnabled("claude:opus-4.6", false);
+  host = {
+    projectId: "project",
+    revision: 1,
+    status: "idle",
+    updatedAt: 0,
+    session: {
+      id: "host-session",
+      cwd: "/home/me/repo",
+      harness: "claude",
+      model: visible.id,
+      runtimeMode: "supervised",
+      title: "Earlier chat",
+      blocks: [{ id: "earlier", role: "user", text: "Work" }],
+    },
+  };
+  rememberRemoteSession("shell", "host-session");
+  await render();
+  await act(async () => byLabel("Claude Code Sonnet")!.click());
+  expect(
+    [...document.querySelectorAll('[role="option"]')].map(
+      (option) => option.textContent,
+    ),
+  ).toEqual(["Sonnet"]);
+});
+
 it("drops settings from the tab that the host's model does not offer", async () => {
   await render({
     ...shell(),
@@ -665,7 +791,10 @@ it("drops settings from the tab that the host's model does not offer", async () 
     modelSettings: { reasoningEffort: "high", serviceTier: "fast" },
   });
   await send("Fix the tests");
-  expect(commands[0]).toMatchObject({ type: "create", model: "codex:gpt-test" });
+  expect(commands[0]).toMatchObject({
+    type: "create",
+    model: "codex:gpt-test",
+  });
   expect(commands[0]).toHaveProperty("modelSettings", {
     reasoningEffort: "high",
   });
@@ -731,7 +860,11 @@ it("keeps a new draft on screen while the host confirms it", async () => {
   expect(commands.map((command) => command.type)).toEqual(["create", "draft"]);
   expect(transcriptItems("Review this later")).toHaveLength(1);
   expect(container.textContent).not.toContain("What should we work on");
-  expect(container.querySelector('[aria-label="Transcript"]')?.getAttribute("data-busy")).toBe("false");
+  expect(
+    container
+      .querySelector('[aria-label="Transcript"]')
+      ?.getAttribute("data-busy"),
+  ).toBe("false");
   expect(byLabel("Send remote draft")).not.toBeNull();
   expect(byLabel("Remove remote draft")).not.toBeNull();
   await act(async () => {
@@ -807,7 +940,9 @@ it("does not flash a status banner while an ordinary message is in flight", asyn
   await type("Second");
   await act(async () => byLabel("Send")!.click());
   expect(container.textContent).toContain("Second");
-  expect(container.textContent).not.toContain("Waiting for the host to confirm");
+  expect(container.textContent).not.toContain(
+    "Waiting for the host to confirm",
+  );
 
   await act(async () => {
     releaseDispatch();
@@ -848,7 +983,9 @@ it("starts a remote session in the worktree chosen before its first message", as
   await settle();
   const worktree = [
     ...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
-  ].find((button) => button.title === "remote://env/home/me/repo-worktrees/dev");
+  ].find(
+    (button) => button.title === "remote://env/home/me/repo-worktrees/dev",
+  );
   expect(worktree).toBeDefined();
   await act(async () => worktree!.click());
   await send("Work in dev");
@@ -857,8 +994,9 @@ it("starts a remote session in the worktree chosen before its first message", as
     worktreeCwd: "/home/me/repo-worktrees/dev",
   });
   expect(host?.session.cwd).toBe("/home/me/repo-worktrees/dev");
-  expect(container.querySelector('[aria-label="Workspace Worktree"]')?.tagName)
-    .toBe("DIV");
+  expect(
+    container.querySelector('[aria-label="Workspace Worktree"]')?.tagName,
+  ).toBe("DIV");
   expect(byLabel("Workspace Worktree")).toBeNull();
 });
 
@@ -985,8 +1123,10 @@ it("locks a started remote session to its worktree like a local session", async 
   };
   rememberRemoteSession("shell", "host-session");
   await render();
-  expect(container.querySelector('[aria-label="Workspace Current checkout"]')?.tagName)
-    .toBe("DIV");
+  expect(
+    container.querySelector('[aria-label="Workspace Current checkout"]')
+      ?.tagName,
+  ).toBe("DIV");
   expect(byLabel("Workspace Current checkout")).toBeNull();
   expect(byLabel("Branch main")).not.toBeNull();
   expect(commands).toHaveLength(0);
@@ -1091,12 +1231,16 @@ it("keeps a first message visible, with Try again, when Send cannot reconnect", 
   await settle();
   await settle();
   expect(commands).toHaveLength(0);
-  expect(container.querySelector("ol[aria-label='Transcript']")?.textContent).toContain(
-    "Fix the tests",
-  );
-  expect(container.textContent).toContain("Couldn’t send the message on Home server");
   expect(
-    [...container.querySelectorAll("button")].some((button) => button.textContent === "Try again"),
+    container.querySelector("ol[aria-label='Transcript']")?.textContent,
+  ).toContain("Fix the tests");
+  expect(container.textContent).toContain(
+    "Couldn’t send the message on Home server",
+  );
+  expect(
+    [...container.querySelectorAll("button")].some(
+      (button) => button.textContent === "Try again",
+    ),
   ).toBe(true);
 });
 
@@ -1159,46 +1303,63 @@ it("holds a settings change during a running turn and applies it afterwards", as
   );
 });
 
-it.each([false, true])("retries a lost create response without duplicating the first turn (remount: %s)", async (remount) => {
-  const original = vi.mocked(invoke).getMockImplementation()!;
-  let accepted: ReturnType<typeof dispatch> | undefined;
-  const attempts: HostCommand[] = [];
-  vi.mocked(invoke).mockImplementation(async (command, input) => {
-    const request = input as { method?: string; params?: HostCommand } | undefined;
-    if (request?.method === "commands.dispatch" && request.params?.type === "create") {
-      attempts.push(request.params);
-      if (accepted) return accepted;
-      accepted = dispatch(request.params);
-      throw new Error("Response lost after host accepted the request");
-    }
-    return original(command, input);
-  });
-  await render();
-  await send("Keep this first message");
-  expect(commands.map((command) => command.type)).toEqual(["create"]);
-  if (remount) {
-    await act(async () => root.unmount());
-    root = createRoot(container);
+it.each([false, true])(
+  "retries a lost create response without duplicating the first turn (remount: %s)",
+  async (remount) => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    let accepted: ReturnType<typeof dispatch> | undefined;
+    const attempts: HostCommand[] = [];
+    vi.mocked(invoke).mockImplementation(async (command, input) => {
+      const request = input as
+        { method?: string; params?: HostCommand } | undefined;
+      if (
+        request?.method === "commands.dispatch" &&
+        request.params?.type === "create"
+      ) {
+        attempts.push(request.params);
+        if (accepted) return accepted;
+        accepted = dispatch(request.params);
+        throw new Error("Response lost after host accepted the request");
+      }
+      return original(command, input);
+    });
     await render();
-  }
-  const retry = [...container.querySelectorAll("button")].find((button) => button.textContent === "Retry")!;
-  expect(retry).toBeTruthy();
-  await act(async () => retry.click());
-  await settle();
-  expect(attempts).toHaveLength(2);
-  expect(attempts[1]).toEqual(attempts[0]);
-  expect(commands.map((command) => command.type)).toEqual(["create", "send"]);
-  expect(commands[1]).toMatchObject({ text: "Keep this first message", sessionId: "host-session" });
-  expect(transcriptItems("Keep this first message")).toHaveLength(1);
-});
+    await send("Keep this first message");
+    expect(commands.map((command) => command.type)).toEqual(["create"]);
+    if (remount) {
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await render();
+    }
+    const retry = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Retry",
+    )!;
+    expect(retry).toBeTruthy();
+    await act(async () => retry.click());
+    await settle();
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]).toEqual(attempts[0]);
+    expect(commands.map((command) => command.type)).toEqual(["create", "send"]);
+    expect(commands[1]).toMatchObject({
+      text: "Keep this first message",
+      sessionId: "host-session",
+    });
+    expect(transcriptItems("Keep this first message")).toHaveLength(1);
+  },
+);
 
 it("ignores a late create response after its tab has switched conversations", async () => {
   await render();
   let release!: () => void;
-  dispatchDelay = new Promise<void>((resolve) => { release = resolve; });
+  dispatchDelay = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   await send("Pending first message");
   await act(async () => rememberRemoteSession("shell", "different-session"));
-  await act(async () => { release(); dispatchDelay = undefined; });
+  await act(async () => {
+    release();
+    dispatchDelay = undefined;
+  });
   await settle();
   expect(remoteSessionFor("shell")).toBe("different-session");
   expect(commands.map((command) => command.type)).toEqual(["create"]);
@@ -1245,153 +1406,248 @@ const setHost = (patch: Partial<HostSession> & { busy?: boolean }) => {
     session: { ...host!.session, ...(busy === undefined ? {} : { busy }) },
   };
 };
-const endTurn = () => setHost({ status: "idle", runId: undefined, busy: false });
+const endTurn = () =>
+  setHost({ status: "idle", runId: undefined, busy: false });
 const sends = () => commands.filter((command) => command.type === "send");
-const sentTexts = () => sends().map((command) => (command as { text: string }).text);
+const sentTexts = () =>
+  sends().map((command) => (command as { text: string }).text);
 const queueCard = () => container.querySelector("[data-message-queue]");
 const openRunningChat = () => {
   openExistingChat({ status: "running", runId: "run-1" });
   host!.session.busy = true;
 };
+it("shows a host turn as running from its status without requiring the transcript busy flag", async () => {
+  openExistingChat({ status: "running", runId: "run-1" });
+  host!.session.busy = false;
+  await render();
+  expect(container.textContent).toContain("Working on Home server.");
+  expect(container.querySelector('[aria-label="Transcript"]')?.getAttribute("data-busy")).toBe("true");
+  expect(byLabel("Stop")).not.toBeNull();
+  setHost({ status: "idle", busy: true });
+  await act(async () => notifyRemoteRecovered());
+  await settle();
+  expect(container.textContent).not.toContain("Working on Home server.");
+  expect(container.querySelector('[aria-label="Transcript"]')?.getAttribute("data-busy")).toBe("false");
+});
+
+it("shows host activity alongside a preserved local conversation conflict", async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, input) =>
+    command === "list_claude_commands" ? [] : original(command, input),
+  );
+  const session = {
+    ...shell(), cwd: "/repo", continuingElsewhere: true, adoptedSyncConflict: true,
+    blocks: [{ id: "u", role: "user", text: "local edit" } as Block],
+  };
+  await render(session);
+  expect(container.querySelector('[role="status"]')?.textContent).toContain("Working on host.");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Your local copy was kept");
+  expect(container.textContent).toContain("local edit");
+  expect(byLabel("Stop")).toBeNull();
+  await render({ ...session, continuingElsewhere: undefined });
+  expect(container.textContent).not.toContain("Working on host.");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("Your local copy was kept");
+});
+
+it("refreshes an adopted conversation without remounting or clearing its unsent composer", async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation(async (command, input) =>
+    command === "list_claude_commands" ? [] : original(command, input),
+  );
+  const session = {
+    ...shell(), cwd: "/repo", continuingElsewhere: true, adoptedSyncConflict: true,
+    blocks: [{ id: "u", role: "user", text: "local edit" } as Block],
+  };
+  const onRefreshAdoptedSession = vi.fn(async () => true);
+  await render(session, { onRefreshAdoptedSession });
+  await type("my unsent draft");
+  const composer = container.querySelector("textarea")!;
+  const refreshButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "Refresh from host")!;
+  await act(async () => refreshButton.click());
+  expect(onRefreshAdoptedSession).toHaveBeenCalledExactlyOnceWith(session.id);
+  await render({
+    ...session, continuingElsewhere: undefined, adoptedSyncConflict: undefined,
+    blocks: [{ id: "u", role: "user", text: "latest host conversation" } as Block],
+  }, { onRefreshAdoptedSession });
+  expect(container.querySelector("textarea")).toBe(composer);
+  expect(composer.value).toBe("my unsent draft");
+  expect(container.textContent).toContain("latest host conversation");
+  expect(container.textContent).toContain("(local copy)");
+});
 const whenStopShown = () =>
   vi.waitFor(() => expect(byLabel("Stop")).not.toBeNull(), { timeout: 4_000 });
 
-slow("runs a !command on the host instead of sending it as a message, even mid-turn", async () => {
-  shellSupported = true;
-  try {
+slow(
+  "runs a !command on the host instead of sending it as a message, even mid-turn",
+  async () => {
+    shellSupported = true;
+    try {
+      openRunningChat();
+      await render();
+      await whenStopShown();
+      await type("!git status");
+      await act(async () => {
+        container
+          .querySelector("textarea")!
+          .dispatchEvent(
+            new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+          );
+      });
+      await vi.waitFor(() => expect(commands).toHaveLength(1), {
+        timeout: 4_000,
+      });
+      expect(commands[0]).toMatchObject({
+        type: "shell",
+        sessionId: "host-session",
+        line: "git status",
+      });
+      // The staged shell-followup behavior queues the agent's continuation while
+      // its current turn is busy; the shell command itself was dispatched once.
+      if (queueCard())
+        expect(queueCard()!.textContent).toContain(SHELL_FOLLOW_UP_PROMPT);
+      expect(container.querySelector("textarea")!.value).toBe("");
+      // The host's block reaches the transcript with the next sync.
+      await vi.waitFor(
+        () =>
+          expect(
+            container.querySelectorAll("ol[aria-label='Transcript'] li"),
+          ).toHaveLength(3),
+        { timeout: 4_000 },
+      );
+    } finally {
+      shellSupported = false;
+    }
+  },
+);
+
+slow(
+  "keeps a !command in the composer when the host is too old to run it",
+  async () => {
+    openExistingChat();
+    await render();
+    await send("!git status");
+    expect(commands).toHaveLength(0);
+    expect(container.querySelector("textarea")!.value).toBe("!git status");
+    expect(container.textContent).toContain("Update MonoCode Host");
+    // The draft is remembered across mounts; leave the composer empty.
+    await type("");
+  },
+);
+
+slow(
+  "queues a message sent during a host turn and sends it when the turn ends",
+  async () => {
     openRunningChat();
     await render();
     await whenStopShown();
-    await type("!git status");
-    await act(async () => {
-      container.querySelector("textarea")!.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
-      );
-    });
-    await vi.waitFor(() => expect(commands).toHaveLength(1), { timeout: 4_000 });
-    expect(commands[0]).toMatchObject({
-      type: "shell",
-      sessionId: "host-session",
-      line: "git status",
-    });
-    expect(queueCard()).toBeNull();
+    await type("Also update the docs");
+    await act(async () => byLabel("Queue message")!.click());
+    await settle();
+    expect(commands).toHaveLength(0);
+    expect(queueCard()?.textContent).toContain("Also update the docs");
+    expect(queueCard()?.textContent).toContain("while MonoCode is open");
+    // A host turn cannot be steered.
+    expect(queueCard()?.textContent).not.toContain("Steer");
     expect(container.querySelector("textarea")!.value).toBe("");
-    // The host's block reaches the transcript with the next sync.
+    expect(queueWrites.at(-1)).toMatchObject({
+      sessionId: "host-session",
+      queue: [expect.objectContaining({ text: "Also update the docs" })],
+    });
+
+    endTurn();
+    await vi.waitFor(() => expect(sends()).toHaveLength(1), { timeout: 5_000 });
+    expect(sends()[0]).toMatchObject({
+      text: "Also update the docs",
+      sessionId: "host-session",
+    });
+    await settle();
+    expect(queueCard()).toBeNull();
+    expect(queueWrites.at(-1)).toMatchObject({ queue: null });
+  },
+);
+
+slow(
+  "queues a plain Send while the host turn runs, and sends the messages in order",
+  async () => {
+    openRunningChat();
+    await render();
+    await whenStopShown();
+    await type("first follow-up");
+    await act(async () => byLabel("Send")!.click());
+    await type("second follow-up");
+    await act(async () => byLabel("Send")!.click());
+    await settle();
+    expect(commands).toHaveLength(0);
+    expect(queueCard()?.textContent).toContain("first follow-up");
+    expect(queueCard()?.textContent).toContain("second follow-up");
+
+    endTurn();
+    // The dispatch stub finishes a turn at once, so the second goes out right
+    // after the first, never together with it.
+    await vi.waitFor(() => expect(sends()).toHaveLength(2), { timeout: 8_000 });
+    expect(sentTexts()).toEqual(["first follow-up", "second follow-up"]);
+  },
+);
+
+slow(
+  "holds the queue while the machine is unreachable and sends after it reconnects",
+  async () => {
+    openRunningChat();
+    await render();
+    await whenStopShown();
+    await type("when you are back");
+    await act(async () => byLabel("Queue message")!.click());
+    await settle();
+
+    // The turn ends while the app cannot see the host.
+    endTurn();
+    machineDown = unreachable;
     await vi.waitFor(
-      () =>
-        expect(
-          container.querySelectorAll("ol[aria-label='Transcript'] li"),
-        ).toHaveLength(3),
-      { timeout: 4_000 },
+      () => expect(container.textContent).toContain("Can’t reach Home server"),
+      {
+        timeout: 6_000,
+      },
     );
-  } finally {
-    shellSupported = false;
-  }
-});
+    await settle();
+    expect(commands).toHaveLength(0);
+    expect(queueCard()?.textContent).toContain("when you are back");
 
-slow("keeps a !command in the composer when the host is too old to run it", async () => {
-  openExistingChat();
-  await render();
-  await send("!git status");
-  expect(commands).toHaveLength(0);
-  expect(container.querySelector("textarea")!.value).toBe("!git status");
-  expect(container.textContent).toContain("Update MonoCode Host");
-  // The draft is remembered across mounts; leave the composer empty.
-  await type("");
-});
+    machineDown = undefined;
+    await act(async () => notifyRemoteRecovered("env"));
+    await vi.waitFor(() => expect(sends()).toHaveLength(1), { timeout: 6_000 });
+    expect(sentTexts()[0]).toBe("when you are back");
+  },
+);
 
-slow("queues a message sent during a host turn and sends it when the turn ends", async () => {
-  openRunningChat();
-  await render();
-  await whenStopShown();
-  await type("Also update the docs");
-  await act(async () => byLabel("Queue message")!.click());
-  await settle();
-  expect(commands).toHaveLength(0);
-  expect(queueCard()?.textContent).toContain("Also update the docs");
-  expect(queueCard()?.textContent).toContain("while MonoCode is open");
-  // A host turn cannot be steered.
-  expect(queueCard()?.textContent).not.toContain("Steer");
-  expect(container.querySelector("textarea")!.value).toBe("");
-  expect(queueWrites.at(-1)).toMatchObject({
-    sessionId: "host-session",
-    queue: [expect.objectContaining({ text: "Also update the docs" })],
-  });
+slow(
+  "brings a saved queue back after a restart and waits for Send next",
+  async () => {
+    savedQueue = [
+      { id: "q1", text: "saved one", attachments: [] },
+      { id: "q2", text: "saved two", attachments: [] },
+    ];
+    openExistingChat();
+    await render();
+    await settle();
+    expect(queueCard()?.textContent).toContain("2 queued messages restored");
+    expect(queueCard()?.textContent).toContain("saved one");
+    // The chat is idle, yet nothing is sent on its own.
+    await settle();
+    expect(commands).toHaveLength(0);
 
-  endTurn();
-  await vi.waitFor(() => expect(sends()).toHaveLength(1), { timeout: 5_000 });
-  expect(sends()[0]).toMatchObject({ text: "Also update the docs", sessionId: "host-session" });
-  await settle();
-  expect(queueCard()).toBeNull();
-  expect(queueWrites.at(-1)).toMatchObject({ queue: null });
-});
-
-slow("queues a plain Send while the host turn runs, and sends the messages in order", async () => {
-  openRunningChat();
-  await render();
-  await whenStopShown();
-  await type("first follow-up");
-  await act(async () => byLabel("Send")!.click());
-  await type("second follow-up");
-  await act(async () => byLabel("Send")!.click());
-  await settle();
-  expect(commands).toHaveLength(0);
-  expect(queueCard()?.textContent).toContain("first follow-up");
-  expect(queueCard()?.textContent).toContain("second follow-up");
-
-  endTurn();
-  // The dispatch stub finishes a turn at once, so the second goes out right
-  // after the first, never together with it.
-  await vi.waitFor(() => expect(sends()).toHaveLength(2), { timeout: 8_000 });
-  expect(sentTexts()).toEqual(["first follow-up", "second follow-up"]);
-});
-
-slow("holds the queue while the machine is unreachable and sends after it reconnects", async () => {
-  openRunningChat();
-  await render();
-  await whenStopShown();
-  await type("when you are back");
-  await act(async () => byLabel("Queue message")!.click());
-  await settle();
-
-  // The turn ends while the app cannot see the host.
-  endTurn();
-  machineDown = unreachable;
-  await vi.waitFor(() => expect(container.textContent).toContain("Can’t reach Home server"), {
-    timeout: 6_000,
-  });
-  await settle();
-  expect(commands).toHaveLength(0);
-  expect(queueCard()?.textContent).toContain("when you are back");
-
-  machineDown = undefined;
-  await act(async () => notifyRemoteRecovered("env"));
-  await vi.waitFor(() => expect(sends()).toHaveLength(1), { timeout: 6_000 });
-  expect(sentTexts()[0]).toBe("when you are back");
-});
-
-slow("brings a saved queue back after a restart and waits for Send next", async () => {
-  savedQueue = [
-    { id: "q1", text: "saved one", attachments: [] },
-    { id: "q2", text: "saved two", attachments: [] },
-  ];
-  openExistingChat();
-  await render();
-  await settle();
-  expect(queueCard()?.textContent).toContain("2 queued messages restored");
-  expect(queueCard()?.textContent).toContain("saved one");
-  // The chat is idle, yet nothing is sent on its own.
-  await settle();
-  expect(commands).toHaveLength(0);
-
-  await act(async () =>
-    [...container.querySelectorAll<HTMLButtonElement>("[data-message-queue] button")]
-      .find((button) => button.textContent?.includes("Send next"))!
-      .click(),
-  );
-  await vi.waitFor(() => expect(sends()).toHaveLength(2), { timeout: 5_000 });
-  expect(sentTexts()).toEqual(["saved one", "saved two"]);
-});
+    await act(async () =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          "[data-message-queue] button",
+        ),
+      ]
+        .find((button) => button.textContent?.includes("Send next"))!
+        .click(),
+    );
+    await vi.waitFor(() => expect(sends()).toHaveLength(2), { timeout: 5_000 });
+    expect(sentTexts()).toEqual(["saved one", "saved two"]);
+  },
+);
 
 slow("keeps one chat's queue from showing on another", async () => {
   savedQueue = [{ id: "q1", text: "belongs to the first", attachments: [] }];
@@ -1421,41 +1677,54 @@ slow("pauses the queue when the user stops the turn", async () => {
   expect(sends()).toHaveLength(0);
 });
 
-slow("re-attaches to a turn still running on the host: working, nothing sent", async () => {
-  openRunningChat();
-  watchRun(watchKey("env", "host-session"), "run-1");
-  await render();
-  await whenStopShown();
-  expect(container.querySelector("ol[aria-label='Transcript']")?.getAttribute("data-busy")).toBe("true");
-  expect(commands).toHaveLength(0);
-  expect(container.querySelector("[data-interrupted-turn]")).toBeNull();
-  // Output produced while the app was away arrives with the next sync, in order.
-  host = {
-    ...host!,
-    revision: host!.revision + 1,
-    session: {
-      ...host!.session,
-      blocks: [
-        ...host!.session.blocks,
-        { id: "while-away", role: "assistant", text: "Edited three files" },
-      ],
-    },
-  };
-  await vi.waitFor(() => expect(container.textContent).toContain("Edited three files"), { timeout: 4_000 });
-  expect(commands).toHaveLength(0);
-});
+slow(
+  "re-attaches to a turn still running on the host: working, nothing sent",
+  async () => {
+    openRunningChat();
+    watchRun(watchKey("env", "host-session"), "run-1");
+    await render();
+    await whenStopShown();
+    expect(
+      container
+        .querySelector("ol[aria-label='Transcript']")
+        ?.getAttribute("data-busy"),
+    ).toBe("true");
+    expect(commands).toHaveLength(0);
+    expect(container.querySelector("[data-interrupted-turn]")).toBeNull();
+    // Output produced while the app was away arrives with the next sync, in order.
+    host = {
+      ...host!,
+      revision: host!.revision + 1,
+      session: {
+        ...host!.session,
+        blocks: [
+          ...host!.session.blocks,
+          { id: "while-away", role: "assistant", text: "Edited three files" },
+        ],
+      },
+    };
+    await vi.waitFor(
+      () => expect(container.textContent).toContain("Edited three files"),
+      { timeout: 4_000 },
+    );
+    expect(commands).toHaveLength(0);
+  },
+);
 
-slow("shows a turn that finished while the app was away, and sends nothing", async () => {
-  openExistingChat({ status: "idle" });
-  watchRun(watchKey("env", "host-session"), "run-1");
-  await render();
-  await settle();
-  expect(container.textContent).toContain("Earlier reply");
-  expect(byLabel("Stop")).toBeNull();
-  expect(commands).toHaveLength(0);
-  expect(container.querySelector("[data-interrupted-turn]")).toBeNull();
-  expect(watchedRun(watchKey("env", "host-session"))).toBeUndefined();
-});
+slow(
+  "shows a turn that finished while the app was away, and sends nothing",
+  async () => {
+    openExistingChat({ status: "idle" });
+    watchRun(watchKey("env", "host-session"), "run-1");
+    await render();
+    await settle();
+    expect(container.textContent).toContain("Earlier reply");
+    expect(byLabel("Stop")).toBeNull();
+    expect(commands).toHaveLength(0);
+    expect(container.querySelector("[data-interrupted-turn]")).toBeNull();
+    expect(watchedRun(watchKey("env", "host-session"))).toBeUndefined();
+  },
+);
 
 const lostTurn = () => {
   openExistingChat({ status: "interrupted", runId: "run-1" });
@@ -1471,16 +1740,21 @@ const lostTurn = () => {
 const continues = () =>
   sentTexts().filter((text) => text === "Continue from where you left off.");
 
-slow("continues a turn the host lost, once, when this app was watching it", async () => {
-  lostTurn();
-  watchRun(watchKey("env", "host-session"), "run-1");
-  await render();
-  await vi.waitFor(() => expect(continues()).toHaveLength(1), { timeout: 5_000 });
-  await settle();
-  await settle();
-  expect(continues()).toHaveLength(1);
-  expect(watchedRun(watchKey("env", "host-session"))).toBeUndefined();
-});
+slow(
+  "continues a turn the host lost, once, when this app was watching it",
+  async () => {
+    lostTurn();
+    watchRun(watchKey("env", "host-session"), "run-1");
+    await render();
+    await vi.waitFor(() => expect(continues()).toHaveLength(1), {
+      timeout: 5_000,
+    });
+    await settle();
+    await settle();
+    expect(continues()).toHaveLength(1);
+    expect(watchedRun(watchKey("env", "host-session"))).toBeUndefined();
+  },
+);
 
 slow("offers Continue instead of sending when the setting is off", async () => {
   localStorage.setItem("monocode.autoContinueInterrupted", "0");
@@ -1491,32 +1765,42 @@ slow("offers Continue instead of sending when the setting is off", async () => {
   await settle();
   expect(commands).toHaveLength(0);
   const notice = container.querySelector("[data-interrupted-turn]");
-  expect(notice?.textContent).toContain("The host stopped this turn before it finished");
+  expect(notice?.textContent).toContain(
+    "The host stopped this turn before it finished",
+  );
   await act(async () =>
     [...notice!.querySelectorAll("button")]
       .find((button) => button.textContent?.includes("Continue"))!
       .click(),
   );
-  await vi.waitFor(() => expect(continues()).toHaveLength(1), { timeout: 5_000 });
+  await vi.waitFor(() => expect(continues()).toHaveLength(1), {
+    timeout: 5_000,
+  });
 });
 
-slow("never continues on its own when messages are queued; it offers Continue", async () => {
-  savedQueue = [{ id: "q1", text: "queued already", attachments: [] }];
-  lostTurn();
-  watchRun(watchKey("env", "host-session"), "run-1");
-  await render();
-  await settle();
-  await settle();
-  expect(commands).toHaveLength(0);
-  expect(container.querySelector("[data-interrupted-turn]")).not.toBeNull();
-  expect(queueCard()?.textContent).toContain("1 queued message restored");
-});
+slow(
+  "never continues on its own when messages are queued; it offers Continue",
+  async () => {
+    savedQueue = [{ id: "q1", text: "queued already", attachments: [] }];
+    lostTurn();
+    watchRun(watchKey("env", "host-session"), "run-1");
+    await render();
+    await settle();
+    await settle();
+    expect(commands).toHaveLength(0);
+    expect(container.querySelector("[data-interrupted-turn]")).not.toBeNull();
+    expect(queueCard()?.textContent).toContain("1 queued message restored");
+  },
+);
 
-slow("does not continue a lost turn it never saw running, only offers Continue", async () => {
-  lostTurn();
-  await render();
-  await settle();
-  await settle();
-  expect(commands).toHaveLength(0);
-  expect(container.querySelector("[data-interrupted-turn]")).not.toBeNull();
-});
+slow(
+  "does not continue a lost turn it never saw running, only offers Continue",
+  async () => {
+    lostTurn();
+    await render();
+    await settle();
+    await settle();
+    expect(commands).toHaveLength(0);
+    expect(container.querySelector("[data-interrupted-turn]")).not.toBeNull();
+  },
+);

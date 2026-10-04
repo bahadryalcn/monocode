@@ -224,3 +224,38 @@ describe("background transitions", () => {
     ]);
   });
 });
+
+describe("automatic merges", () => {
+  it("announces a task merged on its own once, and not as ready for review", () => {
+    expect(
+      messages(
+        { tasks: [task({ status: "verifying" })] },
+        { tasks: [task({ status: "done", merged: true, autoMerged: true })] },
+      ),
+    ).toEqual(["tasks/finished: Merged automatically: Ship the report on MacBook"]);
+    const merged = task({ status: "done", merged: true, autoMerged: true });
+    expect(messages({ tasks: [merged] }, { tasks: [merged] })).toEqual([]);
+  });
+
+  it("still announces review when the merge did not happen, and stays quiet for an approved one", () => {
+    expect(
+      messages(
+        { tasks: [task({ status: "verifying" })] },
+        {
+          tasks: [
+            task({
+              status: "review",
+              mergeError: "The project has uncommitted changes.",
+            }),
+          ],
+        },
+      ),
+    ).toEqual(["tasks/finished: Ready for review: Ship the report on MacBook"]);
+    expect(
+      messages(
+        { tasks: [task({ status: "review" })] },
+        { tasks: [task({ status: "done", merged: true })] },
+      ),
+    ).toEqual([]);
+  });
+});

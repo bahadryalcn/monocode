@@ -3,6 +3,7 @@ import { buildRecentSessions } from "../../sessions/model/recentSessions";
 import { pathKey } from "../../../shared/lib/paths";
 import type { HostSessionSummary } from "./protocol";
 import {
+  nextRemoteUnseenFinished,
   remoteLiveAgents,
   remoteLiveSessionInfos,
   unopenedRemoteSessions,
@@ -63,4 +64,70 @@ it("lists a host session that was never opened here in Last sessions", () => {
     { id: "running", status: "working", remote: true, updatedAt: 1_000 },
     { id: "idle", status: undefined, remote: true, updatedAt: 50 },
   ]);
+});
+
+const fresh = (session: Partial<HostSessionSummary> & { id: string }) => ({
+  ...listed(session),
+  fresh: true,
+});
+
+it("marks a host session done once it stops running, until it is opened", () => {
+  const first = nextRemoteUnseenFinished({
+    listed: [fresh({ id: "a", status: "running" })],
+    previousRunningIds: new Set(),
+    previousUnseenIds: new Set(),
+    loadedHostIds: new Set(),
+  });
+  expect([...first.unseenIds]).toEqual([]);
+  const finished = nextRemoteUnseenFinished({
+    listed: [fresh({ id: "a" })],
+    previousRunningIds: first.runningIds,
+    previousUnseenIds: first.unseenIds,
+    loadedHostIds: new Set(),
+  });
+  expect([...finished.unseenIds]).toEqual(["a"]);
+  const kept = nextRemoteUnseenFinished({
+    listed: [fresh({ id: "a" })],
+    previousRunningIds: finished.runningIds,
+    previousUnseenIds: finished.unseenIds,
+    loadedHostIds: new Set(),
+  });
+  expect([...kept.unseenIds]).toEqual(["a"]);
+  const opened = nextRemoteUnseenFinished({
+    listed: [fresh({ id: "a" })],
+    previousRunningIds: kept.runningIds,
+    previousUnseenIds: kept.unseenIds,
+    loadedHostIds: new Set(["a"]),
+  });
+  expect([...opened.unseenIds]).toEqual([]);
+});
+
+it("does not read a cached list as a finished turn", () => {
+  const next = nextRemoteUnseenFinished({
+    listed: [listed({ id: "a" })],
+    previousRunningIds: new Set(["a"]),
+    previousUnseenIds: new Set(),
+    loadedHostIds: new Set(),
+  });
+  expect([...next.unseenIds]).toEqual([]);
+  expect([...next.runningIds]).toEqual(["a"]);
+});
+
+it("does not mark the focused session or one that left the list", () => {
+  const next = nextRemoteUnseenFinished({
+    listed: [fresh({ id: "a" })],
+    previousRunningIds: new Set(["a", "gone"]),
+    previousUnseenIds: new Set(["old"]),
+    loadedHostIds: new Set(),
+    focusedHostId: "a",
+  });
+  expect([...next.unseenIds]).toEqual([]);
+});
+
+it("shows a finished host session as done on the working card", () => {
+  const agents = remoteLiveAgents(
+    [listed({ id: "a" }), listed({ id: "b" })],
+    new Set(["a"]),
+  );
+  expect(agents).toMatchObject([{ id: "a", done: true, activity: "Done" }]);
 });

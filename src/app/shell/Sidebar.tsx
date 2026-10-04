@@ -639,6 +639,30 @@ function SidebarComponent({
         : sessions,
     [remoteProject, remote.sessions, sessions, cwd],
   );
+  // Count the whole workspace before search, pagination or worktree filters.
+  // Local busy IDs also include sessions continued on this desktop's host.
+  const workingSessionCount = new Set(
+    [...projectSessions, ...(remoteProject ? [] : openSessions)]
+      .filter(
+        (session) =>
+          sameProjectPath(session.cwd, cwd) &&
+          !session.orchestrationLeadId &&
+          listedBusySessionIds.has(session.id) &&
+          !listedApprovalSessionIds.has(session.id),
+      )
+      .map((session) => session.id),
+  ).size;
+  const workingSessionsBadge = workingSessionCount > 0 ? (
+    <span
+      data-workspace-working-count
+      aria-live="polite"
+      aria-label={`${workingSessionCount} working ${workingSessionCount === 1 ? "session" : "sessions"}`}
+      title={`${workingSessionCount} working ${workingSessionCount === 1 ? "session" : "sessions"}`}
+      className="ml-2 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 px-1.5 text-[11px] font-semibold tabular-nums leading-none text-accent"
+    >
+      {workingSessionCount}
+    </span>
+  ) : null;
   const remoteExecutionCwd =
     remote.sessions.find((session) => session.id === activeRemoteId)?.cwd ??
     (activeSessionId ? remotePendingWorktree(activeSessionId) : undefined) ??
@@ -1947,6 +1971,7 @@ function SidebarComponent({
               {TAB_LABELS[itemId]}
             </span>
           )}
+          {!railVisible && itemId === "sessions" ? workingSessionsBadge : null}
         </button>
       </div>
     );
@@ -1977,6 +2002,7 @@ function SidebarComponent({
                   Workspace
                 </span>
               )}
+              {workingSessionsBadge}
             </div>
             <WorkspaceTitleActions onSearch={onGoToFile} onNew={onNew} />
           </div>
@@ -2651,6 +2677,7 @@ function SidebarComponent({
       {compactRailVisible ? (
         <CompactProjectRail
           cwd={cwd}
+          workingSessionsBadge={workingSessionsBadge}
           recents={visibleRecents}
           busy={projectPathBusy(busyProjectPaths, cwd)}
           tabs={visibleTabs}
@@ -2923,6 +2950,7 @@ function SidebarProjectPicker({
 
 function CompactProjectRail({
   cwd,
+  workingSessionsBadge,
   recents,
   busy,
   tabs,
@@ -2955,6 +2983,7 @@ function CompactProjectRail({
   onSelectAgent,
 }: {
   cwd: string;
+  workingSessionsBadge?: ReactNode;
   recents: RecentProject[];
   busy: boolean;
   tabs: SidebarTab[];
@@ -3069,6 +3098,7 @@ function CompactProjectRail({
               icon={COMPACT_TAB_ICONS[itemId]}
               active={workspaceActive && tabShown && activeTab === itemId}
               dot={itemId === "changes" && hasChanges}
+              badge={itemId === "sessions" ? workingSessionsBadge : undefined}
               onClick={() => openWorkspaceTab(itemId)}
             />
           ))}
@@ -3143,6 +3173,7 @@ function CompactRailAction({
   tab = false,
   active = false,
   dot = false,
+  badge,
   onClick,
   onOpenContextMenu,
   ref,
@@ -3152,6 +3183,7 @@ function CompactRailAction({
   tab?: boolean;
   active?: boolean;
   dot?: boolean;
+  badge?: ReactNode;
   onClick?: () => void;
   onOpenContextMenu?: (x: number, y: number) => void;
   ref?: Ref<HTMLButtonElement>;
@@ -3208,6 +3240,11 @@ function CompactRailAction({
           aria-hidden
           className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-accent"
         />
+      ) : null}
+      {badge ? (
+        <span className="pointer-events-none absolute -right-1 -top-1 [&>span]:ml-0 [&>span]:h-4 [&>span]:min-w-4 [&>span]:text-[10px]">
+          {badge}
+        </span>
       ) : null}
     </button>
   );

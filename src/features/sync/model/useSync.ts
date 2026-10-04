@@ -152,8 +152,15 @@ export function startAppSync(): () => void {
     () => collectSyncMachineIds(machines),
     (machineId) => (method, params) => remoteRequest(machineId, method, params),
   );
-  void invoke("local_host_connect")
-    .catch(() => undefined)
+  // A host that was not up yet at launch is linked on a later refresh.
+  let localLinked = false;
+  const connectLocalHost = () =>
+    invoke<unknown>("local_host_connect")
+      .then((machine) => {
+        if (machine) localLinked = true;
+      })
+      .catch(() => undefined);
+  void connectLocalHost()
     .then(refreshMachines)
     .then(() => {
       if (!stopped) loop.nudge();
@@ -162,7 +169,10 @@ export function startAppSync(): () => void {
   const onLocalChange = createLocalChangeHandler(nudger.trigger);
   const unsubscribePaths = subscribeProjectPathsChanged(onLocalChange);
   const unsubscribeLock = subscribeLockRecordChanges(onLocalChange);
-  const interval = setInterval(refreshMachines, 30_000);
+  const interval = setInterval(() => {
+    if (localLinked) void refreshMachines();
+    else void connectLocalHost().then(refreshMachines);
+  }, 30_000);
   return () => {
     started = false;
     stopped = true;

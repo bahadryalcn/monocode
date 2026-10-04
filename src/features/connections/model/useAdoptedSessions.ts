@@ -17,8 +17,10 @@ import {
   ADOPTED_SESSION_ADDED,
   desktopCopyOf,
   mirrorAdoptedSessions,
+  refreshAdoptedSession,
   supportsAdoptedSessions,
   type AdoptedEntry,
+  type AdoptedMirrorDeps,
 } from "./adoptedSessions";
 import {
   loadRemoteCapabilities,
@@ -31,29 +33,35 @@ import { loadRecents, sameProjectPath } from "../../projects/model/recents";
 
 const MACHINE_RECHECK_MS = 15_000;
 
+export type RefreshAdoptedSession = (sessionId: string) => Promise<boolean>;
+
 /** Mirrors sessions the local MonoCode Host adopted from this desktop (another
  * computer continued them there) back into the loaded local sessions.
+ * `loadRunning` is handed the ids the host runs that are not loaded here, so
+ * they can be loaded and show as working without a tab open on them.
  * Returns whether such a host is reachable: then other computers can watch
  * this desktop's sessions through it. */
 export function useAdoptedSessions(
   sessionsRef: MutableRefObject<Session[]>,
   setSessions: (update: (current: Session[]) => Session[]) => void,
+  loadRunning?: MutableRefObject<((ids: string[]) => void) | undefined>,
+  refreshRef?: MutableRefObject<RefreshAdoptedSession | undefined>,
 ): MutableRefObject<boolean> {
   const hostReachable = useRef(false);
   useEffect(() => {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let running = false;
+    let running: Promise<boolean | undefined> | undefined;
+    const refreshes = new Map<string, Promise<boolean>>();
     const mirrored = new Map<string, number>();
-    const hold = new Set<string>();
     let known: RemoteMachine | undefined;
     let knownAt = 0;
 
-    const pass = async () => {
-      if (running) return;
-      running = true;
+    const perform = async (
+      sessionId?: string,
+    ): Promise<boolean | undefined> => {
       try {
-        if (!known || Date.now() - knownAt > MACHINE_RECHECK_MS) {
+        if (sessionId || !known || Date.now() - knownAt > MACHINE_RECHECK_MS) {
           const machines = await invoke<RemoteMachine[]>("remote_machines");
           known = (Array.isArray(machines) ? machines : []).find(
             isLocalSyncMachine,
@@ -63,21 +71,62 @@ export function useAdoptedSessions(
         const machine = known;
         if (!machine || stopped) {
           hostReachable.current = false;
+          if (sessionId)
+            throw new Error(
+              "Host unavailable. Check the connection and try again.",
+            );
           return;
         }
         const capabilities = await loadRemoteCapabilities(
           machine.environmentId,
         );
         hostReachable.current = supportsAdoptedSessions(capabilities);
-        if (!hostReachable.current || stopped) return;
+        if (!hostReachable.current || stopped) {
+          if (sessionId)
+            throw new Error(
+              "The host cannot refresh this conversation. Check the connection and host version.",
+            );
+          return;
+        }
         let projects: HostProject[] | undefined;
-        const held = await mirrorAdoptedSessions({
+        const deps: AdoptedMirrorDeps = {
           list: () =>
             remoteRequest<AdoptedEntry[]>(machine.id, "sessions.adopted", {}),
           load: (sessionId, known) =>
             loadRemoteSession(machine.id, sessionId, known),
-          local: () => sessionsRef.current,
+          local: () => (stopped ? [] : sessionsRef.current),
           mirrored,
+          preserve: async (copy) => {
+            if (stopped || !(await upsertSession(copy))) return false;
+            window.dispatchEvent(
+              new CustomEvent<string>(ADOPTED_SESSION_ADDED, {
+                detail: copy.cwd,
+              }),
+            );
+            return true;
+          },
+          onRunning: (running) => {
+            if (stopped) return;
+            const update = (list: Session[]) => {
+              let changed = false;
+              const next = list.map((session) => {
+                const continuingElsewhere =
+                  running.has(session.id) || undefined;
+                if (session.continuingElsewhere === continuingElsewhere)
+                  return session;
+                changed = true;
+                return { ...session, continuingElsewhere };
+              });
+              return changed ? next : list;
+            };
+            sessionsRef.current = update(sessionsRef.current);
+            setSessions(update);
+            const loaded = new Set(
+              sessionsRef.current.map((session) => session.id),
+            );
+            const unloaded = [...running].filter((id) => !loaded.has(id));
+            if (unloaded.length > 0) loadRunning?.current?.(unloaded);
+          },
           conflict: (current) => {
             if (stopped || current.adoptedSyncConflict) return;
             const flag = (list: Session[]) =>
@@ -147,29 +196,43 @@ export function useAdoptedSessions(
               );
             }
           },
-        });
-        // Clear the hold on sessions the host finished without a new revision.
-        const stale = [...hold].filter((id) => !held.has(id));
-        hold.clear();
-        for (const id of held) hold.add(id);
-        if (stale.length > 0) {
-          const release = (list: Session[]) =>
-            list.map((session) =>
-              stale.includes(session.id) && session.continuingElsewhere
-                ? { ...session, continuingElsewhere: undefined }
-                : session,
-            );
-          sessionsRef.current = release(sessionsRef.current);
-          setSessions(release);
-        }
-      } catch {
+        };
+        if (sessionId) return await refreshAdoptedSession(deps, sessionId);
+        await mirrorAdoptedSessions(deps);
+      } catch (error) {
         hostReachable.current = false;
         known = undefined;
+        if (sessionId) throw error;
         // Host unreachable or too old; the next pass tries again.
-      } finally {
-        running = false;
       }
     };
+
+    const pass = (sessionId?: string): Promise<boolean | undefined> => {
+      if (running && !sessionId) return running.catch(() => undefined);
+      const previous = running;
+      const next = (async () => {
+        if (previous) await previous.catch(() => undefined);
+        return perform(sessionId);
+      })();
+      running = next;
+      void next
+        .finally(() => {
+          if (running === next) running = undefined;
+        })
+        .catch(() => undefined);
+      return next;
+    };
+    const refresh: RefreshAdoptedSession = (sessionId) => {
+      const pending = refreshes.get(sessionId);
+      if (pending) return pending;
+      const request = pass(sessionId).then((preserved) => !!preserved);
+      refreshes.set(sessionId, request);
+      void request
+        .finally(() => refreshes.delete(sessionId))
+        .catch(() => undefined);
+      return request;
+    };
+    if (refreshRef) refreshRef.current = refresh;
 
     const schedule = () => {
       if (stopped) return;
@@ -189,9 +252,10 @@ export function useAdoptedSessions(
     void pass().finally(schedule);
     return () => {
       stopped = true;
+      if (refreshRef?.current === refresh) refreshRef.current = undefined;
       if (timer !== undefined) clearTimeout(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [sessionsRef, setSessions]);
+  }, [sessionsRef, setSessions, loadRunning, refreshRef]);
   return hostReachable;
 }

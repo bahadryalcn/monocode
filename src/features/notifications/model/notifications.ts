@@ -287,7 +287,31 @@ export async function notifySession(
 export const BACKGROUND_NOTIFICATION_TARGETS = {
   tasks: "background:tasks",
   automations: "background:automations",
+  summary: "background:summary",
 } as const;
+
+/** The daily summary of background work. The global switch applies; it has no
+ * event setting of its own beyond the summary's own toggle. */
+export async function notifyDailySummary(headline: string): Promise<boolean> {
+  if (
+    !shouldNotify({
+      enabled: loadNotificationsEnabled(),
+      permission,
+      windowFocused,
+      sessionVisible: false,
+    })
+  )
+    return false;
+  return deliver({
+    sessionId: BACKGROUND_NOTIFICATION_TARGETS.summary,
+    kind: "finished",
+    title: "Daily summary",
+    subtitle: "",
+    body: headline,
+    projectName: "",
+    sessionTitle: "",
+  });
+}
 
 /**
  * A task or background automation on some machine changed in a way the owner
@@ -295,7 +319,7 @@ export const BACKGROUND_NOTIFICATION_TARGETS = {
  * shows it unasked; the global switch and the event's own setting still apply.
  */
 export async function notifyBackground(transition: {
-  target: keyof typeof BACKGROUND_NOTIFICATION_TARGETS;
+  target: Exclude<keyof typeof BACKGROUND_NOTIFICATION_TARGETS, "summary">;
   kind: AttentionKind;
   message: string;
 }): Promise<boolean> {

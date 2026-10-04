@@ -120,6 +120,10 @@ export function listExternalEditors(): Promise<ExternalEditor[]> {
   return invoke<ExternalEditor[]>("list_external_editors");
 }
 
+export function openHtmlInChrome(path: string): Promise<void> {
+  return invokeLocal<void>("open_html_in_chrome", { path });
+}
+
 export function openInExternalEditor(
   editorId: string,
   cwd: string,
@@ -189,6 +193,35 @@ export function listSkills(
   return invoke<DiscoveredSkill[]>("list_skills", {
     cwd,
     disabledPaths: disabledPaths ?? null,
+  });
+}
+
+export type SkillFile = { path: string; data: string };
+export type SkillBundle = { name: string; files: SkillFile[] };
+
+/** Every file of a skill listed for `cwd`, on the machine that owns `path`. */
+export function exportSkill(path: string, cwd: string): Promise<SkillBundle> {
+  return invoke<SkillBundle>("skill_export", { path, cwd });
+}
+
+/** Deletes a listed skill's folder, including its supporting files. */
+export function deleteSkill(path: string, cwd: string): Promise<void> {
+  return invoke<void>("skill_delete", { path, cwd });
+}
+
+/** Writes a skill to `~/.agents/skills/<name>` on the machine `target` (a
+ * project path, `remote://…` or empty for this computer) belongs to; resolves
+ * to the SKILL.md path. Fails with `SKILL_EXISTS:` unless `overwrite`. */
+export function importSkill(
+  target: string,
+  payload: SkillBundle,
+  overwrite: boolean,
+): Promise<string> {
+  return invoke<string>("skill_import", {
+    cwd: target,
+    name: payload.name,
+    files: payload.files,
+    overwrite,
   });
 }
 
@@ -851,6 +884,10 @@ export function homeDir(): Promise<string> {
   return invoke<string>("home_dir");
 }
 
+export function pathEnvironment(): Promise<Record<string, string>> {
+  return invokeLocal<Record<string, string>>("path_environment");
+}
+
 /**
  * Folders chosen from the system picker. Multi-select is on, so several
  * projects can be opened in one pass; the dialog still returns a bare string
@@ -914,6 +951,7 @@ export function readFilePreview(
 export type FileMtime = {
   path: string;
   mtimeMs: number | null;
+  isDir?: boolean;
 };
 
 export function statFiles(paths: string[]): Promise<FileMtime[]> {

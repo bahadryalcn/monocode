@@ -23,17 +23,73 @@ describe("markdown file navigation", () => {
     vi.unstubAllGlobals();
   });
 
-  async function render(text: string) {
+  async function render(text: string, cwd = "/repo") {
     await act(async () =>
       root.render(
         createElement(AgentMarkdown, {
           text,
-          cwd: "/repo",
+          cwd,
           onOpenFile,
         }),
       ),
     );
   }
+
+  it.each([
+    ["G:\\My Projects\\bahadır\\özet.md", "G:/My Projects/bahadır/özet.md"],
+    ["G:\\My Projects\\bahadır", "G:/My Projects/bahadır"],
+    ["/repo/My Project/özet.md", "/repo/My Project/özet.md"],
+    ["./src", "/repo/src"],
+    ["src/", "/repo/src"],
+  ])(
+    "makes the file or folder %s clickable with a folder action",
+    async (reference, path) => {
+      await render(`\`${reference}\``);
+      const link = container.querySelector<HTMLElement>('code[role="link"]');
+      expect(link).not.toBeNull();
+      expect(
+        container.querySelector('[aria-label="Open containing folder"]'),
+      ).not.toBeNull();
+      await act(async () => link!.click());
+      expect(onOpenFile).toHaveBeenCalledWith(path, undefined);
+    },
+  );
+
+  it("adds file actions to a standalone plain-text path", async () => {
+    await render("G:/My Projects/bahadır/özet.md");
+    const link = container.querySelector<HTMLAnchorElement>("a");
+    expect(link).not.toBeNull();
+    expect(
+      container.querySelector('[aria-label="Open containing folder"]'),
+    ).not.toBeNull();
+    await act(async () => link!.click());
+    expect(onOpenFile).toHaveBeenCalledWith(
+      "G:/My Projects/bahadır/özet.md",
+      undefined,
+    );
+  });
+
+  it.each([
+    [
+      "[Source](/home/dev/repo/src/main.ts:8:2)",
+      "remote://env/home/dev/repo",
+      "remote://env/home/dev/repo/src/main.ts",
+    ],
+    [
+      "[Source](<G:/My Project/özet.md:8:2>)",
+      "remote://env/G:/My Project",
+      "remote://env/G:/My Project/özet.md",
+    ],
+  ])(
+    "keeps remote markdown navigation on the owning machine",
+    async (text, cwd, path) => {
+      await render(text, cwd);
+      await act(async () =>
+        container.querySelector<HTMLAnchorElement>("a")!.click(),
+      );
+      expect(onOpenFile).toHaveBeenCalledWith(path, { line: 8, column: 2 });
+    },
+  );
 
   it("keeps protocol methods and ordinary identifiers as code, not file chips", async () => {
     await render("`currentTime/read` and `experimentalApi` and `true`");
@@ -180,6 +236,18 @@ describe("markdown file navigation", () => {
     expect(link).not.toBeNull();
     await act(async () => link!.click());
     expect(onOpenFile).toHaveBeenCalledWith("/repo/src/main.ts", { line: 12 });
+  });
+
+  it.each([
+    "```12:16:G:/My Project/Türkçe/özet.md\nconst answer = 42;\n```",
+    "```G:/My Project/Türkçe/özet.md startLine=12\nconst answer = 42;\n```",
+  ])("preserves spaces and Unicode in code fence paths: %s", async (text) => {
+    await render(text);
+    const link = container.querySelector<HTMLButtonElement>(".markdown-code-path-link")!;
+    expect(link.textContent).toBe("G:/My Project/Türkçe/özet.md");
+    expect(container.querySelector('[aria-label="Open containing folder"]')).not.toBeNull();
+    await act(async () => link.click());
+    expect(onOpenFile).toHaveBeenCalledWith("G:/My Project/Türkçe/özet.md", { line: 12 });
   });
 
   it("preserves external web links and keeps executable URL schemes blocked", async () => {

@@ -97,7 +97,7 @@ beforeEach(() => {
   const classes = new Set<string>();
   vi.stubGlobal("window", browser);
   vi.stubGlobal("document", {
-    body: { style: { cursor: "" } },
+    body: { style: { cursor: "", setProperty: vi.fn(), removeProperty: vi.fn() } },
     documentElement: {
       classList: {
         add: (name: string) => classes.add(name),

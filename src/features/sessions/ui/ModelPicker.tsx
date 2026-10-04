@@ -1,8 +1,45 @@
-import { Check, ChevronDown, ChevronRight, Gauge, Zap } from "../../../shared/ui/icons";
-import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { coerceModelPickerTab, getModelSnapshot, getPickerVisibilitySnapshot, isModelEnabled, loadFavoriteModels, loadRecentModelChoices, saveFavoriteModels, showProviderInModelPicker, subscribeModels, subscribePickerVisibility, type AgentModel, type ModelPickerTab, type ModelSetting } from "../model/models";
-import { isProviderHidden, projectProvidersRevision, subscribeProjectProviders } from "../model/projectProviders";
-import { harnessUnavailableHint, subscribeHarnessAvailability, getHarnessAvailabilitySnapshot } from "../../../integrations/harness/core/availability";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Gauge,
+  Zap,
+} from "../../../shared/ui/icons";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
+import {
+  coerceModelPickerTab,
+  getModelSnapshot,
+  getPickerVisibilitySnapshot,
+  isModelEnabled,
+  loadFavoriteModels,
+  loadRecentModelChoices,
+  saveFavoriteModels,
+  showProviderInModelPicker,
+  subscribeModels,
+  subscribePickerVisibility,
+  type AgentModel,
+  type ModelPickerTab,
+  type ModelSetting,
+} from "../model/models";
+import {
+  isProviderHidden,
+  projectProvidersRevision,
+  subscribeProjectProviders,
+} from "../model/projectProviders";
+import {
+  harnessUnavailableHint,
+  subscribeHarnessAvailability,
+  getHarnessAvailabilitySnapshot,
+} from "../../../integrations/harness/core/availability";
 import { useModelSource } from "./modelSource";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
 
@@ -14,7 +51,17 @@ import { keybindingPressed } from "../../settings/model/settings";
 import "./ModelPicker.css";
 
 import { ModelFlyout } from "./ModelFlyout";
-import { effortSetting, effortTileTone, isEffortSetting, pickerSettings, pillSettings, recentMenuModels, settingLabel, settingValue, settingValueLabel } from "../model/modelPickerData";
+import {
+  effortSetting,
+  effortTileTone,
+  isEffortSetting,
+  pickerSettings,
+  pillSettings,
+  recentMenuModels,
+  settingLabel,
+  settingValue,
+  settingValueLabel,
+} from "../model/modelPickerData";
 type Props = {
   harness: HarnessId;
   model: string;
@@ -198,7 +245,9 @@ export function ModelPicker({
                 pickerHarnesses.includes(item.harness) &&
                 isModelEnabled(item.id),
             )
-        : source.modelsFor(visibleTab);
+        : source
+            .modelsFor(visibleTab)
+            .filter((item) => isModelEnabled(item.id));
     if (!needle) return pool;
     return pool.filter((item) =>
       `${item.name} ${HARNESS_TITLE[item.harness]} ${item.provider?.name ?? ""} ${item.provider?.id ?? ""}`
@@ -225,7 +274,15 @@ export function ModelPicker({
   const openRecentMenu = () => {
     const selected = currentRef.current;
     if (!selected) return;
-    const models = recentMenuModels(selected, source, loadRecentModelChoices());
+    const models = recentMenuModels(
+      selected,
+      source,
+      loadRecentModelChoices(),
+    ).filter(
+      (item) =>
+        pickerHarnesses.includes(item.harness) && isModelEnabled(item.id),
+    );
+    if (!models.length) return;
     const selectedIndex = models.findIndex((item) => item.id === selected.id);
     setOpen(false);
     setSubmenu(null);
@@ -344,17 +401,39 @@ export function ModelPicker({
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("open_model_picker", onMenu);
     };
-  }, [hotkeys, source]);
+  }, [
+    hotkeys,
+    source,
+    providerKey,
+    catalogVersion,
+    visibilityVersion,
+    projectVersion,
+  ]);
 
   const setSetting = (setting: ModelSetting, value: string) => {
     onSettingsChange({ ...values, [setting.id]: value });
   };
 
   const pickModel = (item: AgentModel) => {
-    if (!source.available(item.harness)) return;
+    if (
+      !pickerHarnesses.includes(item.harness) ||
+      !isModelEnabled(item.id) ||
+      !source.available(item.harness)
+    )
+      return;
     onChange(item.harness, item.id);
     dismiss(true);
   };
+
+  useEffect(() => {
+    if (!recentMenu) return;
+    const models = recentMenu.models.filter(
+      (item) => pickerHarnesses.includes(item.harness) && isModelEnabled(item.id),
+    );
+    if (models.length === recentMenu.models.length) return;
+    setRecentMenu(models.length ? { models } : null);
+    setRecentActive((index) => Math.min(index, Math.max(0, models.length - 1)));
+  }, [recentMenu, pickerHarnesses, catalogVersion]);
 
   useEffect(() => {
     if (!recentMenu) return;
@@ -380,7 +459,7 @@ export function ModelPicker({
 
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [recentActive, recentMenu]);
+  }, [recentActive, recentMenu, pickerHarnesses, catalogVersion]);
 
   const pickSetting = (setting: ModelSetting, value: string) => {
     setSetting(setting, value);

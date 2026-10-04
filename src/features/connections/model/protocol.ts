@@ -162,6 +162,8 @@ export type HostCommand =
       type: "configure";
       commandId: string;
       sessionId: string;
+      /** Supported by hosts advertising sessions.harnessSwitch. */
+      harness?: RemoteProvider;
       model: string;
       modelSettings: Record<string, string>;
       runtimeMode: RuntimeMode;

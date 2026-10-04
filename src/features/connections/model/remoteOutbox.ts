@@ -50,6 +50,7 @@ function validCommand(value: unknown, followup = false): value is HostCommand {
   switch (value.type) {
     case "configure":
       return (
+        (value.harness === undefined || isRemoteProvider(value.harness)) &&
         typeof value.model === "string" &&
         strings(value.modelSettings) &&
         RUNTIME_MODES.includes(value.runtimeMode as never)

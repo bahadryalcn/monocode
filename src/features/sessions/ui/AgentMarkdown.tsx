@@ -27,7 +27,10 @@ import {
   type Components,
 } from "streamdown";
 import type { Pluggable, PluggableList } from "unified";
-import { ExplorerMenu, type ExplorerMenuItem } from "../../files/ui/ExplorerMenu";
+import {
+  ExplorerMenu,
+  type ExplorerMenuItem,
+} from "../../files/ui/ExplorerMenu";
 import { FileActionError } from "../../files/ui/FileActionError";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { boundedCode } from "../../files/editor/codeHighlightPlugin";
@@ -35,6 +38,7 @@ import { createLazyMermaidPlugin } from "../../files/editor/mermaidPlugin";
 import {
   displayPath,
   isExtensionlessFileName,
+  parentPath,
   resolveWorkspaceFileReference,
 } from "../../../shared/lib/paths";
 import type { EditorNavigation, OpenFileFn } from "../../search/model/search";
@@ -43,8 +47,20 @@ import { isAtxHeadingLine } from "../../files/model/markdownSource";
 import { useColorScheme } from "../../../shared/hooks/useColorScheme";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { copyText } from "../../../platform/tauri/clipboard";
-import { openPathWithDefaultApp, revealPath } from "../../../platform/tauri/fs";
-import { INBOX_MEDIA_PREFIXES, isInboxMediaUrl } from "../../inbox/model/inboxMedia";
+import {
+  isLocalDirectory,
+  listDir,
+  openPathWithDefaultApp,
+  revealPath,
+} from "../../../platform/tauri/fs";
+import { ChatFolderBrowser } from "../../files/ui/ChatFolderBrowser";
+import { FolderOpen } from "../../../shared/ui/icons";
+import { resolveFileOpenRequest } from "../../files/model/fileIndex";
+import { existingChatPath } from "../../files/model/chatPathChecks";
+import {
+  INBOX_MEDIA_PREFIXES,
+  isInboxMediaUrl,
+} from "../../inbox/model/inboxMedia";
 import { isNoteImagePath } from "../../notes";
 import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import { InboxMedia } from "../../inbox/ui/InboxMedia";
@@ -112,6 +128,7 @@ type FileLinkMenu = {
 const FileOpenContext = createContext<{
   cwd?: string;
   onOpenFile?: OpenFileFn;
+  onRevealFile?: (path: string) => void;
   onFileContextMenu?: (
     event: ReactMouseEvent,
     path: string,
@@ -142,6 +159,7 @@ const REVEAL_LABEL = IS_MAC
 function fileLinkMenuItems(
   canOpenInMonoCode: boolean,
   canCopyRelativePath: boolean,
+  remote = false,
 ): ExplorerMenuItem[] {
   return [
     {
@@ -150,8 +168,17 @@ function fileLinkMenuItems(
       label: "Open in MonoCode",
       disabled: !canOpenInMonoCode,
     },
-    { kind: "item", id: "open-default", label: "Open in Default App" },
-    { kind: "item", id: "reveal", label: REVEAL_LABEL },
+    {
+      kind: "item",
+      id: "open-default",
+      label: "Open in Default App",
+      disabled: remote,
+    },
+    {
+      kind: "item",
+      id: "reveal",
+      label: remote ? "Open Containing Folder in MonoCode" : REVEAL_LABEL,
+    },
     { kind: "sep" },
     { kind: "item", id: "copy-path", label: "Copy Path" },
     ...(canCopyRelativePath
@@ -226,7 +253,9 @@ const LANGUAGE_FILE_NAMES: Record<string, string> = {
 const PLAINTEXT_FENCE_LANGUAGES = new Set(["text", "plaintext", "txt", ""]);
 
 function highlightLanguageFor(language: string): string {
-  return PLAINTEXT_FENCE_LANGUAGES.has(language.toLowerCase()) ? "js" : language;
+  return PLAINTEXT_FENCE_LANGUAGES.has(language.toLowerCase())
+    ? "js"
+    : language;
 }
 
 type MarkdownLinkProps = ComponentProps<"a"> & { node?: unknown };
@@ -250,34 +279,57 @@ function MarkdownLink({
   }
 
   return (
-    <a
-      href={href}
-      className={`text-sky-400/90 hover:text-sky-300 hover:underline ${className ?? ""}`}
-      {...props}
-      dir={dir ?? "auto"}
-      onClick={(event) => {
-        onClick?.(event);
-        if (event.defaultPrevented) return;
-        if (file && onOpenFile) {
+    <>
+      <a
+        href={href}
+        className={`text-sky-400/90 hover:text-sky-300 hover:underline ${className ?? ""}`}
+        {...props}
+        dir={dir ?? "auto"}
+        onClick={(event) => {
+          onClick?.(event);
+          if (event.defaultPrevented) return;
+          if (file && onOpenFile) {
+            event.preventDefault();
+            onOpenFile(file.path, file.navigation);
+            return;
+          }
           event.preventDefault();
-          onOpenFile(file.path, file.navigation);
-          return;
-        }
+          if (href && /^https?:\/\//i.test(href)) {
+            void openUrl(href).catch((error) => {
+              console.error("Failed to open web link:", error);
+            });
+          }
+        }}
+        onContextMenu={(event) => {
+          onContextMenu?.(event);
+          if (event.defaultPrevented || !file || !onFileContextMenu) return;
+          onFileContextMenu(event, file.path, file.navigation);
+        }}
+      >
+        {children}
+      </a>
+      {file ? <FileRevealButton path={file.path} /> : null}
+    </>
+  );
+}
+
+function FileRevealButton({ path }: { path: string }) {
+  const { onRevealFile } = useContext(FileOpenContext);
+  if (!onRevealFile) return null;
+  return (
+    <button
+      type="button"
+      aria-label="Open containing folder"
+      title={`Open containing folder: ${path}`}
+      className="ml-1 inline-flex size-5 shrink-0 items-center justify-center rounded text-content/55 align-middle hover:bg-content/10 hover:text-content focus-visible:outline focus-visible:outline-accent"
+      onClick={(event) => {
         event.preventDefault();
-        if (href && /^https?:\/\//i.test(href)) {
-          void openUrl(href).catch((error) => {
-            console.error("Failed to open web link:", error);
-          });
-        }
-      }}
-      onContextMenu={(event) => {
-        onContextMenu?.(event);
-        if (event.defaultPrevented || !file || !onFileContextMenu) return;
-        onFileContextMenu(event, file.path, file.navigation);
+        event.stopPropagation();
+        onRevealFile?.(path);
       }}
     >
-      {children}
-    </a>
+      <FolderOpen className="size-3.5" />
+    </button>
   );
 }
 
@@ -292,50 +344,78 @@ function MarkdownCode({
 }: MarkdownCodeProps) {
   const incomplete = useIsCodeFenceIncomplete();
   const block = Object.prototype.hasOwnProperty.call(props, "data-block");
+  const { cwd, onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
+  const text = block ? "" : textContent(children);
+  const fileName = inlineFileName(text);
+  const reference = /^[\p{L}\p{N}_-]+$/u.test(text.trim())
+    ? `./${text.trim()}`
+    : text;
+  const candidate =
+    !block && text.length <= 4096 && /[\\/]/.test(reference) && !/[\r\n]/.test(text)
+      ? resolveWorkspaceFileReference(reference, cwd)
+      : undefined;
+  const [verifiedPath, setVerifiedPath] = useState<string>();
+  const ambiguousPath = !fileName ? candidate?.path : undefined;
+  useEffect(() => {
+    if (!ambiguousPath) return;
+    let cancelled = false;
+    void existingChatPath(ambiguousPath).then((exists) => {
+      if (!cancelled) setVerifiedPath(exists ? ambiguousPath : undefined);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ambiguousPath]);
   if (!block) {
-    const text = textContent(children);
-    const fileName = inlineFileName(text);
-    const { cwd, onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
     const file = fileName
       ? resolveWorkspaceFileReference(text, cwd)
-      : undefined;
+      : candidate?.path === verifiedPath
+        ? candidate
+        : undefined;
     const open =
       file && onOpenFile
         ? () => onOpenFile(file.path, file.navigation)
         : undefined;
     return (
-      <code
-        {...props}
-        dir="ltr"
-        className={`inline-flex items-center gap-1 rounded-md bg-content/8 px-1.5 min-h-6 max-w-full [overflow-wrap:anywhere] align-baseline font-mono text-[0.8em] text-content ${
-          open ? "cursor-pointer hover:text-sky-300 hover:underline" : ""
-        } ${className ?? ""}`}
-        role={open ? "link" : undefined}
-        tabIndex={open ? 0 : undefined}
-        onClick={open}
-        onContextMenu={(event) => {
-          onContextMenu?.(event);
-          if (event.defaultPrevented || !file || !onFileContextMenu) return;
-          onFileContextMenu(event, file.path, file.navigation);
-        }}
-        onKeyDown={
-          open
-            ? (event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  open();
+      <span className="inline-flex max-w-full items-center align-baseline">
+        <code
+          {...props}
+          dir="ltr"
+          className={`inline-flex items-center gap-1 rounded-md bg-content/8 px-1.5 min-h-6 max-w-full [overflow-wrap:anywhere] align-baseline font-mono text-[0.8em] text-content ${
+            open ? "cursor-pointer hover:text-sky-300 hover:underline" : ""
+          } ${className ?? ""}`}
+          role={open ? "link" : undefined}
+          tabIndex={open ? 0 : undefined}
+          onClick={open}
+          onContextMenu={(event) => {
+            onContextMenu?.(event);
+            if (event.defaultPrevented || !file || !onFileContextMenu) return;
+            onFileContextMenu(event, file.path, file.navigation);
+          }}
+          onKeyDown={
+            open
+              ? (event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    open();
+                  }
                 }
-              }
-            : undefined
-        }
-      >
-        {fileName ? (
-          <span aria-hidden="true">
-            <FileTypeIcon name={fileName} isDir={false} size={14} />
-          </span>
-        ) : null}
-        {children}
-      </code>
+              : undefined
+          }
+        >
+          {fileName ? (
+            <span aria-hidden="true">
+              <FileTypeIcon
+                name={fileName}
+                isDir={/[\\/]$/.test(text)}
+                size={14}
+              />
+            </span>
+          ) : null}
+          {children}
+        </code>
+        {file ? <FileRevealButton path={file.path} /> : null}
+      </span>
     );
   }
 
@@ -554,6 +634,46 @@ export const AgentMarkdown = memo(function AgentMarkdown({
 }) {
   const [fileMenu, setFileMenu] = useState<FileLinkMenu | null>(null);
   const [fileActionError, setFileActionError] = useState<string | null>(null);
+  const [remoteFolder, setRemoteFolder] = useState<string>();
+  const openFile = useCallback<OpenFileFn>(
+    (...args) => {
+      const [path] = args;
+      if (!path.startsWith("remote://")) {
+        onOpenFile?.(...args);
+        return;
+      }
+      // Host file managers are not visible on this computer. Folders open here.
+      void listDir(path).then(
+        () => setRemoteFolder(path),
+        () => onOpenFile?.(...args),
+      );
+    },
+    [onOpenFile],
+  );
+  const onRevealFile = useCallback(
+    (path: string) => {
+      setFileActionError(null);
+      void (async () => {
+        const resolved = cwd ? await resolveFileOpenRequest(cwd, path) : path;
+        if (resolved.startsWith("remote://")) {
+          const folder = await listDir(resolved).then(
+            () => resolved,
+            () => parentPath(resolved),
+          );
+          setRemoteFolder(folder);
+          return;
+        }
+        if (await isLocalDirectory(resolved))
+          await openPathWithDefaultApp(resolved);
+        else await revealPath(resolved);
+      })().catch((error) =>
+        setFileActionError(
+          `Could not open the containing folder: ${String(error)}`,
+        ),
+      );
+    },
+    [cwd],
+  );
   const onFileContextMenu = useCallback(
     (event: ReactMouseEvent, path: string, navigation?: EditorNavigation) => {
       event.preventDefault();
@@ -563,8 +683,13 @@ export const AgentMarkdown = memo(function AgentMarkdown({
     [],
   );
   const fileOpen = useMemo(
-    () => ({ cwd, onOpenFile, onFileContextMenu }),
-    [cwd, onOpenFile, onFileContextMenu],
+    () => ({
+      cwd,
+      onOpenFile: onOpenFile ? openFile : undefined,
+      onFileContextMenu,
+      onRevealFile,
+    }),
+    [cwd, onOpenFile, openFile, onFileContextMenu, onRevealFile],
   );
   const remarkPlugins = useMemo<PluggableList>(
     () => [
@@ -597,14 +722,24 @@ export const AgentMarkdown = memo(function AgentMarkdown({
     [fading, fadeOptions, hardBreaks],
   );
 
-  const onFileMenuPick = (id: string) => {
+  const onFileMenuPick = async (id: string) => {
     if (!fileMenu) return;
-    const path = fileMenu.path;
+    const reference = fileMenu.path;
     setFileMenu(null);
     setFileActionError(null);
 
+    if (id === "reveal") {
+      onRevealFile(reference);
+      return;
+    }
+    // The context menu resolves shortened paths in the same way as a click.
+    const path =
+      id !== "open-monocode" && cwd
+        ? await resolveFileOpenRequest(cwd, reference).catch(() => reference)
+        : reference;
     if (id === "open-monocode") {
-      if (fileMenu.navigation) onOpenFile?.(path, fileMenu.navigation);
+      if (path.startsWith("remote://")) openFile(path, fileMenu.navigation);
+      else if (fileMenu.navigation) onOpenFile?.(path, fileMenu.navigation);
       else onOpenFile?.(path);
       return;
     }
@@ -613,9 +748,6 @@ export const AgentMarkdown = memo(function AgentMarkdown({
     switch (id) {
       case "open-default":
         action = openPathWithDefaultApp(path);
-        break;
-      case "reveal":
-        action = revealPath(path);
         break;
       case "copy-path":
         action = copyText(path);
@@ -656,10 +788,22 @@ export const AgentMarkdown = memo(function AgentMarkdown({
             <ExplorerMenu
               x={fileMenu.x}
               y={fileMenu.y}
-              items={fileLinkMenuItems(!!onOpenFile, !!cwd)}
+              items={fileLinkMenuItems(
+                !!onOpenFile,
+                !!cwd,
+                fileMenu.path.startsWith("remote://"),
+              )}
               ariaLabel="File link actions"
               onPick={onFileMenuPick}
               onClose={() => setFileMenu(null)}
+            />
+          ) : null}
+          {remoteFolder ? (
+            <ChatFolderBrowser
+              key={remoteFolder}
+              path={remoteFolder}
+              onOpenFile={onOpenFile}
+              onClose={() => setRemoteFolder(undefined)}
             />
           ) : null}
           {fileActionError ? (
@@ -870,8 +1014,14 @@ function parseCodeFence(
   const raw = className?.match(/\blanguage-([^\s]+)/)?.[1] ?? "";
   const metaStart = meta.match(/\bstartLine=(\d+)/);
   const metaStartLine = metaStart ? Number(metaStart[1]) : undefined;
+  // Markdown puts the first space-separated fence token in the language class
+  // and the remainder in metastring, including spaces in a source file path.
+  const pathRemainder = meta
+    .replace(/(?:^|\s+)startLine=\d+(?=\s|$)/g, "")
+    .trim();
+  const reference = pathRemainder ? `${raw} ${pathRemainder}` : raw;
 
-  const citation = raw.match(/^(\d+):(\d+):(.+)$/);
+  const citation = reference.match(/^(\d+):(\d+):(.+)$/);
   if (citation) {
     const filePath = citation[3];
     const fileName = filePath.split(/[/\\]/).filter(Boolean).pop() ?? filePath;
@@ -884,12 +1034,12 @@ function parseCodeFence(
   }
 
   if (/[/\\]/.test(raw)) {
-    const fileName = raw.split(/[/\\]/).filter(Boolean).pop() ?? raw;
+    const fileName = reference.split(/[/\\]/).filter(Boolean).pop() ?? reference;
     return {
       language: languageFromFileName(fileName),
       startLine: metaStartLine,
       fileName,
-      filePath: raw,
+      filePath: reference,
     };
   }
 
@@ -912,17 +1062,24 @@ function MarkdownCodePath({
     file.navigation ??
     (startLine && startLine > 0 ? { line: startLine } : undefined);
   return (
-    <button
-      type="button"
-      className="markdown-code-path markdown-code-path-link"
-      title={file.path}
-      onClick={() => onOpenFile(file.path, navigation)}
-      onContextMenu={(event) =>
-        onFileContextMenu?.(event, file.path, navigation)
-      }
+    <span
+      className="markdown-code-path"
+      style={{ display: "flex", alignItems: "center", pointerEvents: "auto" }}
     >
-      {path}
-    </button>
+      <button
+        type="button"
+        className="markdown-code-path-link"
+        style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}
+        title={file.path}
+        onClick={() => onOpenFile(file.path, navigation)}
+        onContextMenu={(event) =>
+          onFileContextMenu?.(event, file.path, navigation)
+        }
+      >
+        {path}
+      </button>
+      <FileRevealButton path={file.path} />
+    </span>
   );
 }
 
@@ -943,14 +1100,25 @@ function fileNameForLanguage(language: string): string {
 
 function inlineFileName(value: string): string | undefined {
   const text = value.trim();
-  if (!text || text.length > 240 || /\s/.test(text)) return undefined;
+  if (!text || text.length > 4096 || /[\r\n]/.test(text)) return undefined;
 
   const withoutLocation = text.replace(
     /(?::\d+(?::\d+)?|#L\d+(?:-L\d+)?)$/,
     "",
   );
   const fileName = withoutLocation.split(/[/\\]/).filter(Boolean).pop();
-  if (!fileName || !/^[\w%@+().-]+$/.test(fileName)) return undefined;
+  if (!fileName) return undefined;
+
+  // Explicit filesystem roots and relative directory markers also identify
+  // extensionless folders. Bare protocol methods such as currentTime/read do not.
+  if (
+    /^(?:\/|[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|%[A-Za-z_][A-Za-z0-9_]*(?:\(x86\))?%)/i.test(
+      text,
+    ) ||
+    /[\\/]$/.test(text)
+  ) {
+    return fileName;
+  }
 
   if (isExtensionlessFileName(fileName)) {
     return fileName;

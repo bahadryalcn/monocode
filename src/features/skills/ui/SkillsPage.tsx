@@ -7,7 +7,22 @@ import {
   type ReactNode,
 } from "react";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Copy, Eye, FolderOpen, RefreshCw, Search, X } from "../../../shared/ui/icons";
+import {
+  CloudUpload,
+  Copy,
+  Eye,
+  FolderOpen,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+} from "../../../shared/ui/icons";
+import { confirmNative } from "../../source-control/model/gitConfirmation";
+import {
+  canTransferSkill,
+  SkillExistsError,
+  transferSkill,
+} from "../model/transferSkill";
 import { CreateSkillForm } from "./SkillPicker";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import {
@@ -17,7 +32,13 @@ import {
 import { MarkdownSource } from "../../sessions/ui/AgentMarkdown";
 import { SkillDocumentPreview } from "./SkillDocumentPreview";
 import { copyText } from "../../../platform/tauri/clipboard";
-import { listSkills, readTextFile, type DiscoveredSkill } from "../../../platform/tauri/fs";
+import {
+  exportSkill,
+  deleteSkill,
+  listSkills,
+  readTextFile,
+  type DiscoveredSkill,
+} from "../../../platform/tauri/fs";
 import {
   createBlankSkill,
   invalidateSkills,
@@ -27,7 +48,32 @@ import {
 } from "../model/skills";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import { remoteProjectFor } from "../../connections/model/remoteProjects";
-import { knownRemoteMachine } from "../../connections/model/connections";
+import {
+  knownRemoteMachine,
+  useRemoteMachines,
+} from "../../connections/model/connections";
+import { remoteProjectMachines } from "../../connections/model/localSync";
+import { classifyRemoteError } from "../../connections/model/remoteFailure";
+import { listMachineSkills } from "../model/machineSkills";
+import { Popover } from "../../../shared/ui/Popover";
+import { canDeleteSkill } from "../model/deleteSkill";
+
+/** A connected machine whose skills are listed: `cwd` is its open project
+ * (a `remote://` path), or empty for its personal skills only. */
+type Machine = { environmentId: string; name: string; cwd: string };
+
+/** Why a machine's skills could not be listed, in words the user can act on. */
+function machineFailure(machine: Machine, error: unknown): string {
+  const failure = classifyRemoteError(error);
+  const outdated = `${machine.name}'s MonoCode Host needs updating to list skills. Update it in Connections settings.`;
+  if (failure.kind === "outdated" || /needs updating/i.test(failure.message))
+    return outdated;
+  if (failure.kind === "unreachable") return `Couldn't reach ${machine.name}.`;
+  // A current host accepts an empty project; an older one rejects it as a path.
+  if (!machine.cwd && /Invalid workspace path|outside this machine/i.test(failure.message))
+    return outdated;
+  return failure.message;
+}
 
 /** Inspect and manage file skills without modifying provider-owned catalogs. */
 export function SkillsPage({
@@ -46,13 +92,35 @@ export function SkillsPage({
   const addSkillButton = useRef<HTMLButtonElement>(null);
   const [skills, setSkills] = useState<DiscoveredSkill[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // A project on another machine: its skills there, next to this computer's.
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const deletePending = useRef(false);
+  // Every connected machine's skills are listed under this computer's; the
+  // machine that owns the open project also lists that project's skills.
   const remoteProject = remoteProjectFor(cwd);
-  const remoteName = remoteProject
-    ? (knownRemoteMachine(remoteProject.environmentId)?.name ?? "Other machine")
-    : null;
-  const [remoteSkills, setRemoteSkills] = useState<DiscoveredSkill[] | null>(null);
-  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const projectMachine = remoteProject?.environmentId;
+  const { machines: connected } = useRemoteMachines();
+  const machines = useMemo<Machine[]>(() => {
+    const list = remoteProjectMachines(connected).map((machine) => ({
+      environmentId: machine.environmentId,
+      name: machine.name,
+      cwd: machine.environmentId === projectMachine ? cwd : "",
+    }));
+    if (projectMachine && !list.some((entry) => entry.environmentId === projectMachine))
+      list.push({
+        environmentId: projectMachine,
+        name: knownRemoteMachine(projectMachine)?.name ?? "Other machine",
+        cwd,
+      });
+    return list;
+  }, [connected, projectMachine, cwd]);
+  const [machineLists, setMachineLists] = useState<
+    Record<string, { skills: DiscoveredSkill[] | null; error: string | null }>
+  >({});
+  // The "Copy to ..." menu of a row on this computer, when several machines are connected.
+  const [copyMenu, setCopyMenu] = useState<{
+    skill: DiscoveredSkill;
+    anchor: HTMLElement;
+  } | null>(null);
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -62,9 +130,13 @@ export function SkillsPage({
     loadDisabledSkillPaths(),
   );
   const [actionError, setActionError] = useState<string | null>(null);
+  // Path of the skill being copied to the other machine, if any.
+  const [transferring, setTransferring] = useState<string | null>(null);
   const [previewSkill, setPreviewSkill] = useState<DiscoveredSkill | null>(
     null,
   );
+  // The machine a previewed skill is read from; null for this computer.
+  const [previewMachine, setPreviewMachine] = useState<Machine | null>(null);
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useMarkdownMode(
@@ -75,8 +147,10 @@ export function SkillsPage({
   const onPreview = (
     skill: DiscoveredSkill,
     trigger: "name" | "icon",
+    machine: Machine | null = null,
   ): void => {
     previewOpener.current = `${trigger}:${skill.path}`;
+    setPreviewMachine(machine);
     if (previewSkill?.path !== skill.path) {
       setPreviewText(null);
       setPreviewError(null);
@@ -116,7 +190,23 @@ export function SkillsPage({
     setPreviewText(null);
     setPreviewError(null);
     if (!previewSkill) return;
-    void readTextFile(previewSkill.path)
+    // A skill on another machine usually lives in its home folder, outside
+    // every project, where the host's file commands cannot read; the export
+    // command can, so the preview takes SKILL.md from it.
+    const path = previewSkill.path;
+    const load = isRemoteProjectPath(path)
+      ? exportSkill(path, previewMachine?.cwd ?? "").then((bundle) => {
+          const file = bundle.files.find(
+            (entry) => entry.path.toLowerCase() === "skill.md",
+          );
+          if (!file) throw new Error("SKILL.md is missing.");
+          const bytes = Uint8Array.from(atob(file.data), (char) =>
+            char.charCodeAt(0),
+          );
+          return new TextDecoder().decode(bytes);
+        })
+      : readTextFile(path);
+    void load
       .then((text) => {
         if (!cancelled) setPreviewText(text);
       })
@@ -130,15 +220,13 @@ export function SkillsPage({
     return () => {
       cancelled = true;
     };
-  }, [previewSkill]);
+  }, [previewSkill, previewMachine]);
 
   useEffect(() => {
     let cancelled = false;
     const remote = isRemoteProjectPath(cwd);
     setSkills(null);
     setError(null);
-    setRemoteSkills(null);
-    setRemoteError(null);
     // This computer's own skills always; with a remote project, without the
     // project folder, which lives on the other machine.
     listSkills(remote ? "" : cwd)
@@ -151,19 +239,35 @@ export function SkillsPage({
         if (cancelled) return;
         setError(err instanceof Error ? err.message : String(err));
       });
-    if (remote)
-      listSkills(cwd)
-        .then((next) => {
-          if (!cancelled) setRemoteSkills(next);
-        })
-        .catch((err: unknown) => {
-          if (!cancelled)
-            setRemoteError(err instanceof Error ? err.message : String(err));
-        });
     return () => {
       cancelled = true;
     };
   }, [cwd, reload]);
+
+  // Each machine loads on its own, so a slow or offline one holds nothing up.
+  const machinesKey = machines
+    .map((machine) => `${machine.environmentId}\n${machine.cwd}`)
+    .join("\0");
+  useEffect(() => {
+    let cancelled = false;
+    setMachineLists({});
+    for (const machine of machines) {
+      const settle = (value: { skills: DiscoveredSkill[] | null; error: string | null }) => {
+        if (!cancelled)
+          setMachineLists((current) => ({ ...current, [machine.environmentId]: value }));
+      };
+      listMachineSkills(machine.environmentId, machine.cwd)
+        .then((skills) => settle({ skills, error: null }))
+        .catch((err: unknown) =>
+          settle({ skills: null, error: machineFailure(machine, err) }),
+        );
+    }
+    return () => {
+      cancelled = true;
+    };
+    // `machines` is keyed by `machinesKey`: a new list of the same machines must not reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [machinesKey, reload]);
 
   useEffect(() => {
     const onChange = (): void => setDisabledPaths(loadDisabledSkillPaths());
@@ -182,8 +286,16 @@ export function SkillsPage({
         skill.path.toLowerCase().includes(needle),
     );
   const filtered = useMemo(() => matches(skills), [needle, skills]);
-  const remoteFiltered = useMemo(() => matches(remoteSkills), [needle, remoteSkills]);
-  const shownCount = filtered.length + remoteFiltered.length;
+  const machineShown = useMemo(
+    () =>
+      machines.map((machine) => {
+        const all = machineLists[machine.environmentId]?.skills ?? null;
+        return { machine, all, shown: matches(all) };
+      }),
+    [needle, machines, machineLists],
+  );
+  const shownCount =
+    filtered.length + machineShown.reduce((sum, entry) => sum + entry.shown.length, 0);
 
   const onToggle = (path: string, enabled: boolean): void => {
     const next = enabled
@@ -229,12 +341,110 @@ export function SkillsPage({
       .finally(() => setBusy(false));
   };
 
-  /** One machine's skills: rows to preview, switch off or locate. */
+  /** Copies a skill into the personal skills of the other end: `from` and `to`
+   * are machines, null being this computer. */
+  const onTransfer = async (
+    skill: DiscoveredSkill,
+    from: Machine | null,
+    to: Machine | null,
+  ): Promise<void> => {
+    if (deletePending.current) return;
+    const targetName = to?.name ?? "this computer";
+    const move = {
+      skill,
+      // Listed without the project folder when that lives on another machine.
+      sourceCwd: from ? from.cwd : remoteProject ? "" : cwd,
+      targetCwd: "",
+      ...(to ? { targetMachine: to.environmentId } : {}),
+    };
+    setActionError(null);
+    setTransferring(skill.path);
+    try {
+      try {
+        await transferSkill({ ...move, overwrite: false });
+      } catch (err) {
+        if (!(err instanceof SkillExistsError)) throw err;
+        const replace = await confirmNative(
+          `A skill named ${err.skillName} already exists on ${targetName}. Replace it?`,
+          "Replace",
+        );
+        if (!replace) return;
+        await transferSkill({ ...move, overwrite: true });
+      }
+      setReload((value) => value + 1);
+    } catch (err) {
+      setActionError(
+        `Could not copy ${skill.name} to ${targetName}. ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setTransferring(null);
+    }
+  };
+
+  const onDelete = async (
+    skill: DiscoveredSkill,
+    machine: Machine | null = null,
+  ): Promise<void> => {
+    if (deletePending.current) return;
+    deletePending.current = true;
+    setDeleting(skill.path);
+    setActionError(null);
+    try {
+      const confirmed = await confirmNative(
+        `Delete ${skill.name} from ${machine?.name ?? "this computer"}? Its entire folder and supporting files will be permanently deleted. This cannot be undone.\n\n${skill.path}`,
+        "Delete",
+      );
+      if (!confirmed) return;
+      await deleteSkill(skill.path, machine?.cwd ?? (remoteProject ? "" : cwd));
+      // Read current preferences because a switch may have changed while awaiting confirmation.
+      const disabled = loadDisabledSkillPaths();
+      try {
+        saveDisabledSkillPaths(disabled.filter((path) => path !== skill.path));
+      } catch {
+        invalidateSkills();
+        window.dispatchEvent(new Event(SKILLS_CHANGE_EVENT));
+      }
+      setPreviewSkill((current) =>
+        current?.path === skill.path ? null : current,
+      );
+      setCopyMenu((current) =>
+        current?.skill.path === skill.path ? null : current,
+      );
+      setReload((value) => value + 1);
+    } catch (err) {
+      setActionError(
+        `Could not delete ${skill.name}. ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      deletePending.current = false;
+      setDeleting(null);
+    }
+  };
+
+  const renderDelete = (
+    skill: DiscoveredSkill,
+    machine: Machine | null = null,
+  ): ReactNode =>
+    canDeleteSkill(skill) ? (
+      <button
+        type="button"
+        aria-label={`Delete ${skill.name}`}
+        title={
+          deleting === skill.path ? "Deleting…" : "Delete skill permanently"
+        }
+        disabled={deleting !== null || transferring !== null}
+        onClick={() => void onDelete(skill, machine)}
+        className="grid size-6 shrink-0 place-items-center rounded text-content/40 hover:bg-red-400/10 hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+      >
+        <Trash2 className="size-3.5" strokeWidth={1.75} aria-hidden="true" />
+      </button>
+    ) : null;
+
+  /** This computer's skills: rows to preview, switch off or locate. */
   const renderSkills = (
     all: DiscoveredSkill[] | null,
     shown: DiscoveredSkill[],
     failure: string | null,
-    local: boolean,
   ): ReactNode =>
     failure ? (
       <p role="alert" className="text-[12px] text-red-400">
@@ -243,13 +453,13 @@ export function SkillsPage({
     ) : all == null ? (
       <p className="text-[12px] text-content/45">Loading skills…</p>
     ) : (
-      <div className="overflow-hidden rounded-lg border border-content/10">
+      // About ten rows tall; a longer list scrolls inside its own box so one
+      // machine's skills never push the next machine off the page.
+      <div className="max-h-[49rem] overflow-y-auto overscroll-contain rounded-lg border border-content/10">
         {shown.length === 0 ? (
           <p className="px-3 py-3 text-[12px] text-content/45">
             {all.length === 0
-              ? local
-                ? "No skills yet. Add skill creates a starter SKILL.md."
-                : "No skills on this machine for this project."
+              ? "No skills yet. Add skill creates a starter SKILL.md."
               : "No matching skills"}
           </p>
         ) : (
@@ -337,7 +547,35 @@ export function SkillsPage({
                           >
                             <Copy className="size-3" strokeWidth={1.75} />
                           </button>
-                          {local ? (
+                          {machines.length > 0 && canTransferSkill(skill) ? (
+                            <button
+                              type="button"
+                              aria-label={
+                                transferring === skill.path
+                                  ? `Copying ${skill.name}…`
+                                  : machines.length === 1
+                                    ? `Copy ${skill.name} to ${machines[0].name}`
+                                    : `Copy ${skill.name} to another machine`
+                              }
+                              title={
+                                transferring === skill.path
+                                  ? "Copying…"
+                                  : machines.length === 1
+                                    ? `Copy to ${machines[0].name}`
+                                    : "Copy to another machine"
+                              }
+                              aria-haspopup={machines.length > 1 ? "menu" : undefined}
+                              disabled={transferring !== null || deleting !== null}
+                              onClick={(event) =>
+                                machines.length === 1
+                                  ? void onTransfer(skill, null, machines[0])
+                                  : setCopyMenu({ skill, anchor: event.currentTarget })
+                              }
+                              className="grid size-5 shrink-0 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content disabled:opacity-40"
+                            >
+                              <CloudUpload className="size-3" strokeWidth={1.75} />
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             aria-label={`Reveal ${skill.name} in file explorer`}
@@ -347,7 +585,7 @@ export function SkillsPage({
                           >
                             <FolderOpen className="size-3" strokeWidth={1.75} />
                           </button>
-                          ) : null}
+                          {renderDelete(skill)}
                         </div>
                       </div>
                     );
@@ -355,6 +593,74 @@ export function SkillsPage({
         )}
       </div>
     );
+
+  /** A connected machine's skills: compact name rows with a Transfer button. */
+  const renderMachine = (
+    machine: Machine,
+    all: DiscoveredSkill[] | null,
+    shown: DiscoveredSkill[],
+  ): ReactNode => {
+    const failure = machineLists[machine.environmentId]?.error ?? null;
+    if (failure)
+      return (
+        <p role="alert" className="text-[12px] text-red-400">
+          {failure}
+        </p>
+      );
+    if (all == null)
+      return <p className="text-[12px] text-content/45">Loading skills…</p>;
+    return (
+      // About ten compact rows; a longer list scrolls inside its own box.
+      <div className="max-h-80 overflow-y-auto overscroll-contain rounded-lg border border-content/10">
+        {shown.length === 0 ? (
+          <p className="px-3 py-3 text-[12px] text-content/45">
+            {all.length === 0 ? "No skills on this machine." : "No matching skills"}
+          </p>
+        ) : (
+          shown.map((skill) => (
+            <div
+              key={skill.path}
+              className={`flex items-center gap-2 border-b border-content/5 px-3 py-1.5 last:border-b-0 ${previewSkill?.path === skill.path ? "bg-content/5" : ""}`}
+            >
+              <button
+                type="button"
+                className="mr-auto min-w-0 truncate rounded text-left font-sans text-[12px] text-content hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                title={skill.description || `Open ${skill.name}`}
+                ref={registerPreviewButton(`name:${skill.path}`)}
+                aria-controls={previewOpen ? previewId : undefined}
+                aria-expanded={previewSkill?.path === skill.path}
+                onClick={() => onPreview(skill, "name", machine)}
+              >
+                {skill.name}
+              </button>
+              <span className="shrink-0 text-[11px] text-content/40">
+                {skill.scope === "user" ? "Personal" : "Project"} · {skill.source}
+              </span>
+              {renderDelete(skill, machine)}
+              {canTransferSkill(skill) ? (
+                <button
+                  type="button"
+                  aria-label={
+                    transferring === skill.path
+                      ? `Copying ${skill.name}…`
+                      : `Copy ${skill.name} to this computer`
+                  }
+                  title={
+                    transferring === skill.path ? "Copying…" : "Copy to this computer"
+                  }
+                  disabled={transferring !== null || deleting !== null}
+                  onClick={() => void onTransfer(skill, machine, null)}
+                  className="shrink-0 rounded-md border border-content/10 px-2 py-0.5 text-[11px] text-content/70 hover:bg-content/10 disabled:opacity-40"
+                >
+                  {transferring === skill.path ? "Copying…" : "Transfer"}
+                </button>
+              ) : null}
+            </div>
+          ))
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="@container/skills flex min-h-0 min-w-0 flex-1">
@@ -445,20 +751,20 @@ export function SkillsPage({
               </p>
             ) : null}
 
-            {remoteName ? (
+            {machines.length > 0 ? (
               <h3 className="pb-2 text-[12px] font-medium text-content/60">
                 This computer
               </h3>
             ) : null}
-            {renderSkills(skills, filtered, error, true)}
-            {remoteName ? (
-              <>
+            {renderSkills(skills, filtered, error)}
+            {machineShown.map(({ machine, all, shown }) => (
+              <section key={machine.environmentId} aria-label={`Skills on ${machine.name}`}>
                 <h3 className="pt-6 pb-2 text-[12px] font-medium text-content/60">
-                  {remoteName}
+                  {machine.name}
                 </h3>
-                {renderSkills(remoteSkills, remoteFiltered, remoteError, false)}
-              </>
-            ) : null}
+                {renderMachine(machine, all, shown)}
+              </section>
+            ))}
 
             <p className="pt-3 text-[12px] text-content/40">
               Hidden skills stay on disk and are excluded from MonoCode's
@@ -480,6 +786,25 @@ export function SkillsPage({
               <h2 className="min-w-0 flex-1 break-words text-[16px] font-semibold text-content">
                 {previewSkill.name}
               </h2>
+              {previewMachine && canTransferSkill(previewSkill) ? (
+                <button
+                  type="button"
+                  aria-label={
+                    transferring === previewSkill.path
+                      ? `Copying ${previewSkill.name}…`
+                      : `Copy ${previewSkill.name} to this computer`
+                  }
+                  title="Copy to this computer"
+                  disabled={transferring !== null || deleting !== null}
+                  onClick={() =>
+                    void onTransfer(previewSkill, previewMachine, null)
+                  }
+                  className="shrink-0 rounded-md border border-content/10 px-2 py-0.5 text-[12px] text-content/70 hover:bg-content/10 disabled:opacity-40"
+                >
+                  {transferring === previewSkill.path ? "Copying…" : "Transfer"}
+                </button>
+              ) : null}
+              {renderDelete(previewSkill, previewMachine)}
               <button
                 ref={closePreview}
                 type="button"
@@ -493,6 +818,7 @@ export function SkillsPage({
             </header>
             <div className="shrink-0 space-y-3 border-b border-stroke px-4 pt-1 pb-3">
               <p className="select-text break-all text-[11px] text-content/50">
+                {previewMachine ? `${previewMachine.name} · ` : ""}
                 {previewSkill.path}
               </p>
               <div className="flex justify-end">
@@ -529,6 +855,33 @@ export function SkillsPage({
           </aside>
         ) : null}
       </div>
+      {copyMenu ? (
+        <Popover
+          anchor={copyMenu.anchor}
+          align="end"
+          width={220}
+          onDismiss={() => setCopyMenu(null)}
+          role="menu"
+          aria-label={`Copy ${copyMenu.skill.name} to`}
+          className="p-1"
+        >
+          {machines.map((machine) => (
+            <button
+              key={machine.environmentId}
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-[12px] text-content hover:bg-content/8"
+              onClick={() => {
+                const skill = copyMenu.skill;
+                setCopyMenu(null);
+                void onTransfer(skill, null, machine);
+              }}
+            >
+              <span className="min-w-0 truncate">{machine.name}</span>
+            </button>
+          ))}
+        </Popover>
+      ) : null}
     </div>
   );
 }

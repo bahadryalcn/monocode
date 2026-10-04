@@ -708,12 +708,10 @@ function mapItemLifecycle(
     if (completed) {
       const text = streamTextDelta(item.text);
       const events: HarnessEvent[] = [];
-      if (text) {
-        events.push(
-          { type: "message.delta", text },
-          { type: "message.completed" },
-        );
-      }
+      if (text) events.push({ type: "message.delta", text });
+      // Some completions omit the snapshot after streaming all the text.
+      // Still close this message so the next item starts a separate block.
+      events.push({ type: "message.completed" });
       return { events };
     }
     return { events: [] };

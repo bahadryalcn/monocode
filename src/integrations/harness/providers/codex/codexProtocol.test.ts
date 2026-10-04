@@ -747,6 +747,17 @@ describe("mapCodexNotification", () => {
     ]);
   });
 
+  it.each([undefined, ""])(
+    "closes a streamed message when its completion has no text (%s)",
+    (text) => {
+      const mapped = mapCodexNotification("item/completed", {
+        item: { id: "msg_streamed", type: "agentMessage", text },
+      });
+      expect(mapped.turnCompleted).toBeUndefined();
+      expect(mapped.events).toEqual([{ type: "message.completed" }]);
+    },
+  );
+
   it("maps turn completion and clears active turn", () => {
     const mapped = mapCodexNotification("turn/completed", {
       turn: { id: "turn_1", status: "completed" },

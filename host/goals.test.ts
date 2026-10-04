@@ -325,6 +325,37 @@ describe("goal planning", () => {
     expect(tasks.list()).toEqual([]);
   });
 
+  it("reads a plan the planner wrote in plan mode or before its last message", async () => {
+    const { lead, create, turnOf, settled, advance, goal } = setup();
+    const created = await create();
+    const turn = turnOf(created.plannerSessionId!);
+    turn.input.onEvent({
+      type: "plan",
+      text: planReply([{ key: "one", project: lead.cwd }]),
+    });
+    turn.input.onEvent({ type: "message.delta", text: "The plan is ready." });
+    turn.input.onEvent({ type: "message.completed" });
+    turn.finish();
+    await settled(created.plannerSessionId!);
+    await advance();
+    expect(goal()).toMatchObject({ status: "running" });
+    expect(goal().plan!.tasks).toMatchObject([{ key: "one" }]);
+
+    const split = await create({ id: "split" });
+    const second = turnOf(split.plannerSessionId!);
+    second.input.onEvent({
+      type: "message.delta",
+      text: planReply([{ key: "two", project: lead.cwd }]),
+    });
+    second.input.onEvent({ type: "message.completed" });
+    second.input.onEvent({ type: "message.delta", text: "Done." });
+    second.input.onEvent({ type: "message.completed" });
+    second.finish();
+    await settled(split.plannerSessionId!);
+    await advance();
+    expect(goal("split").plan!.tasks).toMatchObject([{ key: "two" }]);
+  });
+
   it("blocks a goal whose planner run failed", async () => {
     const { create, turnOf, settled, advance, goal } = setup();
     const created = await create();
@@ -416,7 +447,8 @@ describe("goal tasks", () => {
     expect(b.baseCommit).toBe(git(repo.cwd, "rev-parse", "HEAD"));
     expect(existsSync(join(b.worktreeCwd!, "from-a.txt"))).toBe(true);
     expect(goals.list()[0].status).toBe("running");
-  });
+    // This scenario creates two worktrees and merges a real branch.
+  }, process.platform === "win32" ? 60_000 : 5_000);
 
   it("keeps dependents queued behind a blocked task and blocks the goal", async () => {
     const {
@@ -562,5 +594,45 @@ describe("goal tasks", () => {
     await tasks.move(other.id, "blocked");
     await goals.delete("other", true);
     expect(tasks.list().map((entry) => entry.id)).not.toContain(other.id);
+  });
+});
+
+describe("goal merging and work limits", () => {
+  it("gives every planned task the goal autoMerge setting", async () => {
+    const { plan, planned, lead } = setup();
+    await plan(planReply([{ key: "one", project: lead.cwd }]), {
+      autoMerge: true,
+    });
+    expect(planned().one.autoMerge).toBe(true);
+  });
+
+  it("leaves autoMerge off by default", async () => {
+    const { plan, planned, lead } = setup();
+    await plan(planReply([{ key: "one", project: lead.cwd }]));
+    expect(planned().one.autoMerge).toBeUndefined();
+  });
+
+  it("counts the planner toward the day", async () => {
+    const { plan, tasks, lead } = setup();
+    await plan(planReply([{ key: "one", project: lead.cwd }]));
+    expect(tasks.limits.usedMinutes()).toBeGreaterThan(0);
+  });
+
+  it("waits to plan while the day is used up, then plans tomorrow", async () => {
+    const { goals, goal, tasks, turns, clock, input } = setup();
+    tasks.limits.save({ dailyAgentMinutes: 1 });
+    tasks.limits.record(clock.now - 2 * MINUTE, clock.now);
+    const created = goals.create(input());
+    expect(created).toMatchObject({ status: "planning" });
+    expect(created.plannerSessionId).toBeUndefined();
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(turns).toHaveLength(0);
+    expect(goal()).toMatchObject({ status: "planning" });
+
+    clock.now += 24 * 60 * MINUTE;
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(goal().plannerSessionId).toBeDefined();
   });
 });

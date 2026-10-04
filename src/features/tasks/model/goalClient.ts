@@ -59,6 +59,8 @@ export type GoalDraft = {
   maxRunMinutes: number;
   approvePlan: boolean;
   review: boolean;
+  /** Merge every task once its checks pass, without waiting for approval. */
+  autoMerge: boolean;
 };
 
 /** Machines whose host carries out goals, this computer's included. */
@@ -83,6 +85,7 @@ export function newGoalDraft(
     maxRunMinutes: 0,
     approvePlan: false,
     review: true,
+    autoMerge: false,
   };
 }
 
@@ -137,6 +140,7 @@ export function hostGoalFromDraft(
     maxRunMinutes: draft.maxRunMinutes,
     verifyDefaults: { review: draft.review },
     approvePlan: draft.approvePlan,
+    ...(draft.autoMerge ? { autoMerge: true } : {}),
   };
 }
 

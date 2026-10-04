@@ -1602,7 +1602,9 @@ describe("collapsed rail Inbox actions", () => {
       '[aria-label="Sessions"]',
     )!;
     expect(sessionsTab.getAttribute("aria-selected")).toBe("true");
-    expect(sessionsTab.querySelector("span")).toBeNull();
+    expect(
+      sessionsTab.querySelector("[data-workspace-working-count]")?.textContent,
+    ).toBe("1");
     expect(
       container.querySelectorAll('[role="tablist"][aria-label="Workspace"]'),
     ).toHaveLength(1);

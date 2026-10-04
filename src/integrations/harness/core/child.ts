@@ -78,12 +78,17 @@ function listen<T>(
 type LinePayload = { sessionId: string; line: string };
 type LinesPayload = { sessionId: string; lines: string[] };
 type SseBatchPayload = { sessionId: string; data: string[] };
-type ExitPayload = { sessionId: string; code: number | null; pid?: number };
+type ExitPayload = {
+  sessionId: string;
+  code: number | null;
+  pid?: number;
+  reason?: string;
+};
 type SsePayload = { sessionId: string; data: string };
 type SseEndPayload = { sessionId: string; error?: string | null };
 
 type LineHandler = (line: string) => void;
-type ExitHandler = (code: number | null) => void;
+type ExitHandler = (code: number | null, reason?: string) => void;
 type SseHandler = (data: string) => void;
 type SseEndHandler = (error?: string) => void;
 
@@ -103,7 +108,7 @@ const ownedSse = new Set<string>();
 const livePid = new Map<string, number>();
 const pendingExit = new Map<
   string,
-  Array<{ code: number | null; pid: number }>
+  Array<{ code: number | null; pid: number; reason?: string }>
 >();
 
 /** True when this exit belongs to the child we currently have spawned. */
@@ -217,18 +222,19 @@ function ensureBridge() {
     ),
     register(
       listen<ExitPayload>("harness-exit", (event) => {
-        const { sessionId, code, pid } = event.payload;
+        const { sessionId, code, pid, reason } = event.payload;
         const handler = exitHandlers.get(sessionId);
         if (!handler || pid == null || pid <= 0) return;
         const currentPid = livePid.get(sessionId);
         if (isCurrentChildExit(currentPid, pid)) {
           livePid.delete(sessionId);
-          handler(code);
+          if (reason) handler(code, reason);
+          else handler(code);
           return;
         }
         if (currentPid != null) return;
         const exits = pendingExit.get(sessionId) ?? [];
-        exits.push({ code, pid });
+        exits.push({ code, pid, reason });
         if (exits.length > 8) exits.splice(0, exits.length - 8);
         pendingExit.set(sessionId, exits);
       }),
@@ -393,7 +399,9 @@ export async function spawnChild(
   const exited = exits?.find((event) => event.pid === pid);
   if (!exited) return;
   livePid.delete(sessionId);
-  exitHandlers.get(sessionId)?.(exited.code);
+  const handler = exitHandlers.get(sessionId);
+  if (exited.reason) handler?.(exited.code, exited.reason);
+  else handler?.(exited.code);
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {

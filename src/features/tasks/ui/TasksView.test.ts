@@ -4,8 +4,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { LOCAL_SYNC_MACHINE_NAME } from "../../connections/model/localSync";
 import type { HostGoal } from "../model/hostGoals";
+import type { HostSettingsState } from "../model/hostSettings";
+import type { HostSteward } from "../model/hostStewards";
 import type { HostTask } from "../model/hostTasks";
 import { invalidateMachineSnapshot } from "../../automations/model/machineSnapshot";
+import type { DailySummary } from "../model/dailySummary";
+import {
+  loadStoredDailySummary,
+  requestSummaryPanel,
+  saveStoredDailySummary,
+} from "../model/dailySummaryClient";
 import { TasksView } from "./TasksView";
 
 const invoke = vi.hoisted(() => vi.fn());
@@ -65,6 +73,8 @@ function host(
   tasks: HostTask[],
   capabilities = ["tasks", "tasks.todo"],
   goals: HostGoal[] = [],
+  stewards: HostSteward[] = [],
+  limits?: HostSettingsState,
 ) {
   const requests: Array<{ method: string; params: unknown }> = [];
   invoke.mockImplementation(async (command: string, args?: any) => {
@@ -84,6 +94,10 @@ function host(
       return [{ id: "project-1", cwd: "/work/project", name: "project" }];
     if (args.method === "tasks.list") return tasks;
     if (args.method === "goals.list") return goals;
+    if (args.method === "stewards.list") return stewards;
+    if (args.method === "host.settings.get" && limits) return limits;
+    if (args.method === "host.settings.save" && limits)
+      return { ...limits, ...args.params.settings };
     if (args.method === "tasks.move")
       return { ...tasks[0], status: args.params.to };
     if (args.method === "tasks.delete") {
@@ -292,8 +306,9 @@ it("offers the branch, check and review options on a new task", async () => {
   expect(boxes.map((box) => box.parentElement!.textContent?.trim())).toEqual([
     "Run on its own branch",
     "Review with a second agent",
+    "Merge automaticallyMerges into the base branch when every check passes",
   ]);
-  expect(boxes.map((box) => box.checked)).toEqual([true, true]);
+  expect(boxes.map((box) => box.checked)).toEqual([true, true, false]);
   expect(
     form.querySelector<HTMLInputElement>('input[aria-label="Check command"]')!
       .value,
@@ -402,8 +417,9 @@ it("offers a new goal form with plan review off and the reviewer on", async () =
   expect(boxes.map((box) => box.parentElement!.textContent?.trim())).toEqual([
     "Review the plan before starting",
     "Review each task with a second agent",
+    "Merge automaticallyMerges into the base branch when every check passes",
   ]);
-  expect(boxes.map((box) => box.checked)).toEqual([false, true]);
+  expect(boxes.map((box) => box.checked)).toEqual([false, true, false]);
   expect(form.querySelector('[data-goal-project="/work/project"]')).toBeTruthy();
   expect(button(form, "Plan it")!.disabled).toBe(true);
 });
@@ -620,4 +636,383 @@ it("will not start a to-do item without a description", async () => {
   expect(requests.some((request) => request.method === "tasks.move")).toBe(
     false,
   );
+});
+
+const steward = (overrides: Partial<HostSteward> = {}): HostSteward => ({
+  id: "steward-1",
+  projectId: "project-1",
+  enabled: true,
+  harness: "claude",
+  model: "claude:test",
+  modelSettings: {},
+  runtimeMode: "auto",
+  scheduleKind: "daily",
+  minute: 0,
+  time: "09:00",
+  dayOfWeek: 1,
+  focus: "find bugs",
+  maxProposals: 5,
+  maxOpen: 10,
+  autoStart: false,
+  nextRunAt: new Date("2030-01-02T09:00:00").getTime(),
+  declined: [],
+  createdAt: 1,
+  updatedAt: 1,
+  ...overrides,
+});
+
+const CAPABILITIES = ["tasks", "tasks.todo", "stewards"];
+const stewardCard = () =>
+  container.querySelector<HTMLElement>(
+    'article[aria-label="Steward for project"]',
+  )!;
+
+it("lists stewards in a panel with their schedule and last run", async () => {
+  const requests = host([], CAPABILITIES, [], [
+    steward({
+      lastRunAt: Date.now() - 5 * 60_000,
+      lastRunStatus: "failed",
+      lastRunError: "The steward’s reply has no json block.",
+    }),
+  ]);
+  await render();
+  // Hidden until asked for.
+  expect(stewardCard()).toBeNull();
+  await act(async () => button(container, "Stewards1")!.click());
+  const card = stewardCard();
+  expect(card.textContent).toContain("on this computer");
+  expect(card.textContent).toContain("Daily at");
+  expect(card.textContent).toContain("Last run: Failed 5m ago");
+  expect(card.textContent).toContain("The steward’s reply has no json block.");
+  expect(card.textContent).toContain("Next run");
+  expect(
+    Array.from(card.querySelectorAll("button"), (entry) =>
+      entry.textContent?.trim(),
+    ),
+  ).toEqual(["Run now", "Edit", "Delete"]);
+
+  await act(async () => button(card, "Run now")!.click());
+  expect(requests).toContainEqual({
+    method: "stewards.runNow",
+    params: { stewardId: "steward-1" },
+  });
+  await act(async () =>
+    card.querySelector<HTMLInputElement>('input[aria-label="Enabled"]')!.click(),
+  );
+  const saved = requests.find((request) => request.method === "stewards.save")!;
+  expect(saved.params).toMatchObject({
+    steward: { id: "steward-1", projectId: "project-1", enabled: false },
+  });
+});
+
+it("has no Stewards button on a machine without stewards", async () => {
+  host([], ["tasks", "tasks.todo"]);
+  await render();
+  expect(button(container, "Stewards")).toBeUndefined();
+});
+
+it("opens a steward form with auto-start off and warns when it is turned on", async () => {
+  host([], CAPABILITIES);
+  await render();
+  await act(async () => button(container, "Stewards")!.click());
+  await act(async () => button(container, "Add steward")!.click());
+  const form = container.querySelector('form[aria-label="New steward"]')!;
+  const auto = form.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  expect(auto.parentElement!.textContent).toContain(
+    "Start suggestions automatically",
+  );
+  expect(auto.checked).toBe(false);
+  expect(form.querySelector('[role="status"]')).toBeNull();
+  await act(async () => auto.click());
+  expect(form.querySelector('[role="status"]')!.textContent).toContain(
+    "without you reviewing the idea",
+  );
+  expect(form.querySelector('textarea[aria-label="Focus"]')).toBeTruthy();
+});
+
+it("marks a steward's suggestion and declines it instead of deleting it", async () => {
+  const requests = host(
+    [
+      task({
+        id: "idea",
+        title: "Add retry tests",
+        status: "todo",
+        source: "steward",
+        stewardId: "steward-1",
+      }),
+      task({ id: "mine", title: "Mine", status: "todo" }),
+    ],
+    CAPABILITIES,
+  );
+  await render();
+  const suggested = card("Add retry tests");
+  expect(suggested.querySelector("[data-task-suggested]")!.textContent).toBe(
+    "Suggested",
+  );
+  expect(card("Mine").querySelector("[data-task-suggested]")).toBeNull();
+  expect(
+    Array.from(suggested.querySelectorAll("button"), (entry) =>
+      entry.textContent?.trim(),
+    ),
+  ).toEqual(["Mark done", "Start", "Edit", "Decline"]);
+
+  // The detail panel carries the badge and the same action.
+  await act(async () => suggested.click());
+  expect(panel()!.querySelector("[data-task-suggested]")).toBeTruthy();
+  expect(button(panel()!, "Decline")).toBeTruthy();
+  expect(button(panel()!, "Delete")).toBeUndefined();
+
+  await act(async () => button(suggested, "Decline")!.click());
+  expect(requests).toContainEqual({
+    method: "stewards.decline",
+    params: { taskId: "idea" },
+  });
+  expect(requests.some((request) => request.method === "tasks.delete")).toBe(
+    false,
+  );
+});
+
+const LIMITS: HostSettingsState = {
+  maxRunningTasks: 2,
+  dailyAgentMinutes: 120,
+  usedMinutes: 75,
+  limitReached: false,
+};
+const LIMIT_CAPABILITIES = ["tasks", "tasks.todo", "host.settings"];
+
+it("sends autoMerge from the new task form, only with its own branch", async () => {
+  const requests = host([]);
+  await render();
+  await act(async () => button(container, "New task")!.click());
+  const form = container.querySelector('form[aria-label="New task"]')!;
+  await act(async () =>
+    type(
+      form.querySelector<HTMLInputElement>('input[aria-label="Task title"]')!,
+      "Ship it",
+    ),
+  );
+  await act(async () =>
+    type(
+      form.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Description"]',
+      )!,
+      "Do it",
+    ),
+  );
+  await act(async () => button(form, "Agent settings")!.click());
+  const boxes = Array.from(
+    form.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+  );
+  const [branch, , merge] = boxes;
+  expect(merge.disabled).toBe(false);
+  await act(async () => merge.click());
+  expect(merge.checked).toBe(true);
+  // Without its own branch there is nothing to merge on its own.
+  await act(async () => branch.click());
+  expect(merge.disabled).toBe(true);
+  expect(merge.checked).toBe(false);
+  await act(async () => branch.click());
+  expect(merge.checked).toBe(true);
+  await act(async () => button(form, "Add and start")!.click());
+  const saved = requests.find((request) => request.method === "tasks.save")!;
+  expect((saved.params as any).task).toMatchObject({
+    isolate: true,
+    autoMerge: true,
+  });
+});
+
+it("sends autoMerge from the goal and steward forms", async () => {
+  const requests = host([], ["tasks", "goals", "stewards"]);
+  await render();
+  await act(async () => button(container, "New goal")!.click());
+  const goalForm = container.querySelector('form[aria-label="New goal"]')!;
+  const merge = Array.from(
+    goalForm.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+  )[2];
+  await act(async () => merge.click());
+  await act(async () =>
+    type(
+      goalForm.querySelector<HTMLInputElement>('input[aria-label="Goal title"]')!,
+      "Launch",
+    ),
+  );
+  await act(async () =>
+    type(
+      goalForm.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Main job"]',
+      )!,
+      "Ship it",
+    ),
+  );
+  await act(async () => button(goalForm, "Plan it")!.click());
+  const created = requests.find((request) => request.method === "goals.create")!;
+  expect((created.params as any).goal).toMatchObject({ autoMerge: true });
+
+  await act(async () => button(container, "Stewards")!.click());
+  await act(async () => button(container, "Add steward")!.click());
+  const stewardForm = container.querySelector('form[aria-label="New steward"]')!;
+  const boxes = Array.from(
+    stewardForm.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'),
+  );
+  const box = boxes.find((entry) =>
+    entry.parentElement!.textContent!.startsWith("Merge automatically"),
+  )!;
+  expect(box.checked).toBe(false);
+  await act(async () => box.click());
+  expect(box.checked).toBe(true);
+});
+
+it("marks a task the host merged on its own, on its card and in its details", async () => {
+  host([
+    task({
+      status: "done",
+      completedAt: 2,
+      branch: "mc/abcd1234",
+      baseBranch: "main",
+      merged: true,
+      autoMerged: true,
+      mergedAt: Date.now(),
+    }),
+    task({ id: "manual", title: "By hand", status: "done", completedAt: 2 }),
+  ]);
+  await render();
+  expect(
+    card("Ship the report").querySelector("[data-task-auto-merged]")!
+      .textContent,
+  ).toBe("Merged automatically");
+  expect(card("By hand").querySelector("[data-task-auto-merged]")).toBeNull();
+  await act(async () => card("Ship the report").click());
+  expect(panel()!.textContent).toContain("Merged automatically");
+});
+
+it("lists each machine's limits, shows today's use and saves a change", async () => {
+  const requests = host([], LIMIT_CAPABILITIES, [], [], LIMITS);
+  await render();
+  expect(container.querySelector('[aria-label="Work limits"]')).toBeNull();
+  await act(async () => button(container, "Limits")!.click());
+  const panelOfLimits = container.querySelector<HTMLElement>(
+    '[aria-label="Work limits"]',
+  )!;
+  expect(panelOfLimits.textContent).toContain("this computer");
+  expect(panelOfLimits.textContent).toContain("Used today: 1h 15m");
+  expect(panelOfLimits.textContent).toContain("Max concurrent tasks");
+  expect(panelOfLimits.textContent).toContain("Daily agent time");
+  const pick = (label: string) =>
+    panelOfLimits.querySelector<HTMLButtonElement>(
+      `button[aria-label="${label}"]`,
+    )!;
+  expect(pick("Max concurrent tasks on this computer: 2")).toBeTruthy();
+  expect(pick("Daily agent time on this computer: 2 hours")).toBeTruthy();
+
+  await act(async () =>
+    pick("Max concurrent tasks on this computer: 2").click(),
+  );
+  const option = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="option"]'),
+  ).find((entry) => entry.textContent?.trim() === "4")!;
+  await act(async () => option.click());
+  expect(requests).toContainEqual({
+    method: "host.settings.save",
+    params: { settings: { maxRunningTasks: 4 } },
+  });
+  expect(
+    pick("Max concurrent tasks on this computer: 4"),
+  ).toBeTruthy();
+});
+
+it("has no Limits button on a host without work limits", async () => {
+  host([], ["tasks", "tasks.todo"]);
+  await render();
+  expect(button(container, "Limits")).toBeUndefined();
+});
+
+it("says when a machine's daily agent time is used up", async () => {
+  host([], LIMIT_CAPABILITIES, [], [], { ...LIMITS, limitReached: true });
+  await render();
+  expect(container.querySelector('[role="status"]')!.textContent).toBe(
+    "Daily agent time on this computer is used up; queued work resumes tomorrow.",
+  );
+});
+
+it("shows no daily notice while time is left", async () => {
+  host([], LIMIT_CAPABILITIES, [], [], LIMITS);
+  await render();
+  expect(container.textContent).not.toContain("is used up");
+});
+
+const storedSummary = (title: string): DailySummary => ({
+  since: 1,
+  until: 2,
+  finished: [
+    {
+      key: "machine-local:main",
+      machineName: "this computer",
+      project: "project",
+      title,
+    },
+  ],
+  autoMerged: 1,
+  blocked: [],
+  waiting: [],
+  suggestions: [],
+  goals: [],
+  goalsFinished: [],
+  usage: [],
+  unreachable: ["MacBook"],
+  outdated: [],
+});
+
+it("opens the last daily summary from the Summary button", async () => {
+  host([task({ status: "done", completedAt: 2, title: "Ship the report" })]);
+  saveStoredDailySummary(storedSummary("Ship the report"));
+  await render();
+  expect(container.querySelector('[aria-label="Summary"]')).toBeNull();
+  await act(async () => button(container, "Summary")!.click());
+  const summary = container.querySelector<HTMLElement>('[aria-label="Summary"]')!;
+  expect(summary.textContent).toContain("Finished · 1 (1 merged automatically)");
+  expect(summary.textContent).toContain("Ship the report");
+  expect(summary.textContent).toContain("MacBook (not reachable)");
+});
+
+it("shows the task's details when its title in the summary is clicked", async () => {
+  host([task({ status: "done", completedAt: 2, title: "Ship the report" })]);
+  saveStoredDailySummary(storedSummary("Ship the report"));
+  await render();
+  await act(async () => button(container, "Summary")!.click());
+  expect(panel()).toBeNull();
+  const summary = container.querySelector<HTMLElement>('[aria-label="Summary"]')!;
+  await act(async () => button(summary, "Ship the report")!.click());
+  expect(panel()!.textContent).toContain("Ship the report");
+});
+
+it("builds a fresh summary of the last day on Refresh now, leaving the stored one", async () => {
+  const now = Date.now();
+  host([
+    task({
+      id: "new",
+      title: "Fresh work",
+      status: "done",
+      createdAt: now - 5000,
+      updatedAt: now - 1000,
+      completedAt: now - 1000,
+    }),
+  ]);
+  saveStoredDailySummary(storedSummary("Old work"));
+  await render();
+  await act(async () => button(container, "Summary")!.click());
+  const summary = () =>
+    container.querySelector<HTMLElement>('[aria-label="Summary"]')!;
+  expect(summary().textContent).toContain("Old work");
+  await act(async () => button(summary(), "Refresh now")!.click());
+  await act(async () => {});
+  expect(summary().textContent).toContain("Fresh work");
+  expect(summary().textContent).not.toContain("Old work");
+  expect(loadStoredDailySummary()!.finished[0].title).toBe("Old work");
+});
+
+it("opens the summary panel when a notification click asked for it", async () => {
+  host([]);
+  requestSummaryPanel();
+  await render();
+  expect(container.querySelector('[aria-label="Summary"]')).not.toBeNull();
 });

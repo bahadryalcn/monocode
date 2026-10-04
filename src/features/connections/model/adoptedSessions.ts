@@ -37,7 +37,7 @@ export function desktopCopyOf(
 export const ADOPTED_RUNNING_REASON =
   "This session is continuing from another computer. Wait for it to finish.";
 export const ADOPTED_CONFLICT_MESSAGE =
-  "This conversation changed here and on the host. Your local copy was kept. Open the host conversation in Connections to compare the changes.";
+  "This conversation changed here and on the host. Your local copy was kept. Refresh from host to save a separate local copy and load the latest host conversation.";
 export const ADOPTED_POLL_VISIBLE_MS = 5_000;
 export const ADOPTED_POLL_HIDDEN_MS = 20_000;
 
@@ -142,6 +142,10 @@ export type AdoptedMirrorDeps = {
    * another computer. Saves a copy when its project is on this desktop. */
   adopt?: (entry: AdoptedEntry) => Promise<void | boolean>;
   conflict?: (local: Session) => void;
+  /** Live status is independent of whether a transcript can be merged. */
+  onRunning?: (running: ReadonlySet<string>) => void;
+  /** Persist a separate local conversation before resolving a conflict. */
+  preserve?: (copy: Session) => Promise<boolean>;
 };
 
 /** Sessions known to have a stored copy, per mirror, so a running one is not
@@ -152,6 +156,72 @@ const baselines = new WeakMap<Map<string, number>, Map<string, Session>>();
  * a snapshot is a whole transcript. */
 const snapshots = new WeakMap<Map<string, number>, Map<string, HostSession>>();
 export const ADOPTED_SNAPSHOT_LIMIT = 6;
+
+/** An explicit refresh resolves divergence only after preserving the local
+ * transcript. It never sends a command to, or stops, the host's running turn. */
+export async function refreshAdoptedSession(
+  deps: AdoptedMirrorDeps,
+  sessionId: string,
+): Promise<boolean> {
+  const entry = (await deps.list()).find((item) => item.id === sessionId);
+  if (!entry)
+    throw new Error("This conversation is no longer available on the host.");
+  const before = deps.local().find((session) => session.id === sessionId);
+  if (!before || before.busy)
+    throw new Error("Wait for the local turn to finish before refreshing.");
+  const beforeTranscript = transcript(before);
+  // Always request a full snapshot, including when the revision has not moved.
+  const host = await deps.load(sessionId);
+  const unchanged = () => {
+    const current = deps.local().find((session) => session.id === sessionId);
+    if (
+      !current ||
+      current.busy ||
+      current !== before ||
+      transcript(current) !== beforeTranscript
+    )
+      throw new Error(
+        "The local conversation changed while refreshing. Try again.",
+      );
+    return current;
+  };
+  unchanged();
+  const base = baselines.get(deps.mirrored)?.get(sessionId);
+  let merged = mergeAdoptedSession(before, host, base);
+  const preserved = !merged;
+  if (!merged) {
+    const copy: Session = {
+      id: crypto.randomUUID(),
+      harness: before.harness,
+      model: before.model,
+      modelSettings: { ...before.modelSettings },
+      runtimeMode: before.runtimeMode,
+      title: `${before.title || "Session"} (local copy)`,
+      cwd: before.cwd,
+      worktreeCwd: before.worktreeCwd,
+      worktreeRemoved: before.worktreeRemoved,
+      branch: before.branch,
+      providerAccountId: before.providerAccountId,
+      blocks: before.blocks,
+    };
+    // No provider conversation id, automation or queued sends on the saved copy.
+    const saved = await deps.preserve?.(copy).catch(() => false);
+    if (!saved)
+      throw new Error(
+        "Could not save the local copy. Your conversation was kept. Try again.",
+      );
+    unchanged();
+    merged = mergeAdoptedSession(before, host, before)!;
+  }
+  deps.apply(merged, before);
+  let bases = baselines.get(deps.mirrored);
+  if (!bases) baselines.set(deps.mirrored, (bases = new Map()));
+  bases.set(sessionId, merged);
+  // Drop any older delta base; the next automatic pass starts from a full copy.
+  snapshots.get(deps.mirrored)?.delete(sessionId);
+  deps.mirrored.set(sessionId, host.revision);
+  return preserved;
+}
 
 /** One mirror pass. Returns the ids the host is still running, so the caller
  * can hold local sending for them. */
@@ -177,6 +247,7 @@ export async function mirrorAdoptedSessions(
   const running = new Set(
     entries.filter((entry) => entry.status === "running").map((e) => e.id),
   );
+  deps.onRunning?.(running);
   for (const entry of planAdoptedFetches(
     entries,
     deps.local(),

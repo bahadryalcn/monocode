@@ -39,14 +39,14 @@ it("backs off a failing target by its own failures while a healthy one keeps its
   });
   await vi.advanceTimersByTimeAsync(0);
   expect(calls).toEqual({ ok: 1, down: 1 });
-  // down: retried after 6 s, then 12 s; ok: every 10 s.
+  // down: retried after 6 s, then 12 s; ok: every 5 s.
   await vi.advanceTimersByTimeAsync(6_000);
   expect(calls.down).toBe(2);
   await vi.advanceTimersByTimeAsync(11_999);
   expect(calls.down).toBe(2);
   await vi.advanceTimersByTimeAsync(1);
   expect(calls.down).toBe(3);
-  expect(calls.ok).toBe(2);
+  expect(calls.ok).toBe(4);
   stop();
 });
 

@@ -136,6 +136,7 @@ export function CodeMirrorEditor({
   canAutosave,
   onStageGit,
   onDocChange,
+  saveRequestRef,
   onOpenFile,
   formatOnSave = true,
 }: {
@@ -153,6 +154,8 @@ export function CodeMirrorEditor({
   canAutosave: () => boolean;
   onStageGit?: (contents: string) => Promise<void>;
   onDocChange?: (content: string) => void;
+  /** Runs the same save flow as Ctrl/Cmd+S before an external preview. */
+  saveRequestRef?: { current: (() => Promise<boolean>) | null };
   /** Lets the conflict bar step to the next conflicted file. */
   onOpenFile?: (path: string) => void;
   formatOnSave?: boolean;
@@ -403,6 +406,7 @@ export function CodeMirrorEditor({
       return true;
     };
     saveNowRef.current = () => saveDocument();
+    if (saveRequestRef) saveRequestRef.current = saveNowRef.current;
 
     // Blame describes what is on disk, so it is fetched when it is switched on,
     // after a save and when git reports a change. One timer folds those into a
@@ -610,6 +614,7 @@ export function CodeMirrorEditor({
       window.clearTimeout(blameTimer);
       unsubscribeGit();
       saveNowRef.current = null;
+      if (saveRequestRef) saveRequestRef.current = null;
       scheduleBlameRef.current = null;
       setConflictCount(0);
       onErrorCountChangeRef.current(0);
@@ -631,7 +636,15 @@ export function CodeMirrorEditor({
       if (split) split.destroy();
       else view.destroy();
     };
-  }, [formatOnSave, lockOverscroll, path, showDiff, splitDiff, syncChunkNav]);
+  }, [
+    formatOnSave,
+    lockOverscroll,
+    path,
+    saveRequestRef,
+    showDiff,
+    splitDiff,
+    syncChunkNav,
+  ]);
 
   useEffect(() => {
     const reconfigure = {

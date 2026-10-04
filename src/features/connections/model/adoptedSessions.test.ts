@@ -4,9 +4,11 @@ import {
   desktopCopyOf,
   mergeAdoptedSession,
   mirrorAdoptedSessions,
+  refreshAdoptedSession,
   planAdoptedFetches,
   supportsAdoptedSessions,
   type AdoptedEntry,
+  type AdoptedMirrorDeps,
 } from "./adoptedSessions";
 import type { HostSession } from "./protocol";
 
@@ -48,6 +50,101 @@ const entry = (over: Partial<AdoptedEntry> = {}): AdoptedEntry => ({
   updatedAt: 10,
   status: "idle",
   ...over,
+});
+
+describe("refreshAdoptedSession", () => {
+  function setup(session = local(), remote = host({})) {
+    let current = session;
+    const deps: AdoptedMirrorDeps = {
+      list: vi.fn(async () => [entry()]),
+      load: vi.fn(async () => remote),
+      local: () => [current],
+      apply: vi.fn((merged) => { current = merged; }),
+      mirrored: new Map([[session.id, remote.revision]]),
+      preserve: vi.fn(async () => true),
+    };
+    return { deps, current: () => current, change: (next: Session) => { current = next; } };
+  }
+
+  it("fetches a full snapshot even at the same revision and reflects host activity", async () => {
+    const { deps, current } = setup(local(), host({ busy: true }, "running"));
+    expect(await refreshAdoptedSession(deps, "s1")).toBe(false);
+    expect(deps.load).toHaveBeenCalledWith("s1");
+    expect(deps.preserve).not.toHaveBeenCalled();
+    expect(current()).toMatchObject({ id: "s1", cwd: "C:/proj", worktreeCwd: "C:/proj/wt", continuingElsewhere: true });
+    expect(current().busy).toBeUndefined();
+    expect(current().blocks).toHaveLength(2);
+  });
+
+  it("saves the divergent transcript before replacing it and establishes a new merge baseline", async () => {
+    const session = local({ blocks: [block("local")], adoptedSyncConflict: true,
+      providerSessionId: "provider-old", automationId: "automation", queuedMessages: [] });
+    const { deps, current } = setup(session);
+    let resolve!: (saved: boolean) => void;
+    vi.mocked(deps.preserve!).mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const refresh = refreshAdoptedSession(deps, "s1");
+    await vi.waitFor(() => expect(deps.preserve).toHaveBeenCalledOnce());
+    expect(deps.apply).not.toHaveBeenCalled();
+    const copy = vi.mocked(deps.preserve!).mock.calls[0][0];
+    expect(copy.id).not.toBe(session.id);
+    expect(copy).toMatchObject({ title: "Local (local copy)", blocks: session.blocks, cwd: session.cwd });
+    expect(copy.providerSessionId).toBeUndefined();
+    expect(copy.automationId).toBeUndefined();
+    expect(copy.queuedMessages).toBeUndefined();
+    resolve(true);
+    expect(await refresh).toBe(true);
+    expect(current().adoptedSyncConflict).toBeUndefined();
+    expect(current().blocks).toEqual(host({}).session.blocks);
+    // A host rewind after explicit replacement uses the newly accepted baseline.
+    vi.mocked(deps.list).mockResolvedValue([entry({ revision: 6 })]);
+    vi.mocked(deps.load).mockResolvedValue({ ...host({ blocks: [] }), revision: 6 });
+    await mirrorAdoptedSessions(deps);
+    expect(current().blocks).toEqual([]);
+  });
+
+  it("keeps the original conversation when the backup cannot be saved", async () => {
+    const { deps, current } = setup(local({ blocks: [block("local")] }));
+    const original = current();
+    vi.mocked(deps.preserve!).mockResolvedValue(false);
+    await expect(refreshAdoptedSession(deps, "s1")).rejects.toThrow("Could not save the local copy");
+    expect(current()).toBe(original);
+    expect(deps.apply).not.toHaveBeenCalled();
+  });
+
+  it("rejects local edits or a local turn started during the fetch", async () => {
+    for (const edit of [{ blocks: [block("new")] }, { busy: true }]) {
+      const { deps, current, change } = setup();
+      vi.mocked(deps.load).mockImplementation(async () => {
+        change({ ...current(), ...edit });
+        return host({});
+      });
+      await expect(refreshAdoptedSession(deps, "s1")).rejects.toThrow("changed while refreshing");
+      expect(deps.apply).not.toHaveBeenCalled();
+      expect(deps.preserve).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not replace a conversation edited while its backup is being saved", async () => {
+    const { deps, current, change } = setup(local({ blocks: [block("local")] }));
+    vi.mocked(deps.preserve!).mockImplementation(async () => {
+      change({ ...current(), blocks: [block("newer-local")] });
+      return true;
+    });
+    await expect(refreshAdoptedSession(deps, "s1")).rejects.toThrow("changed while refreshing");
+    expect(current().blocks).toEqual([block("newer-local")]);
+    expect(deps.apply).not.toHaveBeenCalled();
+  });
+
+  it("leaves the local conversation untouched when the host fails or removes the session", async () => {
+    const { deps, current } = setup();
+    const original = current();
+    vi.mocked(deps.load).mockRejectedValue(new Error("offline"));
+    await expect(refreshAdoptedSession(deps, "s1")).rejects.toThrow("offline");
+    vi.mocked(deps.list).mockResolvedValue([]);
+    await expect(refreshAdoptedSession(deps, "s1")).rejects.toThrow("no longer available");
+    expect(current()).toBe(original);
+    expect(deps.apply).not.toHaveBeenCalled();
+  });
 });
 
 describe("planAdoptedFetches", () => {
@@ -115,6 +212,41 @@ describe("mergeAdoptedSession", () => {
 });
 
 describe("mirrorAdoptedSessions", () => {
+  it("reports live status before loading a conflicting transcript", async () => {
+    const onRunning = vi.fn();
+    const conflict = vi.fn();
+    await mirrorAdoptedSessions({
+      list: async () => [entry({ status: "running" })],
+      load: async () => {
+        expect(onRunning).toHaveBeenCalledWith(new Set(["s1"]));
+        return host({ blocks: [] }, "running");
+      },
+      local: () => [local()],
+      apply: vi.fn(),
+      mirrored: new Map(),
+      onRunning,
+      conflict,
+    });
+    expect(conflict).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports status changes even when the transcript revision is unchanged", async () => {
+    const onRunning = vi.fn();
+    const load = vi.fn();
+    const deps = {
+      list: async () => [entry({ status: "running" })],
+      load,
+      local: () => [local()],
+      apply: vi.fn(),
+      mirrored: new Map([["s1", 5]]),
+      onRunning,
+    };
+    await mirrorAdoptedSessions(deps);
+    await mirrorAdoptedSessions({ ...deps, list: async () => [entry()] });
+    expect(onRunning.mock.calls).toEqual([[new Set(["s1"])], [new Set()]]);
+    expect(load).not.toHaveBeenCalled();
+  });
+
   it("retains a conflicting local edit and does not mark a rejected revision mirrored", async () => {
     const mirrored = new Map<string, number>();
     const current = local({

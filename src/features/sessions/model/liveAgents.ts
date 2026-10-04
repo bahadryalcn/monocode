@@ -1,8 +1,8 @@
 import { composeToolTitle } from "../../../integrations/harness/core/preview";
-import { isInFlightSession } from "./inFlight";
 import { displayPath } from "../../../shared/lib/paths";
 import {
   sessionDisplayTitle,
+  sessionNeedsInput,
   type Block,
   type HarnessId,
   type Session,
@@ -35,7 +35,8 @@ export function liveAgentsFromSessions(
   return sessions
     .filter(
       (session) =>
-        isLiveAgentSession(session) && (isInFlightSession(session) || unseenFinishedIds.has(session.id)),
+        isLiveAgentSession(session) &&
+        (isWorking(session) || unseenFinishedIds.has(session.id)),
     )
     .map((session) =>
       toLiveAgent(session, unseenFinishedIds.has(session.id)),
@@ -67,7 +68,7 @@ function toLiveAgent(session: Session, unseenFinished: boolean): LiveAgent {
     (block) => block.approval && !block.approval.decided,
   );
   const pendingQuestion = session.pendingQuestion;
-  const done = unseenFinished && !isInFlightSession(session);
+  const done = unseenFinished && !isWorking(session);
   const activityBlock = pending ?? lastActivityBlock(session.blocks);
   return {
     id: session.id,
@@ -80,12 +81,22 @@ function toLiveAgent(session: Session, unseenFinished: boolean): LiveAgent {
         ? pendingQuestion.title ||
           pendingQuestion.questions[0]?.prompt ||
           "Question"
-        : activityLabel(activityBlock, session.cwd),
+        : session.continuingElsewhere
+          ? "Working on host"
+          : activityLabel(activityBlock, session.cwd),
     startedAt: turnStartedAt(session.blocks),
     durationMs: done ? turnDurationMs(session.blocks) : undefined,
     needsApproval: Boolean(pending) || Boolean(pendingQuestion),
     done,
   };
+}
+
+/** Display activity for both local turns and turns owned by a host. */
+function isWorking(session: Session): boolean {
+  return (
+    !session.worktreeRemoved &&
+    (!!session.busy || !!session.continuingElsewhere || sessionNeedsInput(session))
+  );
 }
 
 function compareLiveAgents(a: LiveAgent, b: LiveAgent): number {
