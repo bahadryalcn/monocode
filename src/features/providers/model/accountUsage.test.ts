@@ -76,6 +76,24 @@ describe("accountHeadroom", () => {
 });
 
 describe("accountStatus", () => {
+  it("shows checking or an error instead of Ready for retained stale windows", () => {
+    expect(
+      accountStatus(limits(window(10), null, { status: "fetching" }), now).tone,
+    ).toBe("checking");
+    expect(
+      accountStatus(
+        limits(window(10), null, { status: "error", error: "Sign-in expired" }),
+        now,
+      ),
+    ).toMatchObject({ tone: "unknown", label: "Sign-in expired" });
+    expect(
+      bestAlternativeAccount(
+        [account("stale")],
+        () => limits(window(10), null, { status: "error" }),
+        now,
+      ),
+    ).toBeNull();
+  });
   it("reads Ready with comfortable headroom", () => {
     expect(accountStatus(limits(window(10), window(50)), now)).toEqual({
       tone: "ready",

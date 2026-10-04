@@ -37,6 +37,44 @@ const snapshot = (): HostSession => ({
   },
 });
 
+it("downloads generated images through the session chunk reader and reuses them", async () => {
+  const value = snapshot();
+  value.session.blocks = [
+    {
+      id: "generated",
+      role: "image",
+      text: "",
+      image: {
+        path: "/host/attachments/uuid",
+        name: "result.png",
+        mimeType: "image/png",
+        size: 3,
+      },
+    },
+  ];
+  const read = vi.fn(async () => ({ offset: 3, size: 3, data: btoa("png") }));
+  const first = await withRemoteAttachmentPreviews(
+    "generated-machine",
+    value,
+    undefined,
+    read,
+  );
+  expect(read).toHaveBeenCalledWith({
+    sessionId: "session",
+    id: "generated",
+    offset: 0,
+  });
+  expect(first.session.blocks[0].image?.data).toBe(btoa("png"));
+  const next = await withRemoteAttachmentPreviews(
+    "generated-machine",
+    value,
+    first,
+    read,
+  );
+  expect(next.session.blocks[0].image?.data).toBe(btoa("png"));
+  expect(read).toHaveBeenCalledTimes(1);
+});
+
 it("reopens image previews from chunks and reuses bytes on subsequent syncs", async () => {
   const read = vi.fn(async ({ offset }: { offset: number }) =>
     offset === 0
@@ -66,8 +104,12 @@ it("keeps the transcript available when an image is missing", async () => {
   const read = vi.fn(async () => {
     throw new Error("Image no longer available");
   });
-  const result =
-    await withRemoteAttachmentPreviews("machine", value, undefined, read);
+  const result = await withRemoteAttachmentPreviews(
+    "machine",
+    value,
+    undefined,
+    read,
+  );
   expect(result.session.blocks[0].text).toBe(value.session.blocks[0].text);
   expect(result.session.blocks[0].attachments?.[0].loadPreview).toBeTypeOf(
     "function",

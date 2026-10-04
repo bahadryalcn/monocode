@@ -11,6 +11,7 @@ import {
   saveProviderAccount,
   selectedProviderAccountId,
   selectProviderAccount,
+  setDefaultProviderAccount,
 } from "./providerAccounts";
 
 beforeEach(() => {
@@ -178,15 +179,56 @@ describe("provider accounts", () => {
     );
   });
 
-  it("renames but does not remove the provider-owned default account", () => {
+  it("removes the CLI profile without recreating it from legacy storage", () => {
     expect(renameProviderAccount("codex", "default", "  Personal  ")).toEqual({
       id: DEFAULT_PROVIDER_ACCOUNT_ID,
       provider: "codex",
       label: "Personal",
       isDefault: true,
     });
-    expect(removeProviderAccount("codex", "default")).toBe(false);
-    expect(providerAccounts("codex")[0]?.label).toBe("Personal");
+    expect(removeProviderAccount("codex", "default")).toBe(true);
+    expect(providerAccounts("codex")).toEqual([]);
+    expect(providerAccountExists("codex", undefined)).toBe(false);
+    saveProviderAccount({ id: "account-new", provider: "codex", label: "New" });
+    expect(providerAccounts("codex")).toEqual([
+      { id: "account-new", provider: "codex", label: "New", isDefault: true },
+    ]);
+    expect(selectedProviderAccountId("codex", "/repo")).toBe("account-new");
+  });
+
+  it("uses the assigned default for unselected projects and preserves explicit selections", () => {
+    saveProviderAccount({
+      id: "account-work",
+      provider: "codex",
+      label: "Work",
+    });
+    selectProviderAccount("codex", "/explicit", "default");
+    setDefaultProviderAccount("codex", "account-work");
+    expect(selectedProviderAccountId("codex", "/new")).toBe("account-work");
+    expect(selectedProviderAccountId("codex", "/explicit")).toBe("default");
+    expect(
+      providerAccounts("codex")
+        .filter((entry) => entry.isDefault)
+        .map((entry) => entry.id),
+    ).toEqual(["account-work"]);
+    removeProviderAccount("codex", "account-work");
+    expect(selectedProviderAccountId("codex", "/new")).toBe("default");
+  });
+
+  it("reports persistence failures instead of announcing success", () => {
+    const storage = vi
+      .spyOn(localStorage, "setItem")
+      .mockImplementation(() => {
+        throw new Error("Storage full");
+      });
+    try {
+      expect(() => setDefaultProviderAccount("claude", "default")).toThrow(
+        "Storage full",
+      );
+      expect(providerAccounts("claude")).toHaveLength(1);
+    } finally {
+      storage.mockRestore();
+    }
   });
 
   it("preserves a custom default name when named profiles change", () => {

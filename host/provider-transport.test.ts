@@ -12,9 +12,13 @@ import { HostChildBackend } from "./child-backend";
 import { HostStore } from "./store";
 import { HostEngine } from "./engine";
 import { hostProviders } from "./providers";
+import { readAttachmentChunk } from "./attachments";
 import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
 import { discoverClaudeModels } from "../src/integrations/harness/providers/claude/claudeCatalog";
-import { discoverPiModels, discoverOmpModels } from "../src/integrations/harness/providers/pi/piCatalog";
+import {
+  discoverPiModels,
+  discoverOmpModels,
+} from "../src/integrations/harness/providers/pi/piCatalog";
 import {
   acquireHarnessBridge,
   configureChildBackend,
@@ -22,6 +26,8 @@ import {
 
 // Real subprocesses exercise framing, startup, stdout delivery and teardown
 // through the existing production adapters without contacting a paid model.
+// Windows taskkill cleanup has a 10s deadline; settlement includes teardown.
+const SETTLE_TIMEOUT_MS = process.platform === "win32" ? 12_000 : 4_000;
 const fixture = `#!/usr/bin/env node
 const readline = require('node:readline');
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n');
@@ -31,6 +37,7 @@ const record = value => require('node:fs').appendFileSync(require('node:path').j
 if (!process.argv.includes('app-server')) record({claudeArgs: process.argv.slice(2)});
 readline.createInterface({input: process.stdin}).on('line', line => {
   const request = JSON.parse(line);
+  if (request.method) record({rpcMethod: request.method, pid: process.pid});
   if (request.jsonrpc === '2.0') {
     if (request.id == null) return;
     if (request.method === 'session/prompt') {
@@ -46,9 +53,10 @@ readline.createInterface({input: process.stdin}).on('line', line => {
   if (request.method === 'model/list') send({id: request.id, result: {data: [{model: 'fixture-model', displayName: 'Fixture model', supportedReasoningEfforts: ['low', 'high']}], nextCursor: null}});
   if (request.method === 'thread/start' || request.method === 'thread/resume') send({id: request.id, result: {thread: {id: 'fixture-thread'}}});
   if (request.method === 'turn/start') {
-    record({codexEffort: request.params.effort ?? null});
+    record({codexEffort: request.params.effort ?? null, fixtureTurn: request.params.input?.some(item => item.text === 'hello')});
     send({id: request.id, result: {turn: {id: 'fixture-turn'}}});
     setTimeout(() => {
+      if (JSON.stringify(request.params.input).includes('generate-fixture-image')) send({method: 'item/completed', params: {threadId: 'fixture-thread', turnId: 'fixture-turn', item: {id: 'generated-image', type: 'imageGeneration', result: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6lX8AAAAASUVORK5CYII='}}});
       send({method: 'item/agentMessage/delta', params: {threadId: 'fixture-thread', turnId: 'fixture-turn', itemId: 'message', delta: 'Headless Codex completed'}});
       send({method: 'turn/completed', params: {threadId: 'fixture-thread', turn: {id: 'fixture-turn', status: 'completed'}}});
     }, 30);
@@ -87,17 +95,20 @@ describe("existing providers over headless process I/O", () => {
     );
     const binary = join(directory, "provider.cjs");
     writeFileSync(binary, fixture, { mode: 0o700 });
-    backend = new HostChildBackend({
-      codex: binary,
-      claude: binary,
-      pi: binary,
-      omp: binary,
-      cursor: binary,
-      grok: binary,
-      fx: binary,
-      hermes: binary,
-      antigravity: binary,
-    });
+    backend = new HostChildBackend(
+      {
+        codex: binary,
+        claude: binary,
+        pi: binary,
+        omp: binary,
+        cursor: binary,
+        grok: binary,
+        fx: binary,
+        hermes: binary,
+        antigravity: binary,
+      },
+      join(directory, "attachments"),
+    );
     configureChildBackend(backend);
     release = await acquireHarnessBridge();
     store = new HostStore(join(directory, "host.db"));
@@ -112,16 +123,17 @@ describe("existing providers over headless process I/O", () => {
   });
 
   it("discovers host models in parallel without probe process collisions", async () => {
-    const [codexA, codexB, claudeA, claudeB, piA, piB, ompA, ompB] = await Promise.all([
-      discoverCodexModels(directory),
-      discoverCodexModels(directory),
-      discoverClaudeModels(directory),
-      discoverClaudeModels(directory),
-      discoverPiModels(directory),
-      discoverPiModels(directory),
-      discoverOmpModels(directory),
-      discoverOmpModels(directory),
-    ]);
+    const [codexA, codexB, claudeA, claudeB, piA, piB, ompA, ompB] =
+      await Promise.all([
+        discoverCodexModels(directory),
+        discoverCodexModels(directory),
+        discoverClaudeModels(directory),
+        discoverClaudeModels(directory),
+        discoverPiModels(directory),
+        discoverPiModels(directory),
+        discoverOmpModels(directory),
+        discoverOmpModels(directory),
+      ]);
     expect(codexA).toEqual(codexB);
     expect(codexA[0]).toMatchObject({ id: "codex:fixture-model" });
     expect(claudeA).toEqual(claudeB);
@@ -153,7 +165,7 @@ describe("existing providers over headless process I/O", () => {
         });
         await vi.waitFor(
           () => expect(store.session(sessionId).status).toBe("idle"),
-          { timeout: 4_000 },
+          { timeout: SETTLE_TIMEOUT_MS },
         );
         const state = store.session(sessionId).session;
         expect(
@@ -164,6 +176,45 @@ describe("existing providers over headless process I/O", () => {
       }
     },
   );
+
+  it("saves a generated image without window and serves only that session's image", async () => {
+    const project = await engine.openProject(directory);
+    const { sessionId } = engine.command({
+      type: "create",
+      commandId: "create-image",
+      projectId: project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
+    engine.command({
+      type: "send",
+      commandId: "send-image",
+      sessionId,
+      text: "generate-fixture-image",
+    });
+    await vi.waitFor(
+      () => expect(store.session(sessionId).status).toBe("idle"),
+      { timeout: SETTLE_TIMEOUT_MS },
+    );
+    const session = store.session(sessionId).session;
+    const image = session.blocks.find((block) => block.role === "image")!;
+    expect(image.image?.mimeType).toBe("image/png");
+    expect(session.blocks.filter((block) => block.notice === "error")).toEqual(
+      [],
+    );
+    const chunk = readAttachmentChunk(store, {
+      sessionId,
+      id: image.id,
+      offset: 0,
+    });
+    expect(Buffer.from(chunk.data, "base64")).toEqual(
+      readFileSync(image.image!.path),
+    );
+    expect(() =>
+      readAttachmentChunk(store, { sessionId, id: "unknown-image", offset: 0 }),
+    ).toThrow("not found");
+  });
 
   it.each(["pi", "omp"] as const)(
     "completes and resumes %s over the host RPC transport",
@@ -186,7 +237,7 @@ describe("existing providers over headless process I/O", () => {
         });
         await vi.waitFor(
           () => expect(store.session(sessionId).status).toBe("idle"),
-          { timeout: 4_000 },
+          { timeout: SETTLE_TIMEOUT_MS },
         );
         const state = store.session(sessionId).session;
         expect(
@@ -218,7 +269,7 @@ describe("existing providers over headless process I/O", () => {
       });
       await vi.waitFor(
         () => expect(store.session(sessionId).status).toBe("idle"),
-        { timeout: 4_000 },
+        { timeout: SETTLE_TIMEOUT_MS },
       );
       const state = store.session(sessionId).session;
       expect(state.blocks.at(-1)?.text).toContain("Headless ACP completed");
@@ -263,17 +314,17 @@ describe("existing providers over headless process I/O", () => {
         });
         await vi.waitFor(
           () => expect(store.session(sessionId).status).toBe("idle"),
-          { timeout: 4_000 },
+          { timeout: SETTLE_TIMEOUT_MS },
         );
         const calls = readFileSync(log, "utf8")
           .trim()
           .split("\n")
           .map((line) => JSON.parse(line));
         if (harness === "codex")
-          efforts.push(calls.find((call) => "codexEffort" in call).codexEffort);
+          efforts.push(calls.find((call) => call.fixtureTurn).codexEffort);
         else {
-          const args: string[] = calls.find(
-            (call) => call.claudeArgs,
+          const args: string[] = calls.find((call) =>
+            call.claudeArgs?.includes("--effort"),
           ).claudeArgs;
           efforts.push(args[args.indexOf("--effort") + 1] ?? null);
         }

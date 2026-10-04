@@ -893,10 +893,10 @@ export function pathEnvironment(): Promise<Record<string, string>> {
  * projects can be opened in one pass; the dialog still returns a bare string
  * when only one was taken.
  */
-export async function pickFolders(title = "Open projects"): Promise<string[]> {
+export async function pickFolders(title = "Open projects", multiple = true): Promise<string[]> {
   const selected = await open({
     directory: true,
-    multiple: true,
+    multiple,
     title,
   });
   if (Array.isArray(selected)) {

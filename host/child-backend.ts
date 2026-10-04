@@ -9,6 +9,11 @@ import { join } from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import {
+  saveHostGeneratedImage,
+  deleteHostGeneratedImages,
+} from "./generated-images";
 import type { ChildBackend } from "../src/integrations/harness/core/child";
 import {
   isRemoteProvider,
@@ -53,6 +58,11 @@ export class HostChildBackend implements ChildBackend {
 
   constructor(
     private readonly binaries: Partial<Record<RemoteProvider, string>> = {},
+    private readonly artifactDirectory = join(
+      homedir(),
+      ".monocode-host",
+      "attachments",
+    ),
   ) {
     this.events.setMaxListeners(0);
   }
@@ -93,6 +103,17 @@ export class HostChildBackend implements ChildBackend {
       } as T;
     }
     switch (command) {
+      case "harness_save_generated_image":
+        return (await saveHostGeneratedImage(this.artifactDirectory, {
+          data: String(args.data),
+          name: String(args.name),
+        })) as T;
+      case "harness_delete_generated_images":
+        await deleteHostGeneratedImages(
+          this.artifactDirectory,
+          args.paths as string[],
+        );
+        return undefined as T;
       case "harness_exec": {
         const provider = args.binaryProvider;
         if (!isRemoteProvider(provider))
@@ -178,10 +199,15 @@ export class HostChildBackend implements ChildBackend {
         if (!child || child.stdin.destroyed)
           throw new Error("Provider process is not running");
         await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(
-            () => reject(new Error("Provider stdin write timed out")),
-            15_000,
-          );
+          const timer = setTimeout(() => {
+            reject(
+              new Error(
+                `Provider stdin write timed out (session ${id}, pid ${child.pid}, ${Buffer.byteLength(String(args.line))} bytes)`,
+              ),
+            );
+            // Retire only this generation; a replacement must never be killed.
+            if (this.children.get(id) === child) void this.kill(id);
+          }, 12_000);
           child.stdin.write(`${String(args.line)}\n`, (error) => {
             clearTimeout(timer);
             if (error) reject(error);

@@ -248,6 +248,9 @@ export type AgentRunMeta = {
 export type AttachmentKind = "image" | "audio" | "file";
 
 export type GeneratedImageMeta = {
+  /** Desktop preview only; persistence retains metadata, not image bytes. */
+  data?: string;
+  loadPreview?: () => Promise<string>;
   path: string;
   name: string;
   mimeType: string;

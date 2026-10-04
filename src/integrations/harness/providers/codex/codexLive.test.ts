@@ -45,7 +45,11 @@ const {
   __codexTestReset,
 } = await import("./codex");
 import type { HarnessEvent } from "../../core/types";
-import { newSession, type RuntimeMode, type TurnIntent } from "../../../../features/sessions/model/session";
+import {
+  newSession,
+  type RuntimeMode,
+  type TurnIntent,
+} from "../../../../features/sessions/model/session";
 import { applyHarnessEvent } from "../../core/apply";
 
 function parse() {
@@ -139,6 +143,45 @@ async function startTurn(
 }
 
 describe("codex live turn sequence", () => {
+  it("fails an unanswered startup instead of holding the session queue forever", async () => {
+    vi.useFakeTimers();
+    try {
+      const turn = sendCodexTurn({
+        sessionId: "unanswered",
+        cwd: "/repo",
+        model: "codex:test",
+        runtimeMode: "supervised",
+        text: "hello",
+        attachments: [],
+        onEvent: () => undefined,
+      });
+      const outcome = turn.catch((error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(await outcome).toContain("initialize response timed out");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not apply the startup deadline to an accepted long running turn", async () => {
+    const { turn } = await startTurn("long-running");
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      void turn.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(settled).toBe(false);
+      notify("turn/completed", {
+        threadId: "thr_1",
+        turn: { id: "turn_1", status: "completed" },
+      });
+      await turn;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   beforeEach(() => {
     sent.length = 0;
     onLine = undefined;
@@ -192,10 +235,12 @@ describe("codex live turn sequence", () => {
       controlsAgents: true,
       expectResume: true,
     });
-    expect(parse().find((message) => message.method === "thread/resume")?.params)
-      .toMatchObject({ sandboxPolicy: { networkAccess: true } });
-    expect(parse().find((message) => message.method === "turn/start")?.params)
-      .toMatchObject({ sandboxPolicy: { networkAccess: true } });
+    expect(
+      parse().find((message) => message.method === "thread/resume")?.params,
+    ).toMatchObject({ sandboxPolicy: { networkAccess: true } });
+    expect(
+      parse().find((message) => message.method === "turn/start")?.params,
+    ).toMatchObject({ sandboxPolicy: { networkAccess: true } });
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     await appTurn.turn;
 
@@ -276,19 +321,26 @@ describe("codex live turn sequence", () => {
     notify("item/completed", {
       item: { id: "image_1", type: "imageGeneration", result: "aW1hZ2U=" },
     });
-    notify("item/agentMessage/delta", { itemId: "after_image", delta: "after image" });
+    notify("item/agentMessage/delta", {
+      itemId: "after_image",
+      delta: "after image",
+    });
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     await Promise.resolve();
 
     expect(
       events.some(
-        (event) => event.type === "message.delta" && event.text === "after image",
+        (event) =>
+          event.type === "message.delta" && event.text === "after image",
       ),
     ).toBe(false);
     release?.();
     await turn;
     await Promise.resolve();
-    notify("item/agentMessage/delta", { itemId: "post_turn", delta: "post turn" });
+    notify("item/agentMessage/delta", {
+      itemId: "post_turn",
+      delta: "post turn",
+    });
 
     expect(
       events.some(
@@ -320,7 +372,8 @@ describe("codex live turn sequence", () => {
       "interrupt",
     );
     reply(
-      parse().find((message) => message.method === "turn/interrupt")!.id as number,
+      parse().find((message) => message.method === "turn/interrupt")!
+        .id as number,
       {},
     );
     await cancelling;
@@ -361,10 +414,13 @@ describe("codex live turn sequence", () => {
 
     expect(
       events.some(
-        (event) => event.type === "message.delta" && event.text === "after image",
+        (event) =>
+          event.type === "message.delta" && event.text === "after image",
       ),
     ).toBe(false);
-    expect(events.some((event) => event.type === "image.generated")).toBe(false);
+    expect(events.some((event) => event.type === "image.generated")).toBe(
+      false,
+    );
     expect(deleteGeneratedImages).toHaveBeenCalledWith([
       "/app-data/generated-images/image.png",
     ]);
@@ -429,9 +485,11 @@ describe("codex live turn sequence", () => {
       applyHarnessEvent,
       newSession("codex", "/repo"),
     );
-    expect(session.blocks
-      .filter((block) => block.role === "assistant")
-      .map((block) => block.text)).toEqual([
+    expect(
+      session.blocks
+        .filter((block) => block.role === "assistant")
+        .map((block) => block.text),
+    ).toEqual([
       "Inspecting the session.",
       "Found the cause.",
       "Fixed and verified.",

@@ -416,7 +416,7 @@ export function EnabledModelsGroup() {
  * page runs no CLI: it shows the last check, and the button runs a new one.
  */
 export function HarnessUpdatesGroup() {
-  const { checks, checking, runs } = useSyncExternalStore(
+  const { checks, checking, runs, error } = useSyncExternalStore(
     subscribeHarnessUpdates,
     getHarnessUpdateSnapshot,
     getHarnessUpdateSnapshot,
@@ -426,7 +426,7 @@ export function HarnessUpdatesGroup() {
     // Another window's update leaves this window's versions stale.
     const unlisten = onHarnessUpdated(() => {
       if (getHarnessUpdateSnapshot().checks) {
-        void checkInstalledHarnessVersions();
+        void checkInstalledHarnessVersions().catch(() => undefined);
       }
     }).catch(() => undefined);
     return () => {
@@ -476,6 +476,11 @@ export function HarnessUpdatesGroup() {
         </div>
       }
     >
+      {error ? (
+        <p role="alert" className="px-4 py-2 text-[12px] text-red-400">
+          Could not check CLI updates: {error}
+        </p>
+      ) : null}
       {checks === null ? (
         <Row
           label={checking ? "Checking installed CLIs…" : "Not checked yet"}

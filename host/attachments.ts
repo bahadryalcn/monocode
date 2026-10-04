@@ -6,7 +6,7 @@ import {
   writeSync,
   statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, basename, resolve } from "node:path";
 import type { Attachment } from "../src/features/sessions/model/session";
 import type { RemoteAttachment } from "../src/features/connections/model/protocol";
 import type { HostStore } from "./store";
@@ -114,21 +114,49 @@ export function resolveAttachments(
 
 /** Reads only an attachment already accepted into this session. Paths supplied
  * by the client are never used, and each response stays below the RPC cap. */
-export function readAttachmentChunk(store: HostStore, input: Record<string, unknown>) {
+export function readAttachmentChunk(
+  store: HostStore,
+  input: Record<string, unknown>,
+) {
   const session = store.session(String(input.sessionId ?? ""));
-  const attachment = session.session.blocks.flatMap((block) => block.attachments ?? [])
-    .find((file) => file.id === input.id);
-  if (!attachment || attachment.kind !== "image") throw new Error("Image attachment not found");
+  const generated = session.session.blocks.find(
+    (block) => block.id === input.id && block.image,
+  )?.image;
+  const attachment = generated
+    ? { ...generated, id: basename(generated.path), kind: "image" as const }
+    : session.session.blocks
+        .flatMap((block) => block.attachments ?? [])
+        .find((file) => file.id === input.id);
+  if (!attachment || attachment.kind !== "image")
+    throw new Error("Image attachment not found");
   const offset = input.offset;
-  if (!Number.isSafeInteger(offset) || Number(offset) < 0 || Number(offset) > attachment.size)
+  if (
+    !Number.isSafeInteger(offset) ||
+    Number(offset) < 0 ||
+    Number(offset) > attachment.size
+  )
     throw new Error("Invalid attachment offset");
   const path = attachmentPath(store, attachment.id);
-  if (statSync(path).size !== attachment.size) throw new Error("Attachment is incomplete");
+  if (generated && resolve(generated.path) !== resolve(path))
+    throw new Error("Invalid generated image path");
+  if (statSync(path).size !== attachment.size)
+    throw new Error("Attachment is incomplete");
   // Non-final chunks are divisible by three, so the client can join base64.
-  const bytes = Buffer.alloc(Math.min(3 * Math.floor(MAX_CHUNK_BYTES / 3), attachment.size - Number(offset)));
+  const bytes = Buffer.alloc(
+    Math.min(
+      3 * Math.floor(MAX_CHUNK_BYTES / 3),
+      attachment.size - Number(offset),
+    ),
+  );
   const fd = openSync(path, "r");
   try {
     const read = readSync(fd, bytes, 0, bytes.length, Number(offset));
-    return { data: bytes.subarray(0, read).toString("base64"), offset: Number(offset) + read, size: attachment.size };
-  } finally { closeSync(fd); }
+    return {
+      data: bytes.subarray(0, read).toString("base64"),
+      offset: Number(offset) + read,
+      size: attachment.size,
+    };
+  } finally {
+    closeSync(fd);
+  }
 }

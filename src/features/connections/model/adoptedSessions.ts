@@ -69,6 +69,11 @@ function transcript(session: Session): string {
   return canonicalJson(
     session.blocks.map((block) => ({
       ...block,
+      image: block.image
+        ? (({ data: _data, loadPreview: _load, ...image }) => image)(
+            block.image,
+          )
+        : undefined,
       attachments: block.attachments?.map(
         ({ data: _data, previewUrl: _preview, ...file }) => file,
       ),

@@ -19,6 +19,7 @@ import {
 import {
   providerAccounts,
   saveProviderAccount,
+  selectedProviderAccountId,
 } from "../../providers/model/providerAccounts";
 import {
   clearCachedRateLimits,
@@ -444,6 +445,64 @@ describe("settings pages", () => {
       accountId: "account-work",
     });
     expect(providerAccounts("codex")).toHaveLength(1);
+  });
+
+  it("sets another account as default and removes the shared CLI profile", async () => {
+    saveProviderAccount({
+      id: "account-work",
+      provider: "codex",
+      label: "Work",
+    });
+    await render("providers");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Use Work by default"]')!
+        .click(),
+    );
+    expect(selectedProviderAccountId("codex", "/new-project")).toBe(
+      "account-work",
+    );
+    const remove = container.querySelectorAll<HTMLButtonElement>(
+      '[aria-label="Remove Default account"]',
+    );
+    await act(async () => remove[1]!.click());
+    expect(invoke).toHaveBeenCalledWith("provider_account_remove", {
+      provider: "codex",
+      accountId: "default",
+    });
+    expect(providerAccounts("codex").map((entry) => entry.id)).toEqual([
+      "account-work",
+    ]);
+    expect(selectedProviderAccountId("codex", "/new-project")).toBe(
+      "account-work",
+    );
+  });
+
+  it("locks account actions during confirmation and recovers from dialog errors", async () => {
+    vi.mocked(ask).mockClear();
+    let reject!: (error: Error) => void;
+    vi.mocked(ask).mockImplementationOnce(
+      () =>
+        new Promise<boolean>((_, fail) => {
+          reject = fail;
+        }),
+    );
+    await render("providers");
+    const remove = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Remove Default account"]',
+    )!;
+    await act(async () => {
+      remove.click();
+      remove.click();
+    });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(remove.disabled).toBe(true);
+    await act(async () => reject(new Error("Dialog unavailable")));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Dialog unavailable",
+    );
+    expect(remove.disabled).toBe(false);
+    expect(providerAccounts("claude")).toHaveLength(1);
   });
 
   it("validates and stores Codex and OpenCode binary overrides", async () => {

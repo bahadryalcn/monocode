@@ -61,17 +61,28 @@ export function accountStatus(
   limits: ProviderRateLimits | undefined,
   now: number,
 ): AccountStatus {
+  if (limits?.status === "fetching" || limits?.status === "idle") {
+    return { tone: "checking", label: "Checking…", detail: null };
+  }
+  if (limits?.status === "error" || limits?.status === "unavailable") {
+    return {
+      tone: "unknown",
+      label:
+        limits.error ||
+        (limits.status === "unavailable"
+          ? "Not signed in"
+          : "Usage unavailable"),
+      detail: null,
+    };
+  }
   const headroom = accountHeadroom(limits, now);
   if (!limits || headroom == null) {
-    if (!limits || limits.status === "idle" || limits.status === "fetching") {
+    if (!limits) {
       return { tone: "checking", label: "Checking…", detail: null };
     }
     return {
       tone: "unknown",
-      label:
-        limits.status === "unavailable"
-          ? limits.error || "Not signed in"
-          : limits.error || "Usage unavailable",
+      label: "Usage unavailable",
       detail: null,
     };
   }
@@ -121,7 +132,9 @@ export function bestAlternativeAccount(
 ): ProviderAccount | null {
   let best: { account: ProviderAccount; headroom: number } | null = null;
   for (const account of accounts) {
-    const headroom = accountHeadroom(usageFor(account), now);
+    const limits = usageFor(account);
+    if (limits?.status !== "ok") continue;
+    const headroom = accountHeadroom(limits, now);
     if (headroom == null || headroom <= LOW_HEADROOM_PERCENT) continue;
     if (!best || headroom > best.headroom) best = { account, headroom };
   }

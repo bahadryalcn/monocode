@@ -1,6 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Loader, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 
 import { loginHarness } from "../../../integrations/harness/core/auth";
@@ -13,12 +13,20 @@ import {
   PROVIDER_ACCOUNT_PROVIDERS,
   removeProviderAccount,
   renameProviderAccount,
-  saveProviderAccount,
+  setDefaultProviderAccount,
+  DEFAULT_PROVIDER_ACCOUNT_ID,
   subscribeProviderAccounts,
   type ProviderAccount,
   type ProviderAccountProvider,
 } from "../../providers/model/providerAccounts";
-import { removeProviderAccountCredentials } from "../../providers/model/providerAccountCredentials";
+import {
+  removeProviderAccountCredentials,
+  signOutProviderAccountCredentials,
+} from "../../providers/model/providerAccountCredentials";
+import {
+  assertUniqueProviderAccount,
+  registerProviderAccount,
+} from "../../providers/model/providerAccountRegistration";
 import {
   identityKey,
   identityOrganizationTag,
@@ -56,6 +64,20 @@ export function ProviderAccountsSettings() {
   const [editor, setEditor] = useState<AccountEditor | null>(null);
   const [working, setWorking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const busy = useRef(false);
+  const pendingAccount = useRef<ProviderAccount | null>(null);
+
+  const begin = (key: string) => {
+    if (busy.current) return false;
+    busy.current = true;
+    setWorking(key);
+    setError(null);
+    return true;
+  };
+  const finish = () => {
+    busy.current = false;
+    setWorking(null);
+  };
 
   useEffect(
     () => subscribeProviderAccounts(() => setVersion((value) => value + 1)),
@@ -63,11 +85,14 @@ export function ProviderAccountsSettings() {
   );
 
   const startAdd = (provider: ProviderAccountProvider) => {
+    if (busy.current) return;
+    pendingAccount.current = null;
     setError(null);
     setEditor({ provider, label: "" });
   };
 
   const startRename = (account: ProviderAccount) => {
+    if (busy.current) return;
     setError(null);
     setEditor({
       provider: account.provider,
@@ -78,19 +103,29 @@ export function ProviderAccountsSettings() {
 
   const submitEditor = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!editor || !editor.label.trim() || working) return;
+    if (!editor || !editor.label.trim()) return;
     const key = editor.accountId
       ? `rename:${editor.provider}:${editor.accountId}`
       : `add:${editor.provider}`;
-    setWorking(key);
-    setError(null);
+    if (!begin(key)) return;
     try {
       if (editor.accountId) {
-        renameProviderAccount(editor.provider, editor.accountId, editor.label);
+        if (
+          !renameProviderAccount(
+            editor.provider,
+            editor.accountId,
+            editor.label,
+          )
+        )
+          throw new Error("Account no longer exists");
       } else {
-        const account = newProviderAccount(editor.provider, editor.label);
-        await loginHarness(editor.provider, account.id);
-        saveProviderAccount(account);
+        const account =
+          pendingAccount.current ??
+          newProviderAccount(editor.provider, editor.label);
+        account.label = editor.label;
+        pendingAccount.current = account;
+        await registerProviderAccount(account);
+        pendingAccount.current = null;
       }
       setEditor(null);
     } catch (caught) {
@@ -100,20 +135,28 @@ export function ProviderAccountsSettings() {
           : "Could not save this account",
       );
     } finally {
-      setWorking(null);
+      finish();
     }
   };
 
   const signInAccount = async (account: ProviderAccount) => {
-    if (working) return;
-    setWorking(`signin:${account.provider}:${account.id}`);
-    setError(null);
+    if (!begin(`signin:${account.provider}:${account.id}`)) return;
     try {
-      await (account.isDefault
+      await (account.id === DEFAULT_PROVIDER_ACCOUNT_ID
         ? loginHarness(account.provider)
         : loginHarness(account.provider, account.id));
+      try {
+        await assertUniqueProviderAccount(account);
+      } catch (caught) {
+        // A re-login can change the identity of an existing profile as well.
+        await signOutProviderAccountCredentials(account.provider, account.id);
+        clearCachedRateLimits(account.provider, account.id);
+        throw caught;
+      }
+      setVersion((value) => value + 1);
+      clearCachedRateLimits(account.provider, account.id);
       const limits = await loadRateLimits(account.provider, account.id, true);
-      if (limits.status === "error" || needsProviderLogin(limits)) {
+      if (needsProviderLogin(limits)) {
         throw new Error(
           limits.error ||
             `${HARNESS_TITLE[account.provider]} sign-in could not be verified`,
@@ -124,29 +167,31 @@ export function ProviderAccountsSettings() {
         caught instanceof Error ? caught.message : "Could not complete sign-in",
       );
     } finally {
-      setWorking(null);
+      setVersion((value) => value + 1);
+      finish();
     }
   };
 
   const removeAccount = async (account: ProviderAccount) => {
-    if (account.isDefault || working) return;
-    const confirmed = await ask(
-      `Remove “${account.label}”? Its stored credentials will be deleted and any running turns for this account will stop. Existing conversations stay in history, but cannot continue until you switch accounts.`,
-      {
-        title: `Remove ${HARNESS_TITLE[account.provider]} account`,
-        kind: "warning",
-        okLabel: "Remove account",
-        cancelLabel: "Cancel",
-      },
-    );
-    if (!confirmed) return;
     const key = `remove:${account.provider}:${account.id}`;
-    setWorking(key);
-    setError(null);
+    if (!begin(key)) return;
     try {
+      const confirmed = await ask(
+        account.id === DEFAULT_PROVIDER_ACCOUNT_ID
+          ? `Remove “${account.label}”? This signs out of the shared ${HARNESS_TITLE[account.provider]} CLI profile and stops its running turns. CLI settings and conversation history stay on disk.`
+          : `Remove “${account.label}”? Its stored credentials will be deleted and any running turns for this account will stop. Existing conversations stay in history, but cannot continue until you switch accounts.`,
+        {
+          title: `Remove ${HARNESS_TITLE[account.provider]} account`,
+          kind: "warning",
+          okLabel: "Remove account",
+          cancelLabel: "Cancel",
+        },
+      );
+      if (!confirmed) return;
       await removeProviderAccountCredentials(account.provider, account.id);
-      removeProviderAccount(account.provider, account.id);
       clearCachedRateLimits(account.provider, account.id);
+      setVersion((value) => value + 1);
+      removeProviderAccount(account.provider, account.id);
       if (
         editor?.provider === account.provider &&
         editor.accountId === account.id
@@ -160,7 +205,22 @@ export function ProviderAccountsSettings() {
           : "Could not remove this account",
       );
     } finally {
-      setWorking(null);
+      finish();
+    }
+  };
+
+  const makeDefault = (account: ProviderAccount) => {
+    if (!begin(`default:${account.provider}:${account.id}`)) return;
+    try {
+      setDefaultProviderAccount(account.provider, account.id);
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not set default account",
+      );
+    } finally {
+      finish();
     }
   };
 
@@ -174,10 +234,24 @@ export function ProviderAccountsSettings() {
     <Group
       id="provider-accounts"
       title="Accounts"
-      description="Separate sign-ins per provider. Switch accounts from the usage control in the footer."
-      action={<AccountUsageRefresh usage={usage} />}
+      description="Separate sign-ins per provider. The default is used for new conversations without a project account selection."
+      action={
+        <AccountUsageRefresh
+          usage={{
+            ...usage,
+            refreshing: usage.refreshing || Boolean(working),
+            refresh: () => {
+              setVersion((value) => value + 1);
+              usage.refresh();
+            },
+          }}
+        />
+      }
     >
-      <div className="max-h-[460px] overflow-y-auto">
+      <div
+        className="max-h-[460px] overflow-y-auto"
+        aria-busy={Boolean(working) || usage.refreshing}
+      >
         {PROVIDER_ACCOUNT_PROVIDERS.map((provider) => {
           const accounts = providerAccounts(provider);
           const adding = editor?.provider === provider && !editor.accountId;
@@ -239,7 +313,7 @@ export function ProviderAccountsSettings() {
                   ) : (
                     <div
                       key={account.id}
-                      className="flex h-12 items-center gap-3 border-b border-content/5 px-4 py-2 last:border-b-0"
+                      className="flex min-h-12 flex-wrap items-center gap-3 border-b border-content/5 px-4 py-2 last:border-b-0"
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-1.5">
@@ -260,7 +334,7 @@ export function ProviderAccountsSettings() {
                           <ProviderAccountSubtitle
                             identity={identity}
                             fallback={
-                              account.isDefault
+                              account.id === DEFAULT_PROVIDER_ACCOUNT_ID
                                 ? "Provider CLI profile"
                                 : "Isolated profile"
                             }
@@ -270,7 +344,7 @@ export function ProviderAccountsSettings() {
                       </div>
                       <AccountUsageMeters limits={limits} now={usage.now} />
                       <div className="flex min-w-24 shrink-0 items-center justify-end gap-1">
-                        {signingIn || (limits && canSignIn(limits)) ? (
+                        {signingIn || !limits || canSignIn(limits) ? (
                           <button
                             type="button"
                             disabled={Boolean(working)}
@@ -291,7 +365,17 @@ export function ProviderAccountsSettings() {
                           <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-content/30">
                             Default
                           </span>
-                        ) : null}
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={Boolean(working)}
+                            aria-label={`Use ${account.label} by default`}
+                            onClick={() => makeDefault(account)}
+                            className="rounded-md px-2 py-1 text-[11px] text-content/60 hover:bg-content/10 disabled:opacity-35"
+                          >
+                            Use by default
+                          </button>
+                        )}
                         <button
                           type="button"
                           disabled={Boolean(working)}
@@ -302,7 +386,7 @@ export function ProviderAccountsSettings() {
                         >
                           <Pencil className="size-3.5" strokeWidth={1.75} />
                         </button>
-                        {!account.isDefault ? (
+                        {
                           <button
                             type="button"
                             disabled={Boolean(working)}
@@ -317,11 +401,16 @@ export function ProviderAccountsSettings() {
                               <Trash2 className="size-3.5" strokeWidth={1.75} />
                             )}
                           </button>
-                        ) : null}
+                        }
                       </div>
                     </div>
                   );
                 })}
+                {accounts.length === 0 ? (
+                  <p className="px-4 py-3 text-[12px] text-content/50">
+                    No accounts. Add an account to sign in.
+                  </p>
+                ) : null}
                 {adding && editor ? (
                   <ProviderAccountEditor
                     editor={editor}

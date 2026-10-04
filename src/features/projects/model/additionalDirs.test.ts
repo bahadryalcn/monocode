@@ -11,7 +11,10 @@ import {
   removeAdditionalDirs,
   saveAdditionalDirs,
 } from "./additionalDirs";
-import { saveProjectGroupAssignments, saveProjectGroups } from "./projectGroups";
+import {
+  saveProjectGroupAssignments,
+  saveProjectGroups,
+} from "./projectGroups";
 import { pathKey } from "../../../shared/lib/paths";
 import { rememberProject } from "./recents";
 
@@ -23,7 +26,12 @@ describe("additional project folders", () => {
   });
 
   it("stores folders per project without duplicates or the project itself", () => {
-    saveAdditionalDirs("/work/web", ["/work/api", "/work/web", "/work/api/", "/work/ui"]);
+    saveAdditionalDirs("/work/web", [
+      "/work/api",
+      "/work/web",
+      "/work/api/",
+      "/work/ui",
+    ]);
 
     expect(loadAdditionalDirs("/work/web")).toEqual(["/work/api", "/work/ui"]);
     expect(loadAdditionalDirs("/work/api")).toEqual([]);
@@ -40,7 +48,12 @@ describe("additional project folders", () => {
   });
 
   it("offers the other projects of the same group", () => {
-    for (const path of ["/work/web", "/work/api", "/work/other", "/work/loose"]) {
+    for (const path of [
+      "/work/web",
+      "/work/api",
+      "/work/other",
+      "/work/loose",
+    ]) {
       rememberProject(path);
     }
     saveProjectGroups([
@@ -60,7 +73,8 @@ describe("additional project folders", () => {
 
 describe("per-session additional folders", () => {
   function groupWeb() {
-    for (const path of ["/work/web", "/work/api", "/work/ui"]) rememberProject(path);
+    for (const path of ["/work/web", "/work/api", "/work/ui"])
+      rememberProject(path);
     saveProjectGroups([{ id: "acme", name: "Acme", collapsed: false }]);
     saveProjectGroupAssignments({
       [pathKey("/work/web")]: "acme",
@@ -99,13 +113,39 @@ describe("per-session additional folders", () => {
     expect(loadSessionAdditionalDirs("s1")).toBeUndefined();
   });
 
-  it("ignores override folders the project can no longer offer", () => {
+  it("keeps explicitly chosen folders outside the project's rail group", () => {
     groupWeb();
-    saveSessionAdditionalDirs("s1", "/work/web", ["/work/ui", "/work/web", "/work/gone"]);
-    expect(additionalDirsForSession("s1", "/work/web")).toEqual(["/work/ui"]);
+    saveSessionAdditionalDirs("s1", "/work/web", [
+      "/work/ui",
+      "/work/web",
+      "/work/gone",
+    ]);
+    expect(additionalDirsForSession("s1", "/work/web")).toEqual([
+      "/work/ui",
+      "/work/gone",
+    ]);
 
     saveProjectGroupAssignments({ [pathKey("/work/web")]: "acme" });
-    expect(additionalDirsForSession("s1", "/work/web")).toEqual([]);
+    expect(additionalDirsForSession("s1", "/work/web")).toEqual([
+      "/work/ui",
+      "/work/gone",
+    ]);
+  });
+
+  it("keeps custom folder choices local to the session and deduplicates Windows paths", () => {
+    saveSessionAdditionalDirs("s1", "C:/work/web", [
+      "C:/work/api",
+      "c:\\work\\API\\",
+      "C:/work/web",
+      "remote://host/project",
+      "~",
+      "/",
+    ]);
+    expect(additionalDirsForSession("s1", "C:/work/web")).toEqual([
+      "C:/work/api",
+    ]);
+    expect(additionalDirsForSession("s2", "C:/work/web")).toEqual([]);
+    expect(loadAdditionalDirs("C:/work/web")).toEqual([]);
   });
 
   it("is forgotten when the session is deleted", () => {

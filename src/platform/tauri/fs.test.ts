@@ -23,10 +23,21 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 }));
 
 describe("pickFolders", () => {
+  it("can request a single project folder", async () => {
+    vi.mocked(open).mockResolvedValueOnce("/a/project");
+    await expect(pickFolders("Choose session project", false)).resolves.toEqual(
+      ["/a/project"],
+    );
+    expect(vi.mocked(open).mock.lastCall?.[0]).toMatchObject({
+      directory: true,
+      multiple: false,
+      title: "Choose session project",
+    });
+  });
   it("returns every folder chosen in one pass", async () => {
     vi.mocked(open).mockResolvedValueOnce(["/a/one", "/a/two"]);
     await expect(pickFolders()).resolves.toEqual(["/a/one", "/a/two"]);
-    expect(vi.mocked(open).mock.calls[0]?.[0]).toMatchObject({
+    expect(vi.mocked(open).mock.lastCall?.[0]).toMatchObject({
       directory: true,
       multiple: true,
     });
@@ -156,11 +167,17 @@ describe("git option flags", () => {
     await gitPull("/repo");
     expect(invoke).toHaveBeenLastCalledWith("git_pull", { cwd: "/repo" });
     await gitPull("/repo", true);
-    expect(invoke).toHaveBeenLastCalledWith("git_pull", { cwd: "/repo", rebase: true });
+    expect(invoke).toHaveBeenLastCalledWith("git_pull", {
+      cwd: "/repo",
+      rebase: true,
+    });
     await gitFetch("/repo");
     expect(invoke).toHaveBeenLastCalledWith("git_fetch", { cwd: "/repo" });
     await gitFetch("/repo", true);
-    expect(invoke).toHaveBeenLastCalledWith("git_fetch", { cwd: "/repo", prune: true });
+    expect(invoke).toHaveBeenLastCalledWith("git_fetch", {
+      cwd: "/repo",
+      prune: true,
+    });
     await gitStash("/repo", undefined, "staged");
     expect(invoke).toHaveBeenLastCalledWith("git_stash", {
       cwd: "/repo",
@@ -185,15 +202,25 @@ describe("listProjectFiles", () => {
   ];
 
   it("rebuilds absolute paths from a Windows-style root", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({ root: "C:/Users/me/proj", files: entries });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      root: "C:/Users/me/proj",
+      files: entries,
+    });
     await expect(listProjectFiles("C:\\Users\\me\\proj")).resolves.toEqual([
       { name: "a.ts", path: "C:/Users/me/proj/src/a.ts", relative: "src/a.ts" },
-      { name: "README.md", path: "C:/Users/me/proj/README.md", relative: "README.md" },
+      {
+        name: "README.md",
+        path: "C:/Users/me/proj/README.md",
+        relative: "README.md",
+      },
     ]);
   });
 
   it("rebuilds absolute paths from POSIX roots, including a bare slash", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({ root: "/home/me/proj", files: entries });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      root: "/home/me/proj",
+      files: entries,
+    });
     const posix = await listProjectFiles("/home/me/proj");
     expect(posix[0]).toEqual({
       name: "a.ts",
@@ -205,7 +232,9 @@ describe("listProjectFiles", () => {
   });
 
   it("passes a remote host's full entries through untouched", async () => {
-    const full = [{ name: "a.ts", path: "remote://m/p/a.ts", relative: "a.ts" }];
+    const full = [
+      { name: "a.ts", path: "remote://m/p/a.ts", relative: "a.ts" },
+    ];
     vi.mocked(invoke).mockResolvedValueOnce(full);
     await expect(listProjectFiles("/p")).resolves.toBe(full);
   });

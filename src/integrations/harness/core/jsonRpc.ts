@@ -33,6 +33,7 @@ export type JsonRpcClientOptions = {
   /** Include `"jsonrpc":"2.0"` on outbound messages. Default true (ACP). Codex omits it. */
   includeJsonrpc?: boolean;
   label?: string;
+  defaultRequestTimeoutMs?: number;
 };
 
 /**
@@ -45,6 +46,8 @@ export class JsonRpcClient {
   private closed = false;
   private readonly includeJsonrpc: boolean;
   private readonly label: string;
+  private readonly defaultRequestTimeoutMs: number;
+  private readonly serverRequests = new Map<string, string>();
 
   constructor(
     private readonly sessionId: string,
@@ -53,6 +56,7 @@ export class JsonRpcClient {
   ) {
     this.includeJsonrpc = options.includeJsonrpc !== false;
     this.label = options.label ?? "rpc";
+    this.defaultRequestTimeoutMs = options.defaultRequestTimeoutMs ?? 0;
   }
 
   pushLine(line: string) {
@@ -74,6 +78,7 @@ export class JsonRpcClient {
   close(error?: Error) {
     if (this.closed) return;
     this.closed = true;
+    this.serverRequests.clear();
     const err = error ?? new Error("Harness process exited");
     this.rejectPending(err);
   }
@@ -92,7 +97,7 @@ export class JsonRpcClient {
   async request<T>(
     method: string,
     params?: unknown,
-    timeoutMs = 0,
+    timeoutMs = this.defaultRequestTimeoutMs,
   ): Promise<T> {
     if (this.closed) throw new Error("Harness process is not running");
     const id = this.nextId++;
@@ -105,7 +110,11 @@ export class JsonRpcClient {
         timeoutMs > 0
           ? setTimeout(() => {
               this.pending.delete(key);
-              reject(new Error(`${method} timed out`));
+              reject(
+                new Error(
+                  `${this.label} ${method} response timed out after ${timeoutMs} ms (session ${this.sessionId})`,
+                ),
+              );
             }, timeoutMs)
           : undefined;
       this.pending.set(key, {
@@ -123,14 +132,17 @@ export class JsonRpcClient {
     // send() below; mark it handled so that window can't surface as an
     // unhandled rejection. The promise returned to the caller still settles.
     response.catch(() => undefined);
-    try {
-      await this.send({
+    // A response proves delivery even if the desktop IPC write acknowledgement
+    // is delayed. Cancellation and response deadlines must also settle promptly.
+    void this.send(
+      {
         ...(this.includeJsonrpc ? { jsonrpc: "2.0" } : {}),
         id,
         method,
         ...(params !== undefined ? { params } : {}),
-      });
-    } catch (error) {
+      },
+      method,
+    ).catch((error: unknown) => {
       const pending = this.pending.get(key);
       if (pending) {
         this.pending.delete(key);
@@ -138,39 +150,53 @@ export class JsonRpcClient {
           error instanceof Error ? error : new Error(String(error)),
         );
       }
-    }
+    });
     return response;
   }
 
   async notify(method: string, params?: unknown): Promise<void> {
     if (this.closed) return;
-    await this.send({
-      ...(this.includeJsonrpc ? { jsonrpc: "2.0" } : {}),
+    await this.send(
+      {
+        ...(this.includeJsonrpc ? { jsonrpc: "2.0" } : {}),
+        method,
+        ...(params !== undefined ? { params } : {}),
+      },
       method,
-      ...(params !== undefined ? { params } : {}),
-    });
+    );
   }
 
   async respond(id: JsonRpcId, result: unknown): Promise<void> {
-    await this.send({
-      ...(this.includeJsonrpc ? { jsonrpc: "2.0" } : {}),
-      id,
-      result,
-    });
+    const method = this.serverRequests.get(String(id)) ?? `request ${id}`;
+    this.serverRequests.delete(String(id));
+    await this.send(
+      {
+        ...(this.includeJsonrpc ? { jsonrpc: "2.0" } : {}),
+        id,
+        result,
+      },
+      `reply to ${method}`,
+    );
   }
 
   async respondError(
     id: JsonRpcId,
     error: { code: number; message: string; data?: unknown },
   ): Promise<void> {
-    await this.send({
-      ...(this.includeJsonrpc ? { jsonrpc: "2.0" } : {}),
-      id,
-      error,
-    });
+    const method = this.serverRequests.get(String(id)) ?? `request ${id}`;
+    this.serverRequests.delete(String(id));
+    await this.send(
+      {
+        ...(this.includeJsonrpc ? { jsonrpc: "2.0" } : {}),
+        id,
+        error,
+      },
+      `reply to ${method}`,
+    );
   }
 
-  private async send(payload: object): Promise<void> {
+  private async send(payload: object, operation: string): Promise<void> {
+    if (this.closed) throw new Error("Harness process is not running");
     // Bound the write: a child that stops draining stdin must not let a
     // blocked harness_write outlive the request's own deadline (or wedge a
     // cancellation waiting on the session/cancel notify).
@@ -181,11 +207,24 @@ export class JsonRpcClient {
         writeChild(this.sessionId, line),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error("harness write timed out")),
+            () =>
+              reject(
+                new Error(
+                  `${this.label} ${operation} write timed out after ${WRITE_TIMEOUT_MS} ms (session ${this.sessionId}, ${new TextEncoder().encode(line).length} bytes)`,
+                ),
+              ),
             WRITE_TIMEOUT_MS,
           );
         }),
       ]);
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      if (
+        /timed out/.test(failure.message) &&
+        !failure.message.startsWith(`${this.label} ${operation}`)
+      )
+        throw new Error(`${this.label} ${operation}: ${failure.message}`);
+      throw failure;
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -210,6 +249,7 @@ export class JsonRpcClient {
     }
 
     if (msg.method && msg.id != null) {
+      this.serverRequests.set(String(msg.id), msg.method);
       void this.handlers.onRequest?.(msg.id, msg.method, msg.params);
       return;
     }

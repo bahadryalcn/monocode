@@ -15,6 +15,7 @@ import {
 const snapshots = new Map<string, ProviderRateLimits>();
 const pending = new Map<string, Promise<ProviderRateLimits>>();
 const queuedRefreshes = new Map<string, Promise<ProviderRateLimits>>();
+const generations = new Map<string, symbol>();
 const listeners = new Set<() => void>();
 let allSnapshots: Record<string, ProviderRateLimits> = {};
 
@@ -81,7 +82,12 @@ export function loadRateLimits(
     if (!force) return running;
     const queued = queuedRefreshes.get(key);
     if (queued) return queued;
-    const next = running.then(() => loadRateLimits(provider, accountId, true));
+    const generation = generations.get(key);
+    const next = running.then((result) =>
+      generations.get(key) === generation
+        ? loadRateLimits(provider, accountId, true)
+        : result,
+    );
     queuedRefreshes.set(key, next);
     void next.finally(() => {
       if (queuedRefreshes.get(key) === next) queuedRefreshes.delete(key);
@@ -92,6 +98,8 @@ export function loadRateLimits(
   if (cached && !force) return Promise.resolve(cached);
 
   cancelRetry(key);
+  const generation = Symbol(key);
+  generations.set(key, generation);
   publish(key, fetchingRateLimits(provider, cached));
   const run = (async () => {
     let result: ProviderRateLimits;
@@ -108,8 +116,9 @@ export function loadRateLimits(
         error instanceof Error ? error.message : String(error),
       );
     } finally {
-      pending.delete(key);
+      if (generations.get(key) === generation) pending.delete(key);
     }
+    if (generations.get(key) !== generation) return result;
     if (result.status === "error") {
       // A failed request (a 429, a dropped connection) says nothing about the
       // usage itself: the last windows stay, dated when they were read.
@@ -191,12 +200,18 @@ export function clearCachedRateLimits(
     const key = keyFor(provider, accountId);
     cancelRetry(key);
     retryAttempts.delete(key);
+    generations.delete(key);
+    pending.delete(key);
+    queuedRefreshes.delete(key);
     snapshots.delete(key);
     const { [key]: _removed, ...rest } = allSnapshots;
     allSnapshots = rest;
   } else {
     for (const key of [...retryTimers.keys()]) cancelRetry(key);
     retryAttempts.clear();
+    generations.clear();
+    pending.clear();
+    queuedRefreshes.clear();
     snapshots.clear();
     allSnapshots = {};
   }

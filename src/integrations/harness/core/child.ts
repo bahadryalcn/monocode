@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { configureGeneratedImageStorage } from "./generatedImages";
 import {
   runtimeProviderBinaryPath,
   type ConfigurableBinaryProvider,
@@ -21,6 +22,11 @@ export function configureChildBackend(next: ChildBackend): void {
   if (bridge || users)
     throw new Error("Configure the child backend before starting the bridge");
   backend = next;
+  configureGeneratedImageStorage({
+    save: (input) => next.invoke("harness_save_generated_image", input),
+    delete: (paths) =>
+      next.invoke("harness_delete_generated_images", { paths }),
+  });
 }
 
 export function hasHeadlessChildBackend(): boolean {
@@ -521,9 +527,7 @@ export function resolveHermesBinary(
   return resolveHarnessBinary("hermes", binaryPath);
 }
 
-export function resolveAntigravityBinary(
-  binaryPath?: string | null,
-): Promise<{
+export function resolveAntigravityBinary(binaryPath?: string | null): Promise<{
   path: string;
   args: string[];
   /** Absent means ACP: older hosts never reported it. */
@@ -579,7 +583,9 @@ export function inspectHarnessBinary(
       return {
         path: resolved.path,
         version:
-          resolved.transport === "stream-json" ? "agy CLI (stream-json)" : "ACP server",
+          resolved.transport === "stream-json"
+            ? "agy CLI (stream-json)"
+            : "ACP server",
       };
     }
     try {
