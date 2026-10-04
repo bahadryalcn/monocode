@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   ExplorerMenu,
   type ExplorerMenuItem,
@@ -46,7 +46,7 @@ type Props = {
   layout?: TitleBarLayout;
 };
 
-export function MenuBar({
+export const MenuBar = memo(function MenuBar({
   onNew,
   onNewTerminal,
   onToggleTerminal,
@@ -483,4 +483,4 @@ export function MenuBar({
       ) : null}
     </div>
   );
-}
+});

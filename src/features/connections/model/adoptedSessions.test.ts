@@ -247,9 +247,11 @@ describe("mirrorAdoptedSessions", () => {
     // Once each: the running one only to learn it is already stored here.
     expect(stored.mock.calls.map(([id]) => id)).toEqual(["s1", "s1", "busy"]);
     expect(save).toHaveBeenCalledTimes(1);
-    expect(save.mock.calls[0]).toMatchObject([
-      { id: "s1", cwd: "C:/proj", blocks: [{ id: "a" }, { id: "b" }] },
-    ]);
+    expect(save.mock.calls[0][0]).toMatchObject({
+      id: "s1",
+      cwd: "C:/proj",
+      blocks: [{ id: "a" }, { id: "b" }],
+    });
   });
 });
 
@@ -287,8 +289,10 @@ describe("sessions started on this machine's host from another computer", () => 
       adopt,
     });
     expect(adopt).not.toHaveBeenCalled();
+    // The second argument is the optional stored-copy stamp, unset here.
     expect(save).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Finished" }),
+      undefined,
     );
   });
 
@@ -323,4 +327,100 @@ it("needs the sessions.desktop capability", () => {
   expect(supportsAdoptedSessions(["sync"])).toBe(false);
   expect(supportsAdoptedSessions(["sessions.desktop"])).toBe(true);
   expect(supportsAdoptedSessions(undefined)).toBe(false);
+});
+
+describe("mirrorAdoptedSessions delta and closed-copy save", () => {
+  it("asks for a delta from the last applied snapshot", async () => {
+    const mirrored = new Map<string, number>();
+    let current = local();
+    let revision = 5;
+    const seen: (HostSession | undefined)[] = [];
+    const run = () =>
+      mirrorAdoptedSessions({
+        list: async () => [entry({ revision })],
+        load: async (_id, known) => {
+          seen.push(known);
+          return { ...host({}), revision };
+        },
+        local: () => [current],
+        apply: (merged) => {
+          current = merged;
+        },
+        mirrored,
+      });
+    await run();
+    expect(seen).toEqual([undefined]);
+    revision = 6;
+    await run();
+    expect(seen[1]?.revision).toBe(5);
+  });
+
+  it("keeps a conflicting session on deltas without marking it mirrored", async () => {
+    const mirrored = new Map<string, number>();
+    const edited = local({
+      blocks: [{ id: "a", role: "user", text: "edited here" } as never],
+    });
+    const seen: (HostSession | undefined)[] = [];
+    const run = () =>
+      mirrorAdoptedSessions({
+        list: async () => [entry()],
+        load: async (_id, known) => {
+          seen.push(known);
+          return host({ blocks: [block("a")] });
+        },
+        local: () => [edited],
+        apply: vi.fn(),
+        mirrored,
+        conflict: vi.fn(),
+      });
+    await run();
+    await run();
+    expect(seen[0]).toBeUndefined();
+    expect(seen[1]?.revision).toBe(5);
+    expect(mirrored.has("s1")).toBe(false);
+  });
+
+  it("does not remember a snapshot dropped because a local turn started", async () => {
+    const mirrored = new Map<string, number>();
+    let busy = false;
+    const seen: (HostSession | undefined)[] = [];
+    const run = () =>
+      mirrorAdoptedSessions({
+        list: async () => [entry()],
+        load: async (_id, known) => {
+          seen.push(known);
+          busy = true;
+          return host({});
+        },
+        local: () => [local({ busy })],
+        apply: vi.fn(),
+        mirrored,
+      });
+    await run();
+    busy = false;
+    await run();
+    expect(seen).toEqual([undefined, undefined]);
+  });
+
+  it("does not mark a closed copy mirrored when the guarded save refuses", async () => {
+    const mirrored = new Map<string, number>();
+    const stored = local();
+    const save = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const run = () =>
+      mirrorAdoptedSessions({
+        list: async () => [entry()],
+        load: async () => host({}),
+        local: () => [],
+        apply: vi.fn(),
+        mirrored,
+        stored: async () => stored,
+        stamp: async () => 42,
+        save,
+      });
+    await run();
+    expect(save).toHaveBeenCalledWith(expect.anything(), 42);
+    expect(mirrored.has("s1")).toBe(false);
+    await run();
+    expect(mirrored.get("s1")).toBe(5);
+  });
 });

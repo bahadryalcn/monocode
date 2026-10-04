@@ -1606,6 +1606,41 @@ header[data-tauri-drag-region] button {
   cursor: default !important;
 }
 
+header[data-tauri-drag-region] [data-tab-draggable="true"],
+header[data-tauri-drag-region] [data-tab-draggable="true"] * {
+  cursor: grab !important;
+}
+
+header[data-tauri-drag-region] [data-tab-draggable="true"] [data-no-drag],
+header[data-tauri-drag-region] [data-tab-draggable="true"] [data-no-drag] * {
+  cursor: default !important;
+}
+
+html.is-grabbing body *,
+html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable],
+html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
+  cursor: inherit !important;
+}
+
+.pointer-drop-hint {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: none;
+  padding: 6px 10px;
+  border: 1px solid var(--color-accent);
+  border-radius: 6px;
+  background: var(--color-background-base);
+  color: var(--color-content, #fff);
+  box-shadow: 0 3px 12px #0005;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pointer-drop-hint[data-action="blocked"] {
+  border-color: var(--color-stroke, #666);
+  opacity: 0.85;
+}
+
 .material-icon svg {
   display: block;
   width: 100%;
@@ -2166,7 +2201,16 @@ header[data-tauri-drag-region] button {
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
-  animation: shimmer-text var(--shimmer-duration, 2s) linear infinite;
+  /* background-position on clipped text repaints on the main thread, so step it:
+     20 steps = 10 repaints/s at the 2s default (12.5/s at 1.6s, 20/s at 1s)
+     instead of one per frame. */
+  animation: shimmer-text var(--shimmer-duration, 2s) steps(20) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+  }
 }
 
 /* One light sweep across a composer mode command as it appears. */

@@ -16,7 +16,12 @@ import {
   clearPendingInboxSelfActivity,
   recordInboxSelfActivity,
 } from "../model/inboxSelfActivity";
-import { useInboxActivity, type InboxActivity } from "./useInboxUnseen";
+import {
+  HIDDEN_POLL_MS,
+  POLL_MS,
+  useInboxActivity,
+  type InboxActivity,
+} from "./useInboxUnseen";
 
 const { githubWorkItem, listInboxItems, playCue } = vi.hoisted(() => ({
   githubWorkItem: vi.fn(),
@@ -379,3 +384,37 @@ describe("Inbox activity for automations", () => {
   });
 });
 
+
+describe("Inbox polling while the window is hidden", () => {
+  function setHidden(hidden: boolean) {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: () => hidden,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+  const forces = () =>
+    listInboxItems.mock.calls.map(([, , options]) => options?.force);
+
+  afterEach(() => {
+    Reflect.deleteProperty(document, "hidden");
+  });
+
+  it("reads through the freshness cache at a slower cadence, and force-refreshes when shown again", async () => {
+    vi.useFakeTimers();
+    listInboxItems.mockResolvedValue({ items: [], errors: {} });
+    await mount();
+    expect(forces()).toEqual([false]);
+
+    await act(async () => setHidden(true));
+    await act(async () => vi.advanceTimersByTimeAsync(HIDDEN_POLL_MS - 1));
+    expect(listInboxItems).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(forces()).toEqual([false, false]);
+
+    await act(async () => setHidden(false));
+    expect(forces()).toEqual([false, false, true]);
+    await act(async () => vi.advanceTimersByTimeAsync(POLL_MS));
+    expect(forces()).toEqual([false, false, true, true]);
+  });
+});

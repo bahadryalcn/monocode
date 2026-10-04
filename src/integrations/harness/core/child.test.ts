@@ -98,6 +98,9 @@ describe("child bridge", () => {
       .mockRejectedValueOnce(new Error("listen failed"))
       .mockReturnValueOnce(late.promise)
       .mockResolvedValueOnce(vi.fn())
+      .mockResolvedValueOnce(vi.fn())
+      .mockResolvedValueOnce(vi.fn())
+      .mockResolvedValueOnce(vi.fn())
       .mockResolvedValueOnce(vi.fn());
     const child = await loadChild();
     const releaseApp = child.startHarnessBridge();
@@ -281,6 +284,92 @@ describe("child bridge", () => {
     child.watchSse("mine", (data) => events.push(data));
     expect(lines).toEqual(["early"]);
     expect(events).toEqual(["early-event"]);
+    release();
+  });
+
+  it("unpacks batched stdout, stderr and SSE events in order", async () => {
+    installResolvedListeners();
+    const child = await loadChild();
+    const release = await child.acquireHarnessBridge();
+    const emit = (name: string, payload: unknown) =>
+      mocks.handlers.get(name)?.({ payload: payload as never });
+    const lines: string[] = [];
+    const errors: string[] = [];
+    const events: string[] = [];
+    child.watchChild(
+      "batch",
+      (line) => lines.push(line),
+      vi.fn(),
+      (line) => errors.push(line),
+    );
+    child.watchSse("batch", (data) => events.push(data));
+
+    emit("harness-stdout-lines", { sessionId: "batch", lines: ["a", "b"] });
+    emit("harness-stdout-lines", { sessionId: "batch", lines: ["c"] });
+    emit("harness-stderr-lines", { sessionId: "batch", lines: ["e1", "e2"] });
+    emit("harness-sse-batch", { sessionId: "batch", data: ["s1", "s2"] });
+    expect(lines).toEqual(["a", "b", "c"]);
+    expect(errors).toEqual(["e1", "e2"]);
+    expect(events).toEqual(["s1", "s2"]);
+    release();
+  });
+
+  it("caps an unwatched child's buffer by lines, not by batches", async () => {
+    installResolvedListeners();
+    const child = await loadChild();
+    const release = await child.acquireHarnessBridge();
+    const emit = (name: string, payload: unknown) =>
+      mocks.handlers.get(name)?.({ payload: payload as never });
+    mocks.invoke.mockResolvedValue(42);
+
+    await child.spawnChild("burst", "agent", [], "/tmp");
+    await child.openHarnessSse("burst", "http://127.0.0.1:1/event");
+    const first = Array.from({ length: 800 }, (_, i) => `l${i}`);
+    const second = Array.from({ length: 800 }, (_, i) => `l${800 + i}`);
+    emit("harness-stdout-lines", { sessionId: "burst", lines: first });
+    emit("harness-stdout-lines", { sessionId: "burst", lines: second });
+    emit("harness-sse-batch", { sessionId: "burst", data: [...first, ...second] });
+    // A batch from a child this window does not own is never held.
+    emit("harness-stdout-lines", { sessionId: "foreign", lines: first });
+
+    const lines: string[] = [];
+    const events: string[] = [];
+    child.watchChild("burst", (line) => lines.push(line), vi.fn());
+    child.watchSse("burst", (data) => events.push(data));
+    const expected = Array.from({ length: 1000 }, (_, i) => `l${600 + i}`);
+    expect(lines).toEqual(expected);
+    expect(events).toEqual(expected);
+    const foreign: string[] = [];
+    child.watchChild("foreign", (line) => foreign.push(line), vi.fn());
+    expect(foreign).toEqual([]);
+    release();
+  });
+
+  it("bounds an unwatched buffer by bytes, keeping the newest items", async () => {
+    installResolvedListeners();
+    const { pushBounded } = await loadChild();
+    const map = new Map<string, { items: string[]; bytes: number }>();
+    const big = (c: string) => c.repeat(400);
+    pushBounded(map, "s", [big("a"), big("b")], 1000);
+    pushBounded(map, "s", [big("c")], 1000);
+    expect(map.get("s")?.items).toEqual([big("b"), big("c")]);
+    expect(map.get("s")?.bytes).toBe(800);
+
+    // A single line over the bound is kept rather than dropped.
+    pushBounded(map, "huge", ["x".repeat(5000)], 1000);
+    expect(map.get("huge")?.items).toHaveLength(1);
+  });
+
+  it("scopes listeners to this window so targeted events skip other windows", async () => {
+    installResolvedListeners();
+    vi.stubGlobal("__TAURI_INTERNALS__", {
+      metadata: { currentWindow: { label: "main-3" } },
+    });
+    const child = await loadChild();
+    const release = await child.acquireHarnessBridge();
+    for (const call of mocks.listen.mock.calls) {
+      expect(call[2]).toEqual({ target: "main-3" });
+    }
     release();
   });
 

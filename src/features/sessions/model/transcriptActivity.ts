@@ -369,6 +369,38 @@ export function groupTurns(blocks: Block[], managed = false): Block[][] {
 }
 
 /**
+ * `groupTurns`, reusing the previous result's turn arrays where a turn holds
+ * the same block objects in the same order. While the agent streams only the
+ * last block changes, so every earlier turn keeps its array identity and a
+ * memoized turn can skip rendering on a plain reference check.
+ */
+export function groupTurnsStable(
+  blocks: Block[],
+  managed: boolean,
+  previous: Block[][],
+): Block[][] {
+  const next = groupTurns(blocks, managed);
+  if (previous.length === 0) return next;
+  const byStart = new Map<string, Block[]>();
+  for (const turn of previous) byStart.set(turn[0].id, turn);
+  let unchanged = next.length === previous.length;
+  const result = next.map((turn, index) => {
+    const old = byStart.get(turn[0].id);
+    if (
+      old &&
+      old.length === turn.length &&
+      old.every((block, i) => block === turn[i])
+    ) {
+      if (previous[index] !== old) unchanged = false;
+      return old;
+    }
+    unchanged = false;
+    return turn;
+  });
+  return unchanged ? previous : result;
+}
+
+/**
  * Fold contiguous runs of tool calls and reasoning into activity groups.
  * Assistant prose always stands on its own, including progress updates between
  * groups, so the readable transcript never disappears into activity chrome.
@@ -481,6 +513,16 @@ function isIgnoredTurnBlock(block: Block): boolean {
 }
 
 /** Text the user actually reads: assistant prose, tasks, and plans, not tool chrome. */
+export function hasTurnCopyText(blocks: Block[]): boolean {
+  return blocks.some(
+    (block) =>
+      (block.role === "assistant" ||
+        block.role === "tasks" ||
+        block.role === "plan") &&
+      block.text.trim() !== "",
+  );
+}
+
 export function turnCopyText(blocks: Block[]): string {
   return blocks
     .filter(

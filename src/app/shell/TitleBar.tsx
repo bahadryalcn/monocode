@@ -30,6 +30,7 @@ import { looksLikeProject } from "../../features/projects/model/recents";
 import type { HarnessId } from "../../features/sessions/model/session";
 import { CwdPicker } from "../../features/projects/ui/CwdPicker";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
+import { setDropFeedback } from "../../shared/lib/drag";
 import {
   useAnimatedReorder,
   type ReorderExternalDrop,
@@ -84,6 +85,7 @@ export type Tab = {
   /** Other conversation titles in this tab, focused session omitted. */
   more: string[];
   sessionCount: number;
+  focusedPaneId?: string;
   harnesses: HarnessId[];
   /** Harnesses with an in-flight turn in this tab. */
   busyHarnesses: HarnessId[];
@@ -344,6 +346,8 @@ function TitleTabItem({
       }}
       className="reorder-item tab-motion group @container relative flex h-full cursor-default touch-none items-center self-stretch min-w-0 w-full"
       data-tauri-drag-region="false"
+      data-tab-draggable={canDrag || undefined}
+      onDragStart={(event) => event.preventDefault()}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -750,20 +754,44 @@ function TitleBarComponent({
                   window.innerHeight,
                 )
               ) {
+                setDropFeedback(
+                  "window",
+                  event,
+                  tabs.find((tab) => tab.id === tabId)?.busyHarnesses.length
+                    ? "Move after response finishes"
+                    : undefined,
+                );
                 setExternalPaneDrop(null);
                 return true;
               }
-              if (!onPlaceOnPane || tabId === activeId) {
+              const overStrip = document
+                .elementFromPoint(event.clientX, event.clientY)
+                ?.closest("[data-title-tab-strip]");
+              setDropFeedback(
+                overStrip ? "move" : "blocked",
+                event,
+                overStrip ? "Release to reorder tabs" : undefined,
+              );
+              if (!onPlaceOnPane) {
                 setExternalPaneDrop(null);
-                return false;
+                return !overStrip;
               }
               const over = paneDropFromPoint(event.clientX, event.clientY);
+              if (
+                over &&
+                tabId === activeId &&
+                tabs.find((tab) => tab.id === tabId)?.focusedPaneId === over.id
+              ) {
+                setExternalPaneDrop(null);
+                return true;
+              }
               setExternalPaneDrop({
                 fromId: tabId,
                 overId: over?.id ?? null,
                 edge: over?.edge ?? "left",
               });
-              return over != null;
+              if (over) setDropFeedback("move", event, `Place ${over.edge}`);
+              return over != null || !overStrip;
             },
             onDrop: (tabId, event) => {
               if (
@@ -785,16 +813,24 @@ function TitleBarComponent({
                 });
                 return true;
               }
-              if (!onPlaceOnPane || tabId === activeId) return false;
+              const overStrip = document
+                .elementFromPoint(event.clientX, event.clientY)
+                ?.closest("[data-title-tab-strip]");
+              if (!onPlaceOnPane) return !overStrip;
               const over = paneDropFromPoint(event.clientX, event.clientY);
-              if (!over) return false;
+              if (!over) return !overStrip;
+              if (
+                tabId === activeId &&
+                tabs.find((tab) => tab.id === tabId)?.focusedPaneId === over.id
+              )
+                return true;
               onPlaceOnPane(tabId, over.id, over.edge);
               return true;
             },
             onEnd: () => setExternalPaneDrop(null),
           }
         : undefined,
-    [activeId, onPlaceOnPane, onMoveToNewWindow, popOutTab],
+    [activeId, tabs, onPlaceOnPane, onMoveToNewWindow, popOutTab],
   );
   const sortable = useAnimatedReorder(tabIds, onReorder, "x", externalTabDrop);
   const paneToTabDrop = useExternalTitleTabDrop();

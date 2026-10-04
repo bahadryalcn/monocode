@@ -11,6 +11,8 @@ import {
   foldedBlocks,
   groupTurnItems,
   groupTurns,
+  groupTurnsStable,
+  hasTurnCopyText,
   hasRunningSubagent,
   initialThinkingIndex,
   lastActivityIndex,
@@ -1565,5 +1567,62 @@ describe("a call the user stopped", () => {
     expect(subagentStatusLine(block, block.agentRun!.steps)).toBe(
       "3 steps, stopped by you",
     );
+  });
+});
+
+describe("groupTurnsStable", () => {
+  const u = (id: string): Block => ({ id, role: "user", text: id });
+  const a = (id: string, text: string): Block => ({
+    id,
+    role: "assistant",
+    text,
+  });
+
+  it("keeps earlier turns when text streams into the last block", () => {
+    const base = [u("u1"), a("a1", "one"), u("u2"), a("a2", "tw")];
+    const first = groupTurnsStable(base, false, []);
+    const streamed = [...base.slice(0, 3), a("a2", "two")];
+    const next = groupTurnsStable(streamed, false, first);
+    expect(next).toHaveLength(2);
+    expect(next[0]).toBe(first[0]);
+    expect(next[1]).not.toBe(first[1]);
+    expect(next[1][1].text).toBe("two");
+  });
+
+  it("starts a new turn on a user block and keeps the ones before it", () => {
+    const base = [u("u1"), a("a1", "one"), u("u2"), a("a2", "two")];
+    const first = groupTurnsStable(base, false, []);
+    const next = groupTurnsStable([...base, u("u3")], false, first);
+    expect(next).toHaveLength(3);
+    expect(next[0]).toBe(first[0]);
+    expect(next[1]).toBe(first[1]);
+    expect(next[2].map((block) => block.id)).toEqual(["u3"]);
+  });
+
+  it("returns the previous result when nothing changed", () => {
+    const base = [u("u1"), a("a1", "one")];
+    const first = groupTurnsStable(base, false, []);
+    expect(groupTurnsStable([...base], false, first)).toBe(first);
+  });
+
+  it("agrees with groupTurns", () => {
+    const base = [u("u1"), a("a1", "one"), u("u2")];
+    expect(groupTurnsStable(base, false, groupTurns(base))).toEqual(
+      groupTurns(base),
+    );
+  });
+});
+
+describe("hasTurnCopyText", () => {
+  it("matches whether turnCopyText has anything to copy", () => {
+    const cases: Block[][] = [
+      [{ id: "u", role: "user", text: "hi" }],
+      [{ id: "a", role: "assistant", text: " \r\n " }],
+      [{ id: "a", role: "assistant", text: "answer" }],
+      [{ id: "p", role: "plan", text: "- step" }],
+    ];
+    for (const blocks of cases) {
+      expect(hasTurnCopyText(blocks)).toBe(turnCopyText(blocks) !== "");
+    }
   });
 });

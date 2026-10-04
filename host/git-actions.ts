@@ -332,8 +332,97 @@ function historyLimit(input: unknown): string {
   return String(Math.min(HISTORY_MAX, Math.max(1, count)));
 }
 
+/** Current branch per folder for the polled session list: one `git` spawn per
+ * folder per TTL, shared by concurrent callers. */
+export class BranchCache {
+  private entries = new Map<
+    string,
+    { promise: Promise<string>; settledAt?: number }
+  >();
+
+  constructor(
+    private readonly lookup: (cwd: string) => Promise<string>,
+    private readonly ttlMs = 4_000,
+    private readonly maxEntries = 256,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  get(cwd: string): Promise<string> {
+    const found = this.entries.get(cwd);
+    if (
+      found &&
+      (found.settledAt === undefined || this.now() - found.settledAt < this.ttlMs)
+    )
+      return found.promise;
+    this.entries.delete(cwd);
+    this.prune();
+    const entry: { promise: Promise<string>; settledAt?: number } = {
+      promise: this.lookup(cwd).catch(() => ""),
+    };
+    // Counted from when the answer arrived, so a slow spawn is not born stale.
+    // A cleared entry is detached from the map and just dies.
+    void entry.promise.then(() => {
+      entry.settledAt = this.now();
+    });
+    this.entries.set(cwd, entry);
+    return entry.promise;
+  }
+
+  /** A branch change this host just made must show on the next list. */
+  clear(): void {
+    this.entries.clear();
+  }
+
+  private prune(): void {
+    if (this.entries.size < this.maxEntries) return;
+    for (const [key, entry] of this.entries)
+      if (
+        entry.settledAt !== undefined &&
+        this.now() - entry.settledAt >= this.ttlMs
+      )
+        this.entries.delete(key);
+    // Still full of live entries: drop the oldest inserted.
+    while (this.entries.size >= this.maxEntries)
+      this.entries.delete(this.entries.keys().next().value!);
+  }
+}
+
+export const branchCache = new BranchCache((cwd) =>
+  exec("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
+    cwd,
+    timeout: 2_000,
+  }).then(({ stdout }) => stdout.trim()),
+);
+
 /** Runs one command in `root`, a validated working copy. */
 export async function runGitAction(
+  command: GitActionCommand,
+  root: string,
+  input: Record<string, unknown>,
+): Promise<unknown> {
+  try {
+    return await runGitActionUncached(command, root, input);
+  } finally {
+    // Checkout, commit, reset, rebase... may have moved any checkout's HEAD.
+    if (!HEAD_PRESERVING.has(command)) branchCache.clear();
+  }
+}
+
+/** Reads (some polled) that never move HEAD. */
+const HEAD_PRESERVING: ReadonlySet<string> = new Set<GitActionCommand>([
+  "git_stash_list",
+  "git_tags",
+  "git_operation_state",
+  "git_operation_status",
+  "git_remotes",
+  "git_conflicts",
+  "git_conflict_stages",
+  "git_file_history",
+  "git_blame",
+  "git_fetch",
+]);
+
+async function runGitActionUncached(
   command: GitActionCommand,
   root: string,
   input: Record<string, unknown>,

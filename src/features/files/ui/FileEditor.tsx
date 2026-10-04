@@ -493,7 +493,9 @@ export function FileEditor({
                     ? stageGit
                     : undefined
                 }
-                onDocChange={setDraft}
+                // Only the preview reads the draft; skip copying the document
+                // on every keystroke while the source is what is showing.
+                onDocChange={mode === "preview" ? setDraft : undefined}
                 onOpenFile={onOpenFile}
               />
             </div>

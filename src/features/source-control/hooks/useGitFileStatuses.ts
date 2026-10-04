@@ -1,9 +1,9 @@
 import { useCallback, useSyncExternalStore } from "react";
 import {
-  gitDiffIndex,
   subscribeGitChanged,
   type GitDiffIndex,
 } from "../../../platform/tauri/fs";
+import { fetchGitIndex } from "../model/gitIndexStore";
 import { subscribeDirsChanged } from "../../files/model/fileTree";
 import { parentPath } from "../../../shared/lib/paths";
 import { remotePollDue, reportRemoteLoad } from "../../connections/model/remoteHealth";
@@ -104,7 +104,7 @@ async function load(entry: Entry, force = false) {
   if (!force && document.hidden) return;
   entry.inFlight = true;
   try {
-    const index = await gitDiffIndex(entry.cwd);
+    const index = await fetchGitIndex(entry.cwd);
     publish(entry, buildStatusMaps(index, entry.cwd));
     if (isRemoteProjectPath(entry.cwd)) reportRemoteLoad(entry.cwd, "statuses");
   } catch (error) {

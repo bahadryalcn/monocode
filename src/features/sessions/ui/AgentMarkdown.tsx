@@ -21,11 +21,12 @@ import {
   Streamdown,
   defaultRehypePlugins,
   defaultRemarkPlugins,
+  parseMarkdownIntoBlocks,
   useIsCodeFenceIncomplete,
   type BlockProps,
   type Components,
 } from "streamdown";
-import type { PluggableList } from "unified";
+import type { Pluggable, PluggableList } from "unified";
 import { ExplorerMenu, type ExplorerMenuItem } from "../../files/ui/ExplorerMenu";
 import { FileActionError } from "../../files/ui/FileActionError";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
@@ -48,7 +49,12 @@ import { isNoteImagePath } from "../../notes";
 import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import { InboxMedia } from "../../inbox/ui/InboxMedia";
 import { rehypeHardBreaks } from "./hardBreaks";
-import { rehypeWordFade, usePacedText, useWordFading } from "./wordFade";
+import {
+  rehypeWordFade,
+  usePacedText,
+  useWordFading,
+  useWordFadeWindow,
+} from "./wordFade";
 
 const MERMAID_BASE_CONFIG = {
   startOnLoad: false,
@@ -96,17 +102,6 @@ const INBOX_MEDIA_REHYPE_PLUGINS: PluggableList = [
   ],
 ];
 
-// A reply that streams renders its words as spans that fade in as they land.
-const FADING_MARKDOWN_REHYPE_PLUGINS: PluggableList = [
-  ...MARKDOWN_REHYPE_PLUGINS,
-  rehypeWordFade,
-];
-
-const FADING_INBOX_MEDIA_REHYPE_PLUGINS: PluggableList = [
-  ...INBOX_MEDIA_REHYPE_PLUGINS,
-  rehypeWordFade,
-];
-
 type FileLinkMenu = {
   x: number;
   y: number;
@@ -125,6 +120,18 @@ const FileOpenContext = createContext<{
 }>({});
 
 const RemoteMediaContext = createContext(false);
+
+// What DirectionalBlock needs to pick each block's rehype plugins. The plugin
+// list handed to Streamdown never changes, so a reply that stops streaming
+// keeps its mounted tree instead of remounting it (which would re-parse and
+// re-highlight every code block in it).
+const BlockPluginContext = createContext<{
+  fading: boolean;
+  fadeOptions: ReturnType<typeof useWordFadeWindow>;
+  hardBreaks: boolean;
+  /** Index of the last block of the text last handed to Streamdown. */
+  lastBlock: { current: number };
+} | null>(null);
 
 const REVEAL_LABEL = IS_MAC
   ? "Reveal in Finder"
@@ -492,7 +499,32 @@ const MARKDOWN_COMPONENTS = {
  * comes from the block inside it.
  */
 function DirectionalBlock({ dir, ...props }: BlockProps) {
-  const block = <Block {...props} />;
+  const ctx = useContext(BlockPluginContext);
+  // Only the block still being written fades its words: it is the only one
+  // whose text changes, and a block that has been passed is re-parsed once,
+  // without spans, so a long reply does not keep a span per word.
+  const fade = !!ctx?.fading && props.index === ctx.lastBlock.current;
+  const hardBreaks = !!ctx?.hardBreaks;
+  const fadeOptions = ctx?.fadeOptions;
+  const base = props.rehypePlugins;
+  // Hard breaks go last, so nothing after them undoes them, and after the word
+  // fade, whose word spans would otherwise hide the newlines from them.
+  const fadePlugin = useMemo<Pluggable>(
+    () => [rehypeWordFade, fadeOptions],
+    [fadeOptions],
+  );
+  const rehypePlugins = useMemo<PluggableList | undefined>(
+    () =>
+      fade || hardBreaks
+        ? [
+            ...(base ?? []),
+            ...(fade ? [fadePlugin] : []),
+            ...(hardBreaks ? [rehypeHardBreaks] : []),
+          ]
+        : base,
+    [base, fade, fadePlugin, hardBreaks],
+  );
+  const block = <Block {...props} rehypePlugins={rehypePlugins} />;
   return dir ? (
     <div dir={dir} className="agent-markdown-block">
       {block}
@@ -544,23 +576,25 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   const remoteMedia = !!allowRemoteMedia;
   const paced = usePacedText(text, !!streaming);
   const fading = useWordFading(!!streaming || paced.revealing);
-  // Spans stay while words are fading so a word already on screen keeps its
-  // element. Dropping one mid-fade would remount it and fade it again. Once
-  // the fade is over they come off, or a finished reply would keep a span per
-  // word for as long as this transcript stays mounted.
-  const baseRehypePlugins = fading
-    ? remoteMedia
-      ? FADING_INBOX_MEDIA_REHYPE_PLUGINS
-      : FADING_MARKDOWN_REHYPE_PLUGINS
-    : remoteMedia
-      ? INBOX_MEDIA_REHYPE_PLUGINS
-      : MARKDOWN_REHYPE_PLUGINS;
-  // Hard breaks go last, so nothing after them undoes them, and after the word
-  // fade, whose word spans would otherwise hide the newlines from them.
-  const rehypePlugins = useMemo(
-    () =>
-      hardBreaks ? [...baseRehypePlugins, rehypeHardBreaks] : baseRehypePlugins,
-    [baseRehypePlugins, hardBreaks],
+  // Only the words still fading in, in the last block, carry a span (see
+  // DirectionalBlock and useWordFadeWindow), and a word keeps its element until
+  // its fade is over, since dropping one mid-fade would remount it and fade it
+  // again. Streamdown keeps a block's elements while its text is unchanged, so
+  // the few spans on a finished reply stay, inert: the fade rule needs
+  // `.word-fading`, which comes off with the fade.
+  const rehypePlugins = remoteMedia
+    ? INBOX_MEDIA_REHYPE_PLUGINS
+    : MARKDOWN_REHYPE_PLUGINS;
+  const lastBlock = useRef(-1);
+  const parseBlocks = useCallback((markdown: string) => {
+    const blocks = parseMarkdownIntoBlocks(markdown);
+    lastBlock.current = blocks.length - 1;
+    return blocks;
+  }, []);
+  const fadeOptions = useWordFadeWindow(paced.text);
+  const blockPlugins = useMemo(
+    () => ({ fading, fadeOptions, hardBreaks: !!hardBreaks, lastBlock }),
+    [fading, fadeOptions, hardBreaks],
   );
 
   const onFileMenuPick = (id: string) => {
@@ -603,17 +637,15 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   return (
     <RemoteMediaContext.Provider value={remoteMedia}>
       <FileOpenContext.Provider value={fileOpen}>
-        <>
+        <BlockPluginContext.Provider value={blockPlugins}>
           <Streamdown
-            // Streamdown keeps a parsed tree while the text is unchanged, so
-            // the plugin swap has to remount it once the fade is over.
-            key={fading ? "fade" : "plain"}
             BlockComponent={DirectionalBlock}
             className={`agent-markdown min-w-0 font-sans text-sm leading-6 ${fading ? "word-fading" : ""} ${className ?? ""}`}
             components={MARKDOWN_COMPONENTS}
             controls={false}
             dir="auto"
             isAnimating={!!streaming || paced.revealing}
+            parseMarkdownIntoBlocksFn={parseBlocks}
             plugins={MARKDOWN_PLUGINS}
             remarkPlugins={remarkPlugins}
             rehypePlugins={rehypePlugins}
@@ -636,7 +668,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
               onDismiss={() => setFileActionError(null)}
             />
           ) : null}
-        </>
+        </BlockPluginContext.Provider>
       </FileOpenContext.Provider>
     </RemoteMediaContext.Provider>
   );

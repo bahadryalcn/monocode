@@ -27,13 +27,22 @@ let bridge: Promise<UnlistenFn[]> | null = null;
 let users = 0;
 let teardownTimer: ReturnType<typeof setTimeout> | undefined;
 
-function decodeBase64(data: string): Uint8Array {
+/** Portable path: atob plus a byte loop. Exported so tests can compare it with the native one. */
+export function decodeBase64Loop(data: string): Uint8Array {
   const binary = atob(data);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+}
+
+type NativeBase64 = { fromBase64?: (data: string) => Uint8Array };
+
+/** Native decode where the WebView has it (recent Chromium); throws on malformed input like atob. */
+export function decodeBase64(data: string): Uint8Array {
+  const native = (Uint8Array as unknown as NativeBase64).fromBase64;
+  return native ? native.call(Uint8Array, data) : decodeBase64Loop(data);
 }
 
 /**
@@ -152,8 +161,11 @@ export async function resizePty(
 
 export async function getPtyStatus(
   id: string,
-): Promise<{ foreground: string | null }> {
-  return invoke<{ foreground: string | null }>("pty_status", { id });
+): Promise<{ foreground: string | null; supported?: boolean }> {
+  return invoke<{ foreground: string | null; supported?: boolean }>(
+    "pty_status",
+    { id },
+  );
 }
 
 export async function killPty(id: string): Promise<void> {

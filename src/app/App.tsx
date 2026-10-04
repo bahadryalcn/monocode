@@ -3,6 +3,12 @@ import {
   subscribeSyncedProjectsAdded,
 } from "../features/sync/model/syncRemoteProjects";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
+import {
+  liveAgentsEqual,
+  sessionSummariesEqual,
+  stringArraysEqual,
+  worktreeTabStatsEqual,
+} from "./model/sidebarEquality";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import {
@@ -66,6 +72,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { appName } from "../shared/lib/appName";
 import {
+  type ComponentProps,
   startTransition,
   Suspense,
   useCallback,
@@ -547,6 +554,7 @@ import {
   setSessionPinned,
   shouldPersistSession,
   upsertSession,
+  upsertSessionLive,
   flushSessionWrites,
   type SessionSummary,
 } from "../features/sessions/data/sessionStore";
@@ -701,6 +709,14 @@ import { sessionHasBackgroundWork } from "../features/sessions/model/backgroundS
 import { reconnectRemoteMachine } from "../features/connections/model/remoteReconnect";
 import { startAppSync } from "../features/sync/model/useSync";
 import { useAdoptedSessions } from "../features/connections/model/useAdoptedSessions";
+import {
+  isTextOnlyChange,
+  resetSessionsStore,
+  sessionsRef,
+  setSessions,
+  useLiveSessions,
+  useShellSessions,
+} from "../features/sessions/model/sessionsStore";
 import { ADOPTED_SESSION_ADDED } from "../features/connections/model/adoptedSessions";
 import { useDesktopLive } from "../features/connections/model/useDesktopLive";
 import type { DesktopLiveHandlers } from "../features/connections/model/desktopLive";
@@ -771,7 +787,8 @@ import {
 import {
   handleEditorFindKey,
   openFindInActiveEditor,
-} from "../features/files/editor/editorSearch";
+  preloadEditorFind,
+} from "../features/files/editor/editorFindBridge";
 
 import {
   mergeHistorySummary,
@@ -1112,6 +1129,12 @@ function Workspace({
   );
   useEffect(() => startGroupLockWatcher(), []);
   useEffect(() => startAppSync(), []);
+  // The editor is kept out of the boot chunk; fetch it once the app is up so
+  // find-in-file works before the first file is opened.
+  useEffect(() => {
+    const timer = window.setTimeout(() => void preloadEditorFind(), 1_500);
+    return () => window.clearTimeout(timer);
+  }, []);
   useEffect(
     () => subscribeSyncedProjectsAdded(() => setRecents(loadRecents())),
     [],
@@ -1122,9 +1145,16 @@ function Workspace({
     const tab = newTab(session.id);
     return { session, tab };
   });
-  const [sessions, setSessions] = useState<Session[]>(
-    () => windowTransfer?.sessions ?? resumed?.sessions ?? [seed.session],
-  );
+  // The sessions live in a store so a streamed token re-renders only the pane
+  // showing it. `sessions` here lags behind by streamed text alone; code that
+  // needs the live text reads `sessionsRef.current` at event time.
+  useState(() => {
+    resetSessionsStore(
+      windowTransfer?.sessions ?? resumed?.sessions ?? [seed.session],
+    );
+    return null;
+  });
+  const sessions = useShellSessions();
   useKeepAwake(sessions);
   const [sessionDeleteDialog, setSessionDeleteDialog] = useState<{
     title: string;
@@ -1307,8 +1337,6 @@ function Workspace({
   /** Project whose listing failed, so the error cannot leak to another one. */
   const [historyErrorCwd, setHistoryErrorCwd] = useState<string | null>(null);
 
-  const sessionsRef = useRef(sessions);
-  sessionsRef.current = sessions;
   const localHostReachable = useAdoptedSessions(sessionsRef, setSessions);
   const desktopLiveHandlers = useRef<DesktopLiveHandlers>({
     stop: () => undefined,
@@ -1584,7 +1612,8 @@ function Workspace({
     });
     if (!next.some((session, index) => session !== prev[index])) return;
     sessionsRef.current = next;
-    syncDockBadge(next);
+    // Streamed text cannot change who needs input; skip the scan of every block.
+    if (!isTextOnlyChange(prev, next)) syncDockBadge(next);
     setSessions(next);
   }, []);
 
@@ -2042,7 +2071,7 @@ function Workspace({
   const unopenedRemoteRef = useRef(unopenedRemote);
   unopenedRemoteRef.current = unopenedRemote;
 
-  const liveAgents = useMemo(
+  const nextLiveAgents = useMemo(
     () =>
       liveAgentsEnabled
         ? [
@@ -2058,6 +2087,11 @@ function Workspace({
       unopenedRemote,
     ],
   );
+  const liveAgentsRef = useRef(nextLiveAgents);
+  if (!liveAgentsEqual(liveAgentsRef.current, nextLiveAgents)) {
+    liveAgentsRef.current = nextLiveAgents;
+  }
+  const liveAgents = liveAgentsRef.current;
 
   const hiddenApprovalToasts = useMemo(
     () => hiddenApprovalNotices(sessions, activeTabId, tabs, composerFocused),
@@ -2349,9 +2383,18 @@ function Workspace({
           continue;
         const fingerprint = persistFingerprint(session);
         if (lastPersisted.current.get(session.id) === fingerprint) continue;
-        lastPersisted.current.set(session.id, fingerprint);
-        void upsertSession(session).catch(() => {
-          lastPersisted.current.delete(session.id);
+        // The fingerprint is recorded when the write starts: a snapshot that
+        // is replaced while queued behind a slow write never claims to be saved.
+        void upsertSessionLive(session, {
+          shouldWrite: () =>
+            !removingSessionIds.current.has(session.id) &&
+            !switchingWorktrees.current.has(session.id),
+          onStart: () => lastPersisted.current.set(session.id, fingerprint),
+          onFailed: () => {
+            if (lastPersisted.current.get(session.id) === fingerprint) {
+              lastPersisted.current.delete(session.id);
+            }
+          },
         });
       }
     }, LIVE_PERSIST_MS);
@@ -4221,7 +4264,7 @@ function Workspace({
 
   /** Open tabs per workspace in the sidebar's project, keyed by worktree
    * path, so the switcher can show what each worktree still has open. */
-  const worktreeTabStats = useMemo(() => {
+  const nextWorktreeTabStats = useMemo(() => {
     const stats = new Map<string, { tabs: number; busy: boolean }>();
     if (!sidebarCwd || sidebarCwd === "~" || isRemoteProjectPath(sidebarCwd))
       return stats;
@@ -4237,6 +4280,11 @@ function Workspace({
     }
     return stats;
   }, [tabs, sessions, sidebarCwd, tabWorkspace, workspaceNavigation.revision]);
+  const worktreeTabStatsRef = useRef(nextWorktreeTabStats);
+  if (!worktreeTabStatsEqual(worktreeTabStatsRef.current, nextWorktreeTabStats)) {
+    worktreeTabStatsRef.current = nextWorktreeTabStats;
+  }
+  const worktreeTabStats = worktreeTabStatsRef.current;
 
   const deckProjectTabs = useMemo(() => {
     // A projectless session belongs to no project, so it stands on its own
@@ -4536,6 +4584,45 @@ function Workspace({
     [activateTab],
   );
 
+  const onPopOutPane = useCallback(
+    (
+      paneId: string,
+      position: { x: number; y: number; clientX?: number; clientY?: number },
+    ) => {
+      const source = tabsRef.current.find((tab) =>
+        leafIds(tab.layout).includes(paneId),
+      );
+      if (!source || movingTabIds.current.has(source.id)) return;
+      const surface = findSurfacePane(source, paneId);
+      if (
+        surface &&
+        surfacePanes(source, surface.kind)
+          .find((pane) => pane.id === paneId)
+          ?.files.some((file) => file.terminal)
+      ) return;
+      let tabId = source.id;
+      if (leafIds(source.layout).length > 1) {
+        const detached = applyDetachPaneToTab({
+          tabs: tabsRef.current,
+          paneId,
+          targetTabId: source.id,
+          position: "after",
+        });
+        if (!detached) return;
+        // Keep ownership in this window until the receiver acknowledges it.
+        // Busy sessions use the existing cancellable tab-transfer queue.
+        tabId = detached.activeTabId;
+        flushSync(() => {
+          tabsRef.current = detached.tabs;
+          setTabs(detached.tabs);
+          activateTab(tabId, paneId);
+        });
+      }
+      void onMoveTabsToNewWindow([tabId], { position });
+    },
+    [activateTab, onMoveTabsToNewWindow],
+  );
+
   const focusOpenSession = useCallback(
     (sessionId: string) => {
       const tab = findOpenSessionTab(
@@ -4705,6 +4792,27 @@ function Workspace({
       return restored;
     },
     [loadStoredSession, refreshHistory, sidebarCwd],
+  );
+
+  const onPopOutSession = useCallback(
+    async (
+      sessionId: string,
+      position: { x: number; y: number; clientX?: number; clientY?: number },
+    ) => {
+      const session = await ensureOpenSession(sessionId);
+      if (!session) return;
+      if (
+        !tabsRef.current.some((tab) => leafIds(tab.layout).includes(sessionId))
+      ) {
+        flushSync(() => {
+          const next = [...tabsRef.current, newTab(sessionId)];
+          tabsRef.current = next;
+          setTabs(next);
+        });
+      }
+      onPopOutPane(sessionId, position);
+    },
+    [ensureOpenSession, onPopOutPane],
   );
 
   const onPrefetchHistorySession = useCallback(
@@ -5139,7 +5247,13 @@ function Workspace({
       const targetTab = tabsRef.current.find((tab) =>
         leafIds(tab.layout).includes(targetId),
       );
-      if (!targetTab || targetTab.id === sourceTabId) return;
+      if (!targetTab) return;
+      if (targetTab.id === sourceTabId) {
+        if (targetTab.focusedId !== targetId) {
+          onMovePane(targetTab.focusedId, targetId, edge);
+        }
+        return;
+      }
 
       const blankTarget = sessionsRef.current.find(
         (session) => session.id === targetId && isBlankSession(session),
@@ -5168,7 +5282,7 @@ function Workspace({
         result.sessions.some((session) => session.id === result.focusedId),
       );
     },
-    [],
+    [onMovePane],
   );
 
   const onRenameHistorySession = useCallback(
@@ -10955,7 +11069,7 @@ function Workspace({
     [history, sidebarCwd],
   );
 
-  const sidebarHistory = useMemo(
+  const nextSidebarHistory = useMemo(
     () =>
       historyWithLiveSessions(
         history,
@@ -10973,6 +11087,11 @@ function Workspace({
       ),
     [history, projectBranches, sessions, sidebarCwd, orchestrationRuns],
   );
+  const sidebarHistoryRef = useRef(nextSidebarHistory);
+  if (!sessionSummariesEqual(sidebarHistoryRef.current, nextSidebarHistory)) {
+    sidebarHistoryRef.current = nextSidebarHistory;
+  }
+  const sidebarHistory = sidebarHistoryRef.current;
   const {
     unseen: inboxUnseen,
     linkedSessionUpdateIds,
@@ -11014,7 +11133,7 @@ function Workspace({
     () => ciRepairSessions(history, sessions),
     [history, sessions],
   );
-  const openProjectSessions = useMemo(
+  const nextOpenProjectSessions = useMemo(
     () =>
       sessions
         .filter(
@@ -11034,6 +11153,52 @@ function Workspace({
           }),
         ),
     [projectBranches, sessions, sidebarCwd],
+  );
+  const openProjectSessionsRef = useRef(nextOpenProjectSessions);
+  if (
+    !sessionSummariesEqual(
+      openProjectSessionsRef.current,
+      nextOpenProjectSessions,
+    )
+  ) {
+    openProjectSessionsRef.current = nextOpenProjectSessions;
+  }
+  const openProjectSessions = openProjectSessionsRef.current;
+
+  const nextBusyProjectPaths = useMemo(
+    () =>
+      sessions.flatMap((session) =>
+        session.busy && session.cwd ? [session.cwd] : [],
+      ),
+    [sessions],
+  );
+  const busyProjectPathsRef = useRef(nextBusyProjectPaths);
+  if (!stringArraysEqual(busyProjectPathsRef.current, nextBusyProjectPaths)) {
+    busyProjectPathsRef.current = nextBusyProjectPaths;
+  }
+  const busyProjectPaths = busyProjectPathsRef.current;
+
+  const onDismissUpdate = useCallback(() => setUpdateNotice(null), []);
+  const onMoveTabToNewWindow = useCallback(
+    (tabId: string, opts?: Parameters<typeof onMoveTabsToNewWindow>[1]) =>
+      void onMoveTabsToNewWindow([tabId], opts),
+    [onMoveTabsToNewWindow],
+  );
+  const onZoomIn = useCallback(() => {
+    const next = saveUiScale(zoomInUiScale(loadUiScale()));
+    void applyUiScale(next);
+  }, []);
+  const onZoomOut = useCallback(() => {
+    const next = saveUiScale(zoomOutUiScale(loadUiScale()));
+    void applyUiScale(next);
+  }, []);
+  const onZoomReset = useCallback(() => {
+    saveUiScale(UI_SCALE_DEFAULT);
+    void applyUiScale(UI_SCALE_DEFAULT);
+  }, []);
+  const onCloseCurrentTab = useCallback(
+    () => (activeTabId ? onCloseTab(activeTabId) : undefined),
+    [activeTabId, onCloseTab],
   );
 
   const onToggleSidebar = useCallback(() => {
@@ -12205,9 +12370,7 @@ function Workspace({
       onReorder={onReorderTabs}
       onPlaceOnPane={onPlaceTabOnPane}
       layout={layoutControl}
-      onMoveToNewWindow={(tabId, opts) =>
-        void onMoveTabsToNewWindow([tabId], opts)
-      }
+      onMoveToNewWindow={onMoveTabToNewWindow}
       onCancelMoveToNewWindow={onCancelMoveToNewWindow}
       onGoToFile={onGoToFile}
       onPinFile={onPinFile}
@@ -12259,6 +12422,7 @@ function Workspace({
               onPrefetchSession={onPrefetchHistorySession}
               onSessionNavigationOrder={onSessionNavigationOrder}
               onPlaceSessionOnPane={onPlaceSessionOnPane}
+              onPopOutSession={onPopOutSession}
               onOpenSessionsSideBySide={onOpenSessionsSideBySide}
               onRenameSession={onRenameHistorySession}
               onArchiveSession={onArchiveHistorySession}
@@ -12301,9 +12465,7 @@ function Workspace({
               }
               textHarness={pickTextHarness(active?.harness)}
               recents={recents}
-              busyProjectPaths={sessions.flatMap((session) =>
-                session.busy && session.cwd ? [session.cwd] : [],
-              )}
+              busyProjectPaths={busyProjectPaths}
               liveAgents={liveAgents}
               onSelectAgent={onSelectLiveAgent}
               recentSessions={recentSessions}
@@ -12342,7 +12504,7 @@ function Workspace({
               onCloseSettings={onCloseSettings}
               updateNotice={updateNotice}
               onOpenWhatsNew={onOpenWhatsNew}
-              onDismissUpdate={() => setUpdateNotice(null)}
+              onDismissUpdate={onDismissUpdate}
             />
 
             <div className="body-glass flex min-h-0 min-w-0 flex-1 flex-col">
@@ -12381,9 +12543,7 @@ function Workspace({
                     onToggleSidebar={onToggleSidebar}
                     onToggleSessionSidebar={onToggleSessionSidebar}
                     onShowSourceControl={onToggleChanges}
-                    onCloseCurrentTab={
-                      activeTabId ? () => onCloseTab(activeTabId) : undefined
-                    }
+                    onCloseCurrentTab={activeTabId ? onCloseCurrentTab : undefined}
                     onCloseOtherTabs={onCloseOtherTabs}
                     onCloseAllTabs={onCloseAllTabs}
                     onPickProject={pickProject}
@@ -12391,18 +12551,9 @@ function Workspace({
                     onSearch={onOpenSearch}
                     onOpenInbox={onOpenInbox}
                     onOpenNotes={notesEnabled ? onOpenNotes : undefined}
-                    onZoomIn={() => {
-                      const next = saveUiScale(zoomInUiScale(loadUiScale()));
-                      void applyUiScale(next);
-                    }}
-                    onZoomOut={() => {
-                      const next = saveUiScale(zoomOutUiScale(loadUiScale()));
-                      void applyUiScale(next);
-                    }}
-                    onZoomReset={() => {
-                      saveUiScale(UI_SCALE_DEFAULT);
-                      void applyUiScale(UI_SCALE_DEFAULT);
-                    }}
+                    onZoomIn={onZoomIn}
+                    onZoomOut={onZoomOut}
+                    onZoomReset={onZoomReset}
                     layout={layoutControl}
                   />
                 ) : null}
@@ -12512,6 +12663,7 @@ function Workspace({
                                 onUpdatePlan={onUpdatePlan}
                                 onMovePane={onMovePane}
                                 onDetachPane={onDetachPane}
+                                onPopOutPane={onPopOutPane}
                                 onTerminalMetaChange={onTerminalMetaChange}
                               />
                             </div>
@@ -12546,16 +12698,12 @@ function Workspace({
                 </main>
               </div>
               {searchViewOpen ? (
-                <SearchView
+                <LiveSearchView
                   open
                   cwd={gitCwd}
                   recents={visibleRecents}
                   history={projectHistory}
-                  sessions={sessions.filter(
-                    (session) =>
-                      !session.inboxAsk &&
-                      !isProjectLockedIn(lockSnapshot, session.cwd),
-                  )}
+                  lockSnapshot={lockSnapshot}
                   focusToken={searchViewFocusToken}
                   besideRail={projectRailOpen || compactProjectRail}
                   compactRail={compactRailActive}
@@ -12897,6 +13045,25 @@ function selectedCommitSha(tab: WorkspaceTab): string | undefined {
   }
 }
 
+/** Search reads message text, so it subscribes to the live sessions itself. */
+function LiveSearchView({
+  lockSnapshot,
+  ...props
+}: Omit<ComponentProps<typeof SearchView>, "sessions"> & {
+  lockSnapshot: ReturnType<typeof useLockSnapshot>;
+}) {
+  const live = useLiveSessions();
+  const sessions = useMemo(
+    () =>
+      live.filter(
+        (session) =>
+          !session.inboxAsk && !isProjectLockedIn(lockSnapshot, session.cwd),
+      ),
+    [live, lockSnapshot],
+  );
+  return <SearchView {...props} sessions={sessions} />;
+}
+
 function isBlankWorkspaceTab(tab: WorkspaceTab, sessions: Session[]): boolean {
   if (tab.editorPanes.some((pane) => pane.files.length > 0)) return false;
   if ((tab.terminalPanes ?? []).some((pane) => pane.files.length > 0))
@@ -13013,6 +13180,7 @@ function toTitleTab(
     title: focused ? conversationTitle(focused) : "",
     more,
     sessionCount: tabSessions.length,
+    focusedPaneId: tab.focusedId,
     harnesses,
     busyHarnesses,
     doneHarnesses,

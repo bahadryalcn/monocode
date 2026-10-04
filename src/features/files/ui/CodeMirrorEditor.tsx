@@ -762,6 +762,15 @@ export function CodeMirrorEditor({
     return () => scroller.removeEventListener("scroll", onScroll);
   }, [showDiff, splitDiff, syncChunkNav, path]);
 
+  // The text is only copied out while someone wants it. When the listener is
+  // attached (the preview comes into view), catch up on what was typed before.
+  const wantsDocChange = onDocChange !== undefined;
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!wantsDocChange || !view) return;
+    onDocChangeRef.current?.(view.state.doc.toString());
+  }, [wantsDocChange]);
+
   useEffect(() => {
     const view = viewRef.current;
     if (!view || dirtyRef.current) return;

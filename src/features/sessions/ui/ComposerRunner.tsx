@@ -1,4 +1,10 @@
-import { useLayoutEffect, useMemo, useRef, type RefObject } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type RefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   COIN_EDGE_PATH,
@@ -36,6 +42,7 @@ import {
   type RunnerTrack,
 } from "../model/composerRunner";
 import { projectKey, projectName } from "../../../shared/lib/paths";
+import { shouldRunLoop } from "../../../shared/lib/animationGate";
 import {
   loadTabGroupColors,
   loadTabGroupCustomColors,
@@ -77,6 +84,7 @@ export function ComposerRunner({
   const busyRef = useRef(busy);
   const enabledRef = useRef(enabled);
   const onExitedRef = useRef(onExited);
+  const wakeRef = useRef<(() => void) | null>(null);
   busyRef.current = busy;
   enabledRef.current = enabled;
   onExitedRef.current = onExited;
@@ -444,18 +452,116 @@ export function ComposerRunner({
       );
     };
 
-    apply(last);
     const tick = (now: number) => {
       apply(now);
       raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
+
+    // Timestamps are absolute, so a pause would otherwise land as one big jump.
+    const shiftClock = (gap: number) => {
+      if (gap <= 0) return;
+      nextCoinAt += gap;
+      if (exiting) exitAt += gap;
+      if (stunning) stunAt += gap;
+      for (const coin of coins) {
+        if (coin.collectedAt != null) coin.collectedAt += gap;
+      }
+    };
+
+    let observedBox: HTMLElement | null = null;
+    let boxVisible = true;
+    let boxSized = true;
+    let pausedAt: number | null = null;
+    const intersection =
+      typeof IntersectionObserver === "undefined"
+        ? null
+        : new IntersectionObserver((entries) => {
+            const entry = entries[entries.length - 1];
+            if (!entry) return;
+            boxVisible = entry.isIntersecting;
+            sync();
+          });
+    const resize =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver((entries) => {
+            const entry = entries[entries.length - 1];
+            if (!entry) return;
+            boxSized = entry.contentRect.width > 0;
+            sync();
+          });
+
+    const observeBox = () => {
+      const box = boxRef.current;
+      if (box === observedBox) return;
+      if (observedBox) {
+        intersection?.unobserve(observedBox);
+        resize?.unobserve(observedBox);
+      }
+      observedBox = box;
+      boxVisible = true;
+      boxSized = box != null;
+      if (box) {
+        intersection?.observe(box);
+        resize?.observe(box);
+      }
+    };
+
+    // Owns the rAF chain: it exists only while the runner has something to
+    // animate. Otherwise apply runs once per state change, which still lets a
+    // disabled runner report onExited and hide its layer.
+    const sync = () => {
+      observeBox();
+      const exitPending = !busyRef.current && !finished;
+      const idle = !busyRef.current && finished;
+      const run =
+        !idle &&
+        shouldRunLoop({
+          enabled: enabledRef.current,
+          documentHidden: document.hidden,
+          // A finishing exit has to complete even if the box scrolled away.
+          visible: boxVisible || exitPending,
+          sized: boxSized,
+          reducedMotion: reduced,
+        });
+      if (run) {
+        if (raf) return;
+        const now = performance.now();
+        if (pausedAt != null) shiftClock(now - pausedAt);
+        pausedAt = null;
+        last = now;
+        apply(now);
+        raf = requestAnimationFrame(tick);
+        return;
+      }
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+      const now = performance.now();
+      if (pausedAt == null) pausedAt = now;
+      apply(now);
+    };
+
+    wakeRef.current = sync;
+    document.addEventListener("visibilitychange", sync);
+    sync();
     return () => {
+      wakeRef.current = null;
       cancelAnimationFrame(raf);
+      document.removeEventListener("visibilitychange", sync);
+      intersection?.disconnect();
+      resize?.disconnect();
       clearCoins();
       showLayer(false);
     };
   }, [boxRef]);
+
+  // busy/enabled flip (and the box mounting late) without re-running the
+  // layout effect above, so nudge its loop gate after every render.
+  useEffect(() => {
+    wakeRef.current?.();
+  });
 
   return createPortal(
     <div

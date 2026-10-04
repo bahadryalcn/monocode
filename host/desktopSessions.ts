@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import type {
@@ -56,6 +56,14 @@ export function normalizeProjectPath(
 
 type Row = Record<string, unknown>;
 type Found = { row: Row; inFlight: boolean };
+type Handle = {
+  db: DatabaseSync;
+  /** File identity; a replaced database is a different file. */
+  id: string;
+  columns?: Set<string>;
+  schemaVersion?: number;
+  timer?: NodeJS.Timeout;
+};
 
 /**
  * Read-only view of the sessions the MonoCode desktop app keeps on this
@@ -67,7 +75,12 @@ export class DesktopSessions {
     private readonly platform: NodeJS.Platform = process.platform,
     /** The app's heartbeat: running state and live prompts. */
     readonly live = new DesktopLive(),
+    private readonly idleMs = 5000,
   ) {}
+
+  private handles = new Map<string, Handle>();
+  /** Connections opened so far (for tests). */
+  opened = 0;
 
   /** Running per the app's heartbeat; the database's in-flight mark (which a
    * crashed app leaves behind) only counts for an app without one. */
@@ -75,34 +88,99 @@ export class DesktopSessions {
     return this.live.running(id, stored);
   }
 
-  /** Opens per call: desktop databases are small and may appear or move. */
-  private query<T>(path: string, run: (db: DatabaseSync) => T): T | undefined {
-    let db: DatabaseSync | undefined;
-    try {
-      db = new DatabaseSync(path, { readOnly: true });
-      db.exec("PRAGMA busy_timeout=2000");
-      return run(db);
-    } catch (error) {
-      console.error("Could not read desktop sessions:", error);
-      return undefined;
-    } finally {
+  /** Opens one read-only connection per database and keeps it for a while:
+   * `stamp()` runs every watcher tick. It is dropped when idle, because on
+   * Windows an open handle stops the desktop app from replacing the file. */
+  private query<T>(
+    path: string,
+    run: (db: DatabaseSync, columns: () => Set<string>) => T,
+  ): T | undefined {
+    for (let attempt = 0; ; attempt++) {
       try {
-        db?.close();
-      } catch {
-        /* already closed */
+        const handle = this.handle(path);
+        const result = run(handle.db, () => this.columns(handle));
+        this.release(path, handle);
+        return result;
+      } catch (error) {
+        // A stale handle (file replaced, schema migrated) is retried once fresh.
+        this.drop(path);
+        if (attempt > 0) {
+          console.error("Could not read desktop sessions:", error);
+          return undefined;
+        }
       }
     }
   }
 
+  private handle(path: string): Handle {
+    const file = statSync(path, { bigint: true });
+    const id = `${file.dev}:${file.ino}:${file.birthtimeNs}`;
+    const cached = this.handles.get(path);
+    if (cached?.id === id) {
+      clearTimeout(cached.timer);
+      return cached;
+    }
+    this.drop(path);
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      db.exec("PRAGMA busy_timeout=2000");
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+    this.opened++;
+    const handle: Handle = { db, id };
+    this.handles.set(path, handle);
+    return handle;
+  }
+
+  /** Column names of `sessions`, re-read only when the schema version moves. */
+  private columns(handle: Handle): Set<string> {
+    const version = Number(
+      handle.db.prepare("PRAGMA schema_version").get()?.schema_version,
+    );
+    if (!handle.columns || handle.schemaVersion !== version) {
+      handle.columns = new Set(
+        handle.db
+          .prepare("PRAGMA table_info(sessions)")
+          .all()
+          .map((c) => String(c.name)),
+      );
+      handle.schemaVersion = version;
+    }
+    return handle.columns;
+  }
+
+  private release(path: string, handle: Handle): void {
+    clearTimeout(handle.timer);
+    handle.timer = setTimeout(() => this.drop(path), this.idleMs);
+    handle.timer.unref();
+  }
+
+  private drop(path: string): void {
+    const handle = this.handles.get(path);
+    if (!handle) return;
+    this.handles.delete(path);
+    clearTimeout(handle.timer);
+    try {
+      handle.db.close();
+    } catch {
+      /* already closed */
+    }
+  }
+
+  /** Releases every cached connection (host shutdown). */
+  close(): void {
+    for (const path of [...this.handles.keys()]) this.drop(path);
+  }
+
   private rows(
     db: DatabaseSync,
+    columns: Set<string>,
     where: string,
     args: string[],
     blocks = true,
   ): Found[] {
-    const columns = new Set(
-      db.prepare("PRAGMA table_info(sessions)").all().map((c) => String(c.name)),
-    );
     if (!columns.has("id") || !columns.has("blocks_json")) return [];
     const optional = (name: string, fallback = "NULL") =>
       columns.has(name) ? name : `${fallback} AS ${name}`;
@@ -161,11 +239,20 @@ export class DesktopSessions {
     };
   }
 
-  /** Newest copy of each session across all desktop databases. */
-  private collect(where: string, args: string[], blocks = true): Found[] {
+  /** Newest copy of each session across all desktop databases. `where` may
+   * be derived from each database (a project filter that needs its cwds). */
+  private collect(
+    where: string | ((db: DatabaseSync, columns: Set<string>) => [string, string[]] | undefined),
+    args: string[],
+    blocks = true,
+  ): Found[] {
     const best = new Map<string, Found>();
     for (const path of this.paths()) {
-      for (const found of this.query(path, (db) => this.rows(db, where, args, blocks)) ?? []) {
+      for (const found of this.query(path, (db, columns) => {
+        const set = columns();
+        const filter = typeof where === "string" ? ([where, args] as [string, string[]]) : where(db, set);
+        return filter ? this.rows(db, set, filter[0], filter[1], blocks) : [];
+      }) ?? []) {
         const id = String(found.row.id);
         const old = best.get(id);
         if (!old || Number(found.row.updated_at) > Number(old.row.updated_at))
@@ -181,8 +268,29 @@ export class DesktopSessions {
     providers: readonly string[],
   ): HostSessionSummary[] {
     const target = normalizeProjectPath(projectCwd, this.platform);
+    if (providers.length === 0) return [];
     // Listing is polled; transcripts are only read for an opened session.
-    return this.collect("1=1", [], false)
+    // Path matching needs realpath and case rules SQL cannot express, so the
+    // distinct folders are matched here and the rows are then fetched by exact
+    // cwd and harness: the same rows the per-row JS match below would keep.
+    return this.collect(
+      (db, columns) => {
+        if (!columns.has("cwd") || !columns.has("id")) return undefined;
+        const cwds = db
+          .prepare("SELECT DISTINCT cwd FROM sessions WHERE cwd IS NOT NULL")
+          .all()
+          .map((row) => String(row.cwd))
+          .filter((cwd) => normalizeProjectPath(cwd, this.platform) === target);
+        if (cwds.length === 0) return undefined;
+        const marks = (n: number) => Array(n).fill("?").join(",");
+        return [
+          `cwd IN (${marks(cwds.length)}) AND harness IN (${marks(providers.length)})`,
+          [...cwds, ...providers],
+        ];
+      },
+      [],
+      false,
+    )
       .filter(
         ({ row }) =>
           providers.includes(String(row.harness)) &&
@@ -221,7 +329,8 @@ export class DesktopSessions {
 
   /** The row's project folder, for matching it to a host project. */
   projectCwd(id: string): string | undefined {
-    const found = this.collect("id=?", [id])[0];
+    // Only the cwd is needed; skip the transcript.
+    const found = this.collect("id=?", [id], false)[0];
     return found ? String(found.row.cwd) : undefined;
   }
 

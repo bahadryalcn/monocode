@@ -11,6 +11,7 @@ import {
   memo,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -43,7 +44,11 @@ import {
   refreshDir,
   saveExpanded,
   saveSelected,
+  announceDirListings,
+  subscribeDirListings,
   subscribeDirsChanged,
+  TREE_WINDOW_CHUNK,
+  windowEntries,
 } from "../model/fileTree";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
@@ -111,16 +116,21 @@ const REVEAL_LABEL = IS_MAC
     ? "Reveal in File Explorer"
     : "Open Containing Folder";
 
-type TreeCtxValue = {
+// Changing state: only TreeChildren reads it and hands each TreeNode
+// primitive per-node props, so a node re-renders only when its own values change.
+type TreeStateValue = {
   expanded: Set<string>;
   selectedPath: string | null;
   creating: Creating | null;
   renaming: string | null;
   cutPath: string | null;
   dragOverPath: string | null;
-  epoch: number;
   showExcludedFiles: boolean;
   gitStatuses?: GitStatusMap;
+};
+
+// Referentially stable wrappers that call the latest handlers.
+type TreeActions = {
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
   onFilePointerDown: (
@@ -139,11 +149,18 @@ type TreeCtxValue = {
   ) => void;
 };
 
-const TreeCtx = createContext<TreeCtxValue | null>(null);
+const TreeStateCtx = createContext<TreeStateValue | null>(null);
+const TreeActionsCtx = createContext<TreeActions | null>(null);
 
-function useTree(): TreeCtxValue {
-  const ctx = useContext(TreeCtx);
-  if (!ctx) throw new Error("TreeCtx missing");
+function useTreeState(): TreeStateValue {
+  const ctx = useContext(TreeStateCtx);
+  if (!ctx) throw new Error("TreeStateCtx missing");
+  return ctx;
+}
+
+function useTreeActions(): TreeActions {
+  const ctx = useContext(TreeActionsCtx);
+  if (!ctx) throw new Error("TreeActionsCtx missing");
   return ctx;
 }
 
@@ -287,7 +304,12 @@ export const FileTree = memo(function FileTree({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
-  const [epoch, setEpoch] = useState(0);
+  // Re-runs the root listing effect only when the root's own listing changes.
+  const rootListing = useSyncExternalStore(
+    subscribeDirListings,
+    () => peekDir(cwd),
+    () => peekDir(cwd),
+  );
   const showExcludedFiles = useSyncExternalStore(
     subscribeShowExcludedFiles,
     loadShowExcludedFiles,
@@ -481,7 +503,7 @@ export const FileTree = memo(function FileTree({
   const refreshTouched = async (touched: string[], forget: string[] = []) => {
     for (const path of forget) forgetDir(path);
     await Promise.all([...new Set(touched)].map((path) => refreshDir(path)));
-    setEpoch((n) => n + 1);
+    announceDirListings();
   };
 
   const remapTreePaths = (from: string, to: string) => {
@@ -838,7 +860,7 @@ export const FileTree = memo(function FileTree({
   }, [cwd]);
 
   useEffect(() => {
-    const unsub = subscribeDirsChanged(() => setEpoch((n) => n + 1), cwd);
+    const unsub = subscribeDirsChanged(() => undefined, cwd);
     const onResume = () => {
       if (!document.hidden) notifyDirsChanged(cwd, true);
     };
@@ -882,32 +904,66 @@ export const FileTree = memo(function FileTree({
     return () => {
       cancelled = true;
     };
-  }, [cwd, epoch]);
+  }, [cwd, rootListing]);
+
+  const latestActions = useRef<TreeActions>(null as unknown as TreeActions);
+  latestActions.current = {
+    onToggle: toggle,
+    onSelect,
+    onFilePointerDown,
+    consumeFileClick,
+    onOpenFile,
+    onCreateCommit,
+    onCreateCancel,
+    onRenameCommit,
+    onRenameCancel,
+    onItemContextMenu,
+  };
+  const actions = useMemo<TreeActions>(
+    () => ({
+      onToggle: (path) => latestActions.current.onToggle(path),
+      onSelect: (path) => latestActions.current.onSelect(path),
+      onFilePointerDown: (path, event) =>
+        latestActions.current.onFilePointerDown(path, event),
+      consumeFileClick: () => latestActions.current.consumeFileClick(),
+      onOpenFile: (...args) => latestActions.current.onOpenFile(...args),
+      onCreateCommit: (id, raw) => latestActions.current.onCreateCommit(id, raw),
+      onCreateCancel: (id) => latestActions.current.onCreateCancel(id),
+      onRenameCommit: (path, raw) =>
+        latestActions.current.onRenameCommit(path, raw),
+      onRenameCancel: () => latestActions.current.onRenameCancel(),
+      onItemContextMenu: (entry, e) =>
+        latestActions.current.onItemContextMenu(entry, e),
+    }),
+    [],
+  );
+  const cutPath = clip?.mode === "cut" ? clip.path : null;
+  const treeState = useMemo<TreeStateValue>(
+    () => ({
+      expanded,
+      selectedPath,
+      creating,
+      renaming,
+      cutPath,
+      dragOverPath,
+      showExcludedFiles,
+      gitStatuses,
+    }),
+    [
+      expanded,
+      selectedPath,
+      creating,
+      renaming,
+      cutPath,
+      dragOverPath,
+      showExcludedFiles,
+      gitStatuses,
+    ],
+  );
 
   return (
-    <TreeCtx.Provider
-      value={{
-        expanded,
-        selectedPath,
-        creating,
-        renaming,
-        cutPath: clip?.mode === "cut" ? clip.path : null,
-        dragOverPath,
-        epoch,
-        showExcludedFiles,
-        gitStatuses,
-        onToggle: toggle,
-        onSelect,
-        onFilePointerDown,
-        consumeFileClick,
-        onOpenFile,
-        onCreateCommit,
-        onCreateCancel,
-        onRenameCommit,
-        onRenameCancel,
-        onItemContextMenu,
-      }}
-    >
+    <TreeActionsCtx.Provider value={actions}>
+    <TreeStateCtx.Provider value={treeState}>
       <div
         ref={rootRef}
         tabIndex={-1}
@@ -1032,7 +1088,8 @@ export const FileTree = memo(function FileTree({
           onClose={() => setMenu(null)}
         />
       ) : null}
-    </TreeCtx.Provider>
+    </TreeStateCtx.Provider>
+    </TreeActionsCtx.Provider>
   );
 });
 
@@ -1079,7 +1136,8 @@ function TreeChildren({
   loading: boolean;
   error: string | null;
 }) {
-  const ctx = useTree();
+  const ctx = useTreeState();
+  const actions = useTreeActions();
   const creating = ctx.creating;
   const show = creating?.parent === parent;
   const row =
@@ -1089,16 +1147,47 @@ function TreeChildren({
         depth={depth}
         isDir={creating.isDir}
         siblings={(entries ?? []).map((entry) => entry.name)}
-        onCommit={(raw) => ctx.onCreateCommit(creating.id, raw)}
-        onCancel={() => ctx.onCreateCancel(creating.id)}
+        onCommit={(raw) => actions.onCreateCommit(creating.id, raw)}
+        onCancel={() => actions.onCreateCancel(creating.id)}
       />
     ) : null;
+  const [limit, setLimit] = useState(TREE_WINDOW_CHUNK);
   const visible = ctx.showExcludedFiles
     ? entries
     : entries?.filter((e) => !e.ignored);
-  const folders = visible?.filter((e) => e.isDir) ?? [];
-  const files = visible?.filter((e) => !e.isDir) ?? [];
+  // Big folders render a first chunk (folders first, as below); selection,
+  // rename and drag targets stay mounted even past the cut.
+  const { shown, hidden } = windowEntries(
+    [
+      ...(visible?.filter((e) => e.isDir) ?? []),
+      ...(visible?.filter((e) => !e.isDir) ?? []),
+    ],
+    limit,
+    [ctx.selectedPath, ctx.renaming, ctx.dragOverPath],
+  );
+  const folders = shown.filter((e) => e.isDir);
+  const files = shown.filter((e) => !e.isDir);
   const pad = { paddingLeft: 28 + depth * 12 };
+  const renderNode = (child: FsEntry) => {
+    const open = ctx.expanded.has(child.path);
+    return (
+      <TreeNode
+        key={child.path}
+        entry={child}
+        depth={depth}
+        open={open}
+        selected={ctx.selectedPath === child.path}
+        editing={ctx.renaming === child.path}
+        cut={ctx.cutPath === child.path}
+        dragOver={ctx.dragOverPath === child.path}
+        gitStatus={
+          child.isDir
+            ? ctx.gitStatuses?.dirs.get(child.path)
+            : ctx.gitStatuses?.files.get(child.path)
+        }
+      />
+    );
+  };
 
   return (
     <>
@@ -1113,26 +1202,53 @@ function TreeChildren({
           …
         </p>
       ) : null}
-      {folders.map((child) => (
-        <TreeNode key={child.path} entry={child} depth={depth} />
-      ))}
+      {folders.map(renderNode)}
       {show && ctx.creating && !ctx.creating.isDir ? row : null}
-      {files.map((child) => (
-        <TreeNode key={child.path} entry={child} depth={depth} />
-      ))}
+      {files.map(renderNode)}
+      {hidden > 0 ? (
+        <p className="flex gap-3 pr-2 text-[12px] text-content/50" style={pad}>
+          <button
+            type="button"
+            className="hover:text-content"
+            onClick={() => setLimit((n) => n + TREE_WINDOW_CHUNK)}
+          >
+            Show {Math.min(TREE_WINDOW_CHUNK, hidden)} more…
+          </button>
+          {hidden > TREE_WINDOW_CHUNK ? (
+            <button
+              type="button"
+              className="hover:text-content"
+              onClick={() => setLimit(Number.POSITIVE_INFINITY)}
+            >
+              Show all {hidden}
+            </button>
+          ) : null}
+        </p>
+      ) : null}
     </>
   );
 }
 
-function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
+const TreeNode = memo(function TreeNode({
+  entry,
+  depth,
+  open,
+  selected,
+  editing,
+  cut,
+  dragOver,
+  gitStatus,
+}: {
+  entry: FsEntry;
+  depth: number;
+  open: boolean;
+  selected: boolean;
+  editing: boolean;
+  cut: boolean;
+  dragOver: boolean;
+  gitStatus: string | undefined;
+}) {
   const {
-    expanded,
-    selectedPath,
-    renaming,
-    cutPath,
-    dragOverPath,
-    epoch,
-    gitStatuses,
     onToggle,
     onSelect,
     onFilePointerDown,
@@ -1141,45 +1257,43 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
     onRenameCommit,
     onRenameCancel,
     onItemContextMenu,
-  } = useTree();
-  const open = expanded.has(entry.path);
-  const [children, setChildren] = useState<FsEntry[] | null>(() =>
+  } = useTreeActions();
+  const [loaded, setLoaded] = useState<FsEntry[] | null>(() =>
     entry.isDir ? peekDir(entry.path) : null,
   );
-  const [error, setError] = useState<string | null>(null);
-  const selected = selectedPath === entry.path;
-  const editing = renaming === entry.path;
-  const gitStatus = entry.isDir
-    ? gitStatuses?.dirs.get(entry.path)
-    : gitStatuses?.files.get(entry.path);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Only an open folder watches the cache, and only for its own listing: a
+  // change elsewhere leaves this snapshot's identity (and this node) alone.
+  const watching = entry.isDir && open;
+  const cached = useSyncExternalStore(
+    subscribeDirListings,
+    () => (watching ? peekDir(entry.path) : null),
+    () => (watching ? peekDir(entry.path) : null),
+  );
+  const children = cached ?? loaded;
+  const error = cached ? null : loadError;
   const gitColor = gitStatus ? GIT_STATUS_COLOR[gitStatus] : undefined;
 
   useEffect(() => {
-    if (!entry.isDir || !open) return;
-    const hit = peekDir(entry.path);
-    if (hit) {
-      setChildren(hit);
-      setError(null);
-      return;
-    }
+    if (!entry.isDir || !open || cached) return;
     let cancelled = false;
     void listCachedDir(entry.path)
       .then((entries) => {
         if (!cancelled) {
-          setChildren(entries);
-          setError(null);
+          setLoaded(entries);
+          setLoadError(null);
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          setChildren([]);
+          setLoadError(err instanceof Error ? err.message : String(err));
+          setLoaded([]);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [entry.isDir, entry.path, open, epoch]);
+  }, [entry.isDir, entry.path, open, cached]);
 
   const onClick = () => {
     if (consumeFileClick()) return;
@@ -1187,10 +1301,6 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
     if (entry.isDir) onToggle(entry.path);
     else onOpenFile(entry.path, undefined, { exact: true });
   };
-
-  const siblings = (peekDir(parentPath(entry.path)) ?? [])
-    .map((child) => child.name)
-    .filter((name) => name !== entry.name);
 
   return (
     <div>
@@ -1200,7 +1310,9 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
           isDir={entry.isDir}
           initial={entry.name}
           selectStem={!entry.isDir}
-          siblings={siblings}
+          siblings={(peekDir(parentPath(entry.path)) ?? [])
+            .map((child) => child.name)
+            .filter((name) => name !== entry.name)}
           onCommit={(raw) => onRenameCommit(entry.path, raw)}
           onCancel={onRenameCancel}
         />
@@ -1225,9 +1337,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
             selected
               ? "bg-selection text-content"
               : "text-content hover:bg-content/5"
-          } ${cutPath === entry.path ? "opacity-50" : ""} ${
-            dragOverPath === entry.path ? "bg-selection" : ""
-          }`}
+          } ${cut ? "opacity-50" : ""} ${dragOver ? "bg-selection" : ""}`}
         >
           <span className="grid size-4 shrink-0 place-items-center text-content/50">
             {entry.isDir ? (
@@ -1261,7 +1371,7 @@ function TreeNode({ entry, depth }: { entry: FsEntry; depth: number }) {
       ) : null}
     </div>
   );
-}
+});
 
 export function NameRow({
   depth,

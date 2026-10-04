@@ -5,7 +5,12 @@ import {
   isLiveHarness,
 } from "../../../integrations/harness/core/registry";
 import { sessionWorkCwd, type Session } from "../../sessions/model/session";
-import { getSession, upsertSession } from "../../sessions/data/sessionStore";
+import {
+  getSession,
+  storedSessionUpdatedAt,
+  upsertSession,
+  upsertSessionIfUnchanged,
+} from "../../sessions/data/sessionStore";
 import {
   ADOPTED_POLL_HIDDEN_MS,
   ADOPTED_POLL_VISIBLE_MS,
@@ -24,6 +29,8 @@ import { isLocalSyncMachine } from "./localSync";
 import type { HostProject, RemoteMachine } from "./protocol";
 import { loadRecents, sameProjectPath } from "../../projects/model/recents";
 
+const MACHINE_RECHECK_MS = 15_000;
+
 /** Mirrors sessions the local MonoCode Host adopted from this desktop (another
  * computer continued them there) back into the loaded local sessions.
  * Returns whether such a host is reachable: then other computers can watch
@@ -39,15 +46,21 @@ export function useAdoptedSessions(
     let running = false;
     const mirrored = new Map<string, number>();
     const hold = new Set<string>();
+    let known: RemoteMachine | undefined;
+    let knownAt = 0;
 
     const pass = async () => {
       if (running) return;
       running = true;
       try {
-        const machines = await invoke<RemoteMachine[]>("remote_machines");
-        const machine = (Array.isArray(machines) ? machines : []).find(
-          isLocalSyncMachine,
-        );
+        if (!known || Date.now() - knownAt > MACHINE_RECHECK_MS) {
+          const machines = await invoke<RemoteMachine[]>("remote_machines");
+          known = (Array.isArray(machines) ? machines : []).find(
+            isLocalSyncMachine,
+          );
+          knownAt = Date.now();
+        }
+        const machine = known;
         if (!machine || stopped) {
           hostReachable.current = false;
           return;
@@ -61,7 +74,8 @@ export function useAdoptedSessions(
         const held = await mirrorAdoptedSessions({
           list: () =>
             remoteRequest<AdoptedEntry[]>(machine.id, "sessions.adopted", {}),
-          load: (sessionId) => loadRemoteSession(machine.id, sessionId),
+          load: (sessionId, known) =>
+            loadRemoteSession(machine.id, sessionId, known),
           local: () => sessionsRef.current,
           mirrored,
           conflict: (current) => {
@@ -76,9 +90,11 @@ export function useAdoptedSessions(
             setSessions(flag);
           },
           stored: getSession,
-          save: async (merged) => {
-            await upsertSession(merged);
-          },
+          stamp: storedSessionUpdatedAt,
+          save: (merged, stamp) =>
+            stamp === undefined
+              ? upsertSession(merged).then(() => true)
+              : upsertSessionIfUnchanged(merged, stamp),
           adopt: async (entry) => {
             projects ??= await remoteRequest<HostProject[]>(
               machine.id,
@@ -148,6 +164,7 @@ export function useAdoptedSessions(
         }
       } catch {
         hostReachable.current = false;
+        known = undefined;
         // Host unreachable or too old; the next pass tries again.
       } finally {
         running = false;

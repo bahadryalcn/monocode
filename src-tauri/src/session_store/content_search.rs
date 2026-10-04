@@ -409,7 +409,6 @@ fn write_index(
         .optional()?;
     let key = match key {
         Some(key) => {
-            clear_rows(&tx, key)?;
             tx.execute(
                 "UPDATE session_search_index SET source_updated_at = ?2 WHERE key = ?1",
                 params![key, updated_at],
@@ -426,17 +425,46 @@ fn write_index(
         }
     };
     {
+        // Rows are keyed by block position, so an append or a grown last block
+        // leaves every earlier row identical; only rows whose stored text
+        // differs are rewritten, which is also what makes edits, removals and
+        // reorders land exactly as a full rebuild would.
+        let (low, high) = key_range(key);
+        let existing: HashMap<i64, (String, String, String)> = tx
+            .prepare(
+                "SELECT id, block_id, role, text FROM session_search_blocks
+                 WHERE id BETWEEN ?1 AND ?2",
+            )?
+            .query_map(params![low, high], |row| {
+                Ok((row.get(0)?, (row.get(1)?, row.get(2)?, row.get(3)?)))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut delete_block = tx.prepare("DELETE FROM session_search_blocks WHERE id = ?1")?;
+        let mut delete_fts = tx.prepare("DELETE FROM session_search_fts WHERE rowid = ?1")?;
         let mut insert_block = tx.prepare(
             "INSERT INTO session_search_blocks (id, block_id, role, text)
              VALUES (?1, ?2, ?3, ?4)",
         )?;
         let mut insert_fts =
             tx.prepare("INSERT INTO session_search_fts (rowid, folded) VALUES (?1, ?2)")?;
-        let (low, _) = key_range(key);
         for (offset, block) in blocks.iter().enumerate() {
             let id = low + offset as i64;
+            if let Some((block_id, role, text)) = existing.get(&id) {
+                if *block_id == block.block_id && *role == block.role && *text == block.text {
+                    continue;
+                }
+                delete_block.execute(params![id])?;
+                delete_fts.execute(params![id])?;
+            }
             insert_block.execute(params![id, block.block_id, block.role, block.text])?;
             insert_fts.execute(params![id, fold_text(&block.text)])?;
+        }
+        for id in existing
+            .keys()
+            .filter(|id| **id >= low + blocks.len() as i64)
+        {
+            delete_block.execute(params![id])?;
+            delete_fts.execute(params![id])?;
         }
     }
     tx.commit()?;
@@ -1367,5 +1395,119 @@ mod tests {
             println!("query {query:>18?}: best of 5 {best:>10.2?}  {sessions} sessions");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Everything the index holds for a store, in a comparable form: the block
+    /// rows, the FTS doc sizes, and which rowids each probe word matches.
+    fn index_dump(store: &SessionStore) -> Vec<String> {
+        let conn = store.lock_conn().unwrap();
+        let mut out = Vec::new();
+        let mut blocks = conn
+            .prepare("SELECT id, block_id, role, text FROM session_search_blocks ORDER BY id")
+            .unwrap();
+        for row in blocks
+            .query_map([], |r| {
+                Ok(format!(
+                    "block {} {} {} {}",
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?
+                ))
+            })
+            .unwrap()
+        {
+            out.push(row.unwrap());
+        }
+        let mut sizes = conn
+            .prepare("SELECT id, sz FROM session_search_fts_docsize ORDER BY id")
+            .unwrap();
+        for row in sizes
+            .query_map([], |r| {
+                Ok(format!(
+                    "size {} {:?}",
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Vec<u8>>(1)?
+                ))
+            })
+            .unwrap()
+        {
+            out.push(row.unwrap());
+        }
+        for word in [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "grown",
+        ] {
+            let mut hits = conn
+                .prepare(
+                    "SELECT rowid FROM session_search_fts WHERE session_search_fts MATCH ?1
+                     ORDER BY rowid",
+                )
+                .unwrap();
+            let ids: Vec<i64> = hits
+                .query_map([format!("\"{word}\" *")], |r| r.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            out.push(format!("match {word} {ids:?}"));
+        }
+        out
+    }
+
+    #[test]
+    fn incremental_reindex_matches_a_full_rebuild() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let steps: Vec<Vec<Value>> = vec![
+            vec![
+                message("a", "user", "alpha one"),
+                message("b", "assistant", "beta two"),
+            ],
+            // append
+            vec![
+                message("a", "user", "alpha one"),
+                message("b", "assistant", "beta two"),
+                message("c", "user", "gamma three"),
+            ],
+            // last block grows
+            vec![
+                message("a", "user", "alpha one"),
+                message("b", "assistant", "beta two"),
+                message("c", "user", "gamma three grown longer"),
+            ],
+            // middle block edited
+            vec![
+                message("a", "user", "alpha one"),
+                message("b", "assistant", "epsilon edited"),
+                message("c", "user", "gamma three grown longer"),
+            ],
+            // block removed from the middle
+            vec![
+                message("a", "user", "alpha one"),
+                message("c", "user", "gamma three grown longer"),
+            ],
+            // reorder plus a new block
+            vec![
+                message("c", "user", "gamma three grown longer"),
+                message("a", "user", "alpha one"),
+                message("d", "tool", "delta zeta"),
+            ],
+            // truncated back to one block
+            vec![message("d", "tool", "delta zeta")],
+        ];
+        for (step, blocks) in steps.iter().enumerate() {
+            let blocks = Value::Array(blocks.clone());
+            {
+                let conn = store.lock_conn().unwrap();
+                insert_session_at(&conn, "s", "/w", "T", &blocks, 1_000 + step as i64);
+            }
+            assert_eq!(sync_index(&store, None, &|| true).unwrap(), 0);
+
+            let fresh = SessionStore::open_in_memory().unwrap();
+            {
+                let conn = fresh.lock_conn().unwrap();
+                insert_session_at(&conn, "s", "/w", "T", &blocks, 1_000 + step as i64);
+            }
+            assert_eq!(sync_index(&fresh, None, &|| true).unwrap(), 0);
+            assert_eq!(index_dump(&store), index_dump(&fresh), "step {step}");
+        }
     }
 }

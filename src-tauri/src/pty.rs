@@ -4,9 +4,7 @@ use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
-#[cfg(unix)]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -20,6 +18,11 @@ const READ_CHUNK: usize = 32 * 1024;
 /// Cap how often a busy PTY hops the webview. Each `emit` is a JS eval; a
 /// flood of small reads was thousands per second and froze input.
 const PTY_COALESCE: Duration = Duration::from_millis(8);
+/// Reads the Windows reader may run ahead of the emitter (about 2 MB).
+#[cfg(windows)]
+const PTY_QUEUE_CHUNKS: usize = 64;
+/// Keystrokes or pastes queued for a terminal whose child is not reading.
+const WRITE_QUEUE_LEN: usize = 256;
 #[cfg(unix)]
 const KILL_ESCALATE: Duration = Duration::from_secs(1);
 
@@ -55,6 +58,9 @@ pub struct PtyHost {
     /// Background reaps of closed windows. Shutdown joins them so their
     /// SIGKILLs land before the process exits.
     reapers: Mutex<Vec<thread::JoinHandle<()>>>,
+    /// `pty_spawn` runs off the main thread, so two spawns of one id could
+    /// both miss `reattach` and race to insert. One at a time, as before.
+    spawn_gate: Mutex<()>,
 }
 
 impl PtyHost {
@@ -70,6 +76,7 @@ impl PtyHost {
         Self {
             sessions: Mutex::new(HashMap::new()),
             reapers: Mutex::new(Vec::new()),
+            spawn_gate: Mutex::new(()),
         }
     }
 
@@ -183,17 +190,25 @@ impl Drop for PtyHost {
     }
 }
 
-#[tauri::command]
+/// Off the main thread: opening the PTY and starting the shell takes tens of
+/// milliseconds. The terminal is registered before this returns, so a write or
+/// resize sent after it resolves finds it.
+#[tauri::command(async)]
 pub fn pty_spawn(
     app: AppHandle,
     window: tauri::Window,
-    host: State<PtyHost>,
+    host: State<'_, PtyHost>,
     id: String,
     cwd: String,
     cols: u16,
     rows: u16,
     profile: Option<String>,
 ) -> Result<(), String> {
+    let gate_host = host.clone();
+    let _gate = gate_host
+        .spawn_gate
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let (cols, rows) = (cols.max(2), rows.max(2));
     // A reloaded page restores its terminals under the same ids while the old
     // shells are still running. Hand the live PTY to the new view instead of
@@ -257,6 +272,9 @@ fn reattach(live: &LivePty, cols: u16, rows: u16) -> Result<(), String> {
     }
 }
 
+/// Stays on the main thread on purpose: the webview's writes arrive there in
+/// order, and the writer only queues them for the terminal's own
+/// writer thread, so a child that stops reading cannot hang the UI.
 #[tauri::command]
 pub fn pty_write(host: State<PtyHost>, id: String, data: String) -> Result<(), String> {
     let live = host
@@ -301,6 +319,8 @@ pub fn pty_resize(host: State<PtyHost>, id: String, cols: u16, rows: u16) -> Res
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PtyStatus {
     foreground: Option<String>,
+    /// False where no foreground process can be named, so callers stop polling.
+    supported: bool,
 }
 
 /// Off the main thread: this forks `ps`, and the title poll calls it once a
@@ -313,21 +333,40 @@ pub fn pty_status(host: State<'_, PtyHost>, id: String) -> Result<PtyStatus, Str
     #[cfg(unix)]
     {
         let foreground = foreground_label(live.master_fd, live.pid);
-        Ok(PtyStatus { foreground })
+        Ok(PtyStatus {
+            foreground,
+            supported: true,
+        })
     }
     #[cfg(not(unix))]
     {
         let _ = live;
-        Ok(PtyStatus { foreground: None })
+        Ok(PtyStatus {
+            foreground: None,
+            supported: false,
+        })
     }
 }
 
+/// The terminal leaves the map on the calling thread, so a respawn of the same
+/// id right after cannot see it. Only the Windows `taskkill` wait moves to the
+/// blocking pool; the signals on Unix return at once.
 #[tauri::command]
 pub fn pty_kill(host: State<PtyHost>, id: String) -> Result<(), String> {
     if let Some(live) = host.remove(&id) {
-        terminate(live.pid);
-        #[cfg(unix)]
-        close_fd(live.master_fd);
+        #[cfg(windows)]
+        {
+            tauri::async_runtime::spawn_blocking(move || {
+                terminate(live.pid);
+                drop(live);
+            });
+        }
+        #[cfg(not(windows))]
+        {
+            terminate(live.pid);
+            #[cfg(unix)]
+            close_fd(live.master_fd);
+        }
     }
     Ok(())
 }
@@ -405,7 +444,7 @@ fn spawn_unix(
 
     let live = Arc::new(LivePty {
         cwd: workdir.clone(),
-        writer: Mutex::new(Box::new(writer)),
+        writer: Mutex::new(Box::new(QueuedWriter::spawn(Box::new(writer)))),
         master_fd: master,
         pid,
         owner: Mutex::new(owner.to_string()),
@@ -526,7 +565,7 @@ fn spawn_windows(
 
     let live = Arc::new(LivePty {
         cwd: workdir.clone(),
-        writer: Mutex::new(Box::new(writer)),
+        writer: Mutex::new(Box::new(QueuedWriter::spawn(writer))),
         master: Mutex::new(pair.master),
         pid,
         owner: Mutex::new(owner.to_string()),
@@ -535,20 +574,28 @@ fn spawn_windows(
 
     let data_app = app.clone();
     let data_id = id.clone();
+    // A blocking read on the ConPTY pipe cannot be polled with a timeout, so
+    // this thread only reads; the emitter below owns the timed drain. The
+    // bounded queue makes a flooding child wait instead of piling up memory.
+    // Either side ending closes the channel and stops the other.
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(PTY_QUEUE_CHUNKS);
     thread::spawn(move || {
         let mut buf = vec![0_u8; READ_CHUNK];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    // ponytail: caps bridge traffic at 125 emits/s; use a timed
-                    // drain only if sustained PTY throughput becomes limiting.
-                    thread::sleep(PTY_COALESCE);
-                    emit_pty_data(&data_app, &data_id, &buf[..n]);
+                    if tx.send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
                 }
-                Err(_) => break,
             }
         }
+    });
+    thread::spawn(move || {
+        coalesce_chunks(&rx, PTY_COALESCE, READ_CHUNK, |bytes| {
+            emit_pty_data(&data_app, &data_id, bytes)
+        });
     });
 
     let wait_app = app;
@@ -805,6 +852,102 @@ fn emit_pty_data(app: &AppHandle, id: &str, bytes: &[u8]) {
     );
 }
 
+/// Merges what `rx` delivers into few emits, in order. The first chunk after a
+/// quiet spell goes out at once (a keystroke echo); otherwise a batch waits
+/// until `window` has passed since the last emit, which bounds emits to
+/// 1/`window` per second, or until it holds `cap` bytes. Returns after the
+/// channel closes and the last bytes are emitted.
+#[cfg(any(windows, test))]
+fn coalesce_chunks<F: FnMut(&[u8])>(
+    rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    window: Duration,
+    cap: usize,
+    mut emit: F,
+) {
+    use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+
+    let mut last_emit: Option<Instant> = None;
+    while let Ok(first) = rx.recv() {
+        let mut acc = first;
+        let deadline = last_emit.map(|at| at + window);
+        let mut closed = false;
+        while acc.len() < cap && !closed {
+            // Whatever already queued is free to take.
+            match rx.try_recv() {
+                Ok(chunk) => {
+                    acc.extend_from_slice(&chunk);
+                    continue;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    closed = true;
+                    continue;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+            let Some(wait) = deadline.map(|at| at.saturating_duration_since(Instant::now())) else {
+                break;
+            };
+            if wait.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(wait) {
+                Ok(chunk) => acc.extend_from_slice(&chunk),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => closed = true,
+            }
+        }
+        emit(&acc);
+        last_emit = Some(Instant::now());
+        if closed {
+            return;
+        }
+    }
+}
+
+/// Hands writes to a thread of its own, so a child that stops reading its
+/// input stalls that thread and not the caller. Writes keep the order they
+/// were queued in; the thread ends when this is dropped or a write fails (the
+/// next write then reports the closed terminal).
+struct QueuedWriter {
+    tx: std::sync::mpsc::SyncSender<Vec<u8>>,
+}
+
+impl QueuedWriter {
+    fn spawn(mut inner: Box<dyn Write + Send>) -> Self {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE_LEN);
+        thread::spawn(move || {
+            while let Ok(bytes) = rx.recv() {
+                if inner.write_all(&bytes).and_then(|_| inner.flush()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { tx }
+    }
+}
+
+impl Write for QueuedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        use std::io::{Error, ErrorKind};
+        use std::sync::mpsc::TrySendError;
+        match self.tx.try_send(buf.to_vec()) {
+            Ok(()) => Ok(buf.len()),
+            Err(TrySendError::Full(_)) => Err(Error::new(
+                ErrorKind::WouldBlock,
+                "terminal input is backed up",
+            )),
+            Err(TrySendError::Disconnected(_)) => Err(Error::new(
+                ErrorKind::BrokenPipe,
+                "terminal input is closed",
+            )),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(unix)]
 fn pty_should_flush(buffered: usize, since: Duration) -> bool {
     buffered >= READ_CHUNK || since >= PTY_COALESCE
@@ -994,5 +1137,157 @@ mod tests {
         assert!(host.get("term").is_some());
         assert!(host.remove_if_pid("term", 42).is_some());
         assert!(host.get("term").is_none());
+    }
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+    use std::sync::mpsc::{channel, sync_channel};
+
+    fn run(rx: std::sync::mpsc::Receiver<Vec<u8>>, cap: usize) -> Vec<Vec<u8>> {
+        let mut emits = Vec::new();
+        coalesce_chunks(&rx, PTY_COALESCE, cap, |bytes| emits.push(bytes.to_vec()));
+        emits
+    }
+
+    #[test]
+    fn a_queued_burst_is_one_emit_in_order() {
+        let (tx, rx) = channel();
+        for i in 0..20_u8 {
+            tx.send(vec![i; 10]).unwrap();
+        }
+        drop(tx);
+        let emits = run(rx, READ_CHUNK);
+        assert_eq!(emits.len(), 1);
+        let expected: Vec<u8> = (0..20_u8).flat_map(|i| vec![i; 10]).collect();
+        assert_eq!(emits[0], expected);
+    }
+
+    #[test]
+    fn bytes_before_close_are_flushed() {
+        let (tx, rx) = channel();
+        tx.send(b"tail".to_vec()).unwrap();
+        drop(tx);
+        assert_eq!(run(rx, READ_CHUNK), vec![b"tail".to_vec()]);
+    }
+
+    #[test]
+    fn an_empty_closed_channel_emits_nothing() {
+        let (tx, rx) = channel::<Vec<u8>>();
+        drop(tx);
+        assert!(run(rx, READ_CHUNK).is_empty());
+    }
+
+    #[test]
+    fn a_lone_chunk_goes_out_while_the_channel_stays_open() {
+        let (tx, rx) = channel();
+        let (out_tx, out_rx) = channel();
+        let worker = thread::spawn(move || {
+            coalesce_chunks(&rx, PTY_COALESCE, READ_CHUNK, |bytes| {
+                out_tx.send((Instant::now(), bytes.to_vec())).unwrap();
+            });
+        });
+        let sent = Instant::now();
+        tx.send(b"x".to_vec()).unwrap();
+        let (at, bytes) = out_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(bytes, b"x");
+        assert!(at.duration_since(sent) < PTY_COALESCE + Duration::from_millis(100));
+        drop(tx);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn the_size_cap_splits_a_large_burst() {
+        let (tx, rx) = channel();
+        for i in 0..100_u8 {
+            tx.send(vec![i; 1000]).unwrap();
+        }
+        drop(tx);
+        let emits = run(rx, 10_000);
+        assert!(emits.len() >= 10);
+        assert!(emits.iter().all(|emit| emit.len() <= 10_000 + 1000));
+        let expected: Vec<u8> = (0..100_u8).flat_map(|i| vec![i; 1000]).collect();
+        assert_eq!(emits.concat(), expected);
+    }
+
+    #[test]
+    fn sustained_output_stays_under_the_emit_rate_bound() {
+        let (tx, rx) = sync_channel(64);
+        let feeder = thread::spawn(move || {
+            let start = Instant::now();
+            let mut sent = 0_u32;
+            while start.elapsed() < Duration::from_millis(200) {
+                tx.send(vec![1; 16]).unwrap();
+                sent += 1;
+                thread::sleep(Duration::from_millis(1));
+            }
+            sent
+        });
+        let started = Instant::now();
+        let emits = run(rx, READ_CHUNK);
+        let secs = started.elapsed().as_secs_f64();
+        let sent = feeder.join().unwrap();
+        assert_eq!(
+            emits.iter().map(Vec::len).sum::<usize>(),
+            sent as usize * 16
+        );
+        // One emit per window, plus the immediate first and the final flush.
+        assert!(
+            emits.len() as f64 <= secs * 125.0 + 3.0,
+            "{} emits",
+            emits.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod queued_writer_tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+
+    struct Capture(std::sync::mpsc::Sender<Vec<u8>>);
+
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.send(buf.to_vec()).unwrap();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn queued_writes_reach_the_terminal_in_order() {
+        let (tx, rx) = channel();
+        let mut writer = QueuedWriter::spawn(Box::new(Capture(tx)));
+        for i in 0..50_u8 {
+            writer.write_all(&[i]).unwrap();
+        }
+        for i in 0..50_u8 {
+            assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), vec![i]);
+        }
+    }
+
+    #[test]
+    fn a_stuck_child_never_blocks_the_caller() {
+        struct Stuck;
+        impl Write for Stuck {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                thread::sleep(Duration::from_secs(5));
+                Ok(0)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = QueuedWriter::spawn(Box::new(Stuck));
+        let started = Instant::now();
+        let results: Vec<_> = (0..WRITE_QUEUE_LEN + 10)
+            .map(|_| writer.write_all(b"x"))
+            .collect();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(results.last().unwrap().is_err());
     }
 }

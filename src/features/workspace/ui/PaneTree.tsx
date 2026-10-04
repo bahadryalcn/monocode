@@ -7,7 +7,16 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { setGrabbing, suppressTextSelection } from "../../../shared/lib/drag";
+import {
+  setDropFeedback,
+  setGrabbing,
+  suppressTextSelection,
+} from "../../../shared/lib/drag";
+import {
+  isPointerOutsideWindow,
+  popOutPosition,
+  type WindowMovePosition,
+} from "../../../app/model/windowTransferPopout";
 import {
   paneDropFromPoint,
   setExternalTitleTabDrop,
@@ -183,6 +192,7 @@ type Shared = {
     modelSettings: Record<string, string>,
   ) => void;
   onMovePane: (fromId: string, toId: string, edge: PaneEdge) => void;
+  onPopOutPane?: (paneId: string, position: WindowMovePosition) => void;
   onDetachPane: (
     paneId: string,
     targetTabId: string,
@@ -278,6 +288,7 @@ function PaneTreeComponent({
   onHandoff,
   onMovePane,
   onDetachPane,
+  onPopOutPane,
   onNewTerminal,
   onTerminalMetaChange,
   transcriptPool,
@@ -293,8 +304,14 @@ function PaneTreeComponent({
   onMovePaneRef.current = onMovePane;
   const onDetachPaneRef = useRef(onDetachPane);
   onDetachPaneRef.current = onDetachPane;
+  const onPopOutPaneRef = useRef(onPopOutPane);
+  onPopOutPaneRef.current = onPopOutPane;
+  const dragContents = useRef({ editorPanes, sessions });
+  dragContents.current = { editorPanes, sessions };
   const onFocusRef = useRef(onFocus);
   onFocusRef.current = onFocus;
+  const cancelPaneDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelPaneDrag.current?.(), []);
 
   useEffect(() => {
     setDraft(null);
@@ -323,20 +340,31 @@ function PaneTreeComponent({
   const startPaneDrag = useCallback(
     (fromId: string, event: ReactPointerEvent<HTMLElement>) => {
       if (event.button !== 0) return;
+      cancelPaneDrag.current?.();
       const handle = event.currentTarget;
       const pointerId = event.pointerId;
       const startX = event.clientX;
       const startY = event.clientY;
       let active = false;
+      const canPopOut = () =>
+        Boolean(onPopOutPaneRef.current) &&
+        !dragContents.current.editorPanes
+          .find((pane) => pane.id === fromId)
+          ?.files.some((file) => file.terminal);
 
       let lastX = startX;
       let lastY = startY;
+      let screenX = event.screenX;
+      let screenY = event.screenY;
       handle.setPointerCapture(pointerId);
       const restoreSelection = suppressTextSelection();
 
       const onMove = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
         lastX = ev.clientX;
         lastY = ev.clientY;
+        screenX = ev.screenX;
+        screenY = ev.screenY;
         if (!active) {
           if (
             Math.hypot(ev.clientX - startX, ev.clientY - startY) <
@@ -351,12 +379,35 @@ function PaneTreeComponent({
         }
         const titleTab = titleTabDropFromPoint(ev.clientX, ev.clientY);
         setExternalTitleTabDrop(titleTab ? { fromId, ...titleTab } : null);
+        if (
+          canPopOut() &&
+          isPointerOutsideWindow(
+            ev.clientX,
+            ev.clientY,
+            window.innerWidth,
+            window.innerHeight,
+          )
+        ) {
+          setDropFeedback(
+            "window",
+            ev,
+            dragContents.current.sessions.find(
+              (session) => session.id === fromId,
+            )?.busy
+              ? "Move after response finishes"
+              : undefined,
+          );
+          setPaneDrag({ fromId, overId: null, edge: "left" });
+          return;
+        }
         if (titleTab) {
+          setDropFeedback("move", ev, "Release to create a tab");
           setPaneDrag({ fromId, overId: null, edge: "left" });
           return;
         }
         const over = paneDropFromPoint(ev.clientX, ev.clientY);
         if (!over || over.id === fromId) {
+          setDropFeedback("blocked", ev);
           setPaneDrag({
             fromId,
             overId: over?.id === fromId ? fromId : null,
@@ -365,9 +416,15 @@ function PaneTreeComponent({
           return;
         }
         setPaneDrag({ fromId, overId: over.id, edge: over.edge });
+        setDropFeedback("move", ev, `Place ${over.edge}`);
       };
 
-      const onUp = () => finish(true);
+      const onUp = (ev: PointerEvent) => {
+        if (ev.pointerId !== pointerId) return;
+        onMove(ev);
+        finish(true);
+      };
+      const onCancel = () => finish(false);
       const onKey = (ev: KeyboardEvent) => {
         if (ev.key !== "Escape") return;
         ev.preventDefault();
@@ -375,9 +432,10 @@ function PaneTreeComponent({
       };
 
       function finish(commit: boolean) {
+        cancelPaneDrag.current = null;
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
+        window.removeEventListener("pointercancel", onCancel);
         window.removeEventListener("keydown", onKey);
         restoreSelection();
         setGrabbing(false);
@@ -389,6 +447,22 @@ function PaneTreeComponent({
           /* already released */
         }
         if (!active || !commit) return;
+        if (
+          canPopOut() &&
+          isPointerOutsideWindow(
+            lastX,
+            lastY,
+            window.innerWidth,
+            window.innerHeight,
+          )
+        ) {
+          onPopOutPaneRef.current?.(fromId, {
+            ...popOutPosition(screenX, screenY),
+            clientX: lastX,
+            clientY: lastY,
+          });
+          return;
+        }
         const titleTab = titleTabDropFromPoint(lastX, lastY);
         if (titleTab) {
           onDetachPaneRef.current(
@@ -406,8 +480,9 @@ function PaneTreeComponent({
 
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
+      window.addEventListener("pointercancel", onCancel);
       window.addEventListener("keydown", onKey);
+      cancelPaneDrag.current = onCancel;
     },
     [],
   );

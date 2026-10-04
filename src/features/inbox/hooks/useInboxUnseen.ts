@@ -72,7 +72,11 @@ import {
   subscribeInboxSelfActivity,
 } from "../model/inboxSelfActivity";
 
-const POLL_MS = 30_000;
+export const POLL_MS = 30_000;
+/** While the window is hidden or in the tray: notifications, the tray badge
+ * and Inbox automations still ride this refresh, but a few minutes of latency
+ * is acceptable and it reads through the freshness cache instead of forcing. */
+export const HIDDEN_POLL_MS = 180_000;
 const FALLBACK_REFRESH_MS = 60_000;
 const MAX_CONCURRENT_LOOKUPS = 3;
 
@@ -380,17 +384,30 @@ export function useInboxActivity(
     void pull(false);
     const stopSelfActivity = subscribeInboxSelfActivity(() => void pull(true));
     // Keep polling while minimized or closed-to-tray: the webview is still
-    // alive, and Inbox automation triggers ride this same refresh.
-    const timer = window.setInterval(() => void pull(true), POLL_MS);
+    // alive, and Inbox automation triggers ride this same refresh. Slower, and
+    // without force, while hidden.
+    let timer: number | undefined;
+    const arm = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(
+        () => {
+          void pull(!document.hidden);
+          arm();
+        },
+        document.hidden ? HIDDEN_POLL_MS : POLL_MS,
+      );
+    };
+    arm();
     const onVis = () => {
       if (!document.hidden) void pull(true);
+      arm();
     };
     document.addEventListener("visibilitychange", onVis);
     const onJiraChange = () => void pull(true);
     window.addEventListener(JIRA_CHANGE_EVENT, onJiraChange);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener(JIRA_CHANGE_EVENT, onJiraChange);
       stopSelfActivity();

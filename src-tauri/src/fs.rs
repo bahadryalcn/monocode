@@ -731,7 +731,14 @@ pub(crate) fn list_dir_sync(dir: &Path) -> Result<Vec<DirEntry>, String> {
     }
 
     let names: Vec<&str> = out.iter().map(|e| e.name.as_str()).collect();
-    let ignored = git_ignored_names(dir, &names).unwrap_or_else(|| {
+    let ignored = cached_ignored_names(
+        &IGNORED_NAMES_CACHE,
+        IGNORED_NAMES_TTL,
+        dir,
+        &names,
+        git_ignored_names,
+    )
+    .unwrap_or_else(|| {
         let ignore = Ignore::load(dir);
         names
             .iter()
@@ -806,11 +813,42 @@ pub struct ProjectFile {
     pub(crate) relative: String,
 }
 
+/// Wire shape of `list_project_files`: the project root once, and per file only
+/// what the root cannot supply. The absolute `path` is `root` + `/` + `relative`
+/// (rebuilt in `listProjectFiles`), so the root is not repeated 20,000 times.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileEntry {
+    name: String,
+    relative: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileListing {
+    root: String,
+    files: Vec<ProjectFileEntry>,
+}
+
+fn project_file_listing(cwd: &str) -> Result<ProjectFileListing, String> {
+    let files = list_project_files_sync(cwd)?;
+    Ok(ProjectFileListing {
+        root: path_to_js(&expand_home(cwd)),
+        files: files
+            .into_iter()
+            .map(|f| ProjectFileEntry {
+                name: f.name,
+                relative: f.relative,
+            })
+            .collect(),
+    })
+}
+
 /// Workspace files for Quick Open. Prefer `git ls-files` (gitignore-aware,
 /// index-backed); otherwise a bounded walk that never descends into vendor dirs.
 #[tauri::command]
-pub async fn list_project_files(cwd: String) -> Result<Vec<ProjectFile>, String> {
-    tauri::async_runtime::spawn_blocking(move || list_project_files_sync(&cwd))
+pub async fn list_project_files(cwd: String) -> Result<ProjectFileListing, String> {
+    tauri::async_runtime::spawn_blocking(move || project_file_listing(&cwd))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -849,6 +887,50 @@ pub(crate) fn list_project_files_sync_cancellable(
         return Ok(Vec::new());
     }
     Ok(walk_project_files(&root, cancel.into()))
+}
+
+/// `git check-ignore` queues behind the Windows spawn gate, and the tree
+/// re-lists the same folder on every poll and change event. The answer is cached
+/// per folder and keyed on the exact entry names, so an added, removed or
+/// renamed entry always misses. Ignore rules can change without the folder
+/// changing (`.gitignore` higher up, `info/exclude`, global excludes, a file
+/// becoming tracked), so the TTL bounds staleness to a late dimming label; it
+/// matches `GIT_INFO_TTL`.
+const IGNORED_NAMES_TTL: Duration = Duration::from_secs(3);
+const IGNORED_NAMES_CACHE_MAX: usize = 256;
+
+type IgnoredNamesEntry = (Instant, Vec<String>, Option<HashSet<String>>);
+type IgnoredNamesCache = Mutex<Option<HashMap<PathBuf, IgnoredNamesEntry>>>;
+
+static IGNORED_NAMES_CACHE: IgnoredNamesCache = Mutex::new(None);
+
+fn cached_ignored_names(
+    cache: &IgnoredNamesCache,
+    ttl: Duration,
+    dir: &Path,
+    names: &[&str],
+    lookup: impl FnOnce(&Path, &[&str]) -> Option<HashSet<String>>,
+) -> Option<HashSet<String>> {
+    let mut sorted: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    sorted.sort_unstable();
+    if let Ok(mut guard) = cache.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        map.retain(|_, (at, _, _)| at.elapsed() < ttl);
+        if let Some((_, cached_names, result)) = map.get(dir) {
+            if *cached_names == sorted {
+                return result.clone();
+            }
+        }
+    }
+    let result = lookup(dir, names);
+    if let Ok(mut guard) = cache.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        if map.len() >= IGNORED_NAMES_CACHE_MAX {
+            map.clear();
+        }
+        map.insert(dir.to_path_buf(), (Instant::now(), sorted, result.clone()));
+    }
+    result
 }
 
 const CHECK_IGNORE_SOME_MATCHED: i32 = 0;
@@ -2593,11 +2675,14 @@ fn git_changes_with(root: &Path, retry: bool) -> Option<GitChanges> {
     let mut files = Vec::with_capacity(tracked.len());
     let mut additions = 0i64;
     let mut deletions = 0i64;
+    let previous_lines = take_untracked_lines(root);
+    let mut seen_lines = UntrackedLines::new();
     for (relative, acc) in tracked {
         let abs = root.join(&relative);
         let mut count = counts.get(&relative).cloned().unwrap_or_default();
         if acc.untracked && count.additions == 0 {
-            count.additions = text_line_count(&abs);
+            count.additions =
+                untracked_line_count(&previous_lines, &mut seen_lines, &abs, text_line_count);
         }
         additions += count.additions;
         deletions += count.deletions;
@@ -2620,6 +2705,7 @@ fn git_changes_with(root: &Path, retry: bool) -> Option<GitChanges> {
             unstaged: acc.untracked || acc.y != '.',
         });
     }
+    store_untracked_lines(root, seen_lines);
     Some(GitChanges {
         status,
         files,
@@ -2727,6 +2813,52 @@ fn normalize_diff_path(path: &str) -> String {
 }
 
 const MAX_UNTRACKED_BYTES: u64 = 1024 * 1024;
+
+/// Line count of an untracked file with the size and time it was counted at.
+type UntrackedLines = HashMap<PathBuf, (u64, Option<SystemTime>, i64)>;
+
+static GIT_UNTRACKED_LINES_CACHE: Mutex<Option<HashMap<PathBuf, UntrackedLines>>> =
+    Mutex::new(None);
+
+fn take_untracked_lines(root: &Path) -> UntrackedLines {
+    GIT_UNTRACKED_LINES_CACHE
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.as_mut().and_then(|cache| cache.remove(root)))
+        .unwrap_or_default()
+}
+
+/// Keeps only the files this call saw, so the cache follows the untracked set.
+fn store_untracked_lines(root: &Path, seen: UntrackedLines) {
+    if seen.is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = GIT_UNTRACKED_LINES_CACHE.lock() {
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(root.to_path_buf(), seen);
+    }
+}
+
+/// `count(abs)`, unless the file still has the size and time it was last
+/// counted at; the poll would otherwise re-read every untracked file each tick.
+fn untracked_line_count(
+    previous: &UntrackedLines,
+    seen: &mut UntrackedLines,
+    abs: &Path,
+    count: impl Fn(&Path) -> i64,
+) -> i64 {
+    let Ok(meta) = std::fs::metadata(abs) else {
+        return 0;
+    };
+    let stamp = (meta.len(), meta.modified().ok());
+    let lines = match previous.get(abs) {
+        Some((len, modified, lines)) if (*len, *modified) == stamp => *lines,
+        _ => count(abs),
+    };
+    seen.insert(abs.to_path_buf(), (stamp.0, stamp.1, lines));
+    lines
+}
 
 fn text_line_count(path: &Path) -> i64 {
     let Ok(meta) = std::fs::metadata(path) else {
@@ -5029,7 +5161,7 @@ fn git_launcher_cmd() -> Command {
     cmd
 }
 
-fn git_cmd() -> Command {
+pub(crate) fn git_cmd() -> Command {
     let Some(direct) = direct_git() else {
         return git_launcher_cmd();
     };
@@ -5192,7 +5324,7 @@ impl Drop for GitSpawnTurn {
 }
 
 /// `Command::output` for git, taking a turn at the spawn gate.
-fn git_cmd_output(cmd: &mut Command) -> std::io::Result<std::process::Output> {
+pub(crate) fn git_cmd_output(cmd: &mut Command) -> std::io::Result<std::process::Output> {
     let _turn = GIT_SPAWN_GATE.enter();
     cmd.output()
 }
@@ -7678,6 +7810,75 @@ mod tests {
     }
 
     #[test]
+    fn untracked_line_counts_are_reused_until_the_file_changes() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("monocode-untracked-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "one\ntwo\n").unwrap();
+        std::fs::write(&b, "x\n").unwrap();
+
+        let reads = std::cell::Cell::new(0);
+        let counter = |path: &Path| {
+            reads.set(reads.get() + 1);
+            text_line_count(path)
+        };
+        let poll = |previous: &UntrackedLines, paths: &[&PathBuf]| {
+            let mut seen = UntrackedLines::new();
+            let lines: Vec<i64> = paths
+                .iter()
+                .map(|path| untracked_line_count(previous, &mut seen, path, &counter))
+                .collect();
+            (lines, seen)
+        };
+
+        let (lines, seen) = poll(&UntrackedLines::new(), &[&a, &b]);
+        assert_eq!(lines, [2, 1]);
+        assert_eq!(reads.get(), 2);
+
+        // Unchanged size and time: no further read, same numbers.
+        let (lines, seen) = poll(&seen, &[&a, &b]);
+        assert_eq!(lines, [2, 1]);
+        assert_eq!(reads.get(), 2);
+
+        // A different size is recounted.
+        std::fs::write(&a, "one\ntwo\nthree\n").unwrap();
+        let (lines, seen) = poll(&seen, &[&a, &b]);
+        assert_eq!(lines, [3, 1]);
+        assert_eq!(reads.get(), 3);
+
+        // The same size with a different time is recounted too.
+        std::fs::write(&b, "y\n").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&b).unwrap();
+        file.set_modified(SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        drop(file);
+        let (lines, seen) = poll(&seen, &[&a, &b]);
+        assert_eq!(lines, [3, 1]);
+        assert_eq!(reads.get(), 4);
+
+        // A file that is gone is dropped from the next generation.
+        std::fs::remove_file(&b).unwrap();
+        let (lines, seen) = poll(&seen, &[&a, &b]);
+        assert_eq!(lines, [3, 0]);
+        assert_eq!(seen.len(), 1);
+        assert!(seen.contains_key(&a));
+        assert_eq!(reads.get(), 4);
+
+        // The per-root cache holds only what the last call stored.
+        let root = dir.join("root");
+        store_untracked_lines(&root, seen);
+        assert_eq!(take_untracked_lines(&root).len(), 1);
+        assert!(take_untracked_lines(&root).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn editor_text_files_round_trip_without_leaving_a_temporary_file() {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -8156,6 +8357,85 @@ mod tests {
         assert!(!is_ignored(&dir.0, "zz-build"));
         assert!(is_ignored(&dir.0.join("nested"), "x.zztmp"));
         assert!(!is_ignored(&dir.0.join("nested"), "x.txt"));
+    }
+
+    #[test]
+    fn ignored_names_cache_reuses_unchanged_listings_and_misses_on_change() {
+        let cache: IgnoredNamesCache = Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        let lookup = |_: &Path, names: &[&str]| {
+            calls.set(calls.get() + 1);
+            Some(
+                names
+                    .iter()
+                    .filter(|n| n.ends_with(".log"))
+                    .map(|n| n.to_string())
+                    .collect::<HashSet<_>>(),
+            )
+        };
+        let ttl = Duration::from_secs(60);
+        let dir = Path::new("/proj");
+
+        let first = cached_ignored_names(&cache, ttl, dir, &["a.log", "b.ts"], lookup);
+        assert_eq!(calls.get(), 1);
+        // Same set in another order is a hit with the same answer.
+        let again = cached_ignored_names(&cache, ttl, dir, &["b.ts", "a.log"], lookup);
+        assert_eq!(calls.get(), 1);
+        assert_eq!(first, again);
+        // A new entry changes the key.
+        let grown = cached_ignored_names(&cache, ttl, dir, &["a.log", "b.ts", "c.log"], lookup);
+        assert_eq!(calls.get(), 2);
+        assert!(grown.unwrap().contains("c.log"));
+        // Another directory is independent.
+        cached_ignored_names(&cache, ttl, Path::new("/other"), &["a.log", "b.ts"], lookup);
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn ignored_names_cache_expires_and_caches_a_failed_lookup() {
+        let cache: IgnoredNamesCache = Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        let lookup = |_: &Path, _: &[&str]| {
+            calls.set(calls.get() + 1);
+            None
+        };
+        let dir = Path::new("/proj");
+        let long = Duration::from_secs(60);
+        assert!(cached_ignored_names(&cache, long, dir, &["x"], lookup).is_none());
+        assert!(cached_ignored_names(&cache, long, dir, &["x"], lookup).is_none());
+        assert_eq!(calls.get(), 1);
+        // A zero TTL means every entry is already expired.
+        cached_ignored_names(&cache, Duration::ZERO, dir, &["x"], lookup);
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn project_file_listing_sends_the_root_once() {
+        let dir = tmp("listing-shape");
+        std::fs::create_dir_all(dir.0.join("sub")).unwrap();
+        std::fs::write(dir.0.join("sub").join("a.ts"), "x\n").unwrap();
+        let cwd = dir.0.to_string_lossy().into_owned();
+        let listing = project_file_listing(&cwd).unwrap();
+        assert_eq!(listing.root, path_to_js(&dir.0));
+        assert_eq!(
+            listing.files,
+            vec![ProjectFileEntry {
+                name: "a.ts".into(),
+                relative: "sub/a.ts".into()
+            }]
+        );
+        let json = serde_json::to_value(&listing).unwrap();
+        assert!(json["files"][0].get("path").is_none());
+        // The wrapper's join must reproduce the old absolute path.
+        let old = list_project_files_sync(&cwd).unwrap();
+        assert_eq!(
+            old[0].path,
+            format!(
+                "{}/{}",
+                listing.root.trim_end_matches('/'),
+                listing.files[0].relative
+            )
+        );
     }
 
     #[test]

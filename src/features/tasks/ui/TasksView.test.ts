@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { LOCAL_SYNC_MACHINE_NAME } from "../../connections/model/localSync";
 import type { HostGoal } from "../model/hostGoals";
 import type { HostTask } from "../model/hostTasks";
+import { invalidateMachineSnapshot } from "../../automations/model/machineSnapshot";
 import { TasksView } from "./TasksView";
 
 const invoke = vi.hoisted(() => vi.fn());
@@ -137,6 +138,8 @@ beforeEach(() => {
     removeItem: (key: string) => storage.delete(key),
   });
   invoke.mockReset();
+  // Each test describes the same machine differently.
+  invalidateMachineSnapshot();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);

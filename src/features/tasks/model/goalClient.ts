@@ -12,6 +12,12 @@ import {
   hostProjectCwd,
   hostProjectFor,
 } from "../../automations/model/hostAutomationClient";
+import {
+  collectMachineResults,
+  type LastGoodLists,
+  type MachineResult,
+} from "../../automations/model/machineResults";
+import { machineProjects } from "../../automations/model/machineSnapshot";
 import type { HarnessId, RuntimeMode } from "../../sessions/model/session";
 import { projectName } from "../../../shared/lib/paths";
 import {
@@ -34,6 +40,8 @@ export type BoardGoal = HostGoal & {
   machineName: string;
   /** The goal's projects the host still has, in the goal's order. */
   projects: BoardGoalProject[];
+  /** The machine did not answer; this is what it last reported. */
+  stale?: boolean;
 };
 
 /** What the goal form edits. */
@@ -156,25 +164,34 @@ export function boardGoalsFromHost(
   }));
 }
 
-/** Every reachable machine's goals. A machine that does not answer is left out
- * rather than failing the board. */
+const lastBoardGoals: LastGoodLists<BoardGoal> = new Map();
+
+/** Each machine's goals. A machine that does not answer keeps its last
+ * successful list, flagged stale; `down` machines are not asked. */
+export function listBoardGoalResults(
+  machines: readonly RemoteMachine[],
+  down: readonly RemoteMachine[] = [],
+): Promise<MachineResult<BoardGoal>[]> {
+  return collectMachineResults(
+    lastBoardGoals,
+    machines,
+    async (machine) => {
+      const [goals, projects] = await Promise.all([
+        remoteRequest<HostGoal[]>(machine.id, "goals.list"),
+        machineProjects(machine),
+      ]);
+      return boardGoalsFromHost(machine, projects, goals);
+    },
+    (goal) => ({ ...goal, stale: true }),
+    down,
+  );
+}
+
+/** Every machine's goals, last-known ones included. */
 export async function listBoardGoals(
   machines: readonly RemoteMachine[],
 ): Promise<BoardGoal[]> {
-  const lists = await Promise.all(
-    machines.map(async (machine) => {
-      try {
-        const [goals, projects] = await Promise.all([
-          remoteRequest<HostGoal[]>(machine.id, "goals.list"),
-          remoteRequest<HostProject[]>(machine.id, "projects.list"),
-        ]);
-        return boardGoalsFromHost(machine, projects, goals);
-      } catch {
-        return [];
-      }
-    }),
-  );
-  return lists.flat();
+  return (await listBoardGoalResults(machines)).flatMap((result) => result.data);
 }
 
 /** Creates the goal on the machine that has its projects; its planner starts

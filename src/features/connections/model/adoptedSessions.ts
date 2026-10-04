@@ -123,15 +123,21 @@ export function mergeAdoptedSession(
 
 export type AdoptedMirrorDeps = {
   list: () => Promise<AdoptedEntry[]>;
-  load: (sessionId: string) => Promise<HostSession>;
+  /** `known` is the last snapshot this mirror received, to fetch only what
+   * changed since; a host that cannot honour it makes the loader fall back to
+   * a full snapshot. */
+  load: (sessionId: string, known?: HostSession) => Promise<HostSession>;
   local: () => readonly Session[];
   /** Replaces the local session; `previous` is the copy it was merged from. */
   apply: (merged: Session, previous: Session) => void;
   mirrored: Map<string, number>;
   /** The stored copy of a session no tab has loaded. */
   stored?: (sessionId: string) => Promise<Session | null>;
-  /** Writes a merged copy of a session no tab has loaded. */
-  save?: (merged: Session) => Promise<void>;
+  /** The stored copy's `updatedAt`, read before the host snapshot is loaded. */
+  stamp?: (sessionId: string) => Promise<number | null>;
+  /** Writes a merged copy of a session no tab has loaded. With a `stamp` it
+   * must refuse (resolve `false`) when the stored copy changed since. */
+  save?: (merged: Session, stamp?: number | null) => Promise<void | boolean>;
   /** A session this desktop has never had: one started on the host from
    * another computer. Saves a copy when its project is on this desktop. */
   adopt?: (entry: AdoptedEntry) => Promise<void | boolean>;
@@ -142,6 +148,10 @@ export type AdoptedMirrorDeps = {
  * read from storage again on every pass. */
 const storedHere = new WeakMap<Map<string, number>, Set<string>>();
 const baselines = new WeakMap<Map<string, number>, Map<string, Session>>();
+/** The last host snapshot received per session, to ask for deltas. Bounded:
+ * a snapshot is a whole transcript. */
+const snapshots = new WeakMap<Map<string, number>, Map<string, HostSession>>();
+export const ADOPTED_SNAPSHOT_LIMIT = 6;
 
 /** One mirror pass. Returns the ids the host is still running, so the caller
  * can hold local sending for them. */
@@ -153,6 +163,17 @@ export async function mirrorAdoptedSessions(
   if (!base) baselines.set(deps.mirrored, (base = new Map()));
   const liveIds = new Set(entries.map((entry) => entry.id));
   for (const id of base.keys()) if (!liveIds.has(id)) base.delete(id);
+  let known = snapshots.get(deps.mirrored);
+  if (!known) snapshots.set(deps.mirrored, (known = new Map()));
+  for (const id of known.keys()) if (!liveIds.has(id)) known.delete(id);
+  // Remembered once the host copy was either applied or judged against the
+  // local one; a snapshot dropped on a race is not, so it is fetched again.
+  const remember = (id: string, host: HostSession) => {
+    known.delete(id);
+    known.set(id, host);
+    if (known.size > ADOPTED_SNAPSHOT_LIMIT)
+      known.delete(known.keys().next().value!);
+  };
   const running = new Set(
     entries.filter((entry) => entry.status === "running").map((e) => e.id),
   );
@@ -163,7 +184,7 @@ export async function mirrorAdoptedSessions(
   )) {
     try {
       const before = deps.local().find((session) => session.id === entry.id);
-      const host = await deps.load(entry.id);
+      const host = await deps.load(entry.id, known.get(entry.id));
       // A local turn may have started while the snapshot was in flight.
       const current = deps.local().find((session) => session.id === entry.id);
       if (!current || current.busy) continue;
@@ -173,10 +194,14 @@ export async function mirrorAdoptedSessions(
       }
       const merged = mergeAdoptedSession(current, host, base.get(entry.id));
       if (!merged) {
+        // Not mirrored, but the host copy itself arrived: the next pass only
+        // needs what changed after it.
+        remember(entry.id, host);
         deps.conflict?.(current);
         continue;
       }
       deps.apply(merged, current);
+      remember(entry.id, host);
       base.set(entry.id, merged);
       deps.mirrored.set(entry.id, host.revision);
     } catch {
@@ -210,7 +235,8 @@ export async function mirrorAdoptedSessions(
         // A copy the host is still writing is caught up once the turn ends.
         if (entry.status === "running") continue;
         if (!deps.local().some((session) => session.id === entry.id)) {
-          const host = await deps.load(entry.id);
+          const stamp = await deps.stamp?.(entry.id);
+          const host = await deps.load(entry.id, known.get(entry.id));
           // Storage can change while a remote snapshot is in flight too.
           const current = await deps.stored(entry.id);
           if (
@@ -221,10 +247,18 @@ export async function mirrorAdoptedSessions(
             continue;
           const merged = mergeAdoptedSession(current, host, base.get(entry.id));
           if (!merged) {
+            remember(entry.id, host);
             deps.conflict?.(current);
             continue;
           }
-          await deps.save({ ...merged, continuingElsewhere: undefined });
+          // Another window may have written since: the save then refuses and
+          // the next pass starts over from the newer stored copy.
+          const saved = await deps.save(
+            { ...merged, continuingElsewhere: undefined },
+            stamp,
+          );
+          if (saved === false) continue;
+          remember(entry.id, host);
           base.set(entry.id, merged);
           deps.mirrored.set(entry.id, host.revision);
           continue;

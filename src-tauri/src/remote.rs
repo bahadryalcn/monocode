@@ -190,9 +190,42 @@ fn rpc_agent() -> &'static ureq::Agent {
             .max_idle_connections(32)
             .max_idle_connections_per_host(4)
             .timeout_connect(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(DEFAULT_RPC_TIMEOUT)
             .build()
     })
+}
+
+const DEFAULT_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The single method -> client timeout map. A git network operation runs up to
+/// 120 s on the host (`NETWORK_MS` in `host/git-actions.ts`) and `git_sync`
+/// chains a 30 s pull and a push (150 s); the client must outlast them,
+/// otherwise a valid Push/Fetch/Pull looks failed while it still runs and the
+/// user resends it. Push/Fetch/Pull/Sync arrive as `workspace.run` commands.
+fn rpc_timeout(method: &str, params: &Value) -> std::time::Duration {
+    const GIT_ACTION: std::time::Duration = std::time::Duration::from_secs(135);
+    const GIT_NETWORK_RUN: std::time::Duration = std::time::Duration::from_secs(165);
+    match method {
+        "git.action" => GIT_ACTION,
+        "workspace.run"
+            if matches!(
+                params.get("command").and_then(Value::as_str),
+                Some(
+                    "git_push"
+                        | "git_pull"
+                        | "git_sync"
+                        | "git_fetch"
+                        | "git_merge"
+                        | "git_rebase"
+                        | "git_delete_remote_branch"
+                        | "git_pr_create"
+                )
+            ) =>
+        {
+            GIT_NETWORK_RUN
+        }
+        _ => DEFAULT_RPC_TIMEOUT,
+    }
 }
 
 fn rpc(
@@ -206,6 +239,7 @@ fn rpc(
     let payload = json!({ "version": 1, "environmentId": environment_id, "method": method, "params": params });
     let response = agent
         .post(&format!("{endpoint}/rpc"))
+        .timeout(rpc_timeout(method, &params))
         .set("Authorization", &format!("Bearer {token}"))
         .set("Content-Type", "application/json")
         .send_string(&payload.to_string());
@@ -880,6 +914,24 @@ pub fn remote_ssh_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_actions_outlast_the_hosts_network_limit_and_others_keep_the_default() {
+        use std::time::Duration;
+        // Host NETWORK_MS is 120 s; git_sync chains a 30 s pull and a push.
+        let none = json!({});
+        assert!(rpc_timeout("git.action", &none) >= Duration::from_secs(135));
+        for command in ["git_push", "git_pull", "git_sync", "git_fetch"] {
+            let run = json!({ "command": command });
+            assert!(rpc_timeout("workspace.run", &run) >= Duration::from_secs(165));
+        }
+        let read = json!({ "command": "read_text_file" });
+        assert_eq!(rpc_timeout("workspace.run", &read), DEFAULT_RPC_TIMEOUT);
+        assert_eq!(rpc_timeout("workspace.run", &none), DEFAULT_RPC_TIMEOUT);
+        assert_eq!(rpc_timeout("git.index", &none), DEFAULT_RPC_TIMEOUT);
+        assert_eq!(rpc_timeout("environment.describe", &none), DEFAULT_RPC_TIMEOUT);
+    }
+
     #[test]
     fn rpc_reuses_a_connection_without_reusing_request_credentials() {
         use std::io::{BufRead, BufReader};

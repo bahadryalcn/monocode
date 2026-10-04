@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { HostEngine } from "./engine";
 import { HostStore } from "./store";
 import { createHostServer } from "./server";
-import { DesktopSessions } from "./desktopSessions";
+import { DesktopSessions, normalizeProjectPath } from "./desktopSessions";
 import { DesktopLive } from "./desktopLive";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -239,5 +239,137 @@ describe("desktop sessions on the host", () => {
     s.seed({ id: "a", cwd: s.project.cwd, updated: 100 });
     const desktop = new DesktopSessions(() => [s.dbPath, s.dbPath]);
     expect(desktop.list(s.project.cwd, s.project.id, ["codex"])).toHaveLength(1);
+    desktop.close();
+  });
+
+  it("reuses one read-only connection across calls and releases it on close", async () => {
+    const s = await setup();
+    s.seed({ id: "a", cwd: s.project.cwd, updated: 100 });
+    const desktop = new DesktopSessions(() => [s.dbPath]);
+    cleanups.unshift(async () => desktop.close());
+    expect(desktop.stamp("a")?.updatedAt).toBe(100);
+    s.desktopDb.prepare("UPDATE sessions SET updated_at=250 WHERE id='a'").run();
+    // Data written by the desktop meanwhile is visible through the same handle.
+    expect(desktop.stamp("a")?.updatedAt).toBe(250);
+    desktop.list(s.project.cwd, s.project.id, ["codex"]);
+    desktop.snapshot("a", s.project.id);
+    expect(desktop.opened).toBe(1);
+    desktop.close();
+    desktop.stamp("a");
+    expect(desktop.opened).toBe(2);
+    desktop.close();
+  });
+
+  it("drops an idle connection so the desktop can replace the file", async () => {
+    const s = await setup();
+    s.seed({ id: "a", cwd: s.project.cwd });
+    const desktop = new DesktopSessions(() => [s.dbPath], process.platform, new DesktopLive(), 20);
+    cleanups.unshift(async () => desktop.close());
+    desktop.stamp("a");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    desktop.stamp("a");
+    expect(desktop.opened).toBe(2);
+    desktop.close();
+  });
+
+  it.skipIf(process.platform === "win32")("reopens after the database file is replaced", async () => {
+    const s = await setup();
+    s.seed({ id: "a", cwd: s.project.cwd, updated: 100 });
+    const desktop = new DesktopSessions(() => [s.dbPath]);
+    cleanups.unshift(async () => desktop.close());
+    expect(desktop.stamp("a")?.updatedAt).toBe(100);
+    const next = join(s.projectDir, "..", "replacement.db");
+    const replacement = new DatabaseSync(next);
+    replacement.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, harness TEXT NOT NULL, blocks_json TEXT NOT NULL, updated_at INTEGER);
+      INSERT INTO sessions VALUES ('a', 'x', 'codex', '[]', 777);`);
+    replacement.close();
+    renameSync(next, s.dbPath);
+    expect(desktop.stamp("a")?.updatedAt).toBe(777);
+    expect(desktop.opened).toBe(2);
+    desktop.close();
+  });
+
+  it("re-reads the schema when a newer desktop migrates it", async () => {
+    const s = await setup();
+    s.seed({ id: "a", cwd: s.project.cwd });
+    const desktop = new DesktopSessions(() => [s.dbPath]);
+    cleanups.unshift(async () => desktop.close());
+    expect(desktop.snapshot("a", s.project.id)).toBeDefined();
+    // inbox_ask hides a row; the cached column list must learn the new column.
+    s.desktopDb.exec("ALTER TABLE sessions ADD COLUMN inbox_ask TEXT; UPDATE sessions SET inbox_ask='x'");
+    expect(desktop.snapshot("a", s.project.id)).toBeUndefined();
+    expect(desktop.opened).toBe(1);
+    desktop.close();
+  });
+
+  it("projectCwd returns the project folder, not the worktree, and skips unlisted rows", async () => {
+    const s = await setup();
+    s.seed({ id: "a", cwd: s.project.cwd, worktree: join(s.projectDir, "wt") });
+    s.seed({ id: "draft", cwd: s.project.cwd, draft: 1 });
+    const desktop = new DesktopSessions(() => [s.dbPath]);
+    cleanups.unshift(async () => desktop.close());
+    expect(desktop.projectCwd("a")).toBe(s.project.cwd);
+    expect(desktop.projectCwd("draft")).toBeUndefined();
+    expect(desktop.projectCwd("missing")).toBeUndefined();
+    desktop.close();
+  });
+});
+
+describe("DesktopSessions project filter", () => {
+  function database(rows: Array<[string, string, string, string | null]>) {
+    const directory = mkdtempSync(join(tmpdir(), "monocode-desktop-filter-"));
+    const dbPath = join(directory, "monocode.db");
+    const db = new DatabaseSync(dbPath);
+    db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, harness TEXT NOT NULL, model TEXT, model_settings TEXT, runtime_mode TEXT, title TEXT, provider_session_id TEXT, blocks_json TEXT NOT NULL, created_at INTEGER, updated_at INTEGER, worktree_cwd TEXT, has_user_message INTEGER DEFAULT 1, is_draft INTEGER DEFAULT 0);`);
+    const insert = db.prepare(
+      "INSERT INTO sessions (id, cwd, harness, title, blocks_json, created_at, updated_at, worktree_cwd) VALUES (?, ?, ?, 't', '[]', 1, 10, ?)",
+    );
+    for (const row of rows) insert.run(...row);
+    db.close();
+    cleanups.push(async () => rmSync(directory, { recursive: true, force: true }));
+    return dbPath;
+  }
+
+  // The reference: every row through the per-row JS predicate the SQL replaced.
+  const reference = (
+    rows: Array<[string, string, string, string | null]>,
+    platform: NodeJS.Platform,
+    project: string,
+    providers: string[],
+  ) =>
+    rows
+      .filter(
+        ([, cwd, harness]) =>
+          providers.includes(harness) &&
+          normalizeProjectPath(cwd, platform) === normalizeProjectPath(project, platform),
+      )
+      .map(([id]) => id)
+      .sort();
+
+  it("returns the same sessions as the JS predicate for worktree and case variants", () => {
+    const rows: Array<[string, string, string, string | null]> = [
+      ["exact", "C:\\Work\\Proj", "codex", null],
+      ["case", "c:/WORK/proj/", "codex", null],
+      ["worktree", "C:/Work/Proj", "codex", "C:/Work/Proj-wt/feature"],
+      ["in-worktree-cwd", "C:/Work/Proj-wt/feature", "codex", null],
+      ["other", "C:/Work/Other", "codex", null],
+      ["wrong-harness", "C:/Work/Proj", "grok", null],
+    ];
+    for (const platform of ["win32", "linux"] as const) {
+      const desktop = new DesktopSessions(() => [database(rows)], platform);
+      cleanups.push(async () => desktop.close());
+      const got = desktop.list("C:/Work/Proj", "p", ["codex"]).map((s) => s.id).sort();
+      expect(got).toEqual(reference(rows, platform, "C:/Work/Proj", ["codex"]));
+      desktop.close();
+    }
+    const desktop = new DesktopSessions(() => [database(rows)], "win32");
+    cleanups.push(async () => desktop.close());
+    expect(desktop.list("C:/Work/Proj", "p", ["codex"]).map((s) => s.id).sort()).toEqual([
+      "case",
+      "exact",
+      "worktree",
+    ]);
+    expect(desktop.list("C:/Work/Proj", "p", [])).toEqual([]);
+    desktop.close();
   });
 });

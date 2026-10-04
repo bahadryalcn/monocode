@@ -5,6 +5,7 @@ import {
   DESKTOP_LIVE_MS,
   runDesktopLiveTick,
   supportsDesktopLive,
+  type DesktopLiveBeat,
   type DesktopLiveCommand,
   type DesktopLiveHandlers,
 } from "./desktopLive";
@@ -27,13 +28,14 @@ export function useDesktopLive(
   const state = useRef({
     unacked: new Set<string>(),
     handled: new Set<string>(),
+    beat: {} as DesktopLiveBeat,
   });
   useEffect(() => {
     let stopped = false;
     let running = false;
     let machineId: string | undefined;
     let checkedAt = 0;
-    const { unacked, handled } = state.current;
+    const { unacked, handled, beat } = state.current;
 
     const tick = async () => {
       if (running || !hostReachable.current) return;
@@ -62,9 +64,11 @@ export function useDesktopLive(
           },
           unacked,
           handled,
+          beat,
         });
       } catch {
         machineId = undefined; // Host unreachable; the next tick looks again.
+        beat.idleAt = undefined;
       } finally {
         running = false;
       }

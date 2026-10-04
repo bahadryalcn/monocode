@@ -16,8 +16,46 @@ export function emitExplorerFilePointerDrag(
   );
 }
 
+let dropHint: HTMLDivElement | null = null;
+
+/** Shared pointer feedback; the badge never intercepts hit testing. */
+export function setDropFeedback(
+  action: "move" | "window" | "blocked",
+  pointer: { clientX: number; clientY: number },
+  label?: string,
+) {
+  document.body.style.cursor =
+    action === "blocked"
+      ? "not-allowed"
+      : action === "window"
+        ? "alias"
+        : "move";
+  if (!dropHint) {
+    dropHint = document.createElement("div");
+    dropHint.className = "pointer-drop-hint";
+    dropHint.setAttribute("aria-hidden", "true");
+    document.body.append(dropHint);
+  }
+  dropHint.dataset.action = action;
+  dropHint.textContent =
+    label ??
+    (action === "blocked"
+      ? "Cannot drop here"
+      : action === "window"
+        ? "Move to another window"
+        : "Release to move");
+  dropHint.style.left = `${Math.max(8, Math.min(pointer.clientX + 18, window.innerWidth - dropHint.offsetWidth - 8))}px`;
+  dropHint.style.top = `${Math.max(8, Math.min(pointer.clientY + 22, window.innerHeight - dropHint.offsetHeight - 8))}px`;
+}
+
 export function setGrabbing(on: boolean) {
   document.body.style.cursor = on ? "grabbing" : "";
+  if (on) document.documentElement.classList.add("is-grabbing");
+  else document.documentElement.classList.remove("is-grabbing");
+  if (!on) {
+    dropHint?.remove();
+    dropHint = null;
+  }
 }
 
 /** Block native text selection for the duration of a reorder gesture. */

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CYCLE_INTERVAL_MS,
+  MAX_PARALLEL_SYNCS,
   MIN_CYCLE_SPACING_MS,
+  SYNC_BACKOFF_BASE_MS,
+  SYNC_BACKOFF_MAX_MS,
   SYNC_UNSUPPORTED_MESSAGE,
   getSyncStatus,
   recordSyncStatus,
@@ -9,6 +12,7 @@ import {
   startSyncLoop,
   subscribeSyncMerged,
   subscribeSyncStatus,
+  syncBackoffMs,
   syncNow,
 } from "./syncClient";
 import { loadPeerState, peerRev, queueLocalChange } from "./syncPeerState";
@@ -561,5 +565,140 @@ describe("sync loop pacing", () => {
     await vi.advanceTimersByTimeAsync(MIN_CYCLE_SPACING_MS * 2);
     expect(cycles).toHaveBeenCalledTimes(2);
     loop.stop();
+  });
+});
+
+describe("per-machine scheduling", () => {
+  beforeEach(() => {
+    mockLocalStorage();
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  const ok = { rev: 1, records: [], applied: [], rejected: [] };
+
+  it("an offline machine does not delay a healthy one", async () => {
+    let fail: (error: Error) => void = () => undefined;
+    const hang = new Promise<never>((_, reject) => (fail = reject));
+    const loop = startSyncLoop(
+      () => ["par-a", "par-b"],
+      (id) => (id === "par-a" ? () => hang : async () => ok),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getSyncStatus("par-a").state).toBe("syncing");
+    expect(getSyncStatus("par-b").state).toBe("ok");
+    fail(new Error("timed out"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getSyncStatus("par-a").state).toBe("error");
+    loop.stop();
+  });
+
+  it("runs at most MAX_PARALLEL_SYNCS machines at once", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const started: string[] = [];
+    const ids = ["lim-1", "lim-2", "lim-3", "lim-4", "lim-5"];
+    const loop = startSyncLoop(
+      () => ids,
+      (id) => async () => {
+        if (!started.includes(id)) started.push(id);
+        await gate;
+        return ok;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toHaveLength(MAX_PARALLEL_SYNCS);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toEqual(ids);
+    loop.stop();
+  });
+
+  it("syncNow(machine) during a running sync resolves only after a later sync of that machine", async () => {
+    const gates: Array<() => void> = [];
+    let starts = 0;
+    const loop = startSyncLoop(
+      () => ["now-b"],
+      () => {
+        const gate = new Promise<void>((resolve) => gates.push(resolve));
+        starts += 1;
+        return async () => {
+          await gate;
+          return ok;
+        };
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(starts).toBe(1);
+    let done = false;
+    const asked = syncNow("now-b").then(() => (done = true));
+    const askedAgain = syncNow("now-b");
+    gates[0]();
+    await vi.advanceTimersByTimeAsync(0);
+    // The sync that was running when asked finished; a new one has started.
+    expect(starts).toBe(2);
+    expect(done).toBe(false);
+    gates[1]();
+    await Promise.all([asked, askedAgain]);
+    expect(done).toBe(true);
+    // Both callers shared exactly one follow-up.
+    expect(starts).toBe(2);
+    loop.stop();
+  });
+
+  it("a failing machine backs off on its own while healthy machines keep the normal cadence", async () => {
+    const counts = new Map<string, number>();
+    const loop = startSyncLoop(
+      () => ["bo-bad", "bo-good"],
+      (id) => {
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+        return id === "bo-bad"
+          ? async () => {
+              throw new Error("unreachable");
+            }
+          : async () => ok;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect([counts.get("bo-bad"), counts.get("bo-good")]).toEqual([1, 1]);
+    await vi.advanceTimersByTimeAsync(CYCLE_INTERVAL_MS);
+    expect([counts.get("bo-bad"), counts.get("bo-good")]).toEqual([1, 2]);
+    // Past the longest first backoff (60 s + 20 % jitter).
+    await vi.advanceTimersByTimeAsync(SYNC_BACKOFF_BASE_MS * 1.2);
+    expect(counts.get("bo-bad")).toBe(2);
+    expect(counts.get("bo-good")).toBeGreaterThan(2);
+    loop.stop();
+  });
+
+  it("an explicit syncNow ignores the failure backoff", async () => {
+    let starts = 0;
+    const loop = startSyncLoop(
+      () => ["ex-bad"],
+      () => {
+        starts += 1;
+        return async () => {
+          throw new Error("unreachable");
+        };
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await syncNow("ex-bad");
+    expect(starts).toBe(2);
+    loop.stop();
+  });
+});
+
+describe("syncBackoffMs", () => {
+  it("grows exponentially, is capped, and jitters by +-20%", () => {
+    expect(syncBackoffMs(0)).toBe(0);
+    expect(syncBackoffMs(1, () => 0.5)).toBe(SYNC_BACKOFF_BASE_MS);
+    expect(syncBackoffMs(2, () => 0.5)).toBe(SYNC_BACKOFF_BASE_MS * 2);
+    expect(syncBackoffMs(30, () => 1)).toBe(SYNC_BACKOFF_MAX_MS);
+    expect(syncBackoffMs(1, () => 0)).toBe(SYNC_BACKOFF_BASE_MS * 0.8);
+    expect(syncBackoffMs(1, () => 1)).toBe(SYNC_BACKOFF_BASE_MS * 1.2);
   });
 });

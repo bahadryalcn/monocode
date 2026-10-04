@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -51,20 +52,27 @@ type Props = {
   visible?: boolean;
   /** Renders the turn that holds the block. Returns false when the block is unknown. */
   revealBlock?: (blockId: string) => boolean;
+  /** Tells the owner when the hover card needs the live reply text. */
+  onOpenChange?: (open: boolean) => void;
 };
 
-export function PromptOutline({
+export const PromptOutline = memo(function PromptOutline({
   blocks,
   scope,
   scroller: mountedScroller,
   visible = true,
   revealBlock,
+  onOpenChange,
 }: Props) {
   const prompts = useMemo(() => promptBlocks(blocks), [blocks]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [stackBudget, setStackBudget] = useState(BAR_STACK_MAX_PX);
   const [hover, setHover] = useState<Hover | null>(null);
   const [open, setOpen] = useState(false);
+  useEffect(() => {
+    onOpenChange?.(open);
+    return () => onOpenChange?.(false);
+  }, [open, onOpenChange]);
   const [focusId, setFocusId] = useState<string | null>(null);
   const rail = useRef<HTMLDivElement>(null);
   const frame = useRef<number | null>(null);
@@ -333,7 +341,7 @@ export function PromptOutline({
       ) : null}
     </div>
   );
-}
+});
 
 /** Clicking a bar focuses it as well. Only a keyboard focus holds the card open. */
 function keyboardFocused(rail: HTMLElement | null): boolean {

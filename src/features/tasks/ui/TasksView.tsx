@@ -38,6 +38,11 @@ import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { backgroundMachineFor } from "../../automations/model/hostAutomationClient";
+import {
+  failedMachineNames,
+  staleMachineNames,
+} from "../../automations/model/machineResults";
+import { useRefreshLoop } from "../../automations/model/refreshScheduler";
 import type { RemoteMachine } from "../../connections/model/protocol";
 import { parseRemotePath } from "../../connections/model/remoteProjects";
 import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
@@ -82,7 +87,7 @@ import {
   deleteGoal,
   goalKey,
   goalMachines,
-  listBoardGoals,
+  listBoardGoalResults,
   newGoalDraft,
   replanGoal,
   sameGoalMachine,
@@ -94,7 +99,7 @@ import {
   TASK_MACHINE_ERROR,
   deleteTask,
   draftFromTask,
-  listBoardTasks,
+  listBoardTaskResults,
   missingMachinesNotice,
   moveTask,
   newTaskDraft,
@@ -281,38 +286,49 @@ function TasksContent({
     [goalFilter, visibleTasks],
   );
 
-  const refresh = useCallback(async () => {
+  const refreshBoard = useCallback(async (isCurrent: () => boolean) => {
     try {
       const [reach, goalHosts, todoHosts] = await Promise.all([
         probeTaskMachines(),
         goalMachines(),
         todoMachines(),
       ]);
+      if (!isCurrent()) return;
       const capable = reach.capable;
       setMachines(capable);
-      setMissingNotice(missingMachinesNotice(reach));
       setTodoCapable(todoHosts);
       setGoalCapable(goalHosts);
-      const [nextTasks, nextGoals] = await Promise.all([
-        listBoardTasks(capable),
-        listBoardGoals(goalHosts),
+      const [taskResults, goalResults] = await Promise.all([
+        listBoardTaskResults(capable, reach.unreachableMachines),
+        listBoardGoalResults(goalHosts, reach.unreachableMachines),
       ]);
-      setTasks(nextTasks);
-      setGoals(nextGoals);
+      if (!isCurrent()) return;
+      // A machine that does not answer keeps its last known cards, marked stale.
+      const results = [...taskResults, ...goalResults];
+      setMissingNotice(
+        missingMachinesNotice(
+          {
+            outdated: reach.outdated,
+            unreachable: [
+              ...new Set([...reach.unreachable, ...failedMachineNames(results)]),
+            ],
+          },
+          staleMachineNames(results),
+        ),
+      );
+      setTasks(taskResults.flatMap((result) => result.data));
+      setGoals(goalResults.flatMap((result) => result.data));
       setNow(Date.now());
     } catch {
-      // A machine that does not answer keeps its last known tasks.
+      // A board that cannot be read keeps what it shows.
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, []);
 
-  // The host reports no changes, so the board is polled while this view is open.
-  useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 15_000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+  // The host reports no changes, so the board is polled while this view is
+  // open; refreshes never overlap and a superseded one is dropped.
+  const refresh = useRefreshLoop(refreshBoard, 15_000);
 
   const beginCreate = () => {
     const project =
@@ -792,6 +808,7 @@ function TaskCard({
       ) : null}
       <p className="mt-1 truncate text-[11px] text-content/45">
         {project} · on {task.machineName}
+        {task.stale ? " (offline, last known)" : ""}
       </p>
       <p className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-content/50">
         <HarnessIcon harness={task.harness} className="size-3.5 shrink-0" />
@@ -1600,6 +1617,7 @@ function GoalCard({
         <span className="min-w-0 truncate text-[11px] text-content/40">
           {goal.projects.map((project) => project.name).join(", ")} · on{" "}
           {goal.machineName}
+          {goal.stale ? " (offline, last known)" : ""}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           {busy ? (

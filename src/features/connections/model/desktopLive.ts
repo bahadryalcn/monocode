@@ -3,6 +3,11 @@ import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 
 export const DESKTOP_LIVE_CAPABILITY = "sessions.desktopLive";
 export const DESKTOP_LIVE_MS = 1_500;
+/** While nothing is busy or waiting and nothing is left to acknowledge, an
+ * empty heartbeat is repeated this rarely. It must stay well under the host's
+ * 20 s stale threshold (DESKTOP_BEAT_STALE_MS), and a remote Stop/Approve/Answer
+ * only exists for a busy or waiting session, so it never waits on this. */
+export const DESKTOP_LIVE_IDLE_MS = 5_000;
 
 export function supportsDesktopLive(capabilities: string[] | undefined): boolean {
   return !!capabilities?.includes(DESKTOP_LIVE_CAPABILITY);
@@ -45,21 +50,39 @@ function undecidedApprovals(session: Session): Block[] {
   return session.blocks.filter((block) => block.approval && !block.approval.decided);
 }
 
+/** The heartbeat entry per session object (null: nothing to report). A session
+ * keeps its identity while unchanged, so only changed ones are scanned again. */
+const entryBySession = new WeakMap<Session, DesktopLiveSession | null>();
+let lastSessions: readonly Session[] | undefined;
+let lastEntries: DesktopLiveSession[] = [];
+
+function desktopLiveEntry(session: Session): DesktopLiveSession | null {
+  if (session.worktreeRemoved) return null;
+  const approvals = undecidedApprovals(session);
+  const question = session.pendingQuestion;
+  const busy = !!session.busy;
+  if (!busy && approvals.length === 0 && !question) return null;
+  const entry: DesktopLiveSession = { id: session.id, busy };
+  if (approvals.length > 0) entry.pending = jsonSafe(approvals);
+  if (question) entry.patch = jsonSafe({ pendingQuestion: question });
+  return entry;
+}
+
 /** Every busy session, or one waiting on an approval/question. The pending
  * approval blocks and the live question prompt are what persistence drops. */
 export function buildDesktopLiveSessions(sessions: readonly Session[]): DesktopLiveSession[] {
+  if (sessions === lastSessions) return lastEntries;
   const out: DesktopLiveSession[] = [];
   for (const session of sessions) {
-    if (session.worktreeRemoved) continue;
-    const approvals = undecidedApprovals(session);
-    const question = session.pendingQuestion;
-    const busy = !!session.busy;
-    if (!busy && approvals.length === 0 && !question) continue;
-    const entry: DesktopLiveSession = { id: session.id, busy };
-    if (approvals.length > 0) entry.pending = jsonSafe(approvals);
-    if (question) entry.patch = jsonSafe({ pendingQuestion: question });
-    out.push(entry);
+    let entry = entryBySession.get(session);
+    if (entry === undefined) {
+      entry = desktopLiveEntry(session);
+      entryBySession.set(session, entry);
+    }
+    if (entry) out.push(entry);
   }
+  lastSessions = sessions;
+  lastEntries = out;
   return out;
 }
 
@@ -98,10 +121,16 @@ export function applyDesktopLiveCommand(
   return false;
 }
 
+/** When the last heartbeat was sent and whether it reported nothing. */
+export type DesktopLiveBeat = { idleAt?: number };
+
 /** One exchange with the host: report live sessions plus what was handled
  * since last time, then execute the commands it returns. `unacked` keeps ids
- * until a call succeeds; `handled` dedupes re-sent commands. */
+ * until a call succeeds; `handled` dedupes re-sent commands. With a `beat`,
+ * an empty heartbeat is not repeated before DESKTOP_LIVE_IDLE_MS. */
 export async function runDesktopLiveTick(deps: {
+  beat?: DesktopLiveBeat;
+  now?: () => number;
   clientId?: string;
   request: (payload: DesktopLivePayload) => Promise<{ commands?: DesktopLiveCommand[] } | undefined>;
   sessions: () => readonly Session[];
@@ -110,12 +139,24 @@ export async function runDesktopLiveTick(deps: {
   handled: Set<string>;
 }): Promise<void> {
   const acked = [...deps.unacked];
+  const now = deps.now ?? Date.now;
+  const live = buildDesktopLiveSessions(deps.sessions());
+  const idle = live.length === 0 && acked.length === 0;
+  // Anything busy, waiting or unacknowledged goes out on every tick, so a
+  // session that starts running is reported within one DESKTOP_LIVE_MS.
+  if (
+    idle &&
+    deps.beat?.idleAt !== undefined &&
+    now() - deps.beat.idleAt < DESKTOP_LIVE_IDLE_MS
+  )
+    return;
   const payload: DesktopLivePayload = {
     ...(deps.clientId ? { clientId: deps.clientId } : {}),
-    sessions: buildDesktopLiveSessions(deps.sessions()),
+    sessions: live,
     ...(acked.length > 0 ? { acked } : {}),
   };
   const result = await deps.request(payload);
+  if (deps.beat) deps.beat.idleAt = idle ? now() : undefined;
   for (const id of acked) deps.unacked.delete(id);
   const commands = Array.isArray(result?.commands) ? result.commands : [];
   for (const command of commands) {

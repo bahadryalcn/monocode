@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { Shimmer } from "../../../shared/ui/Shimmer";
 import {
@@ -56,7 +56,7 @@ type Props = {
  * agent rows scroll away with the turn they belong to; this reads the same
  * data (one `deriveActivityDock`) from the one place the reader always is.
  */
-export function ActivityDock({
+export const ActivityDock = memo(function ActivityDock({
   sessionId,
   blocks,
   busy,
@@ -130,7 +130,7 @@ export function ActivityDock({
       )}
     </div>
   );
-}
+});
 
 type DockStop = ReturnType<typeof useStopRequests> & {
   perItem: boolean;

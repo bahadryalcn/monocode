@@ -204,8 +204,25 @@ export function listClaudeCommands(cwd: string): Promise<ClaudeCommandEntry[]> {
   return invoke<ClaudeCommandEntry[]>("list_claude_commands", { cwd });
 }
 
-export function listProjectFiles(cwd: string): Promise<ProjectFile[]> {
-  return invoke<ProjectFile[]>("list_project_files", { cwd });
+type ProjectFileListing = {
+  root: string;
+  files: { name: string; relative: string }[];
+};
+
+/** Local projects send the root once with relative paths; a remote host still
+ * sends full entries, which pass through untouched. */
+export async function listProjectFiles(cwd: string): Promise<ProjectFile[]> {
+  const listing = await invoke<ProjectFileListing | ProjectFile[]>(
+    "list_project_files",
+    { cwd },
+  );
+  if (Array.isArray(listing)) return listing;
+  const prefix = listing.root.endsWith("/") ? listing.root : `${listing.root}/`;
+  return listing.files.map((file) => ({
+    name: file.name,
+    path: prefix + file.relative,
+    relative: file.relative,
+  }));
 }
 
 export type GitDiffStats = {

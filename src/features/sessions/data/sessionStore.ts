@@ -231,10 +231,28 @@ const sessionWriteQueues = new Map<string, Promise<unknown>>();
 const sessionWriteLeadById = new Map<string, string>();
 const deletedSessionIds = new Set<string>();
 
+/**
+ * Newest not-yet-started live snapshot per session. A live write waits in the
+ * chain behind the one in flight; further snapshots replace its content instead
+ * of queueing another full payload behind a slow disk.
+ */
+type LiveWriteOptions = {
+  /** Checked when the write is about to start; false drops it. */
+  shouldWrite?: () => boolean;
+  /** Called as the write starts, never for a snapshot that was replaced. */
+  onStart?: () => void;
+  onFailed?: () => void;
+};
+type LiveSlot = { session: Session; options: LiveWriteOptions };
+const pendingLiveWrites = new Map<string, LiveSlot>();
+
 function enqueueSessionWrite<T>(
   sessionId: string,
   operation: () => Promise<T>,
+  live = false,
 ): Promise<T> {
+  // Any other write carries newer data than a snapshot that has not started.
+  if (!live) pendingLiveWrites.delete(sessionId);
   const previous = sessionWriteQueues.get(sessionId) ?? Promise.resolve();
   const run = previous.catch(() => undefined).then(operation);
   const tail = run.then(
@@ -251,8 +269,105 @@ function enqueueSessionWrite<T>(
   return run;
 }
 
-export async function upsertSession(
+export function upsertSession(
   session: Session,
+): Promise<SessionSummary | null> {
+  return persistSession(session);
+}
+
+/**
+ * Mid-turn snapshot for watchers: at most one write in flight and one pending
+ * per session, the pending one always the newest. Shares the per-session chain
+ * with every other write, so a settle/delete/archive write issued later
+ * discards the pending snapshot and runs after the one in flight.
+ */
+export function upsertSessionLive(
+  session: Session,
+  options: LiveWriteOptions = {},
+): Promise<void> {
+  if (!shouldPersistSession(session) || deletedSessionIds.has(session.id)) {
+    return Promise.resolve();
+  }
+  const id = session.id;
+  const pending = pendingLiveWrites.get(id);
+  if (pending) {
+    pending.session = session;
+    pending.options = options;
+    return Promise.resolve();
+  }
+  const slot: LiveSlot = { session, options };
+  pendingLiveWrites.set(id, slot);
+  return enqueueSessionWrite(
+    id,
+    async () => {
+      // Discarded by a later write, or superseded by a newer slot.
+      if (pendingLiveWrites.get(id) !== slot) return;
+      pendingLiveWrites.delete(id);
+      const { session: latest, options: latestOptions } = slot;
+      if (
+        deletedSessionIds.has(id) ||
+        latestOptions.shouldWrite?.() === false
+      ) {
+        return;
+      }
+      latestOptions.onStart?.();
+      try {
+        const payload = sanitizeSessionForPersist(latest);
+        if (latest.orchestrationLeadId) {
+          sessionWriteLeadById.set(id, latest.orchestrationLeadId);
+        } else {
+          sessionWriteLeadById.delete(id);
+        }
+        await invoke<SessionSummary>("session_upsert", {
+          session: {
+            ...payload,
+            blocks: payload.blocks.map((block) =>
+              block.orchestrationLeadId &&
+              deletedSessionIds.has(block.orchestrationLeadId)
+                ? { ...block, orchestrationLeadId: undefined }
+                : block,
+            ),
+          },
+        });
+      } catch {
+        latestOptions.onFailed?.();
+      }
+    },
+    true,
+  );
+}
+
+/** The stored row's `updatedAt`, read without the load-time backfills (which
+ * write), so it is safe to call from inside the write queue. */
+export async function storedSessionUpdatedAt(
+  sessionId: string,
+): Promise<number | null> {
+  const record = await invoke<{ updatedAt?: unknown } | null>("session_get", {
+    sessionId,
+  });
+  return record ? (sanitizeTimestamp(record.updatedAt) ?? null) : null;
+}
+
+/** Saves only if the row still has the `updatedAt` the caller read before it
+ * built `session` (`null`: the row must not exist). The Rust command checks
+ * the stamp and writes under one store lock, so no other window can write in
+ * between. Resolves to `false` when the stamp was stale and nothing was saved. */
+export async function upsertSessionIfUnchanged(
+  session: Session,
+  expectedUpdatedAt: number | null,
+): Promise<boolean> {
+  const summary = await persistSession(
+    session,
+    expectedUpdatedAt === null
+      ? { expectMissing: true }
+      : { expectedUpdatedAt },
+  );
+  return !!summary;
+}
+
+async function persistSession(
+  session: Session,
+  guard?: { expectedUpdatedAt: number } | { expectMissing: true },
 ): Promise<SessionSummary | null> {
   if (!shouldPersistSession(session) || deletedSessionIds.has(session.id)) {
     return null;
@@ -265,7 +380,7 @@ export async function upsertSession(
   }
   const summary = await enqueueSessionWrite(session.id, async () => {
     if (deletedSessionIds.has(session.id)) return null;
-    return invoke<SessionSummary>("session_upsert", {
+    return invoke<SessionSummary | null>("session_upsert", {
       session: {
         ...payload,
         blocks: payload.blocks.map((block) =>
@@ -275,6 +390,7 @@ export async function upsertSession(
             : block,
         ),
       },
+      ...guard,
     });
   });
   return summary ? normalizeSummary(summary) : null;

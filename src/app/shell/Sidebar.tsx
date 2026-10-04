@@ -95,7 +95,16 @@ import {
   setExternalPaneDrop,
 } from "../../features/workspace/model/paneDrop";
 import type { PaneEdge } from "../../features/workspace/model/layout";
-import { suppressTextSelection } from "../../shared/lib/drag";
+import {
+  setDropFeedback,
+  setGrabbing,
+  suppressTextSelection,
+} from "../../shared/lib/drag";
+import {
+  isPointerOutsideWindow,
+  popOutPosition,
+  type WindowMovePosition,
+} from "../model/windowTransferPopout";
 import {
   compareSessionSummaries,
   filterSessionsByArchive,
@@ -218,7 +227,11 @@ import {
   remoteSessionFor,
   useRemoteProjectSessions,
 } from "../../features/connections/model/connections";
-import { parseRemotePath, remotePath, remoteProjectFor } from "../../features/connections/model/remoteProjects";
+import {
+  parseRemotePath,
+  remotePath,
+  remoteProjectFor,
+} from "../../features/connections/model/remoteProjects";
 
 const MIN_WIDTH = SESSION_SIDEBAR_WIDTH_MIN;
 const MAX_WIDTH = SESSION_SIDEBAR_WIDTH_MAX;
@@ -283,6 +296,7 @@ type Props = {
     targetId: string,
     edge: PaneEdge,
   ) => void;
+  onPopOutSession?: (sessionId: string, position: WindowMovePosition) => void;
   /** Opens several sessions together as a grid in one new tab. */
   onOpenSessionsSideBySide?: (sessionIds: string[]) => void;
   onRenameSession?: (sessionId: string, title: string) => void;
@@ -333,7 +347,10 @@ type Props = {
   recentSessions?: RecentSessionsSource;
   onSelectProject?: (path: string) => void;
   onOpenProject?: () => void;
-  onOpenSyncedProject?: (projectId: string, name: string) => void | Promise<void>;
+  onOpenSyncedProject?: (
+    projectId: string,
+    name: string,
+  ) => void | Promise<void>;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onNew?: () => string | void;
   onNewTerminal?: () => void;
@@ -393,6 +410,7 @@ function SidebarComponent({
   onSessionNavigationOrder,
   onPrefetchSession: onPrefetchLocalSession,
   onPlaceSessionOnPane: onPlaceLocalSessionOnPane,
+  onPopOutSession: onPopOutLocalSession,
   onOpenSessionsSideBySide: onOpenLocalSessionsSideBySide,
   onRenameSession: onRenameLocalSession,
   onArchiveSession: onArchiveLocalSession,
@@ -473,7 +491,12 @@ function SidebarComponent({
   const hostProject = remoteProject ? remoteProjectFor(cwd) : undefined;
   const remoteChange = async (
     sessionId: string,
-    patch: { title?: string; archived?: boolean; pinned?: boolean; linkedWorkItem?: LinkedWorkItem | null },
+    patch: {
+      title?: string;
+      archived?: boolean;
+      pinned?: boolean;
+      linkedWorkItem?: LinkedWorkItem | null;
+    },
   ) => {
     if (!remote.machine || !hostProject) {
       window.alert("Connect this project's machine to change its sessions.");
@@ -496,9 +519,12 @@ function SidebarComponent({
       window.alert("Connect this project's machine to delete its sessions.");
       return;
     }
-    if (!window.confirm(
-      `Delete ${sessionIds.length === 1 ? "this conversation" : `${sessionIds.length} conversations`}? This can’t be undone.`,
-    )) return;
+    if (
+      !window.confirm(
+        `Delete ${sessionIds.length === 1 ? "this conversation" : `${sessionIds.length} conversations`}? This can’t be undone.`,
+      )
+    )
+      return;
     try {
       for (const sessionId of sessionIds) {
         await remoteRequest(remote.machine.id, "sessions.delete", {
@@ -518,23 +544,34 @@ function SidebarComponent({
     ? (sessionId: string) => onSelectRemoteSession?.(cwd, sessionId)
     : onSelectLocalSession;
   const onPrefetchSession = remoteProject ? undefined : onPrefetchLocalSession;
-  const onPlaceSessionOnPane = remoteProject ? undefined : onPlaceLocalSessionOnPane;
+  const onPlaceSessionOnPane = remoteProject
+    ? undefined
+    : onPlaceLocalSessionOnPane;
+  const onPopOutSession = remoteProject ? undefined : onPopOutLocalSession;
   const onOpenSessionsSideBySide = remoteProject
     ? undefined
     : onOpenLocalSessionsSideBySide;
   const onRenameSession = remoteProject
-    ? (sessionId: string, title: string) => { void remoteChange(sessionId, { title }); }
+    ? (sessionId: string, title: string) => {
+        void remoteChange(sessionId, { title });
+      }
     : onRenameLocalSession;
   const onArchiveSession = remoteProject
-    ? (sessionId: string, archived: boolean) => { void remoteChange(sessionId, { archived }); }
+    ? (sessionId: string, archived: boolean) => {
+        void remoteChange(sessionId, { archived });
+      }
     : onArchiveLocalSession;
   const onArchiveSessions = remoteProject
     ? (sessionIds: readonly string[], archived: boolean) => {
-        void Promise.all(sessionIds.map((id) => remoteChange(id, { archived })));
+        void Promise.all(
+          sessionIds.map((id) => remoteChange(id, { archived })),
+        );
       }
     : onArchiveLocalSessions;
   const onPinSession = remoteProject
-    ? (sessionId: string, pinned: boolean) => { void remoteChange(sessionId, { pinned }); }
+    ? (sessionId: string, pinned: boolean) => {
+        void remoteChange(sessionId, { pinned });
+      }
     : onPinLocalSession;
   const onPinSessions = remoteProject
     ? (sessionIds: readonly string[], pinned: boolean) => {
@@ -542,10 +579,14 @@ function SidebarComponent({
       }
     : onPinLocalSessions;
   const onDeleteSession = remoteProject
-    ? (sessionId: string) => { void remoteDelete([sessionId]); }
+    ? (sessionId: string) => {
+        void remoteDelete([sessionId]);
+      }
     : onDeleteLocalSession;
   const onDeleteSessions = remoteProject
-    ? (sessionIds: readonly string[]) => { void remoteDelete(sessionIds); }
+    ? (sessionIds: readonly string[]) => {
+        void remoteDelete(sessionIds);
+      }
     : onDeleteLocalSessions;
   const onSetSessionLinkedWorkItem = remoteProject
     ? (sessionId: string, item: LinkedWorkItem | undefined) => {
@@ -555,43 +596,62 @@ function SidebarComponent({
   const activeRemoteId = activeSessionId
     ? remoteSessionFor(activeSessionId)
     : undefined;
-  const activeListedSessionId = remoteProject ? activeRemoteId : activeSessionId;
+  const activeListedSessionId = remoteProject
+    ? activeRemoteId
+    : activeSessionId;
   const listedBusySessionIds = remoteProject
-    ? new Set(remote.sessions.filter((session) => session.status === "running" && !session.needsInput).map((session) => session.id))
+    ? new Set(
+        remote.sessions
+          .filter(
+            (session) => session.status === "running" && !session.needsInput,
+          )
+          .map((session) => session.id),
+      )
     : busySessionIds;
   const listedApprovalSessionIds = remoteProject
-    ? new Set(remote.sessions.filter((session) => session.needsInput).map((session) => session.id))
+    ? new Set(
+        remote.sessions
+          .filter((session) => session.needsInput)
+          .map((session) => session.id),
+      )
     : approvalSessionIds;
-  const projectSessions: SessionSummary[] = useMemo(() => remoteProject
-    ? remote.sessions.map((session) => ({
-        id: session.id,
-        cwd,
-        harness: session.harness,
-        model: session.model ?? "",
-        runtimeMode: session.runtimeMode ?? "supervised",
-        providerSessionId: session.providerSessionId ?? undefined,
-        title: session.title,
-        createdAt: session.createdAt ?? session.updatedAt,
-        updatedAt: session.updatedAt,
-        archived: session.archived,
-        pinned: session.pinned,
-        linkedWorkItem: session.linkedWorkItem,
-        draft: session.draft,
-        repo: session.repo,
-        branch: session.branch,
-        worktreeCwd: session.worktreeCwd,
-      }))
-    : sessions, [remoteProject, remote.sessions, sessions, cwd]);
+  const projectSessions: SessionSummary[] = useMemo(
+    () =>
+      remoteProject
+        ? remote.sessions.map((session) => ({
+            id: session.id,
+            cwd,
+            harness: session.harness,
+            model: session.model ?? "",
+            runtimeMode: session.runtimeMode ?? "supervised",
+            providerSessionId: session.providerSessionId ?? undefined,
+            title: session.title,
+            createdAt: session.createdAt ?? session.updatedAt,
+            updatedAt: session.updatedAt,
+            archived: session.archived,
+            pinned: session.pinned,
+            linkedWorkItem: session.linkedWorkItem,
+            draft: session.draft,
+            repo: session.repo,
+            branch: session.branch,
+            worktreeCwd: session.worktreeCwd,
+          }))
+        : sessions,
+    [remoteProject, remote.sessions, sessions, cwd],
+  );
   const remoteExecutionCwd =
     remote.sessions.find((session) => session.id === activeRemoteId)?.cwd ??
     (activeSessionId ? remotePendingWorktree(activeSessionId) : undefined) ??
     (remoteProject && gitCwd && gitCwd !== cwd
-      ? parseRemotePath(gitCwd)?.hostPath ?? gitCwd
+      ? (parseRemotePath(gitCwd)?.hostPath ?? gitCwd)
       : undefined) ??
     undefined;
   const gitRoot =
     remoteProject && hostProject
-      ? remotePath(hostProject.environmentId, remoteExecutionCwd ?? hostProject.cwd)
+      ? remotePath(
+          hostProject.environmentId,
+          remoteExecutionCwd ?? hostProject.cwd,
+        )
       : gitCwd || cwd;
   const resize = useDragResize({
     min: MIN_WIDTH,
@@ -985,14 +1045,16 @@ function SidebarComponent({
     if (remoteProject && !remote.loaded) return;
     const known = new Set(projectSessions.map((session) => session.id));
     const completedFolderSessions = new Map<string, string>();
-    for (const session of remoteProject ? [] : openSessions) known.add(session.id);
+    for (const session of remoteProject ? [] : openSessions)
+      known.add(session.id);
     if (activeListedSessionId) known.add(activeListedSessionId);
     if (remoteProject && activeSessionId) known.add(activeSessionId);
     if (remoteProject) {
       for (const folder of sessionFolders) {
         for (const shellId of folder.sessionIds) {
           const hostId = remoteSessionFor(shellId);
-          if (hostId && known.has(hostId)) completedFolderSessions.set(shellId, hostId);
+          if (hostId && known.has(hostId))
+            completedFolderSessions.set(shellId, hostId);
         }
       }
     }
@@ -1015,7 +1077,9 @@ function SidebarComponent({
       const migrated = completedFolderSessions.size
         ? current.map((folder) => ({
             ...folder,
-            sessionIds: folder.sessionIds.map((id) => completedFolderSessions.get(id) ?? id),
+            sessionIds: folder.sessionIds.map(
+              (id) => completedFolderSessions.get(id) ?? id,
+            ),
           }))
         : current;
       const next = pruneSessionFolders(migrated, known);
@@ -1023,7 +1087,18 @@ function SidebarComponent({
       saveSessionFolders(cwd, next);
       return next;
     });
-  }, [activeListedSessionId, activeSessionId, cwd, openSessions, pending, projectSessions, remoteProject, remote.loaded, sessionFolders, status]);
+  }, [
+    activeListedSessionId,
+    activeSessionId,
+    cwd,
+    openSessions,
+    pending,
+    projectSessions,
+    remoteProject,
+    remote.loaded,
+    sessionFolders,
+    status,
+  ]);
 
   useEffect(() => {
     if (tab !== "sessions") return;
@@ -1449,7 +1524,10 @@ function SidebarComponent({
     }
   };
 
-  const archiveSessions = (sessionIds: readonly string[], archived: boolean) => {
+  const archiveSessions = (
+    sessionIds: readonly string[],
+    archived: boolean,
+  ) => {
     if (sessionIds.length > 1 && onArchiveSessions) {
       onArchiveSessions(sessionIds, archived);
     } else {
@@ -1505,7 +1583,9 @@ function SidebarComponent({
       return;
     }
     if (
-      !window.confirm(bulkDeleteConfirmMessage(deletable.length, running.length))
+      !window.confirm(
+        bulkDeleteConfirmMessage(deletable.length, running.length),
+      )
     )
       return;
     bulkDeleteActive.current = true;
@@ -1624,7 +1704,8 @@ function SidebarComponent({
       ) {
         selectionAnchorRef.current = null;
       }
-      const anchor = selectionAnchorRef.current ?? activeListedSessionId ?? sessionId;
+      const anchor =
+        selectionAnchorRef.current ?? activeListedSessionId ?? sessionId;
       const range = sessionSelectionRange(visibleIds, anchor, sessionId);
       selectionAnchorRef.current = visibleIds.includes(anchor)
         ? anchor
@@ -1669,6 +1750,7 @@ function SidebarComponent({
     onOpenInboxItem,
     onPrefetchSession,
     onPlaceSessionOnPane,
+    onPopOutSession,
     onSessionListDrop,
     onSessionContextMenu,
     onArchiveSession,
@@ -1680,6 +1762,7 @@ function SidebarComponent({
     onOpenInboxItem,
     onPrefetchSession,
     onPlaceSessionOnPane,
+    onPopOutSession,
     onSessionListDrop,
     onSessionContextMenu,
     onArchiveSession,
@@ -1698,6 +1781,8 @@ function SidebarComponent({
         cardHandlers.current.onPrefetchSession?.(sessionId),
       placeOnPane: (sessionId: string, targetId: string, edge: PaneEdge) =>
         cardHandlers.current.onPlaceSessionOnPane?.(sessionId, targetId, edge),
+      popOut: (sessionId: string, position: WindowMovePosition) =>
+        cardHandlers.current.onPopOutSession?.(sessionId, position),
       listDrop: (draggedId: string, target: SessionListDropTarget) =>
         cardHandlers.current.onSessionListDrop(draggedId, target),
       contextMenu: (sessionId: string, e: ReactMouseEvent<HTMLDivElement>) =>
@@ -1739,11 +1824,16 @@ function SidebarComponent({
         compact={compact}
         now={now}
         onSelect={cardActions.select}
-        onOpenWorkItem={onOpenInboxItem && !remoteProject ? cardActions.openWorkItem : undefined}
+        onOpenWorkItem={
+          onOpenInboxItem && !remoteProject
+            ? cardActions.openWorkItem
+            : undefined
+        }
         onPrefetch={onPrefetchSession ? cardActions.prefetch : undefined}
         onPlaceOnPane={
           onPlaceSessionOnPane ? cardActions.placeOnPane : undefined
         }
+        onPopOut={onPopOutSession ? cardActions.popOut : undefined}
         onListDrop={
           reminderIds.has(session.id) ? undefined : cardActions.listDrop
         }
@@ -1996,7 +2086,9 @@ function SidebarComponent({
             </div>
             <span data-session-selection-keep className="contents">
               <SessionsHeaderButton
-                label={selectionMode ? "Stop selecting" : "Select conversations"}
+                label={
+                  selectionMode ? "Stop selecting" : "Select conversations"
+                }
                 active={selectionMode}
                 onClick={() => {
                   if (selectionMode) {
@@ -2142,8 +2234,7 @@ function SidebarComponent({
                     ? `Couldn’t reach ${remote.machine.name}. Trying again…`
                     : "Couldn’t load sessions"}
                 </p>
-              ) : status === "error" &&
-                projectSessions.length === 0 ? (
+              ) : status === "error" && projectSessions.length === 0 ? (
                 <p className="px-3 py-2 text-[12px] text-content/50">
                   Couldn’t load sessions
                 </p>
@@ -2163,11 +2254,14 @@ function SidebarComponent({
                         type="button"
                         className="rounded-md bg-content/8 px-2 py-1 text-[11px] text-content/80 hover:bg-content/15 hover:text-content"
                         onClick={() =>
-                          onSessionFiltersChange(DEFAULT_SESSION_SIDEBAR_FILTERS)
+                          onSessionFiltersChange(
+                            DEFAULT_SESSION_SIDEBAR_FILTERS,
+                          )
                         }
                       >
                         Clear filters ({listedSessions.length}{" "}
-                        {listedSessions.length === 1 ? "session" : "sessions"} hidden)
+                        {listedSessions.length === 1 ? "session" : "sessions"}{" "}
+                        hidden)
                       </button>
                     ) : null}
                   </div>
@@ -2426,22 +2520,22 @@ function SidebarComponent({
         {tab === "changes" ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <SourceControl
-                cwd={gitRoot}
-                enabled={panelOpen}
-                textHarness={textHarness}
-                selectedPath={selectedDiffPath}
-                selectedKind={selectedDiffKind}
-                selectedSha={selectedCommitSha}
-                onOpenFile={
-                  onOpenDiff ??
-                  ((path) => onOpenFile(path, undefined, { exact: true }))
-                }
-                onOpenInEditor={(path, pin) =>
-                  onOpenFile(path, undefined, { exact: true, pin })
-                }
-                onOpenAllChanges={onOpenAllChanges ?? (() => {})}
-                onOpenCommit={onOpenCommit ?? (() => {})}
-              />
+              cwd={gitRoot}
+              enabled={panelOpen}
+              textHarness={textHarness}
+              selectedPath={selectedDiffPath}
+              selectedKind={selectedDiffKind}
+              selectedSha={selectedCommitSha}
+              onOpenFile={
+                onOpenDiff ??
+                ((path) => onOpenFile(path, undefined, { exact: true }))
+              }
+              onOpenInEditor={(path, pin) =>
+                onOpenFile(path, undefined, { exact: true, pin })
+              }
+              onOpenAllChanges={onOpenAllChanges ?? (() => {})}
+              onOpenCommit={onOpenCommit ?? (() => {})}
+            />
           </div>
         ) : null}
         {showSidebarFooter ? (
@@ -2780,7 +2874,11 @@ function SidebarProjectPicker({
         ) : null}
         {onOpenNotes ? (
           <span className="contents @max-[230px]/picker:hidden">
-            <IconButton label="Notes" active={notesActive} onClick={onOpenNotes}>
+            <IconButton
+              label="Notes"
+              active={notesActive}
+              onClick={onOpenNotes}
+            >
               <StickyNote className="size-3.5" strokeWidth={1.75} />
             </IconButton>
           </span>
@@ -2798,7 +2896,11 @@ function SidebarProjectPicker({
         ) : null}
         {onOpenTasks ? (
           <span className="contents @max-[290px]/picker:hidden">
-            <IconButton label="Tasks" active={tasksActive} onClick={onOpenTasks}>
+            <IconButton
+              label="Tasks"
+              active={tasksActive}
+              onClick={onOpenTasks}
+            >
               <DashboardSquare className="size-3.5" strokeWidth={1.75} />
             </IconButton>
           </span>
@@ -3534,6 +3636,7 @@ const SessionCard = memo(function SessionCard({
   onOpenWorkItem,
   onPrefetch,
   onPlaceOnPane,
+  onPopOut,
   onListDrop,
   onListDropTargetChange,
   onContextMenu,
@@ -3561,6 +3664,7 @@ const SessionCard = memo(function SessionCard({
   onOpenWorkItem?: (item: LinkedWorkItem, sessionId: string) => void;
   onPrefetch?: (sessionId: string) => void;
   onPlaceOnPane?: (sessionId: string, targetId: string, edge: PaneEdge) => void;
+  onPopOut?: (sessionId: string, position: WindowMovePosition) => void;
   onListDrop?: (draggedId: string, target: SessionListDropTarget) => void;
   onListDropTargetChange?: (target: SessionListDropTarget | null) => void;
   onContextMenu?: (
@@ -3572,6 +3676,8 @@ const SessionCard = memo(function SessionCard({
   onDelete?: (sessionId: string) => void;
 }) {
   const skipClickUntil = useRef(0);
+  const cancelSessionDrag = useRef<(() => void) | null>(null);
+  useEffect(() => () => cancelSessionDrag.current?.(), []);
   const prefetchTimer = useRef<number | null>(null);
   const orchestrationTooltipRootRef = useRef<HTMLDivElement>(null);
   const orchestrationTooltipId = useId();
@@ -3619,7 +3725,11 @@ const SessionCard = memo(function SessionCard({
         </>
       ) : opening ? (
         <>
-          <Loader className="size-3 animate-spin" strokeWidth={1.75} aria-hidden />
+          <Loader
+            className="size-3 animate-spin"
+            strokeWidth={1.75}
+            aria-hidden
+          />
           <span>Opening…</span>
         </>
       ) : done ? (
@@ -3708,7 +3818,8 @@ const SessionCard = memo(function SessionCard({
       prefetchTimer.current = null;
     }
     onPrefetch?.(session.id);
-    if (!onPlaceOnPane && !onListDrop) return;
+    if (!onPlaceOnPane && !onListDrop && !onPopOut) return;
+    cancelSessionDrag.current?.();
     const handle = event.currentTarget;
     const pointerId = event.pointerId;
     const startX = event.clientX;
@@ -3716,6 +3827,8 @@ const SessionCard = memo(function SessionCard({
     let active = false;
     let lastX = startX;
     let lastY = startY;
+    let screenX = event.screenX;
+    let screenY = event.screenY;
     let lastList: SessionListDropTarget | null = null;
     handle.setPointerCapture(pointerId);
     const restoreSelection = suppressTextSelection();
@@ -3727,12 +3840,16 @@ const SessionCard = memo(function SessionCard({
     };
 
     const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
       lastX = ev.clientX;
       lastY = ev.clientY;
+      screenX = ev.screenX;
+      screenY = ev.screenY;
       if (!active) {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
         active = true;
         setDragging(true);
+        setGrabbing(true);
         if (onPlaceOnPane) {
           setExternalPaneDrop({
             fromId: session.id,
@@ -3746,9 +3863,35 @@ const SessionCard = memo(function SessionCard({
           ? sessionListDropFromPoint(ev.clientX, ev.clientY, session.id)
           : null,
       );
-      if (!onPlaceOnPane) return;
+      if (
+        onPopOut &&
+        isPointerOutsideWindow(
+          ev.clientX,
+          ev.clientY,
+          window.innerWidth,
+          window.innerHeight,
+        )
+      ) {
+        setDropFeedback(
+          "window",
+          ev,
+          busy ? "Move after response finishes" : undefined,
+        );
+        setExternalPaneDrop(null);
+        return;
+      }
+      if (lastList) {
+        setDropFeedback("move", ev, "Release to move in the list");
+        setExternalPaneDrop(null);
+        return;
+      }
+      if (!onPlaceOnPane) {
+        setDropFeedback("blocked", ev);
+        return;
+      }
       const over = paneDropFromPoint(ev.clientX, ev.clientY);
       if (!over || over.id === session.id) {
+        setDropFeedback("blocked", ev);
         setExternalPaneDrop({
           fromId: session.id,
           overId: over?.id === session.id ? session.id : null,
@@ -3761,9 +3904,15 @@ const SessionCard = memo(function SessionCard({
         overId: over.id,
         edge: over.edge,
       });
+      setDropFeedback("move", ev, `Place ${over.edge}`);
     };
 
-    const onUp = () => finish(true);
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pointerId) return;
+      onMove(ev);
+      finish(true);
+    };
+    const onCancel = () => finish(false);
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key !== "Escape") return;
       ev.preventDefault();
@@ -3771,12 +3920,14 @@ const SessionCard = memo(function SessionCard({
     };
 
     function finish(commit: boolean) {
+      cancelSessionDrag.current = null;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("pointercancel", onCancel);
       window.removeEventListener("keydown", onKey);
       restoreSelection();
       setDragging(false);
+      setGrabbing(false);
       setExternalPaneDrop(null);
       setListTarget(null);
       try {
@@ -3787,6 +3938,22 @@ const SessionCard = memo(function SessionCard({
       if (!active) return;
       skipClickUntil.current = performance.now() + 400;
       if (!commit) return;
+      if (
+        onPopOut &&
+        isPointerOutsideWindow(
+          lastX,
+          lastY,
+          window.innerWidth,
+          window.innerHeight,
+        )
+      ) {
+        onPopOut(session.id, {
+          ...popOutPosition(screenX, screenY),
+          clientX: lastX,
+          clientY: lastY,
+        });
+        return;
+      }
       const listOver = onListDrop
         ? sessionListDropFromPoint(lastX, lastY, session.id)
         : null;
@@ -3802,8 +3969,9 @@ const SessionCard = memo(function SessionCard({
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
+    window.addEventListener("pointercancel", onCancel);
     window.addEventListener("keydown", onKey);
+    cancelSessionDrag.current = onCancel;
   };
 
   useEffect(
@@ -3851,6 +4019,7 @@ const SessionCard = memo(function SessionCard({
         data-session-selected={isSelected ? "true" : undefined}
         data-tauri-drag-region="false"
         onPointerDown={onPointerDown}
+        onDragStart={(event) => event.preventDefault()}
         onPointerEnter={schedulePrefetch}
         onPointerLeave={cancelScheduledPrefetch}
         onClick={(event) => {
@@ -3862,7 +4031,7 @@ const SessionCard = memo(function SessionCard({
             ? (event) => onContextMenu(session.id, event)
             : undefined
         }
-        className={`relative border flex w-full cursor-default select-none touch-none flex-col rounded-md px-2.5 text-left ${cardPaddingY} ${
+        className={`relative border flex w-full ${onPlaceOnPane || onListDrop || onPopOut ? "cursor-grab" : "cursor-default"} select-none touch-none flex-col rounded-md px-2.5 text-left ${cardPaddingY} ${
           dragging ? "opacity-40" : ""
         } ${
           dropTarget
@@ -3967,7 +4136,11 @@ const SessionCard = memo(function SessionCard({
           {gitLabel ? (
             <span
               className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-content/45"
-              title={session.worktreeCwd ? `${gitLabel}\n${session.worktreeCwd}` : gitLabel}
+              title={
+                session.worktreeCwd
+                  ? `${gitLabel}\n${session.worktreeCwd}`
+                  : gitLabel
+              }
             >
               <GitBranch className="size-3 shrink-0" strokeWidth={1.75} />
               <span className="min-w-0 truncate">{gitLabel}</span>

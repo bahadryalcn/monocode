@@ -142,6 +142,48 @@ afterEach(() => {
 });
 
 describe("project rail visibility", () => {
+  it.each(["pointerup", "pointercancel"])(
+    "handles active session dragging outside: %s",
+    async (endEvent) => {
+      props.onPopOutSession = vi.fn();
+      await act(async () => render());
+      const handle = card();
+      handle.setPointerCapture = vi.fn();
+      handle.releasePointerCapture = vi.fn();
+      vi.spyOn(document, "elementFromPoint").mockReturnValue(null);
+      const emit = (target: EventTarget, type: string, clientX: number) =>
+        act(() => {
+          target.dispatchEvent(
+            new PointerEvent(type, {
+              bubbles: true,
+              button: 0,
+              pointerId: 1,
+              clientX,
+              clientY: 100,
+            }),
+          );
+        });
+      emit(handle, "pointerdown", 100);
+      emit(window, "pointermove", window.innerWidth + 100);
+      expect(document.documentElement.classList.contains("is-grabbing")).toBe(
+        true,
+      );
+      emit(window, endEvent, window.innerWidth + 100);
+      if (endEvent === "pointerup") {
+        expect(props.onPopOutSession).toHaveBeenCalledExactlyOnceWith(
+          "session-1",
+          expect.objectContaining({ clientX: window.innerWidth + 100 }),
+        );
+      } else {
+        expect(props.onPopOutSession).not.toHaveBeenCalled();
+      }
+      expect(document.documentElement.classList.contains("is-grabbing")).toBe(
+        false,
+      );
+      act(() => handle.click());
+      expect(props.onSelectSession).not.toHaveBeenCalled();
+    },
+  );
   it("keeps the mounted rail and its scroll state when collapsed", async () => {
     props = {
       ...props,
@@ -152,7 +194,9 @@ describe("project rail visibility", () => {
       onOpenProject: vi.fn(),
     };
     await act(async () => render());
-    const rail = container.querySelector<HTMLElement>('nav[aria-label="Projects"]');
+    const rail = container.querySelector<HTMLElement>(
+      'nav[aria-label="Projects"]',
+    );
     expect(rail).not.toBeNull();
     rail!.scrollTop = 37;
 
@@ -1714,7 +1758,9 @@ describe("collapsed rail Inbox actions", () => {
 
       act(() =>
         container
-          .querySelector<HTMLButtonElement>('button[aria-label^="Switch project"]')!
+          .querySelector<HTMLButtonElement>(
+            'button[aria-label^="Switch project"]',
+          )!
           .click(),
       );
       const row = document.querySelector<HTMLButtonElement>(
@@ -1756,7 +1802,9 @@ describe("collapsed rail Inbox actions", () => {
 
     act(() =>
       container
-        .querySelector<HTMLButtonElement>('button[aria-label^="Switch project"]')!
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label^="Switch project"]',
+        )!
         .click(),
     );
     pressKey(projectSearchInput()!, "ArrowDown");
@@ -1784,7 +1832,9 @@ describe("collapsed rail Inbox actions", () => {
 
     act(() =>
       container
-        .querySelector<HTMLButtonElement>('button[aria-label^="Switch project"]')!
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label^="Switch project"]',
+        )!
         .click(),
     );
     const row = document.querySelector<HTMLButtonElement>(
@@ -1816,11 +1866,15 @@ describe("collapsed rail Inbox actions", () => {
 
     act(() =>
       container
-        .querySelector<HTMLButtonElement>('button[aria-label^="Switch project"]')!
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label^="Switch project"]',
+        )!
         .click(),
     );
     const row = () =>
-      document.querySelector<HTMLButtonElement>('button[title="/workspace/other"]')!;
+      document.querySelector<HTMLButtonElement>(
+        'button[title="/workspace/other"]',
+      )!;
     await act(async () => {
       row().dispatchEvent(
         new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
@@ -2039,7 +2093,9 @@ describe("sessions hidden by a filter", () => {
   it("offers to clear the filters that hide every session", () => {
     localStorage.setItem(
       "monocode.sessionSidebarFilters",
-      JSON.stringify({ status: { working: false, needsApproval: true, done: false } }),
+      JSON.stringify({
+        status: { working: false, needsApproval: true, done: false },
+      }),
     );
     props.busySessionIds = new Set();
     act(() => render());
@@ -2050,8 +2106,10 @@ describe("sessions hidden by a filter", () => {
     expect(clear?.textContent).toBe("Clear filters (1 session hidden)");
     act(() => clear!.click());
     expect(card()).not.toBeNull();
-    expect(JSON.parse(localStorage.getItem("monocode.sessionSidebarFilters")!).status.needsApproval)
-      .toBe(false);
+    expect(
+      JSON.parse(localStorage.getItem("monocode.sessionSidebarFilters")!).status
+        .needsApproval,
+    ).toBe(false);
   });
 });
 

@@ -4,6 +4,8 @@ import {
   type EditorState,
   type Extension,
   type Range,
+  type Text,
+  type Transaction,
 } from "@codemirror/state";
 import {
   Decoration,
@@ -136,10 +138,51 @@ function buildConflicts(state: EditorState): ConflictState {
   return { blocks, decorations: Decoration.set(ranges, true) };
 }
 
+// Same line shapes as conflictMarkers.ts (`findConflictBlocks`), tested one line
+// at a time so a keystroke does not need the whole document as a string.
+const MARKER_LINE = [/^<{7}( |$)/, /^\|{7}( |$)/, /^={7}$/, /^>{7}( |$)/];
+
+function isMarkerLine(text: string): boolean {
+  const first = text.charCodeAt(0);
+  // `<` `=` `>` `|`: most lines are rejected here without trimming.
+  if (first !== 60 && first !== 61 && first !== 62 && first !== 124) return false;
+  const marker = text.trimEnd();
+  return MARKER_LINE.some((pattern) => pattern.test(marker));
+}
+
+function rangeHasMarkerLine(doc: Text, from: number, to: number): boolean {
+  const last = doc.lineAt(to).number;
+  for (let n = doc.lineAt(from).number; n <= last; n += 1) {
+    if (isMarkerLine(doc.line(n).text)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the transaction added, removed or edited a conflict-marker line:
+ * any touched line that is a marker in the old or the new document. When the
+ * document had no conflict blocks and no marker line was touched, the marker
+ * lines are exactly what they were, so it still has none. A marker completed
+ * by joining text lies on a touched line, so it is caught.
+ */
+export function touchesConflictMarker(tr: Transaction): boolean {
+  let found = false;
+  tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    found ||=
+      rangeHasMarkerLine(tr.newDoc, fromB, toB) ||
+      rangeHasMarkerLine(tr.startState.doc, fromA, toA);
+  });
+  return found;
+}
+
 const conflictField = StateField.define<ConflictState>({
   create: buildConflicts,
   update(value, tr) {
-    return tr.docChanged ? buildConflicts(tr.state) : value;
+    if (!tr.docChanged) return value;
+    // Existing blocks can shift or break with any edit; rebuild those. Without
+    // blocks, only an edit touching a marker line can produce one.
+    if (value.blocks.length === 0 && !touchesConflictMarker(tr)) return value;
+    return buildConflicts(tr.state);
   },
   provide: (field) => EditorView.decorations.from(field, (value) => value.decorations),
 });

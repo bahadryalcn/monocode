@@ -84,7 +84,8 @@ Bu listede **26 madde** var. İlk uygulama grubunda **7 madde kod ve hedefli tes
   - TODO: pencere/client kimliği ve oturum sahipliğiyle birleştirilmiş heartbeat/komut yönlendirme ekle; yalnızca sahibi komutu tamamlasın. Lider pencere seçilecekse diğer pencerelerin oturumlarını da toplamalı.
   - Kabul: farklı oturum çalıştıran iki pencerenin heartbeat sırası state'i silmesin; Stop/Approve/Answer tam bir kez doğru pencereye gitsin. Pencere kapanması yalnızca onun oturumlarını etkilesin.
 
-- [ ] **P23 — Adopted session birleştirmesinde yalnızca blok sayısına güvenme. [Risk; yardımcı fonksiyonda tekrarlandı]**
+- [x] **P23 — Adopted session birleştirmesinde yalnızca blok sayısına güvenme. [Risk; yardımcı fonksiyonda tekrarlandı]**
+  - **Durum (4 Eki, ikinci tur):** `session_upsert` isteğe bağlı `expected_updated_at`/`expect_missing` alıyor; kontrol ve yazım aynı kilit altında, tutmazsa yazılmıyor.
   - Kanıt: `src/features/connections/model/adoptedSessions.ts:42–70`, `:96–107`. Aynı blok ID'si/sayısı ama yeni yerel metin bulunan sentetik örnekte eski host metni yerelin üzerine geçti; [P23 deney sonucu](performance-validation-2026-10-03/probes.json).
   - Etki: blok sayısı değişmeden yapılan yerel edit/rewind veya gecikmiş host kopyası için tutarlılık koruması yetersiz. Gerçek kullanıcı verisi kaybı bu incelemede yaşatılmadı.
   - TODO: son birleştirilen sürüm ve iki taraftaki değişiklikleri karşılaştır; ownership/CAS veya üç yönlü birleştirme uygula. Reddedilen birleştirmeyi başarıyla aynalanmış gibi işaretleme; görünür conflict/recovery durumu sun.
@@ -104,38 +105,44 @@ Bu listede **26 madde** var. İlk uygulama grubunda **7 madde kod ve hedefli tes
   - TODO: foreground, gizli çalışan ve boşta modları için ortak scheduler; host change/long-poll veya bildirim mekanizması değerlendir. Kritik Stop/Approve/Answer teslim gecikmesini koru.
   - Kabul: 1/5/10 uzak sekmede görünür/gizli/minimize istek ve byte ölçülsün; gizli modda transcript yükü azalsın, turn sonucu ve giriş bekleme durumu kaybolmasın.
 
-- [ ] **P05 — Oturum listelerinin çift sorgusunu, tekrar yazısını ve hosttaki tekrarlı Git/tarama işini azalt. [Tekrarlandı + Kaynak]**
+- [x] **P05 — Oturum listelerinin çift sorgusunu, tekrar yazısını ve hosttaki tekrarlı Git/tarama işini azalt. [Tekrarlandı + Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** Host kısmı da yapıldı: branch 4 s cache + host Git işlemlerinde geçersiz kılma, `cwd IN (...)` SQL ön filtresi, etag'li koşullu `sessions.list` (eski host/istemciyle uyumlu). `git.switch` gibi diğer host yolları cache'i temizlemiyor; 4 s içinde yansır.
   - Kanıt: `connections.ts:504–539` her 3 saniyede yeni listeyi state/localStorage'a yazıp event yayınlıyor. `:594–605` yalnızca tamamlanmış sonucu cache'liyor. Sentetik hook/IPC deneyinde aynı proje için eşzamanlı **iki** `sessions.list` oluştu.
   - Host kanıtı: `host/server.ts:481–519` her liste sorgusunda her farklı çalışma klasörü için yeniden `git symbolic-ref` çalıştırıyor. `host/desktopSessions.ts:178–191` projeyi SQL'de filtrelemek yerine `collect("1=1", [], false)` ile tüm masaüstü oturum özetlerini okuyup sonradan filtreliyor. Transcript'ler bu liste yolunda okunmuyor; maliyet özet taraması/Git süreçleridir.
   - Etki: aynı verinin çift yüklenmesi; değişmeyen listelerde parse, render ve senkron localStorage yazısı. Her polling turunda çalışma klasörü sayısı kadar host Git süreci ve proje dışı oturum taraması.
   - TODO: machine/project anahtarlı in-flight Promise ve revision/TTL cache'i; manuel refresh invalidation ve içerik değişmediyse yayın/yazıdan kaçınma. Hostta branch/ref cache'i ve normalize edilmiş proje anahtarıyla SQL filtreleme; liste revision/conditional response ekle.
   - Kabul: aynı projeyi gösteren sidebar ve rail ilk açılışta da tek sorgu kullansın; değişmeyen cevap React state/localStorage/event güncellemesin. Sabit ref'lerde 100 liste sorgusu 100 Git süreci gerektirmesin; branch switch görünümü zamanında güncellensin; proje dışı satırlar taranmasın.
 
-- [ ] **P06 — Rail polling'inde başarısız makineyi sağlıklı makinelerden bağımsız yavaşlat. [Kaynak]**
+- [x] **P06 — Rail polling'inde başarısız makineyi sağlıklı makinelerden bağımsız yavaşlat. [Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** `remoteRailPoller.ts`: hedef başına zamanlayıcı, hata sayacı ve jitter'lı backoff; en fazla 4 eşzamanlı istek; sonuçlar geldikçe yayınlanıyor.
   - Kanıt: `connections.ts:594–635` tüm hedefleri sınırsız `Promise.all` ile bekliyor; tek `failures` sayacı `results.some(Boolean)` ile sıfırlanıyor.
   - Etki: bir makine cevap verdiğinde erişilemeyen diğerleri backoff'a geçmeyebilir. Bir yavaş hedef, bütün rail sonuçlarının yayınını geciktirir.
   - TODO: makine/hedef başına backoff+jitter ve sınırlı concurrency; tamamlanan sonuçları bağımsız yayınlama; reconnect sonrası kontrollü tazeleme.
   - Kabul: bir sağlıklı ve bir timeout olan hostla sağlıklı liste gecikmesin; offline host hızlı döngüde sürekli denenmesin. Büyük railde eşzamanlı iş sayısı belirlenmiş sınırı aşmasın.
 
-- [ ] **P07 — Capability, proje listesi ve board ön sorgularını ortaklaştır. [Kaynak]**
+- [x] **P07 — Capability, proje listesi ve board ön sorgularını ortaklaştır. [Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** `machineSnapshot.ts`: makine başına paylaşılan `environment.describe` + `projects.list` (in-flight dedup, 10 s TTL, makine değişiminde geçersiz).
   - Kanıt: `hostAutomationClient.ts:44–79`; `TasksView.tsx:284–299`; `useBackgroundNotifications.ts:59–69`. Tasks üç ayrı capability taraması başlatıyor; bildirim turu da üç ayrı tarama yapabiliyor. Bu yol `loadRemoteCapabilities()` in-flight cache'ini kullanmıyor. Tasks/Goals/Automations listeleri ayrı ayrı `projects.list` ister.
   - Etki: her makineye birden çok aynı `environment.describe`/`projects.list` RPC'si; view ve bildirim döngülerinde ek tekrar.
   - TODO: tek descriptor/proje snapshot'ından capability filtreleme, in-flight dedup ve TTL/revision invalidation; offline sağlık bilgisini ortak kullan.
   - Kabul: bir board/bildirim turunda makine başına en fazla bir descriptor ve bir proje listesi sorgusu; capability değişimi ve host güncellemesi doğru yenilensin.
 
-- [ ] **P08 — Tasks ve Automations refresh'lerinin üst üste binmesini ve geç cevapları önle. [Kaynak; yarış riski]**
+- [x] **P08 — Tasks ve Automations refresh'lerinin üst üste binmesini ve geç cevapları önle. [Kaynak; yarış riski]**
+  - **Durum (4 Eki, ikinci tur):** `refreshScheduler.ts`: önceki bitmeden yenisi başlamıyor, generation ile eski cevap düşüyor, gizliyken 60 s, görünür olunca hemen.
   - Kanıt: `TasksView.tsx:284–315` 15 s interval'de `running`/generation kontrolü olmadan refresh çağırıyor; `AutomationsView.tsx:272–287` benzer. RPC timeout'u 30 s ve refresh çok aşamalı.
   - Etki: yavaş ağda aynı tarama eşzamanlı başlar; eski sonuç yeniyi ezebilir; kapatılan view'in işleri sonuçlanmaya devam eder. Görünürlük kapısı da yok.
   - TODO: completion sonrası planlama veya tek in-flight+trailing refresh; generation/cleanup koruması; gizli view için daha yavaş politika.
   - Kabul: 40 s geciktirilmiş cevap ve manuel yenilemede en fazla bir refresh çalışsın; daha eski cevap state'i ezmesin; unmount sonrasında yayın yapılmasın.
 
-- [ ] **P09 — Yerel host heartbeat/mirror döngülerinin boşta işini azalt. [Kaynak]**
+- [x] **P09 — Yerel host heartbeat/mirror döngülerinin boşta işini azalt. [Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** Boş heartbeat en çok 5 s'de bir (host eşiği 20 s); meşgul/bekleyen varsa 1,5 s. Payload oturum nesnesi başına memo. Yetenekler 20 s TTL.
   - Kanıt: `desktopLive.ts:49–60` her heartbeat'te bütün yüklü oturumların approval bloklarını tarıyor; `useDesktopLive.ts:36–70` boş payload olsa da 1,5 s çağırıyor. `useAdoptedSessions.ts:47–58` her pass'te makineleri ve capability'leri yeniden okuyup adopted listesini ister.
   - Etki: dış ağdan bağımsız sürekli IPC, loopback HTTP, dosya okuma ve blok taraması. Birden fazla pencere maliyeti büyütür.
   - TODO: paylaşılan makine/capability cache'i, dirty/live-session index'i ve boşta heartbeat süresi. Hostun 20 s stale eşiğini ve komut teslim sözleşmesini birlikte düzenle.
   - Kabul: boşta ve aktif modun istek/scan sayıları ayrı ölçülsün; boşta maliyet düşsün, bekleyen onay/soru ve remote kontrol korunmalı.
 
-- [ ] **P10 — Bir yavaş hostun tüm kütüphane sync döngüsünü geciktirmesini önle. [Kaynak]**
+- [x] **P10 — Bir yavaş hostun tüm kütüphane sync döngüsünü geciktirmesini önle. [Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** Makine başına bağımsız sync, en fazla 3 paralel, 60 s–10 dk backoff; `syncNow` çağrıdan sonra başlayan bir sync bitince çözülüyor.
   - Kanıt: `src/features/sync/model/syncClient.ts:221–235` makineleri sırayla `await` ediyor; `:265` sabit 30 s tur. `:258–263` çalışırken gelen `syncNow()` mevcut turun Promise'ini döndürüyor, istenen yeni turu beklemiyor.
   - Etki: önceki offline makinenin 30 s timeout'u sağlıklı makineyi bekletir; pending döngüler birikir. Kullanıcının sync isteği, talep ettiği makine yeniden sync olmadan tamamlanmış görünebilir.
   - TODO: makine başına scheduler/backoff, sınırlı paralellik ve o makinenin gerçekten tamamlanan turuna bağlı `syncNow()` Promise'i.
@@ -147,7 +154,8 @@ Bu listede **26 madde** var. İlk uygulama grubunda **7 madde kod ve hedefli tes
   - TODO: proje/makine kapsamlı dirty klasör cache'i, yalnızca abonesi/açık klasörleri yenileme, kullanılmayan cache'i bırakma ve index revision kontrolü. Dizinde içerik değişmeden tam index indirme.
   - Kabul: deneyde yenilenen eski makine klasörü artık sorgulanmasın; 100 cache klasörü/10 açık klasörde yalnızca ilgili açık/dirty klasörler yenilensin. Index değişmeyen listede yeniden indirilmesin.
 
-- [ ] **P12 — Adopted session mirror'da bilinen snapshot üzerinden delta al. [Kaynak]**
+- [x] **P12 — Adopted session mirror'da bilinen snapshot üzerinden delta al. [Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** Mirror son snapshot'ı `known` olarak geçiyor (delta), base tutmazsa tam indirme; conflict'teki oturum da delta alıyor.
   - Kanıt: `useAdoptedSessions.ts:57–59` `loadRemoteSession(machine.id, sessionId)` çağrısına bilinen snapshot vermiyor. `connections.ts:242–255` bilinen revision olmayınca full sync ister.
   - Etki: host revision ilerledikçe açık yerel adopted konuşma bütün geçmişi 5/20 s'de yeniden alabilir; normal RemoteSession delta avantajını kullanmaz. Bu trafik loopback'tir ama JSON/IPC/RAM maliyeti vardır.
   - TODO: mirror başına bounded snapshot/revision cache'i; delta ve yalnızca bozuk base'de full fallback. State apply ile cache sürümünü eşleştir.
@@ -159,37 +167,43 @@ Bu listede **26 madde** var. İlk uygulama grubunda **7 madde kod ve hedefli tes
   - TODO: viewport/on-demand thumbnail, bounded concurrency, başarısız ekler için TTL/backoff ve explicit retry; oturum cache'i için toplam byte bütçesi.
   - Kabul: ekranda olmayan geçmiş görseller açılışta indirilmesin; missing ek her sync'te denenmesin; oturum değişimi ve görünür ekler doğru çalışsın.
 
-- [ ] **P14 — Host streaming kaydında bütün transcript'i sık aralıkla yeniden yazma maliyetini azalt. [Tekrarlandı + Kaynak]**
+- [x] **P14 — Host streaming kaydında bütün transcript'i sık aralıkla yeniden yazma maliyetini azalt. [Tekrarlandı + Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** Yalnızca delta içeren kayıtlar oturum başına 1 s'de bir diske yazılıyor (write-behind); diğer her kayıt anında ve bekleyeni de yazarak. Okumalar bellekteki güncel değeri görüyor. **Dayanıklılık:** host akış ortasında ölürse o turun son ≤1 s metni kaybolabilir. 1/10/50 MB ölçümü yapılmadı.
   - Kanıt: `host/engine.ts:48`, `:493–501`, `:1101–1118`; batch 120 ms. `host/store.ts:30`, `:198–223` senkron SQLite/FULL durability ile bütün snapshot ve event yazar. İzole örnekte yalnızca title değişiminde snapshot kolonu **1.048.917 byte** idi.
   - Etki: uzun konuşmalarda JSON, disk/WAL ve host event loop maliyeti; bir session diğer RPC'leri de geciktirebilir. Gerçek disk latency benchmark'ı yapılmadı.
   - TODO: blok/incremental veya event kaydı, daha seyrek snapshot checkpoint'i ve bounded writer/worker; flush sıklığını veri dayanıklılığı ihtiyacına göre ölç. Durability'yi gerekçesiz kapatma.
   - Kabul: 1/10/50 MB geçmişte sabit küçük delta için serialization/write maliyeti ölçülsün; idle polling latency bozulmasın; crash sonrası onaylanmış içerik korunmalı.
 
-- [ ] **P15 — Yerel canlı oturum kayıt kuyruğunu birleştir ve izleyici talebine göre sınırla. [Kaynak; kuyruk büyümesi riski]**
+- [~] **P15 — Yerel canlı oturum kayıt kuyruğunu birleştir ve izleyici talebine göre sınırla. [Kaynak; kuyruk büyümesi riski]**
+  - **Durum (4 Eki, ikinci tur):** Kısmi — `upsertSessionLive`: oturum başına bir yazım + bir bekleyen, yenisi bekleyenin yerini alıyor; kalıcı yazımlar bekleyeni iptal ediyor. **Açık:** izleyici talebine göre sınırlama (host heartbeat cevabı izleyici bilgisi vermiyor). Native tarafı için 4 Ekim P37'ye bak.
   - Kanıt: `App.tsx` canlı persistence effect'i 1,5 s'de tüm busy session'ları kontrol edip `void upsertSession` yapıyor; `sessionStore.ts:254–279` tam sanitized payload'ı sıra halinde gönderiyor. `:325–328` fingerprint blok kimlikleriyle zaten iyileştirilmiş; burada eski deep-JSON fingerprint hatası yeniden ileri sürülmüyor.
   - Etki: yerel hostun yalnızca erişilebilir olması sürekli tam kayıt için yeterli; izleyen uzak bilgisayar olup olmadığı kontrol edilmiyor. Disk yetişmezse eski payload'lar seri kuyruğa birikebilir.
   - TODO: session başına tek writer ve en yeni pending snapshot'ı birleştirme; busy/final kayıt önceliği; hostta izleyici talebi varsa uygun cadence.
   - Kabul: disk write'ı 5 s geciktirilince sınırsız eski snapshot kuyruğu oluşmasın; son başarılı içerik, final kayıt, silme ve pencere kapatma sözleşmeleri korunmalı.
 
-- [ ] **P16 — Dekoratif canvas ve RAF döngülerine görünürlük ve iş bütçesi ekle. [Kaynak + Ölçüm]**
+- [x] **P16 — Dekoratif canvas ve RAF döngülerine görünürlük ve iş bütçesi ekle. [Kaynak + Ölçüm]**
+  - **Durum (4 Eki, ikinci tur):** İki döngü de devre dışı/gizli/ekran dışı/sıfır boyut/reduced-motion durumunda RAF zamanlamıyor; grid yalnızca görünen board'u işliyor, stamp buffer yeniden kullanılıyor. CPU karşılaştırması yapılmadı.
   - Kanıt: `TerminalGridBackground.tsx:32`, `:175–237`, `:327–350`: yaklaşık 30 FPS, idle halde **iki** oyun board'unu da step/paint; her paint'te yeni `Float32Array(cols*rows)`. Gizli dokümanda duruyor ama gizli sekmede sıfır boyut kontrolü RAF başladıktan sonra geliyor. `ComposerRunner.tsx:216–233`, `:447–458` enabled=false/hidden dalında bile RAF zincirini schedule etmeyi sürdürüyor.
   - Etki: görünmeyen oyun/runner callback'leri, canvas/grid boyutuyla artan çizim ve allocation/GC maliyeti. Canlı renderer/GPU süreç CPU yükü yüksek; bu bileşenlere nedensel olarak bağlanmadı.
   - TODO: yalnızca aktif/geçiş yapan board'u çiz; stamp buffer'ı yeniden kullan; görünmeyen/disabled bileşende RAF'ı iptal et; düşük kaynak/reduced-motion modu ve ölçülmüş DPR/FPS bütçesi.
   - Kabul: gizli/disabled bileşen RAF üretmesin; boş ekran/çok sekme/aktif streaming için animasyon açık-kapalı CPU karşılaştırması ve trace yapılsın; oyun geçişi ve resume bozulmasın.
 
-- [ ] **P17 — Gizli terminal panellerinin başlık sorgusunu ve Windows'taki sonuçsuz poll'u kaldır. [Kaynak]**
+- [x] **P17 — Gizli terminal panellerinin başlık sorgusunu ve Windows'taki sonuçsuz poll'u kaldır. [Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** Sorgu yalnızca ekrandaki terminalde çalışıyor; backend `supported` bildiriyor, Windows bir kez sorup bırakıyor.
   - Kanıt: `TerminalView.tsx:414–448` görünür dokümanda tüm mount edilmiş terminallerin meta bilgisi için 1 s'de IPC; `active` kontrolü bu effect'te yok. `src-tauri/src/pty.rs:313–321`: Unix `ps` çalıştırır, Windows sürekli `foreground: None` döndürür.
   - Etki: Windows'ta değişmeyecek değer için sürekli IPC; Unix'te gizli terminaller için process spawn. Bu Windows gözlemine Unix `ps` maliyeti yanlış atfedilmemeli.
   - TODO: panel görünürlüğü ve platform capability'siyle gate; Unix'te paylaşılan/toplu veya daha seyrek durum okuması; görünür terminal title güncellemesini koru.
   - Kabul: gizli terminal başlık poll'u üretmesin; Windows desteklenmeyen meta sorgusunu tekrarlamasın; Unix görünür foreground değişimi güncellensin.
 
-- [ ] **P18 — Harness çıktısını her WebView'e yayınlamak yerine ilgili pencerelere yönlendir. [Kaynak; büyük çıktı riski]**
+- [x] **P18 — Harness çıktısını her WebView'e yayınlamak yerine ilgili pencerelere yönlendir. [Kaynak; büyük çıktı riski]**
+  - **Durum (4 Eki, ikinci tur):** Dar sürüm: çıktı süreci başlatan pencereye `emit_to` ile gidiyor, sahip yoksa yayın; `child.ts` dinleyicileri pencereye özel; sahipsiz buffer 4 MiB ile sınırlı. Uygulamada çalışan sürecin pencere devri olmadığı için devir tamponu gerekmedi. Çoklu pencerede çalıştırılarak denenmedi. Frekans için 4 Ekim P41.
   - Kanıt: `src-tauri/src/harness.rs:934`, `:949`, `:1260` `app.emit` kullanıyor; `src/integrations/harness/core/child.ts:70–73` yayınların her pencereye gittiğini açıklıyor. `:91–107` buffer sınırı **1.000 satır/adet**, byte değil.
   - Etki: pencere sayısıyla bridge serialization/JS callback maliyeti artar; birkaç büyük JSON satırı adet sınırına rağmen yüksek RAM kullanabilir. Sahipsiz child için buffer koruması zaten var ve korunmalı.
   - TODO: session owner/observer registry ve hedefli emit; gerekli observer'lara fan-out; byte sınırı ve geri basınç. Semantic event'leri sessizce düşürme; overflow'da açık recovery.
   - Kabul: tek oturumun çıktısı ilgisiz pencerelere teslim edilmesin; dev satır/stream burst toplam byte bütçesinde kalsın; pencere transferi ve yeniden bağlanma event kaçırmasın.
 
-- [ ] **P19 — RPC timeout'unu uzun Git işlemlerinin sözleşmesiyle eşleştir. [Kaynak]**
+- [x] **P19 — RPC timeout'unu uzun Git işlemlerinin sözleşmesiyle eşleştir. [Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** Metod bazlı süre: `git.action` 135 s, ağ Git komutları (`workspace.run` push/pull/sync/fetch/merge/rebase/PR) 165 s, diğerleri 30 s. İstemcide otomatik yeniden gönderme yok. Job/receipt tasarımı yapılmadı.
   - Kanıt: `remote.rs:150–154` bütün RPC'ler 30 s; `host/git-actions.ts:74` ağ Git işleri 120 s; `host/server.ts:908–922` Git action tamamlanmadan cevap vermiyor.
   - Etki: geçerli 30–120 s Push/Fetch/Pull sürerken istemci timeout alabilir; işlem hostta devam ederken kullanıcı tekrar deneyebilir. Başarısız görünüm ile gerçek sonuç ayrışır.
   - TODO: method bazlı süre veya job/receipt+durum sorgusu; iptal/tekrar/idempotency ve "sonucu belirsiz" recovery davranışı.
@@ -207,7 +221,8 @@ Bu listede **26 madde** var. İlk uygulama grubunda **7 madde kod ve hedefli tes
   - TODO: `Buffer.byteLength(..., 'utf8')` eşdeğeri byte hesabı; tek kayıt ve toplam batch limitleri; reddedilen op için görünür hata/recovery.
   - Kabul: ASCII/Türkçe/CJK/emoji ile byte sınırının altı kabul, üstü kontrollü ret; geçerli outbox girdileri sessizce kaybolmasın.
 
-- [ ] **P22 — Erişilemeyen makinenin Tasks/Goals/Automations kartlarını son başarılı değerle koru. [Kaynak]**
+- [x] **P22 — Erişilemeyen makinenin Tasks/Goals/Automations kartlarını son başarılı değerle koru. [Kaynak]**
+  - **Durum (4 Eki, ikinci tur):** Makine başına `{status,data,stale}` sonuç ve son başarılı cache; erişilemeyen makinenin kartları "(offline, last known)" ile kalıyor, başarılı boş cevap temizliyor.
   - Kanıt: `taskClient.ts:249–265`, `goalClient.ts:161–174`, `hostAutomationClient.ts:208–237` makine hatasında `[]` döndürür; view'ler bunu başarılı birleşik sonuç gibi state'e yazar. "Son bilinenleri tut" catch'i burada çalışmaz çünkü hata alt katmanda yutulur.
   - Etki: kısa ağ kesintisinde kartlar/selection kaybolabilir; boş board ile erişilemeyen host ayırt edilmez.
   - TODO: makine başına `{data,status,error}` sonuç/cache; başarılı boş listeyi hata boşluğundan ayır; stale/offline göstergesi ve kurtarma.
@@ -216,18 +231,21 @@ Bu listede **26 madde** var. İlk uygulama grubunda **7 madde kod ve hedefli tes
 ### P2/P3 — Trafik politikası ve doğrulama
 
 - [ ] **P24 — Kaynak kullanımına göre ortak polling politikası ve ölçüm ekle. [Ölçüm; kaynakta dağıtık politika]**
+  - **Durum (4 Eki, ikinci tur):** Kısmi — Inbox gizliyken 3 dk'da bir ve zorlamadan yenileniyor; sağlayıcılar paralel, depo sorguları en fazla 4 eşzamanlı. **Açık:** ortak polling politikası ve sayaçlar (ölçüm altyapısı).
   - Kanıt: envanterdeki birbirinden bağımsız döngüler. Özellikle `useInboxUnseen.ts:380–388` tray/minimize halinde 30 s **force** refresh; `githubTasks.ts:656–678` TTL yalnızca force değilse kullanılır. `:688–759` çoklu repo işlerindeki paralellik sınırsız, farklı sağlayıcıların aşamaları sıralı.
   - Etki: Inbox otomasyonları etkin olmasa da tarama sürer; farklı feature'ların toplam bütçesi görünmüyor. Bir yavaş sağlayıcı tüm Inbox refresh süresini büyütebilir. In-flight dedup ve bazı visibility kapıları zaten var; bunlar tamamen yokmuş gibi değerlendirilmemeli.
   - TODO: gerekli bildirim/otomasyon aboneliğiyle background tarama; görünür/arka plan/boşta/offline policy ve makine bazlı concurrency+jitter. IPC/RPC method bazında count, süre, request/response byte, cache hit, retry ve queue depth sayaçları ekle. Token/payload içeriği kaydetme.
   - Kabul: local-only, 1/5 uzak proje, 0/5 aktif turn, 1/3 pencere, minimize ve bağlantı kesintisi için 5'er dakikalık baseline oluştur; kritik komut/notification teslim sürelerini ürün sözleşmesine bağla. Aynı senaryoda önerilen ilk hedef, boşta uzak istek sayısını ve byte'ı baseline'a göre en az %80 azaltmak; bu **önerilen kabul hedefidir, elde edilmiş sonuç değildir**. Renderer/GPU trace'iyle P16 dahil gerçek CPU kaynaklarını ayır.
 
 - [ ] **P25 — Windows host testlerindeki aralıklı cleanup/connection hatalarını araştır. [Gözlendi; tekil tekrarda geçiyor]**
+  - **Durum (4 Eki, ikinci tur):** İki test dosyası art arda 20 kez koşuldu: 20/20 geçti; tam host takımı da temiz (267). `%TEMP%` altında 148 `monocode-*` klasörü birikmiş, kaynağı ayrıştırılmadı; süreç/handle incelemesi yapılmadı. Kök neden hâlâ bilinmiyor.
   - Kanıt: hedefli host koşusunda 44/46 test geçti; `desktopSessions.test.ts` cleanup `:88` EBUSY aldı; `server.test.ts:569` `search_project` isteği ECONNRESET aldı. İki başarısız test tekil odaklı tekrar koşusunda geçti. `host/vitest.config.ts:9–14` mevcut 30 s Windows bütçesi ve seri suite davranışı zaten var.
   - Etki: başarısız tam doğrulama ve geçici test dizinleri. Kalıcı ürün hatası veya belirli bir root cause olduğu henüz kanıtlanmadı.
   - TODO: cleanup öncesi bütün Git/provider işlerini drain etme ve handle/process-tree kanıtı; keep-alive/reuse/idle timing için HTTP tracing; assertion timeout'u körlemesine büyütmeden asıl kaynak sahibini bul.
   - Kabul: aynı iki testin en az 20 seri tekrarı ve host suite'i temiz geçsin; bitince test child/process/port ve açık dizin handle'ı kalmasın. Başarısız ilk koşu geçmişten silinmesin.
 
 - [ ] **P26 — Mac'te yeni pencere açma akışındaki native çökmesini araştır. [Canlı crash kaydı; kesin kök neden açık]**
+  - **Durum (4 Eki, ikinci tur):** Kod değişmedi — çökme kaydı 0.8.42'den; aynı gün atılan `e265384b` `macos::install`'ı ana thread'e taşıyarak en olası nedeni gideriyor. Mac'te tekrar üretilemedi; güncel sürümde 20 tekrar denemesi kullanıcıda.
   - Kanıt: 0.8.42 kurulum doğrulamasında `monocode-2026-10-03-205523.ips` SIGABRT; faulting stack Rust foreign-exception cleanup ve Tokio blocking task içinde `monocode_lib::open_new_window` içeriyor. `src-tauri/src/lib.rs:218–221` pencere açmayı `spawn_blocking` içinde çağırıyor. Sonraki kontrollerde uygulama çalışıyordu; her açılışın çöktüğü iddia edilmez.
   - Etki: yeni pencere/oturum transferi sırasında bütün uygulama kapanabilir. Native exception'ın tam kaynağı ve hangi kullanıcı akışının tetiklediği henüz kesinleşmedi.
   - TODO: macOS yeni pencere ve transfer akışını tekrar üret; native exception/backtrace ile AppKit thread kullanımını ayır. Pencere/decorations kurulumunu gerekiyorsa ana thread'e taşı; Windows webview deadlock korumasını koru.

@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { renameHostWorktreeBranch, resolveHostWorktree } from "./git-worktrees";
 import {
@@ -313,8 +312,23 @@ export class HostEngine {
   ) {
     // Provider dispatch is not transactional with SQLite. Never replay a send
     // automatically after a crash; its external effects may already exist.
-    for (const stored of store.sessions()) {
-      let value = stored;
+    // Only sessions that need rewriting are parsed; the rest are bound from
+    // mirror columns and their snapshot loads on first access.
+    for (const state of store.startupStates()) {
+      if (
+        state.hasDesktop &&
+        !state.shellRunning &&
+        !state.running
+      ) {
+        if (state.providerSessionId && state.harness)
+          this.provider(state.harness).bind(
+            state.id,
+            state.providerSessionId,
+            state.cwd ?? "",
+          );
+        continue;
+      }
+      let value = store.session(state.id);
       // Sessions started here before they were shared with this machine's
       // desktop app become shared too, so the app on this machine lists them.
       if (!value.desktop)
@@ -397,11 +411,16 @@ export class HostEngine {
     return provider;
   }
 
-  private save(value: HostSession, event: unknown): HostSession {
+  private save(
+    value: HostSession,
+    event: unknown,
+    deferred = false,
+  ): HostSession {
     return this.store.transaction(() =>
       this.store.save(
         { ...value, revision: value.revision + 1, updatedAt: Date.now() },
         event,
+        { deferred },
       ),
     );
   }
@@ -497,7 +516,13 @@ export class HostEngine {
     live.timer = undefined;
     if (!live.events.length) return;
     const events = live.events;
-    live.value = this.save(live.value, { type: "events", events });
+    // Only batched streaming deltas may wait for the store checkpoint; a batch
+    // holding anything else (tool start, approval, question, ...) is written now.
+    live.value = this.save(
+      live.value,
+      { type: "events", events },
+      events.every((event) => BATCHED.has(event.type)),
+    );
     live.events = [];
   }
 
@@ -1042,16 +1067,23 @@ export class HostEngine {
               await provider.send({
                 ...input,
                 text: prompt,
-                attachments: attachments?.map((file) =>
-                  isVisionImage(file.mimeType) &&
-                  file.path &&
-                  file.size <= 20 * 1024 * 1024
-                    ? {
-                        ...file,
-                        data: readFileSync(file.path).toString("base64"),
-                      }
-                    : file,
-                ),
+                // Async so a 20 MB image does not stall every other RPC.
+                attachments:
+                  attachments &&
+                  (await Promise.all(
+                    attachments.map(async (file) =>
+                      isVisionImage(file.mimeType) &&
+                      file.path &&
+                      file.size <= 20 * 1024 * 1024
+                        ? {
+                            ...file,
+                            data: (await readFile(file.path)).toString(
+                              "base64",
+                            ),
+                          }
+                        : file,
+                    ),
+                  )),
               });
           }
         } catch (reason) {

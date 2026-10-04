@@ -18,6 +18,7 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -623,7 +624,7 @@ function MessageQueue({
   );
 }
 
-export function Composer({
+export const Composer = memo(function Composer({
   enabled = true,
   focused,
   focusToken,
@@ -3166,7 +3167,7 @@ export function Composer({
       </div>
     </div>
   );
-}
+});
 
 function ComposerHighlight({
   text,

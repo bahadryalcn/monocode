@@ -4,6 +4,7 @@ import {
   buildSecondOpinionCard,
   buildSecondOpinionPrompt,
   harnessForTurn,
+  harnessesForTurns,
   secondOpinionTargets,
   turnEditedFiles,
   turnReport,
@@ -81,6 +82,52 @@ describe("harnessForTurn", () => {
       ...second,
     ];
     expect(harnessForTurn(blocks, second, "codex")).toBe("codex");
+  });
+});
+
+describe("harnessesForTurns", () => {
+  const handoff = (id: string, from: HarnessId, to: HarnessId): Block => ({
+    id,
+    role: "handoff",
+    text: "",
+    handoff: { from, to, status: "ready" },
+  });
+  const recordedUser: Block = {
+    id: "u4",
+    role: "user",
+    text: "x",
+    turnModel: { harness: "gemini", id: "gemini:x", name: "X" },
+  };
+
+  it("matches harnessForTurn for every turn", () => {
+    const blocks: Block[] = [
+      user("u1", "go"),
+      assistant("a1", "working"),
+      handoff("h1", "claude", "codex"),
+      user("u2", "keep going"),
+      assistant("a2", "ok"),
+      handoff("h2", "codex", "claude"),
+      user("u3", "again"),
+      recordedUser,
+    ];
+    const turns: Block[][] = [
+      blocks.slice(0, 2),
+      [blocks[2]],
+      blocks.slice(3, 5),
+      [blocks[5]],
+      [blocks[6]],
+      [blocks[7]],
+    ];
+    expect(harnessesForTurns(blocks, turns, "claude")).toEqual(
+      turns.map((turn) => harnessForTurn(blocks, turn, "claude")),
+    );
+    expect(harnessesForTurns(blocks, turns, "claude")[0]).toBe("claude");
+    expect(harnessesForTurns(blocks, turns, "claude")[2]).toBe("codex");
+  });
+
+  it("falls back to the session harness without handoffs", () => {
+    const turn = [user("u", "go")];
+    expect(harnessesForTurns(turn, [turn], "codex")).toEqual(["codex"]);
   });
 });
 

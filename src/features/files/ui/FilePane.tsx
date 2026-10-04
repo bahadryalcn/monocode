@@ -31,6 +31,7 @@ import {
   subscribeDiffViewer,
 } from "../../settings/model/settings";
 import { AgentTabView } from "../../sessions/ui/AgentTabView";
+import { useSession } from "../../sessions/model/sessionsStore";
 import { MarkdownPreview } from "../../sessions/ui/AgentMarkdown";
 import { BinaryFileView } from "./BinaryFileView";
 import { DocumentView } from "./DocumentView";
@@ -312,9 +313,11 @@ function PlanSurface({
 }) {
   const plan = file.plan;
   const [mode, setMode] = useMarkdownMode(file.path);
-  const session = plan
-    ? sessions.find((entry) => entry.id === plan.sessionId)
-    : undefined;
+  // A streaming plan's text lives only in the store; the `sessions` prop lags.
+  const liveSession = useSession(plan?.sessionId);
+  const session =
+    liveSession ??
+    (plan ? sessions.find((entry) => entry.id === plan.sessionId) : undefined);
   const block = plan
     ? session?.blocks.find((entry) => entry.id === plan.blockId)
     : undefined;

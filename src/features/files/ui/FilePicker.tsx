@@ -2,6 +2,7 @@ import { RefreshCw, Search } from "../../../shared/ui/icons";
 import {
   useEffect,
   useMemo,
+  useDeferredValue,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -135,9 +136,11 @@ export function FilePicker({
   const paletteMode = query.trim().startsWith(">");
   const actionQuery = paletteMode ? query.trim().slice(1).trim() : "";
 
+  // Ranking the whole index is the costly part of a keystroke; let typing win.
+  const deferredQuery = useDeferredValue(query);
   const results = useMemo(
-    () => (paletteMode ? [] : rankProjectFiles(files, query, recents)),
-    [files, paletteMode, query, recents],
+    () => (paletteMode ? [] : rankProjectFiles(files, deferredQuery, recents)),
+    [files, paletteMode, deferredQuery, recents],
   );
   const actionResults = useMemo((): RankedAction[] => {
     if (!paletteMode) return [];
@@ -247,7 +250,11 @@ export function FilePicker({
         const action = actionResults[active];
         if (action) runAction(action);
       } else {
-        const file = results[active];
+        // A pending deferred render may still show the previous query's list.
+        const file =
+          deferredQuery === query
+            ? results[active]
+            : rankProjectFiles(files, query, recents)[0];
         if (file) pick(file);
       }
       return;

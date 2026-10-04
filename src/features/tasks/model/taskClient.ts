@@ -13,6 +13,12 @@ import {
   probeMachines,
   type MachineReach,
 } from "../../automations/model/hostAutomationClient";
+import {
+  collectMachineResults,
+  type LastGoodLists,
+  type MachineResult,
+} from "../../automations/model/machineResults";
+import { machineProjects } from "../../automations/model/machineSnapshot";
 import type { HarnessId, RuntimeMode } from "../../sessions/model/session";
 import {
   HOST_TASKS,
@@ -34,6 +40,8 @@ export type BoardTask = HostTask & {
   machineName: string;
   /** How this desktop addresses the task's project. */
   cwd: string;
+  /** The machine did not answer; this is what it last reported. */
+  stale?: boolean;
 };
 
 /** What the task form edits. A draft with an ID edits that task. */
@@ -69,12 +77,25 @@ export function probeTaskMachines(): Promise<MachineReach> {
 /** Why some machines' tasks are missing from the board, or null. */
 export function missingMachinesNotice(
   reach: Pick<MachineReach, "outdated" | "unreachable">,
+  /** Unreachable machines whose last-known tasks are still shown. */
+  stale: readonly string[] = [],
 ): string | null {
   const parts: string[] = [];
-  if (reach.unreachable.length)
+  const unreachable = (names: string[], shown: boolean) => {
+    if (!names.length) return;
+    const one = names.length === 1;
     parts.push(
-      `${reach.unreachable.join(", ")} ${reach.unreachable.length === 1 ? "isn’t" : "aren’t"} reachable right now, so ${reach.unreachable.length === 1 ? "its" : "their"} tasks aren’t shown.`,
+      `${names.join(", ")} ${one ? "isn’t" : "aren’t"} reachable right now, so ${one ? "its" : "their"} tasks ${shown ? "may be out of date" : "aren’t shown"}.`,
     );
+  };
+  unreachable(
+    reach.unreachable.filter((name) => !stale.includes(name)),
+    false,
+  );
+  unreachable(
+    reach.unreachable.filter((name) => stale.includes(name)),
+    true,
+  );
   if (reach.outdated.length)
     parts.push(
       `Update MonoCode Host on ${reach.outdated.join(", ")} to see ${reach.outdated.length === 1 ? "its" : "their"} tasks.`,
@@ -244,25 +265,34 @@ export function taskTimeLabel(
   )} ago`;
 }
 
-/** Every reachable machine's tasks. A machine that does not answer is left out
- * rather than failing the board. */
+const lastBoardTasks: LastGoodLists<BoardTask> = new Map();
+
+/** Each machine's tasks. A machine that does not answer keeps its last
+ * successful list, flagged stale; `down` machines are not asked. */
+export function listBoardTaskResults(
+  machines: readonly RemoteMachine[],
+  down: readonly RemoteMachine[] = [],
+): Promise<MachineResult<BoardTask>[]> {
+  return collectMachineResults(
+    lastBoardTasks,
+    machines,
+    async (machine) => {
+      const [tasks, projects] = await Promise.all([
+        remoteRequest<HostTask[]>(machine.id, "tasks.list"),
+        machineProjects(machine),
+      ]);
+      return boardTasksFromHost(machine, projects, tasks);
+    },
+    (task) => ({ ...task, stale: true }),
+    down,
+  );
+}
+
+/** Every machine's tasks, last-known ones included. */
 export async function listBoardTasks(
   machines: readonly RemoteMachine[],
 ): Promise<BoardTask[]> {
-  const lists = await Promise.all(
-    machines.map(async (machine) => {
-      try {
-        const [tasks, projects] = await Promise.all([
-          remoteRequest<HostTask[]>(machine.id, "tasks.list"),
-          remoteRequest<HostProject[]>(machine.id, "projects.list"),
-        ]);
-        return boardTasksFromHost(machine, projects, tasks);
-      } catch {
-        return [];
-      }
-    }),
-  );
-  return lists.flat();
+  return (await listBoardTaskResults(machines)).flatMap((result) => result.data);
 }
 
 /** Saves the draft on the machine that owns its project. A new task is added

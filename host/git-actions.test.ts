@@ -2,8 +2,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  BranchCache,
   GIT_ACTION_COMMANDS,
   parseHistoryLog,
   runGitAction,
@@ -373,5 +374,49 @@ describe("stopped operations", () => {
     expect(await r.run("git_conflicts")).toEqual(["a.txt"]);
     await r.run("git_operation_abort");
     expect(await r.run("git_operation_state")).toBeNull();
+  });
+});
+
+describe("BranchCache", () => {
+  it("shares one lookup between concurrent callers and honours the TTL", async () => {
+    let now = 0;
+    const lookup = vi.fn(async (_cwd: string) => "main");
+    const cache = new BranchCache(lookup, 4_000, 256, () => now);
+    await expect(Promise.all([cache.get("/a"), cache.get("/a"), cache.get("/a")])).resolves.toEqual(["main", "main", "main"]);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    now = 3_999;
+    await cache.get("/a");
+    expect(lookup).toHaveBeenCalledTimes(1);
+    now = 4_001;
+    await cache.get("/a");
+    expect(lookup).toHaveBeenCalledTimes(2);
+    await cache.get("/b");
+    expect(lookup).toHaveBeenCalledTimes(3);
+  });
+
+  it("clear makes the next read look again, and a failed lookup yields an empty branch", async () => {
+    const lookup = vi
+      .fn<(cwd: string) => Promise<string>>()
+      .mockResolvedValueOnce("main")
+      .mockRejectedValueOnce(new Error("not a repository"))
+      .mockResolvedValue("feature");
+    const cache = new BranchCache(lookup);
+    expect(await cache.get("/a")).toBe("main");
+    cache.clear();
+    expect(await cache.get("/a")).toBe("");
+    cache.clear();
+    expect(await cache.get("/a")).toBe("feature");
+  });
+
+  it("stays bounded, dropping expired entries first", async () => {
+    let now = 0;
+    const lookup = vi.fn(async (cwd: string) => cwd);
+    const cache = new BranchCache(lookup, 1_000, 3, () => now);
+    for (const cwd of ["/1", "/2", "/3"]) await cache.get(cwd);
+    now = 2_000;
+    await cache.get("/4");
+    expect((cache as unknown as { entries: Map<string, unknown> }).entries.size).toBe(1);
+    for (const cwd of ["/5", "/6", "/7"]) await cache.get(cwd);
+    expect((cache as unknown as { entries: Map<string, unknown> }).entries.size).toBeLessThanOrEqual(3);
   });
 });

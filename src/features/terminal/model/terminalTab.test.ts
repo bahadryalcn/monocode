@@ -5,6 +5,7 @@ import {
   defaultTerminalTitle,
   listRunningTerminals,
   runningTerminalChipLabel,
+  parseOsc7Cwd,
   scanOscCwd,
   terminalTabLabel,
 } from "./terminalTab";
@@ -98,5 +99,17 @@ describe("scanOscCwd", () => {
     const { cwd, rest } = scanOscCwd("/repo\x07", partial);
     expect(cwd).toBe("/Users/dev/repo");
     expect(rest).toBe("");
+  });
+});
+
+describe("parseOsc7Cwd", () => {
+  it("extracts and decodes the path from an OSC 7 payload", () => {
+    expect(parseOsc7Cwd("file://host/Users/dev/my%20repo")).toBe("/Users/dev/my repo");
+    expect(parseOsc7Cwd("file:///C:/work")).toBe("/C:/work");
+  });
+
+  it("ignores payloads that are not file URLs", () => {
+    expect(parseOsc7Cwd("http://host/x")).toBeUndefined();
+    expect(parseOsc7Cwd("file://host")).toBeUndefined();
   });
 });

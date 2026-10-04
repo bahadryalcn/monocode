@@ -235,3 +235,74 @@ describe("supportsDesktopLive", () => {
     expect(supportsDesktopLive(undefined)).toBe(false);
   });
 });
+
+describe("desktop live memoization and idle cadence", () => {
+  it("rescans only sessions whose object changed", () => {
+    let reads = 0;
+    const counted = (id: string) => {
+      const s = session({ id });
+      Object.defineProperty(s, "blocks", {
+        get() {
+          reads++;
+          return [];
+        },
+      });
+      return s;
+    };
+    const a = counted("a");
+    const b = counted("b");
+    buildDesktopLiveSessions([a, b]);
+    expect(reads).toBe(2);
+    const c = counted("c");
+    buildDesktopLiveSessions([a, b, c]);
+    expect(reads).toBe(3);
+  });
+
+  it("sends an empty heartbeat once, then waits for the idle interval", async () => {
+    const request = vi.fn().mockResolvedValue({});
+    let now = 1_000;
+    const deps = {
+      request,
+      sessions: () => [session({ id: "idle" })],
+      handlers: { stop: vi.fn(), approve: vi.fn(), answer: vi.fn() },
+      unacked: new Set<string>(),
+      handled: new Set<string>(),
+      beat: {},
+      now: () => now,
+    };
+    await runDesktopLiveTick(deps);
+    now += 1_500;
+    await runDesktopLiveTick(deps);
+    expect(request).toHaveBeenCalledTimes(1);
+    now += 3_600; // past DESKTOP_LIVE_IDLE_MS since the first beat
+    await runDesktopLiveTick(deps);
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("goes back to every tick as soon as a session is busy or an ack is pending", async () => {
+    const request = vi.fn().mockResolvedValue({});
+    let busy = false;
+    const unacked = new Set<string>();
+    const deps = {
+      request,
+      sessions: () => [session({ id: "s", busy })],
+      handlers: { stop: vi.fn(), approve: vi.fn(), answer: vi.fn() },
+      unacked,
+      handled: new Set<string>(),
+      beat: {},
+      now: () => 1_000,
+    };
+    await runDesktopLiveTick(deps);
+    await runDesktopLiveTick(deps);
+    expect(request).toHaveBeenCalledTimes(1);
+    busy = true;
+    await runDesktopLiveTick(deps);
+    await runDesktopLiveTick(deps);
+    expect(request).toHaveBeenCalledTimes(3);
+    busy = false;
+    unacked.add("c1");
+    await runDesktopLiveTick(deps);
+    expect(request).toHaveBeenCalledTimes(4);
+    expect(request.mock.calls[3][0].acked).toEqual(["c1"]);
+  });
+});

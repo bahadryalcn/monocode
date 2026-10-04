@@ -5,6 +5,7 @@ import {
 } from "node:http";
 import { hostname, homedir } from "node:os";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import {
@@ -19,6 +20,7 @@ import { HostAutomations } from "./automations";
 import { HostTasks } from "./tasks";
 import { HostGoals } from "./goals";
 import { DesktopSessions } from "./desktopSessions";
+import { branchCache } from "./git-actions";
 import { withOverlay } from "./desktopLive";
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
@@ -369,7 +371,7 @@ export function createHostServer(
     }
     return catalog;
   };
-  return createServer(
+  const server = createServer(
     { requestTimeout: 20_000, headersTimeout: 10_000, maxHeaderSize: 8192 },
     async (request, response) => {
       if (request.url === "/lifecycle" && lifecycle) {
@@ -545,22 +547,12 @@ export function createHostServer(
             ];
             const branches = new Map(
               await Promise.all(
-                paths.map(async (cwd) => {
-                  const branch = await exec(
-                    "git",
-                    ["symbolic-ref", "--quiet", "--short", "HEAD"],
-                    {
-                      cwd,
-                      timeout: 2_000,
-                    },
-                  )
-                    .then(({ stdout }) => stdout.trim())
-                    .catch(() => "");
-                  return [cwd, branch] as const;
-                }),
+                paths.map(
+                  async (cwd) => [cwd, await branchCache.get(cwd)] as const,
+                ),
               ),
             );
-            result = summaries.map((session) => ({
+            const list = summaries.map((session) => ({
               ...session,
               repo: project.name,
               branch: branches.get(session.cwd ?? project.cwd) || undefined,
@@ -569,6 +561,17 @@ export function createHostServer(
                   ? session.cwd
                   : undefined,
             }));
+            // A client that sends `known` can take "unchanged" instead of the
+            // array. Clients that omit it keep getting the plain array.
+            if (typeof params.known === "string") {
+              const etag = createHash("sha256")
+                .update(JSON.stringify(list))
+                .digest("base64url");
+              result =
+                params.known === etag
+                  ? { unchanged: true, etag }
+                  : { etag, sessions: list };
+            } else result = list;
             break;
           }
           case "sessions.update": {
@@ -1028,4 +1031,7 @@ export function createHostServer(
       }
     },
   );
+  // Cached read-only desktop connections would keep the files locked.
+  server.on("close", () => desktop.close());
+  return server;
 }

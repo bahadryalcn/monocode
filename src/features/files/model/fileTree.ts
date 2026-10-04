@@ -111,10 +111,14 @@ export async function refreshCachedDirs(
     Array.from({ length: Math.min(4, paths.length) }, async () => {
       while (cursor < paths.length) {
         const path = paths[cursor++];
-        const previous = JSON.stringify(dirs.get(path));
+        const previousEntries = dirs.get(path);
+        const previous = JSON.stringify(previousEntries);
         try {
           const next = await refreshDir(path);
           if (JSON.stringify(next) !== previous) changed.push(path);
+          // An unchanged listing keeps its array identity, so per-directory
+          // subscribers (`peekDir` snapshots) see no change.
+          else if (previousEntries) dirs.set(path, previousEntries);
         } catch (error) {
           if (!keepsLastListing(path, error)) {
             forgetDir(path);
@@ -153,6 +157,24 @@ export function subscribeDirsChanged(
   };
 }
 
+const listingListeners = new Set<() => void>();
+
+/**
+ * Per-directory readers (`peekDir(path)` as a snapshot) subscribe here; a
+ * directory whose listing array is unchanged produces no re-render.
+ */
+export function subscribeDirListings(listener: () => void): () => void {
+  listingListeners.add(listener);
+  return () => {
+    listingListeners.delete(listener);
+  };
+}
+
+/** Tell listing subscribers the dir cache was replaced (e.g. after `refreshDir`). */
+export function announceDirListings() {
+  for (const listener of [...listingListeners]) listener();
+}
+
 /** Reload the explorer cache after an agent/shell write (debounced). */
 export function notifyDirsChanged(root?: string, pollOnly = false) {
   if (typeof document !== "undefined" && document.hidden) return;
@@ -184,12 +206,14 @@ async function runRefresh() {
     contentChange = false;
     pendingRoots.clear();
     const changed = await refreshCachedDirs(unscoped ? undefined : roots);
-    if (changed.length || unscoped || content)
+    if (changed.length || unscoped || content) {
       for (const listener of listeners)
         listener(
           unscoped ? undefined : content ? roots : changed,
           unscoped ? undefined : changed,
         );
+      announceDirListings();
+    }
   } finally {
     refreshing = false;
     if (refreshAgain) {
@@ -226,4 +250,40 @@ export function dirsTouchedByMove(from: string, to: string): string[] {
   const fromParent = parentPath(from);
   const toParent = parentPath(to);
   return fromParent === toParent ? [fromParent] : [fromParent, toParent];
+}
+
+/** Folders with more visible entries than this render in chunks. */
+export const TREE_WINDOW_THRESHOLD = 300;
+export const TREE_WINDOW_CHUNK = 200;
+
+/**
+ * Bounded rendering for one folder: the first `limit` entries, plus any entry
+ * that is, or contains, a `mustShow` path (selection, rename, drag target).
+ * Original order is kept; `hidden` counts what was cut.
+ */
+export function windowEntries(
+  entries: readonly FsEntry[],
+  limit: number,
+  mustShow: readonly (string | null | undefined)[],
+): { shown: FsEntry[]; hidden: number } {
+  if (entries.length <= TREE_WINDOW_THRESHOLD || limit >= entries.length)
+    return { shown: entries as FsEntry[], hidden: 0 };
+  const targets = mustShow
+    .filter((path): path is string => !!path)
+    .map((path) => path.replace(/\\/g, "/"));
+  const shown: FsEntry[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (i < limit) {
+      shown.push(entry);
+      continue;
+    }
+    if (!targets.length) continue;
+    const base = entry.path.replace(/\\/g, "/");
+    if (
+      targets.some((path) => path === base || path.startsWith(`${base}/`))
+    )
+      shown.push(entry);
+  }
+  return { shown, hidden: entries.length - shown.length };
 }

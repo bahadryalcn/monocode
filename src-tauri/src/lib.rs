@@ -499,6 +499,7 @@ pub fn run() {
             harness::harness_write,
             harness::harness_kill,
             harness::harness_kill_all,
+            harness::harness_set_owner,
             harness::harness_http,
             harness::harness_sse_open,
             harness::harness_sse_close,

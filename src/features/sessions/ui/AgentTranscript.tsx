@@ -69,7 +69,7 @@ import { visibleUserPrompt } from "../../orchestration/model/orchestration";
 import { playCue } from "../../settings/model/sounds";
 import { legacyTaskListFromText } from "../model/taskList";
 import { resolveModel } from "../model/models";
-import { harnessForTurn } from "../model/secondOpinion";
+import { harnessesForTurns } from "../model/secondOpinion";
 import { Shimmer } from "../../../shared/ui/Shimmer";
 import {
   hasPendingApproval,
@@ -92,6 +92,7 @@ import {
   requestViewSubagent,
 } from "./subagentFocus";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
+import { useStableCallback } from "../../../shared/hooks/useStableCallback";
 import { useTranscriptLayout } from "../hooks/useTranscriptLayout";
 import { useTranscriptAnchor } from "../hooks/useTranscriptAnchor";
 import { useTranscriptSelection } from "../hooks/useTranscriptSelection";
@@ -109,7 +110,7 @@ import {
   foldableWork,
   foldedBlocks,
   groupTurnItems,
-  groupTurns,
+  groupTurnsStable,
   initialThinkingIndex,
   isIncompleteTool,
   isSubagentBlock,
@@ -127,6 +128,7 @@ import {
   subagentStatusLine,
   toolCallLabel,
   toolCallState,
+  hasTurnCopyText,
   turnCopyText,
   workKind,
   workSummaryLine,
@@ -453,21 +455,22 @@ function AgentTranscriptComponent({
     }
   }, [visible, setShowJump]);
 
-  useLayoutEffect(() => {
-    if (!visible || !stickToBottom.current) return;
-    const el = scroller.current;
-    syncTranscriptViewport(el);
-    pinToBottom(el);
-  }, [blocks, busy, visible]);
-
+  // The one place that follows streamed content to the bottom. Observer
+  // callbacks run after layout and before paint, so the pin lands in the same
+  // frame as the content and reads geometry the browser has already computed.
+  // A layout effect keyed on `blocks` would force a second layout per frame.
   useLayoutEffect(() => {
     const el = scrollerEl;
     const inner = el?.firstElementChild;
     if (!visible || !el || !inner) return;
-    const onResize = () => {
+    const onResize = (entries?: ResizeObserverEntry[]) => {
       // A parked transcript's scroller is detached and measures zero.
       if (!el.isConnected) return;
-      syncTranscriptViewport(el);
+      // The padding only changes with the container, never with its content.
+      syncTranscriptViewport(
+        el,
+        !entries || entries.some((entry) => entry.target === el),
+      );
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       if (stickToBottom.current) {
         pinToBottom(el);
@@ -486,9 +489,25 @@ function AgentTranscriptComponent({
 
   useTurnScrollAnchor(scrollerEl, visible, stickToBottom);
 
-  const turns = groupTurns(blocks, managed);
+  const previousTurns = useRef<Block[][]>([]);
+  const turns = groupTurnsStable(blocks, managed, previousTurns.current);
+  previousTurns.current = turns;
   const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount);
   const visibleTurns = turns.slice(firstVisibleTurn);
+  const turnHarnesses = harness
+    ? harnessesForTurns(blocks, visibleTurns, harness)
+    : undefined;
+  const stableApproval = useStableCallback(onApproval);
+  const stableSaveNote = useStableCallback(onSaveNote);
+  const stableSendDraft = useStableCallback(onSendDraft);
+  const stableRemoveDraft = useStableCallback(onRemoveDraft);
+  const stableOpenFile = useStableCallback(onOpenFile);
+  const stableOpenDiff = useStableCallback(onOpenDiff);
+  const stableOpenPlan = useStableCallback(onOpenPlan);
+  const stableBuildPlan = useStableCallback(onBuildPlan);
+  const stableSecondOpinion = useStableCallback(onSecondOpinion);
+  const stableHandoff = useStableCallback(onHandoff);
+  const stableEditLastTurn = useStableCallback(onEditLastTurn);
   const turnsRef = useRef(turns);
   turnsRef.current = turns;
   const visibleTurnCountRef = useRef(visibleTurnCount);
@@ -678,315 +697,63 @@ function AgentTranscriptComponent({
           </div>
         ) : null}
         {visibleTurns.map((turn, turnIndex) => {
-          const isLastTurn = firstVisibleTurn + turnIndex === turns.length - 1;
-          const userBlock = turnUserBlock(turn, managed);
-          const durationMs = userBlock?.durationMs;
+          const turnNumber = firstVisibleTurn + turnIndex + 1;
+          const isLastTurn = turnNumber === turns.length;
           const settled = !(busy && isLastTurn);
-          const proposals = turn.filter((block) => block.orchestration);
-          // Proposals are turn results, like the changes card. Keep them out
-          // of the live work and append them after all of the lead's output.
-          const items = groupTurnItems(
-            turn.filter((block) => !block.orchestration),
-            { settled },
-          );
-          // Earlier activity groups have already been followed by prose or
-          // more work. Only the last one can still be the live group.
-          const foldedAt = lastActivityIndex(items);
-          const initialThinkingAt = initialThinkingIndex(items);
-          const startedAt = userBlock?.startedAt;
-          // The agent starting its answer is the end of the work: fold the
-          // groups then, not when the turn finally settles, so the collapse
-          // never lands under the text you have already started reading.
-          const answering =
-            foldedAt >= 0 &&
-            items
-              .slice(foldedAt + 1)
-              .some(
-                (item) => item.type === "block" && isProseBlock(item.block),
-              );
-          const workStillRunning = activityStillRunning(turn);
-          // New turns carry immutable model provenance. Legacy turns do not,
-          // so omit their model instead of rewriting history from the picker.
-          const turnModel = userBlock?.turnModel;
-          const turnHarness = harness
-            ? (turnModel?.harness ?? harnessForTurn(blocks, turn, harness))
-            : undefined;
-          // Work the turn has already answered for folds away behind one line,
-          // leaving the prompt and the answer to it.
-          const turnId = turn[0].id;
-          const fold = foldableWork(items);
-          const folded = fold ? foldedBlocks(items, fold) : [];
-          const workOpen = openWork[turnId] ?? false;
-          // The fold line is the turn's status line from the first token to
-          // the last: the mark, and the clock beside it. It never moves, so a
-          // turn settling does not shuffle the layout around the answer.
           const live = visible && !settled && !preparingHandoff;
-          const turnModelName =
-            turnModel?.name ?? (live ? currentModelName : undefined);
-          // The fold line speaks for the main agent only. A delegated run has
-          // its own row, which says who is working and how it went, so saying
-          // it again here would be two lines telling the same story.
-          const foldTitle: ReactNode = live ? (
-            <LiveFoldTitle
-              startedAt={turnClockStart(blocks, userBlock)}
-              paused={waitingForApproval}
-              waitingLabel={
-                managed && waitingForApproval
-                  ? "Waiting for orchestrator"
-                  : pendingQuestion
-                    ? "Waiting for answers"
-                    : undefined
-              }
-              background={backgroundTasks}
-              backgroundAgents={backgroundAgents}
-              modelName={turnModelName}
-            />
-          ) : durationMs != null ? (
-            formatWorkingDuration(durationMs, turnModelName, true)
-          ) : (
-            workSummaryLine(folded)
-          );
-          const showFoldLine = live || durationMs != null || !!fold;
-          // It sits where the work starts, from before there is any: the row
-          // is there from the first token, so nothing shoves the answer down
-          // when the turn folds.
-          const firstWork = firstFoldableIndex(items);
-          const foldLineAt = fold
-            ? fold.start
-            : firstWork >= 0
-              ? firstWork
-              : items.length;
-          const isCurrentItem = (item: TurnItem) =>
-            item.type === "block"
-              ? item.block.id === searchCurrent
-              : item.blocks.some((block) => block.id === searchCurrent);
-          const renderItem = (item: TurnItem, itemIndex: number) =>
-            item.type === "subagents" ? (
-              <SubagentStack
-                key={item.blocks[0].id}
-                blocks={item.blocks}
-                cwd={cwd}
-                live={live}
-                onOpenFile={onOpenFile}
-                onOpenDiff={onOpenDiff}
-              />
-            ) : item.type === "activity" ? (
-              itemIndex === initialThinkingAt ? (
-                <InitialThinking
-                  key={item.blocks[0].id}
-                  live={visible && !settled}
-                />
-              ) : (
-                <ActivityPhases
-                  key={item.blocks[0].id}
-                  blocks={item.blocks}
-                  cwd={cwd}
-                  done={
-                    !visible ||
-                    settled ||
-                    itemIndex < foldedAt ||
-                    (answering && !workStillRunning)
-                  }
-                  onApproval={onApproval}
-                  onOpenFile={onOpenFile}
-                  onOpenDiff={onOpenDiff}
-                />
-              )
-            ) : (
-              <TranscriptBlock
-                key={item.block.id}
-                block={item.block}
-                layout={transcriptLayout}
-                visible={item.block.role === "user" ? visible : undefined}
-                stickyIndex={firstVisibleTurn + turnIndex + 1}
-                // Prose reads the same wherever it lands: under the fold
-                // line at the top of the turn, or under the work it follows.
-                underLine={
-                  isProseBlock(item.block) &&
-                  itemIndex > 0 &&
-                  (items[itemIndex - 1]?.type === "activity" ||
-                    items[itemIndex - 1]?.type === "subagents" ||
-                    (itemIndex === foldLineAt && showFoldLine))
-                }
-                onApproval={onApproval}
-                onSaveNote={onSaveNote}
-                onSendDraft={onSendDraft}
-                onRemoveDraft={onRemoveDraft}
-                onOpenFile={onOpenFile}
-                onOpenDiff={onOpenDiff}
-                onOpenPlan={onOpenPlan}
-                onBuildPlan={onBuildPlan}
-                planBusy={!!busy}
-                planHarness={planBuildTargets ? harness : undefined}
-                planModel={model}
-                planModelSettings={modelSettings}
-                cwd={cwd}
-                onEditLastTurn={
-                  onEditLastTurn &&
-                  settled &&
-                  item.block.role === "user" &&
-                  item.block.id === editableUserBlockId &&
-                  !item.block.draft
-                    ? onEditLastTurn
-                    : undefined
-                }
-                editing={
-                  editingLastTurn &&
-                  item.block.role === "user" &&
-                  item.block.id === editableUserBlockId
-                }
-              />
-            );
-          // The fold reaches across a stack of delegated runs, but those rows
-          // do not collapse with it: they are lifted out and parked under the
-          // work, where they stay put however often it re-folds.
-          const foldEntries = fold
-            ? items.slice(fold.start, fold.end + 1).map((entry, offset) => ({
-                entry,
-                index: fold.start + offset,
-              }))
-            : [];
-          const foldSubagents = foldEntries.filter(
-            ({ entry }) => entry.type === "subagents",
-          );
-          const foldWork = foldEntries.filter(
-            ({ entry }) => entry.type !== "subagents",
-          );
-          const foldLineRow = (
-            <TurnRow key="work-fold" folded={!showFoldLine}>
-              <WorkFoldLine
-                title={foldTitle}
-                kind={workKind(folded)}
-                harness={turnHarness}
-                live={live}
-                expandable={!!fold}
-                open={workOpen && !!fold}
-                onToggle={() => toggleWork(turnId, workOpen)}
-              />
-            </TurnRow>
-          );
+          const turnId = turn[0].id;
           return (
-            <div
-              key={turn[0].id}
-              data-transcript-turn={turnId}
-              className={`transcript-turn flex min-w-0 flex-col${
-                isLastTurn ? " transcript-turn-live" : ""
-              }${
-                promptAnchor && anchorTurn && isLastTurn && userBlock
-                  ? " transcript-turn-anchor"
-                  : ""
-              }`}
-            >
-              {items.flatMap((item, itemIndex) => {
-                const inFold =
-                  !!fold && itemIndex >= fold.start && itemIndex <= fold.end;
-                if (inFold) {
-                  if (itemIndex !== fold.start) return [];
-                  return [
-                    foldLineRow,
-                    <TurnRow key="work-details" folded={!workOpen}>
-                      {() =>
-                        foldWork.map(({ entry, index }, offset) => (
-                          <div
-                            key={turnItemKey(entry)}
-                            data-transcript-search-item
-                            data-transcript-search-current={
-                              isCurrentItem(entry) || undefined
-                            }
-                            className={`flow-root pb-1 last:pb-0 pl-5 zen-fold-rail ${
-                              offset === foldWork.length - 1
-                                ? "zen-fold-tail"
-                                : ""
-                            }${
-                              // Prose the trail holds is the agent talking
-                              // while it works; the marker lets it read as
-                              // process, not result.
-                              entry.type === "block" &&
-                              isProseBlock(entry.block)
-                                ? " zen-fold-prose"
-                                : ""
-                            }`}
-                          >
-                            {renderItem(entry, index)}
-                          </div>
-                        ))
-                      }
-                    </TurnRow>,
-                    // Delegated runs sit under the agent's own work, not
-                    // among it: they are a second thing the turn is doing,
-                    // and reading them as the first steps of the main trail
-                    // is what made them look like its work.
-                    ...foldSubagents.map(({ entry, index }) => (
-                      <div
-                        key={turnItemKey(entry)}
-                        data-transcript-search-item
-                        data-transcript-search-current={
-                          isCurrentItem(entry) || undefined
-                        }
-                        className="flow-root pb-1"
-                      >
-                        {renderItem(entry, index)}
-                      </div>
-                    )),
-                  ];
-                }
-                const row = (
-                  <div
-                    key={turnItemKey(item)}
-                    data-transcript-search-item
-                    data-transcript-search-current={
-                      isCurrentItem(item) || undefined
-                    }
-                    className="flow-root pb-1"
-                  >
-                    {renderItem(item, itemIndex)}
-                  </div>
-                );
-                if (itemIndex !== foldLineAt) return row;
-                return [foldLineRow, row];
-              })}
-              {foldLineAt >= items.length ? foldLineRow : null}
-              {settled &&
-                proposals
-                  .filter((block) => block.orchestration?.status !== "planning")
-                  .map((block) => (
-                    <div
-                      key={block.id}
-                      className="px-4 pt-1 pb-2"
-                      data-orchestration-result
-                    >
-                      <OrchestrationPreview block={block} busy={!!busy} />
-                    </div>
-                  ))}
-              {/* The accessory keeps the pane's props, which go stale once parked. */}
-              {isLastTurn && latestTurnAccessory && !parked
-                ? latestTurnAccessory
-                : null}
-              {durationMs != null && settled ? (
-                <TurnDuration
-                  elapsedMs={durationMs}
-                  metrics={userBlock?.turnMetrics}
-                  labelHidden={showFoldLine}
-                  modelName={turnModelName}
-                  completedAt={
-                    startedAt != null ? startedAt + durationMs : undefined
-                  }
-                  copyText={turnCopyText(turn)}
-                  onSaveNote={onSaveNote}
-                  harness={turnHarness}
-                  fromHarness={turnHarness}
-                  fromModel={turnModel?.id}
-                  onSecondOpinion={
-                    onSecondOpinion
-                      ? (target) => onSecondOpinion(target, turn)
-                      : undefined
-                  }
-                  onHandoff={
-                    onHandoff ? (target) => onHandoff(target, turn) : undefined
-                  }
-                />
-              ) : null}
-            </div>
+            <Turn
+              key={turnId}
+              turn={turn}
+              managed={managed}
+              settled={settled}
+              live={live}
+              visible={visible}
+              isLastTurn={isLastTurn}
+              turnNumber={turnNumber}
+              turnHarness={turnHarnesses?.[turnIndex]}
+              clockStart={
+                live
+                  ? turnClockStart(blocks, turnUserBlock(turn, managed))
+                  : undefined
+              }
+              currentModelName={live ? currentModelName : undefined}
+              waitingForApproval={live && waitingForApproval}
+              pendingQuestion={live && pendingQuestion}
+              backgroundTasks={live ? backgroundTasks : undefined}
+              backgroundAgents={live ? backgroundAgents : undefined}
+              anchorPrompt={promptAnchor && anchorTurn && isLastTurn}
+              latestTurnAccessory={
+                isLastTurn && !parked ? latestTurnAccessory : undefined
+              }
+              workOpen={openWork[turnId] ?? false}
+              searchCurrent={
+                searchCurrent && turn.some((block) => block.id === searchCurrent)
+                  ? searchCurrent
+                  : null
+              }
+              transcriptLayout={transcriptLayout}
+              editableUserBlockId={editableUserBlockId}
+              editingLastTurn={editingLastTurn}
+              busy={!!busy}
+              planHarness={planBuildTargets ? harness : undefined}
+              planModel={model}
+              planModelSettings={modelSettings}
+              cwd={cwd}
+              toggleWork={toggleWork}
+              onApproval={stableApproval}
+              onSaveNote={stableSaveNote}
+              onSendDraft={stableSendDraft}
+              onRemoveDraft={stableRemoveDraft}
+              onOpenFile={stableOpenFile}
+              onOpenDiff={stableOpenDiff}
+              onOpenPlan={stableOpenPlan}
+              onBuildPlan={stableBuildPlan}
+              onSecondOpinion={stableSecondOpinion}
+              onHandoff={stableHandoff}
+              onEditLastTurn={stableEditLastTurn}
+            />
           );
         })}
       </div>
@@ -1007,6 +774,418 @@ export const AgentTranscript = memo(
   AgentTranscriptComponent,
   (previous, next) => previous.visible === false && next.visible === false,
 );
+
+type TurnProps = {
+  turn: Block[];
+  managed: boolean;
+  settled: boolean;
+  live: boolean;
+  visible: boolean;
+  isLastTurn: boolean;
+  /** One-based position in the whole transcript, not in the visible window. */
+  turnNumber: number;
+  /** The provider that produced the turn, resolved for the whole transcript. */
+  turnHarness?: HarnessId;
+  clockStart?: number;
+  currentModelName?: string;
+  waitingForApproval: boolean;
+  pendingQuestion: boolean;
+  backgroundTasks?: string[];
+  backgroundAgents?: number;
+  anchorPrompt: boolean;
+  latestTurnAccessory?: ReactNode;
+  workOpen: boolean;
+  searchCurrent: string | null;
+  transcriptLayout: TranscriptLayout;
+  editableUserBlockId?: string;
+  editingLastTurn: boolean;
+  busy: boolean;
+  planHarness?: HarnessId;
+  planModel?: string;
+  planModelSettings?: Record<string, string>;
+  cwd?: string;
+  toggleWork: (turnId: string, currentlyOpen: boolean) => void;
+  onApproval?: (requestId: number, decision: ApprovalDecision) => void;
+  onSaveNote?: (text: string) => void | Promise<void>;
+  onSendDraft?: (block: Block) => boolean | void;
+  onRemoveDraft?: (block: Block) => boolean | void;
+  onOpenFile?: (path: string) => void;
+  onOpenDiff?: (path: string) => void;
+  onOpenPlan?: (blockId: string) => void;
+  onBuildPlan?: (blockId: string, target?: PlanBuildTarget) => void;
+  onSecondOpinion?: (target: ModelTarget, turn: Block[]) => void;
+  onHandoff?: (target: ModelTarget, turn: Block[]) => void;
+  onEditLastTurn?: () => void;
+};
+
+/**
+ * One turn of the transcript. For a settled turn every prop is a primitive or
+ * a stable reference and `turn` is compared block by block, so a streamed
+ * token re-renders only the live turn. The parent hands settled turns
+ * `undefined` for the props only a live turn reads.
+ */
+const Turn = memo(function Turn({
+  turn,
+  managed,
+  settled,
+  live,
+  visible,
+  isLastTurn,
+  turnNumber,
+  turnHarness,
+  clockStart,
+  currentModelName,
+  waitingForApproval,
+  pendingQuestion,
+  backgroundTasks,
+  backgroundAgents,
+  anchorPrompt,
+  latestTurnAccessory,
+  workOpen,
+  searchCurrent,
+  transcriptLayout,
+  editableUserBlockId,
+  editingLastTurn,
+  busy,
+  planHarness,
+  planModel,
+  planModelSettings,
+  cwd,
+  toggleWork,
+  onApproval,
+  onSaveNote,
+  onSendDraft,
+  onRemoveDraft,
+  onOpenFile,
+  onOpenDiff,
+  onOpenPlan,
+  onBuildPlan,
+  onSecondOpinion,
+  onHandoff,
+  onEditLastTurn,
+}: TurnProps) {
+  const userBlock = turnUserBlock(turn, managed);
+  const durationMs = userBlock?.durationMs;
+  const proposals = turn.filter((block) => block.orchestration);
+  // Proposals are turn results, like the changes card. Keep them out
+  // of the live work and append them after all of the lead's output.
+  const items = groupTurnItems(
+    turn.filter((block) => !block.orchestration),
+    { settled },
+  );
+  // Earlier activity groups have already been followed by prose or
+  // more work. Only the last one can still be the live group.
+  const foldedAt = lastActivityIndex(items);
+  const initialThinkingAt = initialThinkingIndex(items);
+  const startedAt = userBlock?.startedAt;
+  // The agent starting its answer is the end of the work: fold the
+  // groups then, not when the turn finally settles, so the collapse
+  // never lands under the text you have already started reading.
+  const answering =
+    foldedAt >= 0 &&
+    items
+      .slice(foldedAt + 1)
+      .some(
+        (item) => item.type === "block" && isProseBlock(item.block),
+      );
+  const workStillRunning = activityStillRunning(turn);
+  // New turns carry immutable model provenance. Legacy turns do not,
+  // so omit their model instead of rewriting history from the picker.
+  const turnModel = userBlock?.turnModel;
+  // Work the turn has already answered for folds away behind one line,
+  // leaving the prompt and the answer to it.
+  const turnId = turn[0].id;
+  const fold = foldableWork(items);
+  const folded = fold ? foldedBlocks(items, fold) : [];
+  // The fold line is the turn's status line from the first token to
+  // the last: the mark, and the clock beside it. It never moves, so a
+  // turn settling does not shuffle the layout around the answer.
+  const turnModelName =
+    turnModel?.name ?? (live ? currentModelName : undefined);
+  // The fold line speaks for the main agent only. A delegated run has
+  // its own row, which says who is working and how it went, so saying
+  // it again here would be two lines telling the same story.
+  const foldTitle: ReactNode = live ? (
+    <LiveFoldTitle
+      startedAt={clockStart}
+      paused={waitingForApproval}
+      waitingLabel={
+        managed && waitingForApproval
+          ? "Waiting for orchestrator"
+          : pendingQuestion
+            ? "Waiting for answers"
+            : undefined
+      }
+      background={backgroundTasks}
+      backgroundAgents={backgroundAgents}
+      modelName={turnModelName}
+    />
+  ) : durationMs != null ? (
+    formatWorkingDuration(durationMs, turnModelName, true)
+  ) : (
+    workSummaryLine(folded)
+  );
+  const showFoldLine = live || durationMs != null || !!fold;
+  // It sits where the work starts, from before there is any: the row
+  // is there from the first token, so nothing shoves the answer down
+  // when the turn folds.
+  const firstWork = firstFoldableIndex(items);
+  const foldLineAt = fold
+    ? fold.start
+    : firstWork >= 0
+      ? firstWork
+      : items.length;
+  const isCurrentItem = (item: TurnItem) =>
+    item.type === "block"
+      ? item.block.id === searchCurrent
+      : item.blocks.some((block) => block.id === searchCurrent);
+  const renderItem = (item: TurnItem, itemIndex: number) =>
+    item.type === "subagents" ? (
+      <SubagentStack
+        key={item.blocks[0].id}
+        blocks={item.blocks}
+        cwd={cwd}
+        live={live}
+        onOpenFile={onOpenFile}
+        onOpenDiff={onOpenDiff}
+      />
+    ) : item.type === "activity" ? (
+      itemIndex === initialThinkingAt ? (
+        <InitialThinking
+          key={item.blocks[0].id}
+          live={visible && !settled}
+        />
+      ) : (
+        <ActivityPhases
+          key={item.blocks[0].id}
+          blocks={item.blocks}
+          cwd={cwd}
+          done={
+            !visible ||
+            settled ||
+            itemIndex < foldedAt ||
+            (answering && !workStillRunning)
+          }
+          onApproval={onApproval}
+          onOpenFile={onOpenFile}
+          onOpenDiff={onOpenDiff}
+        />
+      )
+    ) : (
+      <TranscriptBlock
+        key={item.block.id}
+        block={item.block}
+        layout={transcriptLayout}
+        visible={item.block.role === "user" ? visible : undefined}
+        stickyIndex={turnNumber}
+        // Prose reads the same wherever it lands: under the fold
+        // line at the top of the turn, or under the work it follows.
+        underLine={
+          isProseBlock(item.block) &&
+          itemIndex > 0 &&
+          (items[itemIndex - 1]?.type === "activity" ||
+            items[itemIndex - 1]?.type === "subagents" ||
+            (itemIndex === foldLineAt && showFoldLine))
+        }
+        onApproval={onApproval}
+        onSaveNote={onSaveNote}
+        onSendDraft={onSendDraft}
+        onRemoveDraft={onRemoveDraft}
+        onOpenFile={onOpenFile}
+        onOpenDiff={onOpenDiff}
+        onOpenPlan={onOpenPlan}
+        onBuildPlan={onBuildPlan}
+        planBusy={busy}
+        planHarness={planHarness}
+        planModel={planModel}
+        planModelSettings={planModelSettings}
+        cwd={cwd}
+        onEditLastTurn={
+          onEditLastTurn &&
+          settled &&
+          item.block.role === "user" &&
+          item.block.id === editableUserBlockId &&
+          !item.block.draft
+            ? onEditLastTurn
+            : undefined
+        }
+        editing={
+          editingLastTurn &&
+          item.block.role === "user" &&
+          item.block.id === editableUserBlockId
+        }
+      />
+    );
+  // The fold reaches across a stack of delegated runs, but those rows
+  // do not collapse with it: they are lifted out and parked under the
+  // work, where they stay put however often it re-folds.
+  const foldEntries = fold
+    ? items.slice(fold.start, fold.end + 1).map((entry, offset) => ({
+        entry,
+        index: fold.start + offset,
+      }))
+    : [];
+  const foldSubagents = foldEntries.filter(
+    ({ entry }) => entry.type === "subagents",
+  );
+  const foldWork = foldEntries.filter(
+    ({ entry }) => entry.type !== "subagents",
+  );
+  const foldLineRow = (
+    <TurnRow key="work-fold" folded={!showFoldLine}>
+      <WorkFoldLine
+        title={foldTitle}
+        kind={workKind(folded)}
+        harness={turnHarness}
+        live={live}
+        expandable={!!fold}
+        open={workOpen && !!fold}
+        onToggle={() => toggleWork(turnId, workOpen)}
+      />
+    </TurnRow>
+  );
+  return (
+    <div
+      key={turn[0].id}
+      data-transcript-turn={turnId}
+      className={`transcript-turn flex min-w-0 flex-col${
+        isLastTurn ? " transcript-turn-live" : ""
+      }${
+        anchorPrompt && userBlock
+          ? " transcript-turn-anchor"
+          : ""
+      }`}
+    >
+      {items.flatMap((item, itemIndex) => {
+        const inFold =
+          !!fold && itemIndex >= fold.start && itemIndex <= fold.end;
+        if (inFold) {
+          if (itemIndex !== fold.start) return [];
+          return [
+            foldLineRow,
+            <TurnRow key="work-details" folded={!workOpen}>
+              {() =>
+                foldWork.map(({ entry, index }, offset) => (
+                  <div
+                    key={turnItemKey(entry)}
+                    data-transcript-search-item
+                    data-transcript-search-current={
+                      isCurrentItem(entry) || undefined
+                    }
+                    className={`flow-root pb-1 last:pb-0 pl-5 zen-fold-rail ${
+                      offset === foldWork.length - 1
+                        ? "zen-fold-tail"
+                        : ""
+                    }${
+                      // Prose the trail holds is the agent talking
+                      // while it works; the marker lets it read as
+                      // process, not result.
+                      entry.type === "block" &&
+                      isProseBlock(entry.block)
+                        ? " zen-fold-prose"
+                        : ""
+                    }`}
+                  >
+                    {renderItem(entry, index)}
+                  </div>
+                ))
+              }
+            </TurnRow>,
+            // Delegated runs sit under the agent's own work, not
+            // among it: they are a second thing the turn is doing,
+            // and reading them as the first steps of the main trail
+            // is what made them look like its work.
+            ...foldSubagents.map(({ entry, index }) => (
+              <div
+                key={turnItemKey(entry)}
+                data-transcript-search-item
+                data-transcript-search-current={
+                  isCurrentItem(entry) || undefined
+                }
+                className="flow-root pb-1"
+              >
+                {renderItem(entry, index)}
+              </div>
+            )),
+          ];
+        }
+        const row = (
+          <div
+            key={turnItemKey(item)}
+            data-transcript-search-item
+            data-transcript-search-current={
+              isCurrentItem(item) || undefined
+            }
+            className="flow-root pb-1"
+          >
+            {renderItem(item, itemIndex)}
+          </div>
+        );
+        if (itemIndex !== foldLineAt) return row;
+        return [foldLineRow, row];
+      })}
+      {foldLineAt >= items.length ? foldLineRow : null}
+      {settled &&
+        proposals
+          .filter((block) => block.orchestration?.status !== "planning")
+          .map((block) => (
+            <div
+              key={block.id}
+              className="px-4 pt-1 pb-2"
+              data-orchestration-result
+            >
+              <OrchestrationPreview block={block} busy={busy} />
+            </div>
+          ))}
+      {/* The accessory keeps the pane's props, which go stale once parked. */}
+      {latestTurnAccessory
+        ? latestTurnAccessory
+        : null}
+      {durationMs != null && settled ? (
+        <TurnDuration
+          elapsedMs={durationMs}
+          metrics={userBlock?.turnMetrics}
+          labelHidden={showFoldLine}
+          modelName={turnModelName}
+          completedAt={
+            startedAt != null ? startedAt + durationMs : undefined
+          }
+          turn={turn}
+          onSaveNote={onSaveNote}
+          harness={turnHarness}
+          fromHarness={turnHarness}
+          fromModel={turnModel?.id}
+          onSecondOpinion={
+            onSecondOpinion
+              ? (target) => onSecondOpinion(target, turn)
+              : undefined
+          }
+          onHandoff={
+            onHandoff ? (target) => onHandoff(target, turn) : undefined
+          }
+        />
+      ) : null}
+    </div>
+  );
+}, sameTurn);
+
+function sameTurn(a: TurnProps, b: TurnProps): boolean {
+  const keys = Object.keys(a) as (keyof TurnProps)[];
+  if (keys.length !== Object.keys(b).length) return false;
+  for (const key of keys) {
+    if (key === "turn") {
+      if (
+        a.turn.length !== b.turn.length ||
+        !a.turn.every((block, index) => block === b.turn[index])
+      ) {
+        return false;
+      }
+    } else if (!Object.is(a[key], b[key])) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /** Placeholder for private reasoning before the first assistant text arrives. */
 function InitialThinking({
@@ -1100,7 +1279,7 @@ function TurnDuration({
   modelName,
   harness,
   completedAt,
-  copyText: output,
+  turn,
   onSaveNote,
   fromHarness,
   fromModel,
@@ -1114,7 +1293,8 @@ function TurnDuration({
   modelName?: string;
   harness?: HarnessId;
   completedAt?: number;
-  copyText?: string;
+  /** The turn's blocks; its text is only gathered when copy or save is used. */
+  turn: Block[];
   onSaveNote?: (text: string) => void | Promise<void>;
   fromHarness?: HarnessId;
   /** The turn's own model, so a same-harness second opinion can hide it. */
@@ -1123,6 +1303,8 @@ function TurnDuration({
   onHandoff?: (target: ModelTarget) => void;
 }) {
   const label = formatWorkingDuration(elapsedMs, modelName, true);
+  const hasOutput = hasTurnCopyText(turn);
+  const getText = useCallback(() => turnCopyText(turn), [turn]);
   const dot = (
     <span
       aria-hidden
@@ -1135,11 +1317,11 @@ function TurnDuration({
       className="flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden px-4 pt-1 pb-3 font-sans text-sm text-content/40"
     >
       <span className="flex shrink-0 items-center gap-1">
-        {output ? (
+        {hasOutput ? (
           <>
-            <CopyTurnButton text={output} />
+            <CopyTurnButton getText={getText} />
             {onSaveNote ? (
-              <SaveNoteButton text={output} onSave={onSaveNote} />
+              <SaveNoteButton getText={getText} onSave={onSaveNote} />
             ) : null}
           </>
         ) : (
@@ -1289,10 +1471,13 @@ function formatClockTime(epochMs: number): string {
 
 function CopyTurnButton({
   text,
+  getText,
   attachments,
   label = "Copy response",
 }: {
-  text: string;
+  text?: string;
+  /** Gathers the text on click, for text that is costly to build each render. */
+  getText?: () => string;
   attachments?: Attachment[];
   label?: string;
 }) {
@@ -1307,7 +1492,7 @@ function CopyTurnButton({
     return () => {
       if (timer.current != null) window.clearTimeout(timer.current);
     };
-  }, [text, attachments]);
+  }, [text, getText, attachments]);
 
   return (
     <>
@@ -1323,7 +1508,7 @@ function CopyTurnButton({
           setCopied(false);
           setPending(true);
           playCue("copy");
-          void copyMessage(text, attachments).then(
+          void copyMessage(text ?? getText?.() ?? "", attachments).then(
             () => {
               setPending(false);
               setCopied(true);
@@ -1354,9 +1539,11 @@ function CopyTurnButton({
 
 function SaveNoteButton({
   text,
+  getText,
   onSave,
 }: {
-  text: string;
+  text?: string;
+  getText?: () => string;
   onSave: (text: string) => void | Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -1370,7 +1557,7 @@ function SaveNoteButton({
     return () => {
       if (timer.current != null) window.clearTimeout(timer.current);
     };
-  }, [text]);
+  }, [text, getText]);
 
   return (
     <>
@@ -1385,7 +1572,7 @@ function SaveNoteButton({
           setSaved(false);
           setPending(true);
           try {
-            await onSave(text);
+            await onSave(text ?? getText?.() ?? "");
             playCue("copy");
             setSaved(true);
             if (timer.current != null) window.clearTimeout(timer.current);
@@ -3972,13 +4159,23 @@ function pinToBottom(el: HTMLElement | null) {
   el.scrollTop = el.scrollHeight;
 }
 
+/** Bottom padding of each transcript's inner column, read once per resize. */
+const viewportPadding = new WeakMap<Element, number>();
+
 /** Keep the live turn's min-height in lockstep with the visible transcript. */
-function syncTranscriptViewport(el: HTMLElement | null) {
+function syncTranscriptViewport(el: HTMLElement | null, refreshPadding = false) {
   if (!el || el.clientHeight <= 0) return;
   const inner = el.firstElementChild as HTMLElement | null;
-  const pad = inner
-    ? Number.parseFloat(getComputedStyle(inner).paddingBottom) || 0
-    : 0;
+  let pad = 0;
+  if (inner) {
+    const cached = viewportPadding.get(inner);
+    if (cached === undefined || refreshPadding) {
+      pad = Number.parseFloat(getComputedStyle(inner).paddingBottom) || 0;
+      viewportPadding.set(inner, pad);
+    } else {
+      pad = cached;
+    }
+  }
   const next = `${Math.max(0, el.clientHeight - pad)}px`;
   if (el.style.getPropertyValue("--transcript-viewport") === next) return;
   el.style.setProperty("--transcript-viewport", next);

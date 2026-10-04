@@ -1,25 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Loader } from "../../../shared/ui/icons";
 import {
-  gitDiffFiles,
   gitDiscardFile,
   gitFileDiff,
   gitStageContents,
   gitStageFile,
-  notifyGitChanged,
   subscribeGitChanged,
   type GitChangedFile,
   type GitFileDiffKind,
 } from "../../../platform/tauri/fs";
-import { forEachConcurrent } from "../../../shared/lib/concurrent";
 import { buildUnifiedFile, type UnifiedFileDiff } from "../model/unifiedDiff";
 import {
   prioritizeWorkingTreeDiffEntries,
   workingTreeDiffEntries,
   workingTreeDiffEntryLabel,
   workingTreeDiffFocusId,
+  type WorkingTreeDiffEntry,
 } from "../model/workingTreeDiff";
 import { stageChunkText } from "../../files/editor/editorGit";
+import {
+  currentGitChangeHint,
+  fetchGitIndex,
+  invalidateGitIndex,
+  notifyGitChangedWith,
+} from "../model/gitIndexStore";
+import {
+  dirtyEntryIds,
+  entriesToLoad,
+  reuseLoadedDiff,
+  sameChangedFiles,
+  sameChangedRow,
+} from "../model/workingTreeReload";
 import { LINE_DIFF_CONFIG } from "../model/lineDiff";
 import { confirmDiscardFile } from "../model/gitConfirmation";
 import { UnifiedDiffView, type UnifiedDiffFileModel } from "./UnifiedDiffView";
@@ -40,7 +51,58 @@ type LoadedDiff = {
   error?: string;
 };
 
+type CachedModel = {
+  file: GitChangedFile;
+  kind: GitFileDiffKind;
+  loaded: LoadedDiff | undefined;
+  model: UnifiedDiffFileModel;
+};
+
 const DIFF_LOAD_CONCURRENCY = 4;
+// Bodies loaded without waiting for their section to be seen: the first
+// screenful is there at once.
+const EAGER_DIFF_LOADS = 10;
+const REFRESH_DEBOUNCE_MS = 500;
+// A shared index fetched just before the event that woke us still counts.
+const GIT_INDEX_EVENT_SLACK_MS = 300;
+
+function buildModel(
+  entry: WorkingTreeDiffEntry,
+  loaded: LoadedDiff | undefined,
+): UnifiedDiffFileModel {
+  const { file, kind } = entry;
+  const unified = loaded?.unified ?? null;
+  const unchanged =
+    unified != null &&
+    unified.additions === 0 &&
+    unified.deletions === 0 &&
+    !loaded?.binary;
+  // Also before the body is loaded: the placeholder shows the index's counts.
+  const canUseIndexCounts = !loaded?.error && !(file.staged && file.unstaged);
+  return {
+    id: entry.id,
+    path: file.path,
+    label: workingTreeDiffEntryLabel(entry),
+    binary: loaded?.binary,
+    tooLarge: loaded?.tooLarge,
+    emptyMessage:
+      loaded == null
+        ? "Loading…"
+        : loaded.error
+          ? `Couldn’t load diff: ${loaded.error}`
+          : unchanged
+            ? kind === "staged"
+              ? "No staged changes"
+              : "No unstaged changes"
+            : undefined,
+    additions: unified?.additions ?? (canUseIndexCounts ? file.additions : 0),
+    deletions: unified?.deletions ?? (canUseIndexCounts ? file.deletions : 0),
+    blocks: unchanged ? [] : (unified?.blocks ?? []),
+    canStage: kind === "unstaged",
+    canDiscard: kind === "unstaged",
+    canStageHunk: kind === "unstaged" && !loaded?.binary && !loaded?.tooLarge,
+  };
+}
 
 export function WorkingTreeDiff({
   cwd,
@@ -54,6 +116,7 @@ export function WorkingTreeDiff({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const refreshNow = useRef<((paths: readonly string[]) => void) | null>(null);
   const mutationQueue = useRef(Promise.resolve());
   const pendingIds = useRef(new Set<string>());
   const mutationContext = useRef({ cwd, active: true });
@@ -68,7 +131,7 @@ export function WorkingTreeDiff({
   }, [cwd]);
 
   const enqueueMutation = useCallback(
-    (id: string, action: () => Promise<boolean | void>) => {
+    (id: string, path: string, action: () => Promise<boolean | void>) => {
       const context = mutationContext.current;
       const key = `${cwd}\0${id}`;
       if (pendingIds.current.has(key)) return;
@@ -79,7 +142,12 @@ export function WorkingTreeDiff({
           setBusyId(id);
           setMutationError(null);
           try {
-            if ((await action()) !== false) notifyGitChanged(cwd, "index");
+            if ((await action()) !== false) {
+              invalidateGitIndex();
+              notifyGitChangedWith(cwd, "index", { paths: [path] });
+              // Our own action: show its result without the debounce.
+              refreshNow.current?.([path]);
+            }
           } catch (caught) {
             if (context.active)
               setMutationError(
@@ -99,6 +167,15 @@ export function WorkingTreeDiff({
   );
   const diffsRef = useRef(diffs);
   diffsRef.current = diffs;
+  // Sections that are expanded and near the viewport: their bodies are the
+  // ones worth loading (or reloading after a change).
+  const neededRef = useRef(new Set<string>());
+  const pumpRef = useRef<(() => void) | null>(null);
+  const onSectionNeeded = useCallback((id: string, needed: boolean) => {
+    if (needed) neededRef.current.add(id);
+    else neededRef.current.delete(id);
+    if (needed) pumpRef.current?.();
+  }, []);
 
   useEffect(() => {
     setError(null);
@@ -113,71 +190,150 @@ export function WorkingTreeDiff({
     setFiles(null);
     setDiffs(new Map());
 
+    // What each loaded diff was loaded for. A refresh fetches again only the
+    // entries whose index row moved, plus the ones a change names as touched.
+    const loadedRows = new Map<string, GitChangedFile>();
+    // Entries that must be fetched again whatever their row says; kept across
+    // runs so a superseded run does not lose them.
+    const dirtyIds = new Set<string>();
+    let lastHead: string | null | undefined;
+    let pendingAll = true;
+    const pendingPaths = new Set<string>();
+    let lastEventAt = 0;
+    // Entries of the last index read, focused file first, and the loads that
+    // are running or failed since the last refresh (neither is started again).
+    let latestEntries: WorkingTreeDiffEntry[] = [];
+    const inFlight = new Set<string>();
+    const failedIds = new Set<string>();
+
+    const loadEntry = async (entry: WorkingTreeDiffEntry) => {
+      let loaded: LoadedDiff;
+      let failed = false;
+      try {
+        const diff = await gitFileDiff(cwd, entry.file.relative, entry.kind);
+        const candidate: LoadedDiff = {
+          binary: diff.binary,
+          tooLarge: diff.tooLarge,
+          original: diff.original,
+          current: diff.current,
+          unified: null,
+        };
+        // Same texts as on screen: keep that object, skip the parse.
+        const previous = diffsRef.current.get(entry.id);
+        const reused = reuseLoadedDiff(previous, candidate);
+        loaded =
+          reused !== candidate
+            ? reused
+            : {
+                ...candidate,
+                unified:
+                  !diff.binary && !diff.tooLarge
+                    ? buildUnifiedFile(diff.original, diff.current)
+                    : null,
+              };
+      } catch (caught: unknown) {
+        failed = true;
+        loaded = {
+          binary: false,
+          tooLarge: false,
+          original: "",
+          current: "",
+          unified: null,
+          error: caught instanceof Error ? caught.message : String(caught),
+        };
+      }
+      inFlight.delete(entry.id);
+      if (disposed) return;
+      // An entry that left the list meanwhile has nothing to show.
+      if (latestEntries.some((candidate) => candidate.id === entry.id)) {
+        // A failed load stays unrecorded; the next refresh retries it.
+        if (failed) {
+          loadedRows.delete(entry.id);
+          failedIds.add(entry.id);
+        } else loadedRows.set(entry.id, entry.file);
+        setDiffs((existing) => {
+          if (existing.get(entry.id) === loaded) return existing;
+          const next = new Map(existing);
+          next.set(entry.id, loaded);
+          return next;
+        });
+      }
+      pump();
+    };
+
+    // Starts loads for what is needed and not yet (or no longer) current, up
+    // to the concurrency limit; each finished load pumps again.
+    const pump = () => {
+      if (disposed) return;
+      const skip = new Set([...inFlight, ...failedIds]);
+      const todo = entriesToLoad(
+        latestEntries,
+        loadedRows,
+        dirtyIds,
+        neededRef.current,
+        EAGER_DIFF_LOADS,
+        skip,
+      );
+      for (const entry of todo) {
+        if (inFlight.size >= DIFF_LOAD_CONCURRENCY) break;
+        inFlight.add(entry.id);
+        // A change that lands while this load runs marks it dirty again.
+        dirtyIds.delete(entry.id);
+        void loadEntry(entry);
+      }
+    };
+    pumpRef.current = pump;
+
     const run = () => {
       const current = ++generation;
+      const since = lastEventAt
+        ? lastEventAt - GIT_INDEX_EVENT_SLACK_MS
+        : undefined;
       setError(null);
-      void gitDiffFiles(cwd)
+      void fetchGitIndex(cwd, { since })
         .then(async (index) => {
           if (disposed || current !== generation) return;
-          setFiles(index.files);
+          setFiles((previous) =>
+            previous && sameChangedFiles(previous, index.files)
+              ? previous
+              : index.files,
+          );
           setError(null);
           const entries = workingTreeDiffEntries(index.files, focusKind);
+          // A moved HEAD changes the left side of rows that look the same.
+          if (index.head !== lastHead) pendingAll = true;
+          lastHead = index.head;
+          for (const id of dirtyEntryIds(
+            entries,
+            pendingAll ? null : pendingPaths,
+          )) {
+            dirtyIds.add(id);
+          }
+          pendingAll = false;
+          pendingPaths.clear();
           // A refresh keeps each loaded diff on screen until its replacement
           // arrives; only files that left the list are dropped.
           const kept = new Set(entries.map((entry) => entry.id));
+          for (const id of [...loadedRows.keys(), ...dirtyIds]) {
+            if (!kept.has(id)) {
+              loadedRows.delete(id);
+              dirtyIds.delete(id);
+            }
+          }
           setDiffs((existing) => {
             if ([...existing.keys()].every((id) => kept.has(id))) {
               return existing;
             }
             return new Map([...existing].filter(([id]) => kept.has(id)));
           });
-          const loadOrder = prioritizeWorkingTreeDiffEntries(
+          latestEntries = prioritizeWorkingTreeDiffEntries(
             entries,
             focusPath,
             focusKind,
           );
-          await forEachConcurrent(
-            loadOrder,
-            DIFF_LOAD_CONCURRENCY,
-            async (entry) => {
-              let loaded: LoadedDiff;
-              try {
-                const diff = await gitFileDiff(
-                  cwd,
-                  entry.file.relative,
-                  entry.kind,
-                );
-                const unified =
-                  !diff.binary && !diff.tooLarge
-                    ? buildUnifiedFile(diff.original, diff.current)
-                    : null;
-                loaded = {
-                  binary: diff.binary,
-                  tooLarge: diff.tooLarge,
-                  original: diff.original,
-                  current: diff.current,
-                  unified,
-                };
-              } catch (caught: unknown) {
-                loaded = {
-                  binary: false,
-                  tooLarge: false,
-                  original: "",
-                  current: "",
-                  unified: null,
-                  error:
-                    caught instanceof Error ? caught.message : String(caught),
-                };
-              }
-              if (disposed || current !== generation) return;
-              setDiffs((existing) => {
-                const next = new Map(existing);
-                next.set(entry.id, loaded);
-                return next;
-              });
-            },
-            () => !disposed && current === generation,
-          );
+          // A refresh retries what failed before.
+          failedIds.clear();
+          pump();
         })
         .catch((caught: unknown) => {
           if (disposed || current !== generation) return;
@@ -187,23 +343,42 @@ export function WorkingTreeDiff({
     };
 
     run();
-    let refreshFrame = 0;
-    const scheduleRun = () => {
-      if (refreshFrame) return;
-      refreshFrame = window.requestAnimationFrame(() => {
-        refreshFrame = 0;
+    let refreshTimer = 0;
+    // Trailing, not restarted by later events, so a steady stream of changes
+    // still refreshes every REFRESH_DEBOUNCE_MS.
+    const scheduleRun = (paths: readonly string[] | null, now = false) => {
+      lastEventAt = Date.now();
+      if (paths === null) pendingAll = true;
+      else for (const path of paths) pendingPaths.add(path);
+      if (now) {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = 0;
         run();
-      });
+        return;
+      }
+      if (refreshTimer) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = 0;
+        run();
+      }, REFRESH_DEBOUNCE_MS);
     };
-    const unsub = subscribeGitChanged(scheduleRun, { cwd });
+    const unsub = subscribeGitChanged(
+      // Read while the event is delivered; without a hint anything may have
+      // changed.
+      () => scheduleRun(currentGitChangeHint()?.paths ?? null),
+      { cwd },
+    );
+    refreshNow.current = (paths) => scheduleRun(paths, true);
     const onFocus = () => {
-      if (!document.hidden) scheduleRun();
+      if (!document.hidden) scheduleRun(null);
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
     return () => {
       disposed = true;
-      if (refreshFrame) window.cancelAnimationFrame(refreshFrame);
+      refreshNow.current = null;
+      pumpRef.current = null;
+      window.clearTimeout(refreshTimer);
       unsub();
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
@@ -216,46 +391,32 @@ export function WorkingTreeDiff({
     [files, focusKind],
   );
 
+  // One model per entry, rebuilt only when its row or its loaded diff changed,
+  // so a refresh costs a lookup per file instead of a rebuild per file.
+  const modelCache = useRef(new Map<string, CachedModel>());
   const models = useMemo<UnifiedDiffFileModel[]>(() => {
     if (!files) return [];
-    return entries.map((entry) => {
+    const previous = modelCache.current;
+    const next = new Map<string, CachedModel>();
+    const built = entries.map((entry) => {
       const { file, kind } = entry;
       const loaded = diffs.get(entry.id);
-      const unified = loaded?.unified ?? null;
-      const unchanged =
-        unified != null &&
-        unified.additions === 0 &&
-        unified.deletions === 0 &&
-        !loaded?.binary;
-      const canUseIndexCounts =
-        loaded != null && !loaded.error && !(file.staged && file.unstaged);
-      return {
-        id: entry.id,
-        path: file.path,
-        label: workingTreeDiffEntryLabel(entry),
-        binary: loaded?.binary,
-        tooLarge: loaded?.tooLarge,
-        emptyMessage:
-          loaded == null
-            ? "Loading…"
-            : loaded.error
-              ? `Couldn’t load diff: ${loaded.error}`
-              : unchanged
-                ? kind === "staged"
-                  ? "No staged changes"
-                  : "No unstaged changes"
-                : undefined,
-        additions:
-          unified?.additions ?? (canUseIndexCounts ? file.additions : 0),
-        deletions:
-          unified?.deletions ?? (canUseIndexCounts ? file.deletions : 0),
-        blocks: unchanged ? [] : (unified?.blocks ?? []),
-        canStage: kind === "unstaged",
-        canDiscard: kind === "unstaged",
-        canStageHunk:
-          kind === "unstaged" && !loaded?.binary && !loaded?.tooLarge,
-      };
+      const cached = previous.get(entry.id);
+      if (
+        cached &&
+        cached.loaded === loaded &&
+        cached.kind === kind &&
+        sameChangedRow(cached.file, file)
+      ) {
+        next.set(entry.id, cached);
+        return cached.model;
+      }
+      const model = buildModel(entry, loaded);
+      next.set(entry.id, { file, kind, loaded, model });
+      return model;
     });
+    modelCache.current = next;
+    return built;
   }, [diffs, entries, files]);
 
   const totals = useMemo(
@@ -279,7 +440,9 @@ export function WorkingTreeDiff({
     async (id: string) => {
       const entry = entries.find((candidate) => candidate.id === id);
       if (!entry || entry.kind !== "unstaged") return;
-      await enqueueMutation(id, () => gitStageFile(cwd, entry.file.relative));
+      await enqueueMutation(id, entry.file.path, () =>
+        gitStageFile(cwd, entry.file.relative),
+      );
     },
     [cwd, entries, enqueueMutation],
   );
@@ -288,7 +451,7 @@ export function WorkingTreeDiff({
     async (id: string) => {
       const entry = entries.find((candidate) => candidate.id === id);
       if (!entry || entry.kind !== "unstaged") return;
-      await enqueueMutation(id, async () => {
+      await enqueueMutation(id, entry.file.path, async () => {
         if (!(await confirmDiscardFile(entry.file))) return false;
         await gitDiscardFile(cwd, entry.file.relative);
       });
@@ -311,7 +474,7 @@ export function WorkingTreeDiff({
         LINE_DIFF_CONFIG,
       );
       if (next == null) return;
-      await enqueueMutation(id, () =>
+      await enqueueMutation(id, entry.file.path, () =>
         gitStageContents(cwd, entry.file.relative, next),
       );
     },
@@ -366,6 +529,7 @@ export function WorkingTreeDiff({
         onStageFile={onStageFile}
         onDiscardFile={onDiscardFile}
         onStageHunk={onStageHunk}
+        onSectionNeeded={onSectionNeeded}
       />
     </div>
   );

@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { resetGitIndexStore } from "../model/gitIndexStore";
 import { WorkingTreeDiff } from "./WorkingTreeDiff";
 import { CommitDiff } from "./CommitDiff";
 import { SessionChangesDiff } from "./SessionChangesDiff";
@@ -73,6 +74,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 beforeEach(() => {
+  resetGitIndexStore();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
   api.index.mockResolvedValue({ files });

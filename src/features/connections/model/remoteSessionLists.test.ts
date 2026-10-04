@@ -53,3 +53,32 @@ it("does not share projects across machines and retries failed reads", async () 
   await cache.load("B", "project");
   expect(request).toHaveBeenCalledTimes(3);
 });
+
+it("asks with the held etag and keeps the same array when the host says unchanged", async () => {
+  vi.useFakeTimers();
+  const request = vi
+    .fn()
+    .mockResolvedValueOnce({ etag: "e1", sessions: summary("A") })
+    .mockResolvedValueOnce({ unchanged: true, etag: "e1" })
+    .mockResolvedValueOnce({ etag: "e2", sessions: summary("B") });
+  const cache = new RemoteSessionLists(request);
+  const first = await cache.load("m", "p");
+  expect(request).toHaveBeenLastCalledWith("m", "p", "");
+  vi.advanceTimersByTime(5_001);
+  expect(await cache.load("m", "p")).toBe(first);
+  expect(request).toHaveBeenLastCalledWith("m", "p", "e1");
+  vi.advanceTimersByTime(5_001);
+  const changed = await cache.load("m", "p");
+  expect(request).toHaveBeenLastCalledWith("m", "p", "e1");
+  expect(changed[0].title).toBe("B");
+});
+
+it("falls back to the full list for a host that ignores the etag", async () => {
+  vi.useFakeTimers();
+  const request = vi.fn(async () => summary("A"));
+  const cache = new RemoteSessionLists(request);
+  await cache.load("m", "p");
+  vi.advanceTimersByTime(5_001);
+  await cache.load("m", "p");
+  expect(request).toHaveBeenLastCalledWith("m", "p", "");
+});

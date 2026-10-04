@@ -20,6 +20,8 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -38,7 +40,12 @@ import {
   loadGraphPanelHeight,
   saveGraphPanelHeight,
 } from "./GitHistoryGraph";
-import { GitConflictCompare } from "./GitConflictCompare";
+// Loaded on demand: it brings the diff view and CodeMirror with it.
+const GitConflictCompare = lazy(() =>
+  import("./GitConflictCompare").then((module) => ({
+    default: module.GitConflictCompare,
+  })),
+);
 import { GitConflictRows } from "./GitConflictRows";
 import { GitOperationBanner } from "./GitOperationBanner";
 import { GitStashSection } from "./GitStashSection";
@@ -56,7 +63,6 @@ import {
 import {
   basename,
   gitCommit,
-  gitDiffIndex,
   gitDiscardAll,
   gitDiscardFile,
   gitFetch,
@@ -70,7 +76,6 @@ import {
   gitSync,
   gitUnstageAll,
   gitUnstageFile,
-  notifyGitChanged,
   subscribeGitChanged,
   type GitChangedFile,
   type GitChangeScope,
@@ -118,6 +123,12 @@ import { useConflictActions } from "../hooks/useConflictActions";
 import { useLegacyConflictStatus } from "../hooks/useLegacyConflictStatus";
 import { appName } from "../../../shared/lib/appName";
 import { confirmNative, confirmDiscardFile } from "../model/gitConfirmation";
+import {
+  fetchGitIndex,
+  invalidateGitIndex,
+  notifyGitChangedWith,
+  type GitChangeHint,
+} from "../model/gitIndexStore";
 
 const GIT_POLL_MS = 2000;
 
@@ -134,10 +145,14 @@ const prByCwd = new Map<string, GitPr | null>();
 /** Set while this panel announces its own change, which it reloads itself. */
 let announcingOwnChange = false;
 
-function announceGitChange(cwd: string, scope: GitChangeScope) {
+function announceGitChange(
+  cwd: string,
+  scope: GitChangeScope,
+  hint: GitChangeHint = {},
+) {
   announcingOwnChange = true;
   try {
-    notifyGitChanged(cwd, scope);
+    notifyGitChangedWith(cwd, scope, hint);
   } finally {
     announcingOwnChange = false;
   }
@@ -222,8 +237,11 @@ export function GitChangesPanel({
   const [autoFetch, setAutoFetch] = useState(loadAutoFetch);
 
   const onMutated = (paths?: string[], scope: GitChangeScope = "refs") => {
+    // Our own action: the reload must not be answered from a shared result
+    // read before it.
+    invalidateGitIndex();
     reload();
-    announceGitChange(cwd, scope);
+    announceGitChange(cwd, scope, scope === "index" ? { paths } : {});
     invalidateWatchedFiles(paths);
     window.setTimeout(() => invalidateWatchedFiles(paths), 150);
   };
@@ -1157,11 +1175,13 @@ function ChangedFiles({
         )}
       </div>
       {compareFile ? (
-        <GitConflictCompare
-          cwd={cwd}
-          relative={compareFile}
-          onClose={() => setCompareFile(null)}
-        />
+        <Suspense fallback={null}>
+          <GitConflictCompare
+            cwd={cwd}
+            relative={compareFile}
+            onClose={() => setCompareFile(null)}
+          />
+        </Suspense>
       ) : null}
     </aside>
   );
@@ -1888,7 +1908,7 @@ function useDiffIndex(
     let inFlight = false;
     let pending = false;
 
-    const load = async () => {
+    const load = async (fresh = false) => {
       if (inFlight) {
         pending = true;
         return;
@@ -1896,7 +1916,11 @@ function useDiffIndex(
       if (document.hidden && nonce === 0) return;
       inFlight = true;
       try {
-        const next = await gitDiffIndex(cwd);
+        // Opening the panel (or a reload that bumped `nonce`) reads git itself.
+        const next = await fetchGitIndex(cwd, {
+          full: true,
+          since: fresh ? Date.now() : undefined,
+        });
         if (cancelled || holdRef.current) return;
         if (remote) reportRemoteLoad(cwd, "changes");
         const prev = indexRef.current;
@@ -1917,7 +1941,13 @@ function useDiffIndex(
           // Found by the poll (an agent, a terminal): tell the other git views,
           // and spare the commit graph when only files moved.
           if (!announced) {
-            announceGitChange(cwd, sameRefs(prev, next) ? "index" : "refs");
+            // The shared index was just read, so keep it; only an index change
+            // can name the files whose contents moved.
+            const index = sameRefs(prev, next);
+            announceGitChange(cwd, index ? "index" : "refs", {
+              observed: true,
+              paths: index ? paths : undefined,
+            });
           }
         }
       } catch (error) {
@@ -1937,7 +1967,7 @@ function useDiffIndex(
       }
     };
 
-    void load();
+    void load(true);
     const onResume = () => {
       if (!document.hidden) void load();
     };
