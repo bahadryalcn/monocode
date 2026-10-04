@@ -13,6 +13,19 @@ def digest(path):
     with pathlib.Path(path).open('rb') as f:
         return hashlib.file_digest(f, 'sha256').hexdigest()
 
+def windows_binary_digest(path):
+    """Tauri embeds NSS during NSIS packaging, then restores UNK in the build EXE.
+    Normalize only that single marker; every other executable byte is verified.
+    """
+    data = pathlib.Path(path).read_bytes()
+    marker = b'__TAURI_BUNDLE_TYPE_VAR_'
+    if data.count(marker) != 1:
+        raise RuntimeError('Expected one Tauri bundle type marker')
+    offset = data.index(marker) + len(marker)
+    if data[offset:offset + 3] not in (b'UNK', b'NSS'):
+        raise RuntimeError('Unexpected Windows bundle type')
+    return hashlib.sha256(data[:offset] + b'UNK' + data[offset + 3:]).hexdigest()
+
 def read_json(path):
     return json.loads(pathlib.Path(path).read_text(encoding='utf-8-sig'))
 

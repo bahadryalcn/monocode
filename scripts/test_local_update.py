@@ -11,10 +11,26 @@ import unittest
 from unittest.mock import patch
 
 from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions
-from local_update_lib import backup, count, safe_child, write_json, read_json, alive
+from local_update_lib import backup, count, safe_child, write_json, read_json, alive, digest, windows_binary_digest
 from local_install import wait_idle
 
 class LocalUpdateTests(unittest.TestCase):
+    def test_nsis_bundle_marker_is_the_only_normalized_executable_difference(self):
+        with tempfile.TemporaryDirectory() as folder:
+            built = pathlib.Path(folder) / 'built.exe'
+            installed = pathlib.Path(folder) / 'installed.exe'
+            built.write_bytes(b'MZ-prefix-__TAURI_BUNDLE_TYPE_VAR_UNK-suffix')
+            installed.write_bytes(b'MZ-prefix-__TAURI_BUNDLE_TYPE_VAR_NSS-suffix')
+            self.assertEqual(windows_binary_digest(installed), digest(built))
+            self.assertEqual(windows_binary_digest(built), digest(built))
+            installed.write_bytes(b'MZ-changed-__TAURI_BUNDLE_TYPE_VAR_NSS-suffix')
+            self.assertNotEqual(windows_binary_digest(installed), digest(built))
+            for data in (b'missing', b'__TAURI_BUNDLE_TYPE_VAR_MSI',
+                         b'__TAURI_BUNDLE_TYPE_VAR_NSS__TAURI_BUNDLE_TYPE_VAR_UNK'):
+                installed.write_bytes(data)
+                with self.assertRaises(RuntimeError):
+                    windows_binary_digest(installed)
+
     def test_process_liveness_is_read_only(self):
         import os
         self.assertTrue(alive(os.getpid()))

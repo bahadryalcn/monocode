@@ -18,7 +18,7 @@ import time
 import tomllib
 
 from local_update_lib import (digest, lock, read_json, run, safe_child,
-                              tree_hashes, verify_tree, write_json, alive)
+                              tree_hashes, verify_tree, write_json, alive, windows_binary_digest)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TOOLS = ('local_update.py', 'local_update_lib.py', 'local_install.py')
@@ -134,7 +134,7 @@ def queue_install(release):
                 else:
                     binary = (pathlib.Path(os.environ['LOCALAPPDATA'])/'MonoCode/monocode.exe' if os.name == 'nt'
                               else pathlib.Path('/Applications/MonoCode.app/Contents/MacOS/monocode'))
-                    if digest(binary) != manifest['binaryHash']:
+                    if (windows_binary_digest(binary) if os.name == 'nt' else digest(binary)) != manifest['binaryHash']:
                         raise RuntimeError('Installed binary changed')
                 results[component] = str(record)
                 continue
@@ -174,6 +174,10 @@ def worker(request):
         if alive(old.get('pid')) and old.get('id') != request['id']:
             raise RuntimeError(f'{component} has a pending package; see --status before starting another update')
     if request.get('installOnly'):
+        # Reuse the immutable package with current installation bug fixes.
+        # An already-running helper has imported its own code and keeps its job.
+        for name in TOOLS:
+            shutil.copy2(pathlib.Path(__file__).parent / name, release / name)
         queue_install(release)
         return
     with lock(state / 'build.lock'):
@@ -286,7 +290,7 @@ def worker(request):
             shutil.copy2(app, release / 'setup.exe')
             shutil.copy2(str(app) + '.sig', release / 'setup.exe.sig')
             native_exe = artifacts / 'monocode.exe'
-            binary_hash = digest(native_exe)
+            binary_hash = windows_binary_digest(native_exe)
             app_hashes = {'setup.exe': digest(release / 'setup.exe'), 'setup.exe.sig': digest(release / 'setup.exe.sig')}
         else:
             destination = release / 'MonoCode.app'

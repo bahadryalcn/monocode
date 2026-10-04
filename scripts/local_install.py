@@ -10,7 +10,7 @@ import time
 import urllib.request
 
 from local_update_lib import (alive, backup, count, digest, lock, ps, ps_quote,
-                              read_json, run, safe_child, verify_tree, write_json)
+                              read_json, run, safe_child, verify_tree, write_json, windows_binary_digest)
 
 BASE = pathlib.Path.home() / '.monocode-host'
 
@@ -155,15 +155,15 @@ def app_install(release, manifest, report):
         app = pathlib.Path(os.environ['LOCALAPPDATA']) / 'MonoCode/monocode.exe'
         shutil.copy2(app, rollback / 'monocode.exe')
         app_q = ps_quote(app)
-        ps(f'Get-Process monocode -ErrorAction SilentlyContinue | Where-Object Path -EQ {app_q} | ForEach-Object {{ [void]$_.CloseMainWindow() }}')
+        ps(f'Get-Process | Where-Object {{ $_.ProcessName -eq "monocode" -and $_.Path -eq {app_q} }} | ForEach-Object {{ [void]$_.CloseMainWindow() }}')
         time.sleep(5)
         if count(desktop_db(), 'select count(*) from in_flight_sessions') != 0:
             raise RuntimeError('A new turn started; app installation canceled')
         # Close-to-tray retains an idle process; only terminate the known app path.
-        ps(f'Get-Process monocode -ErrorAction SilentlyContinue | Where-Object Path -EQ {app_q} | Stop-Process -Force')
+        ps(f'Get-Process | Where-Object {{ $_.ProcessName -eq "monocode" -and $_.Path -eq {app_q} }} | Stop-Process -Force')
         run([str(release / 'setup.exe'), '/S'], timeout=180)
         version = ps(f'(Get-Item -LiteralPath {app_q}).VersionInfo.ProductVersion')
-        if version != manifest['version'] or digest(app) != manifest['binaryHash']:
+        if version != manifest['version'] or windows_binary_digest(app) != manifest['binaryHash']:
             raise RuntimeError('Installed Windows executable version/hash mismatch; rollback EXE retained')
         ps(f'Start-Process -FilePath {app_q}')
     else:
