@@ -54,12 +54,12 @@ Download from [this fork's releases](https://github.com/bahadryalcn/monocode/rel
 Check the tag and asset list before installing; source changes do not update
 an already published package.
 
-The [v0.8.75 release](https://github.com/bahadryalcn/monocode/releases/tag/v0.8.75) includes:
+The [v0.8.76 release](https://github.com/bahadryalcn/monocode/releases/tag/v0.8.76) includes:
 
 | Platform | Application package | Installation |
 | --- | --- | --- |
-| Windows x64 | `MonoCode_0.8.75_x64-setup.exe` | Run the installer after saving work. |
-| macOS Apple Silicon | `MonoCode_0.8.75_aarch64.app.zip` | Extract and move `MonoCode.app` to Applications. |
+| Windows x64 | `MonoCode_0.8.76_x64-setup.exe` | Run the installer after saving work. |
+| macOS Apple Silicon | `MonoCode_0.8.76_aarch64.app.zip` | Extract and move `MonoCode.app` to Applications. |
 
 That release also includes Windows x64 and macOS arm64 host packages for remote
 sessions. The Mac application is ad-hoc signed and is not notarized, so macOS may
@@ -70,7 +70,7 @@ identities, data directories and updates.
 For the **original MonoCode**, use [the upstream releases](https://github.com/hardbeat920/monocode/releases).
 Those packages are maintained by the original project and have their own feature
 set and update channel. Intel macOS and Linux packages are not included in this
-fork's v0.8.75 release; consult the upstream asset list or build from source.
+fork's v0.8.76 release; consult the upstream asset list or build from source.
 
 ## Agent providers
 
