@@ -54,3 +54,20 @@ lerna-debug.log*
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Local agent work, machine-specific reports and generated Python caches.
+.scratch/
+.claude/
+.superpowers/
+__pycache__/
+*.py[cod]
+docs/annem-*.md
+docs/deployment-*.md
+docs/fork-research-*.md
+docs/fork-research-*.json
+docs/fork-features-*.md
+docs/performance-todo-*.md
+docs/performance-validation-*/
+docs/review-todo-*.md
+docs/review-validation-*/
+docs/unchanged-code-todo-*.md
