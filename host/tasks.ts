@@ -21,6 +21,7 @@ import { DEFAULT_MAX_RUNNING_TASKS } from "../src/features/tasks/model/hostSetti
 import { createHostWorktree } from "./git-worktrees";
 import { HostLimits } from "./limits";
 import {
+  HOST_INTERRUPTED,
   STOPPED_BY_USER,
   cancelSessionRun,
   errorMessage,
@@ -480,7 +481,13 @@ export class HostTasks {
     const now = this.now();
     for (const task of this.list()) {
       try {
-        if (task.status === "running") this.settle(task, now);
+        if (
+          task.status === "blocked" &&
+          task.error === HOST_INTERRUPTED &&
+          this.canResumeAfterHostStop(task)
+        )
+          this.requeueInterrupted(task, now);
+        else if (task.status === "running") this.settle(task, now);
         else if (task.status === "verifying")
           await this.settleVerification(task, now);
       } catch (error) {
@@ -538,6 +545,43 @@ export class HostTasks {
       needsInput: undefined,
       reviewer: undefined,
       completedAt: now,
+      updatedAt: now,
+    });
+  }
+
+  /** Only infrastructure interruptions may resume without owner intervention.
+   * A persistence failure also interrupts a session, but must stay stopped. */
+  private canResumeAfterHostStop(run: {
+    sessionId?: string;
+    runId?: string;
+    error?: string;
+  }): boolean {
+    if (run.error && run.error !== HOST_INTERRUPTED) return false;
+    try {
+      const session = this.store.session(run.sessionId ?? "");
+      if (session.status !== "interrupted") return false;
+      if (run.runId && session.runId !== run.runId) return false;
+      const last = session.session.blocks.at(-1);
+      const note = last?.role === "system" ? last.text.trim() : "";
+      return (
+        note === "Host stopped. This turn was interrupted." ||
+        note ===
+          "Host restarted. This turn was interrupted; inspect its work before continuing."
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private requeueInterrupted(task: HostTask, now: number): HostTask {
+    // Retain the session, branch, working copy and any previous check feedback.
+    // The ordinary scheduler still enforces dependencies, concurrency and limits.
+    return this.write({
+      ...task,
+      status: "queued",
+      error: undefined,
+      completedAt: undefined,
+      needsInput: undefined,
       updatedAt: now,
     });
   }
@@ -621,10 +665,12 @@ export class HostTasks {
       )
     )
       return task;
-    const started = launchSessionRun(this.store, this.engine, {
-      ...ready,
-      prompt: workerPrompt(ready, this.store.project(ready.projectId).cwd),
-    });
+    const started = this.canResumeAfterHostStop(ready)
+      ? this.resumeInterrupted(ready)
+      : launchSessionRun(this.store, this.engine, {
+          ...ready,
+          prompt: workerPrompt(ready, this.store.project(ready.projectId).cwd),
+        });
     const next = {
       ...ready,
       sessionId: started.sessionId,
@@ -634,6 +680,48 @@ export class HostTasks {
     if (started.error !== undefined)
       return this.block(next, started.error, now);
     return this.write({ ...next, status: "running", updatedAt: now });
+  }
+
+  private resumeInterrupted(task: HostTask): {
+    sessionId?: string;
+    runId?: string;
+    error?: string;
+  } {
+    try {
+      const session = this.store.session(task.sessionId!).session;
+      // A queued recovery can be edited, or its worktree recreated elsewhere.
+      // Never resume a conversation configured for a different folder or model.
+      if (
+        session.cwd !==
+          (task.worktreeCwd ?? this.store.project(task.projectId).cwd) ||
+        session.harness !== task.harness ||
+        session.model !== task.model ||
+        session.runtimeMode !== task.runtimeMode ||
+        JSON.stringify(session.modelSettings) !==
+          JSON.stringify(task.modelSettings)
+      ) {
+        return launchSessionRun(this.store, this.engine, {
+          ...task,
+          prompt: workerPrompt(task, this.store.project(task.projectId).cwd),
+        });
+      }
+      this.engine.command({
+        type: "send",
+        commandId: randomUUID(),
+        sessionId: task.sessionId!,
+        text: [
+          "The host stopped before this task finished. Continue this task from the existing conversation and working copy. Inspect the current changes and the last tool results first; keep completed work and do not start over. Completion still requires the original task's checks and review.",
+          "",
+          workerPrompt(task, this.store.project(task.projectId).cwd),
+        ].join("\n"),
+      });
+      return {
+        sessionId: task.sessionId,
+        runId: this.store.session(task.sessionId!).runId,
+      };
+    } catch (error) {
+      return { sessionId: task.sessionId, error: errorMessage(error) };
+    }
   }
 
   private settle(task: HostTask, now: number): void {
@@ -668,6 +756,13 @@ export class HostTasks {
       );
     } else {
       this.limits.record(task.startedAt ?? task.createdAt, now);
+      if (
+        outcome.error === HOST_INTERRUPTED &&
+        this.canResumeAfterHostStop(task)
+      ) {
+        this.requeueInterrupted(task, now);
+        return;
+      }
       this.block(
         task,
         outcome.status === "cancelled"
@@ -799,6 +894,20 @@ export class HostTasks {
       return;
     }
     this.limits.record(task.reviewer.startedAt, now);
+    if (
+      outcome.error === HOST_INTERRUPTED &&
+      this.canResumeAfterHostStop(task.reviewer)
+    ) {
+      // Re-run verification rather than interpreting an unfinished review as FAIL.
+      const next = this.write({
+        ...task,
+        reviewer: undefined,
+        needsInput: undefined,
+        updatedAt: now,
+      });
+      this.verify(next);
+      return;
+    }
     if (outcome.status === "cancelled") {
       this.block(task, STOPPED_BY_USER, now);
       return;

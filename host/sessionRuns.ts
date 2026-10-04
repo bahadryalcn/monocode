@@ -9,6 +9,7 @@ import type { HostEngine } from "./engine";
 import type { HostStore } from "./store";
 
 export const STOPPED_BY_USER = "Stopped by you.";
+export const HOST_INTERRUPTED = "The host stopped during this run.";
 
 export type SessionRunEngine = Pick<HostEngine, "command" | "updateSession">;
 
@@ -110,13 +111,14 @@ export function sessionRunState(
     return {
       state: "finished",
       status: "failed",
-      error: "The host stopped during this run.",
+      error: HOST_INTERRUPTED,
     };
   // The host ends a failed or stopped turn with a system note.
   const last = session.session.blocks.at(-1);
   const note = last?.role === "system" ? last.text.trim() : "";
   if (!note) return { state: "finished", status: "succeeded" };
-  if (note === STOPPED_BY_USER) return { state: "finished", status: "cancelled" };
+  if (note === STOPPED_BY_USER)
+    return { state: "finished", status: "cancelled" };
   return { state: "finished", status: "failed", error: note };
 }
 

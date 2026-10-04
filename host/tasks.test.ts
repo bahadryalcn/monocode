@@ -101,6 +101,29 @@ function setup(verifyTimeoutMs?: number) {
   const task = (id = "main") => tasks.list().find((entry) => entry.id === id)!;
   const settled = (sessionId: string) =>
     vi.waitFor(() => expect(store.session(sessionId).status).toBe("idle"));
+  const interrupt = async (
+    sessionId: string,
+    note = "Host restarted. This turn was interrupted; inspect its work before continuing.",
+  ) => {
+    turns.findLast((turn) => turn.input.sessionId === sessionId)!.finish();
+    await settled(sessionId);
+    const session = store.session(sessionId);
+    store.save(
+      {
+        ...session,
+        revision: session.revision + 1,
+        status: "interrupted",
+        session: {
+          ...session.session,
+          blocks: [
+            ...session.session.blocks,
+            { id: "host-interruption", role: "system", text: note },
+          ],
+        },
+      },
+      { type: "interrupted" },
+    );
+  };
   /** Saves a task and starts it; later saves get a later creation time. */
   const run = async (overrides: Record<string, unknown> = {}) => {
     const saved = tasks.save(input(overrides));
@@ -161,6 +184,7 @@ function setup(verifyTimeoutMs?: number) {
     input,
     task,
     settled,
+    interrupt,
     run,
     review,
     reviewing,
@@ -241,20 +265,106 @@ describe("host tasks", () => {
     });
   });
 
-  it("blocks a task when the host restarted during it", async () => {
-    const { tasks, run, task, store, clock } = setup();
+  it(
+    "resumes an interrupted task in its retained session and worktree before releasing dependencies",
+    async () => {
+      const {
+        tasks,
+        run,
+        task,
+        clock,
+        interrupt,
+        turns,
+        input,
+        addRepo,
+        finish,
+      } = setup();
+      const repo = addRepo("recover");
+      const started = await run({ projectId: repo.id });
+      writeFileSync(
+        join(started.worktreeCwd!, "progress.txt"),
+        "keep this work",
+      );
+      tasks.save(
+        input({ id: "dependent", projectId: repo.id, dependsOn: [started.id] }),
+      );
+      await interrupt(started.sessionId!);
+      clock.now += MINUTE;
+      await tasks.tick();
+      expect(task()).toMatchObject({
+        status: "running",
+        sessionId: started.sessionId,
+        branch: started.branch,
+        worktreeCwd: started.worktreeCwd,
+      });
+      expect(task().runId).not.toBe(started.runId);
+      expect(task().error).toBeUndefined();
+      expect(turns).toHaveLength(2);
+      expect(turns.at(-1)!.input.text).toContain("do not start over");
+      expect(
+        readFileSync(join(started.worktreeCwd!, "progress.txt"), "utf8"),
+      ).toBe("keep this work");
+      expect(task("dependent").status).toBe("queued");
+      await finish(started.sessionId!);
+      await tasks.move(started.id, "done");
+      await tasks.tick();
+      expect(task("dependent").status).toBe("running");
+    },
+    SHELL_TEST_MS,
+  );
+
+  it("recovers legacy host-stopped blocked tasks but keeps failures blocked", async () => {
+    const { tasks, run, task, clock, interrupt, store } = setup();
     const started = await run();
-    const session = store.session(started.sessionId!);
-    store.save(
-      { ...session, revision: session.revision + 1, status: "interrupted" },
-      { type: "interrupted" },
+    await interrupt(started.sessionId!);
+    store.db.prepare("UPDATE tasks SET value=? WHERE id=?").run(
+      JSON.stringify({
+        ...task(),
+        status: "blocked",
+        error: "The host stopped during this run.",
+        completedAt: clock.now,
+      }),
+      started.id,
     );
-    clock.now += MINUTE;
     await tasks.tick();
     expect(task()).toMatchObject({
-      status: "blocked",
-      error: "The host stopped during this run.",
+      status: "running",
+      sessionId: started.sessionId,
     });
+    expect(task().completedAt).toBeUndefined();
+    await interrupt(started.sessionId!, "Could not persist this turn safely.");
+    clock.now += MINUTE;
+    await tasks.tick();
+    expect(task().status).toBe("blocked");
+    await tasks.tick();
+    expect(task().status).toBe("blocked");
+  });
+
+  it("keeps recovered work queued when the daily agent limit is reached", async () => {
+    const { tasks, run, task, clock, interrupt, turns } = setup();
+    tasks.limits.save({ dailyAgentMinutes: 1 });
+    const started = await run();
+    await interrupt(started.sessionId!);
+    clock.now += 2 * MINUTE;
+    await tasks.tick();
+    expect(task().status).toBe("queued");
+    expect(turns).toHaveLength(1);
+    tasks.limits.save({ dailyAgentMinutes: 0 });
+    await tasks.tick();
+    expect(task()).toMatchObject({
+      status: "running",
+      sessionId: started.sessionId,
+    });
+  });
+
+  it("restarts interrupted verification without recording a failed review", async () => {
+    const { tasks, reviewing, task, interrupt, turns } = setup();
+    const started = await reviewing();
+    await interrupt(started.reviewer!.sessionId!);
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(3));
+    expect(task().status).toBe("verifying");
+    expect(task().verification?.review).toBeUndefined();
   });
 
   it("blocks a task whose turn was stopped from a desktop", async () => {
