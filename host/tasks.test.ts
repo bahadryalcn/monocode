@@ -269,7 +269,10 @@ describe("host tasks", () => {
     await settled(started.sessionId!);
     clock.now += MINUTE;
     await tasks.tick();
-    expect(task()).toMatchObject({ status: "blocked", error: "Stopped by you." });
+    expect(task()).toMatchObject({
+      status: "blocked",
+      error: "Stopped by you.",
+    });
   });
 
   it("runs one task per project folder at a time", async () => {
@@ -491,11 +494,15 @@ describe("host tasks", () => {
 
   it("adds a to-do item with no description, and queues by default", () => {
     const { tasks, input } = setup();
-    expect(tasks.save(input({ id: "idea", status: "todo", prompt: "" }))).toMatchObject({
+    expect(
+      tasks.save(input({ id: "idea", status: "todo", prompt: "" })),
+    ).toMatchObject({
       status: "todo",
       prompt: "",
     });
-    expect(tasks.save(input({ id: "later", status: "queued" })).status).toBe("queued");
+    expect(tasks.save(input({ id: "later", status: "queued" })).status).toBe(
+      "queued",
+    );
     expect(() => tasks.save(input({ id: "bad", status: "running" }))).toThrow(
       "A new task starts as to do or queued.",
     );
@@ -635,7 +642,9 @@ describe("a task on its own branch", () => {
     // The agent is told to stay out of the project folder.
     const prompt = turns[0].input.text;
     expect(prompt).toContain(`You are working in ${started.worktreeCwd}`);
-    expect(prompt).toContain(`Do not edit, commit in or switch branches in ${repo.cwd}`);
+    expect(prompt).toContain(
+      `Do not edit, commit in or switch branches in ${repo.cwd}`,
+    );
     expect(prompt).toContain(`on the branch ${started.branch}`);
     expect(prompt.endsWith(started.prompt)).toBe(true);
     expect(store.session(started.sessionId!).session.cwd).toBe(
@@ -730,11 +739,14 @@ describe("a task on its own branch", () => {
       branch: reviewed.branch,
     });
     expect(done.worktreeCwd).toBeUndefined();
-    expect(readFileSync(join(repo.cwd, "report.md"), "utf8")).toBe("# Report\n");
+    expect(readFileSync(join(repo.cwd, "report.md"), "utf8")).toBe(
+      "# Report\n",
+    );
     expect(git(repo.cwd, "symbolic-ref", "--short", "HEAD")).toBe("main");
     // A merge commit, not a fast-forward.
-    expect(git(repo.cwd, "rev-list", "--parents", "-1", "HEAD").split(" "))
-      .toHaveLength(3);
+    expect(
+      git(repo.cwd, "rev-list", "--parents", "-1", "HEAD").split(" "),
+    ).toHaveLength(3);
     expect(git(repo.cwd, "branch", "--list", "mc/*")).toBe("");
     expect(existsSync(reviewed.worktreeCwd!)).toBe(false);
 
@@ -773,7 +785,9 @@ describe("a task on its own branch", () => {
     );
     expect(task().status).toBe("review");
     expect(git(repo.cwd, "rev-parse", "HEAD")).toBe(head);
-    expect(git(repo.cwd, "rev-parse", "--verify", reviewed.branch!)).toBeTruthy();
+    expect(
+      git(repo.cwd, "rev-parse", "--verify", reviewed.branch!),
+    ).toBeTruthy();
     expect(existsSync(reviewed.worktreeCwd!)).toBe(true);
 
     git(repo.cwd, "checkout", "-q", "main");
@@ -821,7 +835,9 @@ describe("a task on its own branch", () => {
       `This task’s work is on ${reviewed.branch} and was never merged.`,
     );
     expect(tasks.list()).toHaveLength(1);
-    expect(git(repo.cwd, "branch", "--list", "mc/*")).toContain(reviewed.branch);
+    expect(git(repo.cwd, "branch", "--list", "mc/*")).toContain(
+      reviewed.branch,
+    );
     expect(existsSync(reviewed.worktreeCwd!)).toBe(true);
 
     await tasks.delete("main", true);
@@ -849,7 +865,10 @@ describe("a task on its own branch", () => {
 
     await tasks.tick();
     await vi.waitFor(() => expect(turns).toHaveLength(2));
-    expect(task()).toMatchObject({ status: "running", branch: reviewed.branch });
+    expect(task()).toMatchObject({
+      status: "running",
+      branch: reviewed.branch,
+    });
     expect(task().sessionId).not.toBe(reviewed.sessionId);
     expect(turns[1].input.cwd).toBe(reviewed.worktreeCwd);
     expect(existsSync(join(reviewed.worktreeCwd!, "report.md"))).toBe(true);
@@ -859,7 +878,9 @@ describe("a task on its own branch", () => {
     expect(task().status).toBe("review");
     expect(task().diffStat).toContain("report.md");
     expect(task().diffStat).toContain("notes.md");
-    expect(git(repo.cwd, "branch", "--list", "mc/*").split("\n")).toHaveLength(1);
+    expect(git(repo.cwd, "branch", "--list", "mc/*").split("\n")).toHaveLength(
+      1,
+    );
   });
 });
 
@@ -929,7 +950,7 @@ describe("task verification", () => {
     async () => {
       const { review } = setup(1500);
       const blocked = await review({
-        verifyCommand: "node -e \"setTimeout(() => {}, 60000)\"",
+        verifyCommand: 'node -e "setTimeout(() => {}, 60000)"',
       });
       expect(blocked).toMatchObject({
         status: "blocked",
@@ -1005,6 +1026,84 @@ describe("task verification", () => {
     });
   });
 
+  it.each([false, true])(
+    "passes failed review details to the retry worker (isolated: %s)",
+    async (isolated) => {
+      const { tasks, reviewing, task, turns, finish, addRepo, store } = setup();
+      const repo = isolated ? addRepo("repo") : undefined;
+      const verifying = await reviewing(repo ? { projectId: repo.id } : {});
+      const reviewer = verifying.reviewer!.sessionId!;
+      await finish(
+        reviewer,
+        "package.ts:42 keeps the old selection after rollback.\nVERDICT: FAIL - Package versions disagree.",
+      );
+      const originalPrompt = task().prompt;
+      // Going through To do must preserve the finding after verification is cleared.
+      const todo = await tasks.move("main", "todo");
+      expect(todo.verification).toBeUndefined();
+      expect(todo.retryFeedback).toContain("package.ts:42");
+      expect(todo.retryFeedback!.length).toBeLessThanOrEqual(12_000);
+      await tasks.move("main", "queued");
+      await tasks.tick();
+      expect(task().prompt).toBe(originalPrompt);
+      expect(task().sessionId).not.toBe(verifying.sessionId);
+      expect(task().branch).toBe(verifying.branch);
+      expect(store.session(task().sessionId!).session.cwd).toBe(
+        verifying.worktreeCwd ?? store.project(verifying.projectId).cwd,
+      );
+      const retry = turns.at(-1)!.input.text;
+      expect(retry).toContain(originalPrompt);
+      expect(retry).toContain("Package versions disagree.");
+      expect(retry).toContain(
+        "package.ts:42 keeps the old selection after rollback.",
+      );
+      expect(retry).toContain("fix the findings");
+      await finish(task().sessionId!);
+      await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+      expect(task().status).toBe("review");
+      expect(task().retryFeedback).toBeUndefined();
+    },
+  );
+
+  it("retries a failed review even when its session is unavailable", async () => {
+    const { tasks, reviewing, task, turns, finish, store } = setup();
+    const verifying = await reviewing();
+    const reviewer = verifying.reviewer!.sessionId!;
+    await finish(reviewer, "VERDICT: FAIL - Friday is missing.");
+    store.deleteSession(reviewer);
+    await tasks.move("main", "queued");
+    await tasks.tick();
+    expect(task().status).toBe("running");
+    expect(turns.at(-1)!.input.text).toContain("Friday is missing.");
+  });
+
+  it("carries a failed check's output into retry and bounds the feedback", async () => {
+    const { tasks, run, task, turns, store, advance } = setup();
+    await run();
+    await tasks.move("main", "blocked");
+    await advance();
+    const failed = {
+      ...task(),
+      error: "The check command failed (exit code 1).",
+      verifyCommand: "pnpm test",
+      verification: {
+        command: {
+          exitCode: 1,
+          timedOut: false,
+          output: "rollback selection failed\n" + "x".repeat(20_000),
+        },
+      },
+    };
+    store.db
+      .prepare("UPDATE tasks SET value=? WHERE id=?")
+      .run(JSON.stringify(failed), failed.id);
+    const queued = await tasks.move("main", "queued");
+    expect(queued.retryFeedback!.length).toBe(12_000);
+    await tasks.tick();
+    expect(turns.at(-1)!.input.text).toContain("Check command: pnpm test");
+    expect(turns.at(-1)!.input.text).toContain("rollback selection failed");
+  });
+
   it("blocks a task whose reviewer gave no verdict", async () => {
     const { reviewing, task, finish } = setup();
     const verifying = await reviewing();
@@ -1067,10 +1166,13 @@ describe("merging without waiting for approval", () => {
         mergedAt: expect.any(Number),
       });
       expect(task().mergeError).toBeUndefined();
-      expect(readFileSync(join(repo.cwd, "report.md"), "utf8")).toBe("# Report\n");
+      expect(readFileSync(join(repo.cwd, "report.md"), "utf8")).toBe(
+        "# Report\n",
+      );
       expect(git(repo.cwd, "branch", "--list", "mc/*")).toBe("");
-      expect(git(repo.cwd, "rev-list", "--parents", "-1", "HEAD").split(" "))
-        .toHaveLength(3);
+      expect(
+        git(repo.cwd, "rev-list", "--parents", "-1", "HEAD").split(" "),
+      ).toHaveLength(3);
     },
     SHELL_TEST_MS,
   );
@@ -1246,8 +1348,17 @@ describe("host work limits", () => {
   });
 
   it("starts nothing new once the day is used up, lets running work finish, and resumes tomorrow", async () => {
-    const { tasks, input, run, task, turns, settled, clock, advance, addProject } =
-      setup();
+    const {
+      tasks,
+      input,
+      run,
+      task,
+      turns,
+      settled,
+      clock,
+      advance,
+      addProject,
+    } = setup();
     tasks.limits.save({ dailyAgentMinutes: 5 });
     const first = await run({ id: "a", projectId: addProject("a").id });
     tasks.save(input({ id: "b", projectId: addProject("b").id }));
@@ -1283,7 +1394,8 @@ describe("host work limits", () => {
   });
 
   it("keeps the total and the settings across a host restart", async () => {
-    const { tasks, store, engine, run, turns, settled, clock, advance } = setup();
+    const { tasks, store, engine, run, turns, settled, clock, advance } =
+      setup();
     tasks.limits.save({ maxRunningTasks: 3, dailyAgentMinutes: 120 });
     const started = await run();
     clock.now += 10 * MINUTE;

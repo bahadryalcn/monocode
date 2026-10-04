@@ -8,13 +8,34 @@
   <strong>A desktop UI for your coding agents.</strong>
 </p>
 
+## About this fork
+
+This is **Bahadır Yalçın's independently maintained version of MonoCode**, based
+on [hardbeat920/monocode](https://github.com/hardbeat920/monocode), originally
+created by Nick. This repository includes our own changes to desktop interaction,
+remote sessions, host task workflows, and local build/update tooling. It is not
+an official upstream release and is not maintained or endorsed by the upstream author.
+
+The original copyright and [MIT license](LICENSE) are preserved. Our changes are
+distributed under the same license. See [NOTICE](NOTICE) for attribution and
+[the fork guide](docs/fork.md) for build identities and updates.
+
+Use [this fork's releases](https://github.com/bahadryalcn/monocode/releases) for
+published fork packages. Source changes can be newer than the published packages;
+check the release tag before downloading. For local Windows/Mac build and install
+work, follow [the local update guide](docs/local-update.md).
+
 <p align="center">
   <img width="1680" height="1050" alt="Screenshot 2026-09-04 at 06 34 00" src="https://github.com/user-attachments/assets/2cd4a6ec-eb1e-4b45-8627-a76442ea3874" />
 </p>
 
 Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Antigravity, Pi, omp, fx, and Hermes Agent. If they’re installed and logged in, MonoCode can run them. Tabs are sessions. The composer is the input. MonoCode does not sell tokens.
 
-## Install
+## Upstream provider setup and packages
+
+The application packages listed in this section are distributed by the upstream
+project. They do not include this fork's changes. Use the fork release link above
+to install our published version.
 
 > Install and log in to at least one provider first:
 >

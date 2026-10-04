@@ -1,3 +1,11 @@
+This repository is an independently maintained fork of MonoCode by Bahadır Yalçın
+(https://github.com/bahadryalcn/monocode).
+Original project: https://github.com/hardbeat920/monocode
+Original copyright: Copyright (c) 2026 Nick, distributed under the MIT License.
+Fork modifications: Copyright (c) 2026 Bahadır Yalçın, distributed under the MIT License.
+The original copyright and license text are preserved in LICENSE.
+This fork is not an official release of, or endorsed by, the upstream project.
+
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
 agent harnesses it can drive.
 
