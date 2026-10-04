@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.76] - 2026-10-05
+
+### Fixed
+
+- Resume tasks interrupted by a host shutdown in their retained conversation and worktree, preserving completed work.
+- Restart interrupted verification without recording it as a failed review.
+- Keep genuine failures and persistence errors blocked, and honor daily agent limits when recovering work.
+
 ## [0.8.75] - 2026-10-04
 
 ### Fork changes since 0.8.74
