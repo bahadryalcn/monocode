@@ -8,6 +8,7 @@ import {
 } from "../model/transcriptJump";
 import { HarnessIcon } from "./HarnessIcon";
 import { findModel } from "../model/models";
+import { useSession } from "../model/sessionsStore";
 import {
   HARNESS_TITLE,
   sessionDisplayTitle,
@@ -27,7 +28,7 @@ import { loadNotesEnabled, subscribeNotesEnabled } from "../../settings/model/se
  */
 export function AgentTabView({
   title,
-  session,
+  session: shellSession,
   visible,
   focused = visible,
   onOpenFile,
@@ -38,6 +39,8 @@ export function AgentTabView({
   focused?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
+  // The shell's copy lags behind by streamed text; the store has the live one.
+  const session = useSession(shellSession?.id) ?? shellSession;
   const navigateBlockRef = useRef<
     ((blockId: string | null, query?: string) => boolean) | null
   >(null);

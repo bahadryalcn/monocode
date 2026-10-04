@@ -214,3 +214,40 @@ describe("session persistence concurrency", () => {
     });
   });
 });
+
+describe("guarded session save", () => {
+  it("writes only while the stored updatedAt is the one the caller read", async () => {
+    let stored = 10;
+    const writes: unknown[] = [];
+    mocks.invoke.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command !== "session_upsert") throw new Error(command);
+        // The Rust command does the compare-and-swap; mirror its contract.
+        if (args?.expectedUpdatedAt !== stored) return null;
+        writes.push(args);
+        return { id: "s", updatedAt: ++stored };
+      },
+    );
+    const { upsertSessionIfUnchanged } = await loadStore();
+    expect(await upsertSessionIfUnchanged(session("s") as never, 10)).toBe(
+      true,
+    );
+    // Another window wrote in between: the caller's stamp is now old.
+    expect(await upsertSessionIfUnchanged(session("s") as never, 10)).toBe(
+      false,
+    );
+    expect(writes).toHaveLength(1);
+  });
+
+  it("asks the store to require a missing row for a null expectation", async () => {
+    mocks.invoke.mockResolvedValue(null);
+    const { upsertSessionIfUnchanged } = await loadStore();
+    expect(await upsertSessionIfUnchanged(session("s") as never, null)).toBe(
+      false,
+    );
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "session_upsert",
+      expect.objectContaining({ expectMissing: true }),
+    );
+  });
+});

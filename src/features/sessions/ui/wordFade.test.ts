@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot, type Root as Root2 } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentMarkdown } from "./AgentMarkdown";
-import { revealEnd, WORD_FADE_MS } from "./wordFade";
+import type { Element, Root } from "hast";
+import { revealEnd, rehypeWordFade, WORD_FADE_MS } from "./wordFade";
 
 describe("revealEnd", () => {
   it("stops at the end of the word the reveal has reached", () => {
@@ -24,7 +25,7 @@ describe("revealEnd", () => {
 
 describe("paced streaming", () => {
   let container: HTMLDivElement;
-  let root: Root;
+  let root: Root2;
 
   beforeEach(() => {
     vi.useFakeTimers({
@@ -87,28 +88,27 @@ describe("paced streaming", () => {
     expect(shown()).toBe(reply);
   });
 
-  it("adds each word as its own span and never replaces one already shown", () => {
+  it("gives a word still fading one element for as long as it fades", () => {
     render("", true);
     render("I will review ", true);
-    act(() => vi.advanceTimersByTime(500));
+    act(() => vi.advanceTimersByTime(60));
     const first = word("I");
     expect(first).toBeDefined();
 
-    // The fade plays as a span is added, so a word that keeps its element as
-    // the reply grows is a word that does not fade again.
+    // The fade plays as an element is added, so a word that keeps its element
+    // as the reply grows is a word that does not fade again.
     render("I will review the diff and **recent** commits ", true);
-    act(() => vi.advanceTimersByTime(1_000));
-    expect(shown()).toBe("I will review the diff and recent commits");
+    act(() => vi.advanceTimersByTime(60));
     expect(word("I")).toBe(first);
-    expect(word("recent")?.parentElement?.dataset.streamdown).toBe("strong");
 
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(shown()).toBe("I will review the diff and recent commits");
     render("I will review the diff and **recent** commits", false);
-    // The last word is still fading, so the spans already on screen stay put.
-    expect(word("I")).toBe(first);
     act(() => vi.advanceTimersByTime(WORD_FADE_MS));
     expect(shown()).toBe("I will review the diff and recent commits");
     expect(fading()).toBe(false);
-    expect(container.querySelector("[data-word-fade]")).toBeNull();
+    // Words past their fade are plain text again.
+    expect(word("I")).toBeUndefined();
   });
 
   it("holds back a word still being written until the stream pauses on it", () => {
@@ -130,10 +130,12 @@ describe("paced streaming", () => {
     act(() => vi.advanceTimersByTime(2_000));
     expect(shown()).toBe(reply);
     act(() => vi.advanceTimersByTime(WORD_FADE_MS));
-    // A finished reply drops its word spans, so hiding and showing it cannot
-    // replay the fade.
+    // A finished reply drops the class its fade rule needs, so hiding and
+    // showing it cannot replay the fade; the few spans left are inert.
     expect(fading()).toBe(false);
-    expect(container.querySelector("[data-word-fade]")).toBeNull();
+    expect(container.querySelectorAll("[data-word-fade]").length).toBeLessThan(
+      20,
+    );
     expect(shown()).toBe(reply);
   });
 
@@ -151,5 +153,133 @@ describe("paced streaming", () => {
     expect(container.querySelector("code [data-word-fade]")).toBeNull();
     expect(container.querySelector("a [data-word-fade]")).toBeNull();
     expect(word("now")).toBeDefined();
+  });
+});
+
+describe("rehypeWordFade", () => {
+  const text = (value: string) => ({ type: "text" as const, value });
+  const el = (tagName: string, ...children: Element["children"]): Element => ({
+    type: "element",
+    tagName,
+    properties: {},
+    children,
+  });
+  const run = (fresh?: number) => {
+    const tree: Root = {
+      type: "root",
+      children: [
+        el(
+          "p",
+          text("one two "),
+          el("code", text("a b")),
+          el("a", text("c d")),
+          text(" three four"),
+        ),
+      ],
+    };
+    rehypeWordFade(
+      fresh === undefined ? undefined : { freshWords: () => fresh },
+    )(tree);
+    const p = tree.children[0] as Element;
+    const wrapped = p.children.flatMap((c) =>
+      c.type === "element" && "dataWordFade" in c.properties
+        ? [(c.children[0] as { value: string }).value]
+        : [],
+    );
+    return { p, wrapped };
+  };
+
+  it("wraps every word of prose when no window is given, and leaves code and links whole", () => {
+    const { p, wrapped } = run();
+    expect(wrapped).toEqual(["one", "two", "three", "four"]);
+    const code = p.children.find(
+      (c) => c.type === "element" && c.tagName === "code",
+    ) as Element;
+    expect(code.children).toEqual([text("a b")]);
+  });
+
+  it("leaves words before the window as plain text and wraps only the new ones", () => {
+    const { p, wrapped } = run(2);
+    expect(wrapped).toEqual(["three", "four"]);
+    expect(p.children[0]).toEqual(text("one two "));
+  });
+
+  it("wraps nothing once the message has settled", () => {
+    expect(run(0).wrapped).toEqual([]);
+  });
+
+  it("keys a word by its place in the block, whichever words are in the window", () => {
+    const tags = (fresh: number) =>
+      run(fresh).p.children.flatMap((c) =>
+        c.type === "element" && "dataWordFade" in c.properties
+          ? [c.tagName]
+          : [],
+      );
+    expect(tags(2)).toEqual(tags(3).slice(1));
+  });
+});
+
+describe("streamed message DOM", () => {
+  let container: HTMLDivElement;
+  let root: Root2;
+
+  beforeEach(() => {
+    vi.useFakeTimers({
+      toFake: [
+        "setTimeout",
+        "clearTimeout",
+        "requestAnimationFrame",
+        "cancelAnimationFrame",
+        "performance",
+      ],
+    });
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const paragraphs = (n: number) =>
+    Array.from(
+      { length: n },
+      (_, i) => `Paragraph ${i} ` + "word ".repeat(58).trim(),
+    ).join("\n\n");
+
+  it("bounds the spans of a long reply and does not remount at stream end", () => {
+    const full = paragraphs(50);
+    act(() =>
+      root.render(createElement(AgentMarkdown, { text: "", streaming: true })),
+    );
+    for (let i = 0; i < full.length; i += 60) {
+      const streamed = full.slice(0, i + 60);
+      act(() =>
+        root.render(
+          createElement(AgentMarkdown, { text: streamed, streaming: true }),
+        ),
+      );
+      act(() => vi.advanceTimersByTime(50));
+    }
+    act(() => vi.advanceTimersByTime(3_000));
+    expect(container.textContent).toContain("Paragraph 49");
+    const mid = container.querySelectorAll("[data-word-fade]").length;
+    // A few words still fading, not the ~3,000 words of the message.
+    expect(mid).toBeLessThan(600);
+
+    const marker = container.querySelector("p");
+    act(() =>
+      root.render(createElement(AgentMarkdown, { text: full, streaming: false })),
+    );
+    act(() => vi.advanceTimersByTime(WORD_FADE_MS * 2));
+    const settled = container.querySelectorAll("[data-word-fade]").length;
+    expect(settled).toBeLessThan(600);
+    expect(container.querySelector(".word-fading")).toBeNull();
+    expect(container.querySelector("p")).toBe(marker);
   });
 });

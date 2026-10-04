@@ -1,5 +1,5 @@
-import { Terminal } from "@xterm/xterm";
-import { useEffect, useRef } from "react";
+import { Terminal, type IDisposable } from "@xterm/xterm";
+import { useEffect, useRef, useState } from "react";
 import {
   getPtyStatus,
   killPty,
@@ -9,13 +9,14 @@ import {
   writePty,
 } from "../../../platform/tauri/pty";
 import { isOscColorQuery, oscColorReply } from "../model/terminalChrome";
+import { shouldPollTerminalMeta } from "../model/terminalMetaPolling";
 import {
   isMacTerminalClearShortcut,
   macTerminalShortcutData,
 } from "../model/terminalKeys";
 import {
   defaultTerminalTitle,
-  scanOscCwd,
+  parseOsc7Cwd,
   type TerminalMetaPatch,
 } from "../model/terminalTab";
 import { isLightScheme, SCHEME_CHANGE_EVENT } from "../../settings/model/appearance";
@@ -148,7 +149,16 @@ function oscColors() {
   };
 }
 
+// Set once the backend says it cannot name a foreground process (Windows), so
+// no terminal asks again.
+let metaSupported = true;
+
 export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) {
+  // Same signal as the WebGL addon: the terminal is actually on screen. Without
+  // IntersectionObserver there is no signal, so assume visible.
+  const [onScreen, setOnScreen] = useState(
+    typeof IntersectionObserver === "undefined",
+  );
   const profileRef = useRef(profile);
   profileRef.current = profile;
   const outerRef = useRef<HTMLDivElement>(null);
@@ -194,6 +204,45 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
       event.preventDefault();
       term.paste(text);
     };
+    // A WebGL context is only held while the terminal is on screen; browsers
+    // cap live contexts, and a context loss falls back to the DOM renderer.
+    let webgl: IDisposable | null = null;
+    let webglLoading = false;
+    const dropWebgl = () => {
+      webgl?.dispose();
+      webgl = null;
+    };
+    const loadWebgl = async () => {
+      if (webgl || webglLoading || closed) return;
+      webglLoading = true;
+      try {
+        const { WebglAddon } = await import("@xterm/addon-webgl");
+        if (closed || !visible) return;
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => {
+          if (webgl === addon) webgl = null;
+          addon.dispose();
+        });
+        term.loadAddon(addon);
+        webgl = addon;
+      } catch {
+        webgl = null;
+      } finally {
+        webglLoading = false;
+      }
+    };
+    let visible = false;
+    const visibility =
+      typeof IntersectionObserver === "undefined"
+        ? null
+        : new IntersectionObserver((entries) => {
+            visible = entries[entries.length - 1]?.isIntersecting ?? false;
+            setOnScreen(visible);
+            if (visible) void loadWebgl();
+            else dropWebgl();
+          });
+    visibility?.observe(host);
+
     host.addEventListener("copy", onCopy);
     host.addEventListener("paste", onPaste);
 
@@ -228,8 +277,6 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
       return true;
     });
 
-    let oscBuffer = "";
-
     let unsubscribe = () => {};
     let didStart = false;
     const start = () => {
@@ -238,19 +285,6 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
         id,
         (data) => {
           if (closed) return;
-          const onMeta = onMetaChangeRef.current;
-          if (onMeta) {
-            const text = new TextDecoder().decode(data);
-            const scanned = scanOscCwd(text, oscBuffer);
-            oscBuffer = scanned.rest;
-            if (scanned.cwd) {
-              const patch: TerminalMetaPatch = { cwd: scanned.cwd };
-              if (!runningProcessRef.current) {
-                patch.title = defaultTerminalTitle(scanned.cwd);
-              }
-              onMeta(patch);
-            }
-          }
           term.write(data);
         },
         (code) => {
@@ -301,6 +335,19 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
       }
       return true;
     };
+    // xterm already decodes the stream, so cwd reports come from its parser
+    // (split sequences included) instead of a second per-chunk decode here.
+    // Replayed output for a not-yet-mounted terminal flows through term.write too.
+    const oscCwd = term.parser.registerOscHandler(7, (data) => {
+      const cwd = parseOsc7Cwd(data);
+      const onMeta = onMetaChangeRef.current;
+      if (cwd && onMeta && !closed) {
+        const patch: TerminalMetaPatch = { cwd };
+        if (!runningProcessRef.current) patch.title = defaultTerminalTitle(cwd);
+        onMeta(patch);
+      }
+      return false;
+    });
     const oscFg = term.parser.registerOscHandler(10, (data) =>
       isOscColorQuery(data) ? replyOsc(10, oscColors().fg) : false,
     );
@@ -379,12 +426,15 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
       cancelAnimationFrame(frame);
       if (raf) cancelAnimationFrame(raf);
       observer.disconnect();
+      visibility?.disconnect();
+      dropWebgl();
       outer.classList.remove("monocode-terminal--alt-screen");
       applySizeRef.current = () => {};
       host.removeEventListener("copy", onCopy);
       host.removeEventListener("paste", onPaste);
       window.removeEventListener(SCHEME_CHANGE_EVENT, onSchemeChange);
       dataSub.dispose();
+      oscCwd.dispose();
       oscFg.dispose();
       oscBg.dispose();
       oscCursor.dispose();
@@ -412,17 +462,30 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
   const wantsMeta = !!onMetaChange;
 
   useEffect(() => {
-    if (!wantsMeta) return;
+    if (!wantsMeta || !onScreen || !metaSupported) return;
     let lastForeground: string | null = null;
     let inFlight = false;
     const refresh = () => {
       if (!spawned.current) return;
-      // Each status read forks `ps`; an off-screen window has no title to paint.
-      if (document.hidden) return;
+      // Each status read forks `ps`; an off-screen terminal or window has no
+      // title to paint.
+      if (
+        !shouldPollTerminalMeta({
+          onScreen,
+          documentHidden: document.hidden,
+          supported: metaSupported,
+        })
+      )
+        return;
       if (inFlight) return;
       inFlight = true;
       void getPtyStatus(id)
-        .then(({ foreground }) => {
+        .then(({ foreground, supported }) => {
+          if (supported === false) {
+            metaSupported = false;
+            clearInterval(interval);
+            return;
+          }
           const fg = foreground?.trim() || null;
           runningProcessRef.current = fg;
           if (fg === lastForeground) return;
@@ -438,14 +501,14 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
           inFlight = false;
         });
     };
-    refresh();
     const interval = setInterval(refresh, 1000);
+    refresh();
     document.addEventListener("visibilitychange", refresh);
     return () => {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [id, cwd, wantsMeta]);
+  }, [id, cwd, wantsMeta, onScreen]);
 
   useEffect(() => {
     if (!active) return;

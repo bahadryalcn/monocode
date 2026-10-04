@@ -20,6 +20,8 @@ describe("ModalPanel", () => {
     expect(markup).toContain("A reusable shell");
     expect(markup).toContain("Body");
     expect(markup).toContain('aria-label="Close"');
+    expect(markup).toContain("max-h-[calc(100dvh-32px)]");
+    expect(markup).toContain("ui-secondary-text mt-0.5 break-words");
   });
 
   it("can preserve an accessible title with a minimal visual header", () => {

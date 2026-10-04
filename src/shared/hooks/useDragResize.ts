@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { suppressTextSelection } from "../lib/drag";
 
@@ -17,7 +18,8 @@ type Options = {
 };
 
 function clampTo(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, Math.round(value)));
+  const upper = Math.max(0, max);
+  return Math.min(upper, Math.max(Math.min(min, upper), Math.round(value)));
 }
 
 /** Drag a pane's width by writing the DOM directly so React re-renders can't fight the cursor. */
@@ -119,6 +121,48 @@ export function useDragResize({
 
   useEffect(() => () => stopDrag.current?.(), []);
 
+  useEffect(() => {
+    const resize = () => {
+      const next = clamp(widthRef.current);
+      if (next !== widthRef.current) commit(next);
+      const upper = Math.max(0, maxRef.current());
+      setBounds((previous) =>
+        previous.min === Math.min(minRef.current, upper) &&
+        previous.max === upper
+          ? previous
+          : { min: Math.min(minRef.current, upper), max: upper },
+      );
+    };
+    const observer = new ResizeObserver(resize);
+    if (paneRef.current?.parentElement)
+      observer.observe(paneRef.current.parentElement);
+    window.addEventListener("resize", resize);
+    resize();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", resize);
+    };
+  }, [clamp, min]);
+
+  const [bounds, setBounds] = useState(() => ({
+    min: Math.min(min, Math.max(0, max())),
+    max: Math.max(0, max()),
+  }));
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    const step = event.shiftKey ? 50 : 10;
+    let next: number;
+    if (event.key === "ArrowRight")
+      next = widthRef.current + (direction === "left" ? -step : step);
+    else if (event.key === "ArrowLeft")
+      next = widthRef.current + (direction === "left" ? step : -step);
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = maxRef.current();
+    else if (event.key === "Enter") next = defaultRef.current;
+    else return;
+    event.preventDefault();
+    commit(next);
+  };
+
   const onDoubleClick = () => {
     commit(defaultRef.current);
   };
@@ -129,5 +173,17 @@ export function useDragResize({
     setPaneRef,
     onPointerDown,
     onDoubleClick,
+    onKeyDown,
+    min: bounds.min,
+    max: bounds.max,
+    separatorProps: {
+      role: "separator" as const,
+      tabIndex: 0,
+      "aria-orientation": "vertical" as const,
+      "aria-valuemin": bounds.min,
+      "aria-valuemax": bounds.max,
+      "aria-valuenow": width,
+      onKeyDown,
+    },
   };
 }

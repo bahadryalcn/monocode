@@ -86,6 +86,8 @@ export type AutomationHost = {
   projectId: string;
   /** A run is going and its session is waiting on an approval or a question. */
   needsInput?: boolean;
+  /** The machine did not answer; this is what it last reported. */
+  stale?: boolean;
 };
 
 export type AutomationUpsert = Omit<

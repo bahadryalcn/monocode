@@ -1,5 +1,5 @@
 import type { Element, ElementContent, Root } from "hast";
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 /*
  * Streaming prose, paced. Tokens land in uneven bursts; read straight off the
@@ -140,30 +140,114 @@ export function useWordFading(active: boolean): boolean {
  */
 const UNFADED_TAGS = new Set(["a", "code", "pre", "svg", "math", "kbd"]);
 
+/** What the word fade needs to know that the tree it is handed does not say. */
+export type WordFadeOptions = {
+  /**
+   * How many of the last words of the block are still fading in. Read each
+   * time a block is parsed. Absent, every word counts as new.
+   */
+  freshWords?: () => number;
+};
+
+let nextWindowId = 0;
+
 /**
- * Wraps every word in a span that fades in as it is added to the page. The
- * plugin keeps no state: a word already on screen keeps its element however
- * often its block re-renders, so it never fades twice, and a word the reveal
- * has just let out is a new element, so it does. That holds because every
- * word gets a span — the JSX keys count spans, and a word without one would
- * shift the keys of every word after it and fade them again.
+ * A reply's fade window: how many of the words at the end of its text were
+ * let out within the last `WORD_FADE_MS`. Only those need a span; words that
+ * finished fading are plain text, so a long reply keeps a handful of spans, not
+ * one per word. The returned options object never changes, and carries a
+ * distinct `id` because Streamdown caches its processors by plugin name and
+ * serialised options, and the plugin must read this reply's window, not
+ * another's.
  */
-export function rehypeWordFade() {
+export function useWordFadeWindow(
+  text: string,
+): WordFadeOptions & { id: number } {
+  const state = useRef({
+    length: text.length,
+    // Text already there when the reply mounts is not a new word.
+    log: [{ at: -Infinity, length: text.length }],
+    fresh: 0,
+  });
+  const options = useMemo(
+    () => ({ id: nextWindowId++, freshWords: () => state.current.fresh }),
+    [],
+  );
+
+  const s = state.current;
+  const now = performance.now();
+  if (text.length < s.length) s.log = [{ at: -Infinity, length: text.length }];
+  else if (text.length > s.length) s.log.push({ at: now, length: text.length });
+  s.length = text.length;
+  while (s.log.length > 1 && s.log[1].at <= now - WORD_FADE_MS) s.log.shift();
+  s.fresh = countTokens(text, s.log[0].length);
+
+  return options;
+}
+
+/** Whitespace-separated words in `text` from `from` on, the one a `from` falls inside included. */
+function countTokens(text: string, from: number): number {
+  let count = 0;
+  let inWord = false;
+  for (let i = from; i < text.length; i++) {
+    const word = !isSpace(text.charCodeAt(i));
+    if (word && !inWord) count++;
+    inWord = word;
+  }
+  return count;
+}
+
+function countWords(parent: Root | Element): number {
+  let count = 0;
+  for (const child of parent.children) {
+    if (child.type === "text") count += countTokens(child.value, 0);
+    else if (child.type === "element" && !UNFADED_TAGS.has(child.tagName)) {
+      count += countWords(child);
+    }
+  }
+  return count;
+}
+
+/**
+ * Wraps the words that are still fading in a span that fades in as it is
+ * added to the page; with no `freshWords` that is every word. A word already
+ * on screen keeps its element however often its block re-renders, so it never
+ * fades twice, and a word the reveal has just let out is a new element, so it
+ * does. That holds because each word's element is keyed by its place in the
+ * block: the JSX keys count elements by tag name, so a plain `span` would hand
+ * its key, and the finished fade it carries, on to the next word as the window
+ * slides along. Words past the window go back to plain text, which is also
+ * what stops a block's spans growing with its length.
+ */
+export function rehypeWordFade(options?: WordFadeOptions) {
   return (tree: Root) => {
-    const wrap = (value: string): ElementContent[] =>
-      value
-        .split(/(\s+)/)
-        .filter(Boolean)
-        .map((part) =>
-          isSpace(part.charCodeAt(0))
-            ? { type: "text", value: part }
-            : {
-                type: "element",
-                tagName: "span",
-                properties: { dataWordFade: "" },
-                children: [{ type: "text", value: part }],
-              },
-        );
+    const total = countWords(tree);
+    const firstFresh = options?.freshWords
+      ? total - options.freshWords()
+      : -1;
+    let seen = 0;
+
+    const wrap = (value: string): ElementContent[] => {
+      const out: ElementContent[] = [];
+      let plain = "";
+      for (const part of value.split(/(\s+)/)) {
+        if (!part) continue;
+        if (isSpace(part.charCodeAt(0)) || seen++ < firstFresh) {
+          plain += part;
+          continue;
+        }
+        if (plain) out.push({ type: "text", value: plain });
+        plain = "";
+        out.push({
+          type: "element",
+          tagName: `fade-w${seen}`,
+          properties: { dataWordFade: "" },
+          children: [{ type: "text", value: part }],
+        });
+      }
+      if (plain) out.push({ type: "text", value: plain });
+      return out;
+    };
 
     const walk = (parent: Root | Element) => {
       const children: Array<Root["children"][number]> = [];

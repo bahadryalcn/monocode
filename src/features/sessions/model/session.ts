@@ -267,6 +267,8 @@ export type Attachment = {
   data?: string;
   /** Object URL for in-session thumbnails. Not persisted. */
   previewUrl?: string;
+  /** Remote history preview loaded on explicit user action. Never persisted. */
+  loadPreview?: () => Promise<string>;
   /** Restored from a saved queue, and the file (or pasted data) is gone. */
   missing?: boolean;
 };
@@ -507,6 +509,8 @@ export type Session = {
   pendingQuestion?: UserQuestionPrompt;
   /** The local host is running a turn for this session for another computer; Send is held. In-memory. */
   continuingElsewhere?: boolean;
+  /** A host mirror was rejected; the local transcript is intact. In-memory. */
+  adoptedSyncConflict?: boolean;
 };
 
 export type PendingHarnessSwitch = {
@@ -796,8 +800,18 @@ export function canReplaceSessionTitle(
   );
 }
 
+// Block arrays are immutable snapshots (a changed session gets a new array), so
+// the scan result can ride on the array's identity instead of rescanning every
+// block of every session on each store change.
+const pendingApprovalByBlocks = new WeakMap<Block[], boolean>();
+
 export function hasPendingApproval(blocks: Block[]): boolean {
-  return blocks.some((block) => block.approval && !block.approval.decided);
+  let pending = pendingApprovalByBlocks.get(blocks);
+  if (pending === undefined) {
+    pending = blocks.some((block) => block.approval && !block.approval.decided);
+    pendingApprovalByBlocks.set(blocks, pending);
+  }
+  return pending;
 }
 
 export function sessionNeedsInput(session: Session): boolean {

@@ -514,7 +514,7 @@ pub fn control_reply(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_save(
     store: State<'_, crate::session_store::SessionStore>,
     lead_id: String,
@@ -529,7 +529,7 @@ pub fn control_save(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn control_load(
     store: State<'_, crate::session_store::SessionStore>,
     lead_id: String,

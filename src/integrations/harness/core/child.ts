@@ -43,14 +43,41 @@ function invoke<T>(
     : tauriInvoke<T>(command, args);
 }
 
+let windowLabel: string | null | undefined;
+
+/** A global `listen` registers as target `Any`, which Tauri delivers to even
+ * when the backend used `emit_to` another window. Scoping the listener to this
+ * window's label still receives broadcasts and targeted events for it, and
+ * skips those the backend routed to other windows. */
+function currentWindowLabel(): string | null {
+  if (windowLabel === undefined) {
+    // The same field `getCurrentWindow()` reads; avoids importing the window API.
+    const internals = (
+      globalThis as {
+        __TAURI_INTERNALS__?: {
+          metadata?: { currentWindow?: { label?: string } };
+        };
+      }
+    ).__TAURI_INTERNALS__;
+    windowLabel = internals?.metadata?.currentWindow?.label || null;
+  }
+  return windowLabel;
+}
+
 function listen<T>(
   event: string,
   handler: (event: { payload: T }) => void,
 ): Promise<UnlistenFn> {
-  return backend ? backend.listen(event, handler) : tauriListen(event, handler);
+  if (backend) return backend.listen(event, handler);
+  const label = currentWindowLabel();
+  return label
+    ? tauriListen(event, handler, { target: label })
+    : tauriListen(event, handler);
 }
 
 type LinePayload = { sessionId: string; line: string };
+type LinesPayload = { sessionId: string; lines: string[] };
+type SseBatchPayload = { sessionId: string; data: string[] };
 type ExitPayload = { sessionId: string; code: number | null; pid?: number };
 type SsePayload = { sessionId: string; data: string };
 type SseEndPayload = { sessionId: string; error?: string | null };
@@ -62,13 +89,14 @@ type SseEndHandler = (error?: string) => void;
 
 const lineHandlers = new Map<string, LineHandler>();
 const exitHandlers = new Map<string, ExitHandler>();
-const lineBuffer = new Map<string, string[]>();
+const lineBuffer = new Map<string, Buffered>();
 const stderrHandlers = new Map<string, LineHandler>();
 const sseHandlers = new Map<string, SseHandler>();
 const sseEndHandlers = new Map<string, SseEndHandler>();
-const sseBuffer = new Map<string, string[]>();
-// Output is broadcast to every window. Only ids this window spawned or opened
-// may buffer while unwatched; anything else would be held until the bridge
+const sseBuffer = new Map<string, Buffered>();
+// Output may be broadcast to every window (the backend falls back to that when
+// it does not know the owner). Only ids this window spawned or opened may
+// buffer while unwatched; anything else would be held until the bridge
 // is torn down, since nothing here ever watches or unwatches it.
 const ownedChildren = new Set<string>();
 const ownedSse = new Set<string>();
@@ -88,23 +116,67 @@ export function isCurrentChildExit(
   return exitedPid === expectedPid;
 }
 
+/** Output held for a child nobody watches yet. The byte bound is the real
+ * limit; the item bound only keeps many tiny lines from piling up. */
+type Buffered = { items: string[]; bytes: number };
+
 const MAX_BUFFERED = 1000;
+// UTF-16 code units, which is close enough to bytes for a memory bound.
+export const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 let bridge: Promise<UnlistenFn[]> | null = null;
 let bridgeAttempt: symbol | null = null;
 let users = 0;
 let teardownTimer: ReturnType<typeof setTimeout> | undefined;
 
-function pushBounded(
-  map: Map<string, string[]>,
+/** Drops the oldest items past either bound; the newest item always stays,
+ * even when it alone exceeds the byte bound. */
+export function pushBounded(
+  map: Map<string, Buffered>,
   sessionId: string,
-  item: string,
+  items: readonly string[],
+  maxBytes = MAX_BUFFERED_BYTES,
 ) {
-  const queued = map.get(sessionId) ?? [];
-  queued.push(item);
-  if (queued.length > MAX_BUFFERED) {
-    queued.splice(0, queued.length - MAX_BUFFERED);
+  const queued = map.get(sessionId) ?? { items: [], bytes: 0 };
+  for (const item of items) {
+    queued.items.push(item);
+    queued.bytes += item.length;
+  }
+  let drop = Math.max(0, queued.items.length - MAX_BUFFERED);
+  let kept = queued.bytes;
+  for (let i = 0; i < drop; i += 1) kept -= queued.items[i].length;
+  while (kept > maxBytes && drop < queued.items.length - 1) {
+    kept -= queued.items[drop].length;
+    drop += 1;
+  }
+  if (drop > 0) {
+    queued.items.splice(0, drop);
+    queued.bytes = kept;
   }
   map.set(sessionId, queued);
+}
+
+// The desktop emits batches; a headless host still emits one line per event.
+function deliverStdout(sessionId: string, lines: readonly string[]) {
+  const handler = lineHandlers.get(sessionId);
+  if (handler) {
+    for (const line of lines) handler(line);
+    return;
+  }
+  if (ownedChildren.has(sessionId)) pushBounded(lineBuffer, sessionId, lines);
+}
+
+function deliverStderr(sessionId: string, lines: readonly string[]) {
+  const handler = stderrHandlers.get(sessionId);
+  if (handler) for (const line of lines) handler(line);
+}
+
+function deliverSse(sessionId: string, data: readonly string[]) {
+  const handler = sseHandlers.get(sessionId);
+  if (handler) {
+    for (const item of data) handler(item);
+    return;
+  }
+  if (ownedSse.has(sessionId)) pushBounded(sseBuffer, sessionId, data);
 }
 
 function ensureBridge() {
@@ -124,22 +196,23 @@ function ensureBridge() {
   bridgeAttempt = attempt;
   const installation = Promise.all([
     register(
+      listen<LinesPayload>("harness-stdout-lines", (event) => {
+        deliverStdout(event.payload.sessionId, event.payload.lines);
+      }),
+    ),
+    register(
       listen<LinePayload>("harness-stdout", (event) => {
-        const { sessionId, line } = event.payload;
-        const handler = lineHandlers.get(sessionId);
-        if (handler) {
-          handler(line);
-          return;
-        }
-        if (ownedChildren.has(sessionId)) {
-          pushBounded(lineBuffer, sessionId, line);
-        }
+        deliverStdout(event.payload.sessionId, [event.payload.line]);
+      }),
+    ),
+    register(
+      listen<LinesPayload>("harness-stderr-lines", (event) => {
+        deliverStderr(event.payload.sessionId, event.payload.lines);
       }),
     ),
     register(
       listen<LinePayload>("harness-stderr", (event) => {
-        const { sessionId, line } = event.payload;
-        stderrHandlers.get(sessionId)?.(line);
+        deliverStderr(event.payload.sessionId, [event.payload.line]);
       }),
     ),
     register(
@@ -161,14 +234,13 @@ function ensureBridge() {
       }),
     ),
     register(
+      listen<SseBatchPayload>("harness-sse-batch", (event) => {
+        deliverSse(event.payload.sessionId, event.payload.data);
+      }),
+    ),
+    register(
       listen<SsePayload>("harness-sse", (event) => {
-        const { sessionId, data } = event.payload;
-        const handler = sseHandlers.get(sessionId);
-        if (handler) {
-          handler(data);
-          return;
-        }
-        if (ownedSse.has(sessionId)) pushBounded(sseBuffer, sessionId, data);
+        deliverSse(event.payload.sessionId, [event.payload.data]);
       }),
     ),
     register(
@@ -260,7 +332,7 @@ export function watchChild(
   lineHandlers.set(sessionId, onLine);
   exitHandlers.set(sessionId, onExit);
   if (onStderr) stderrHandlers.set(sessionId, onStderr);
-  if (queued) queued.forEach(onLine);
+  if (queued) for (const line of queued.items) onLine(line);
 }
 
 export function unwatchChild(sessionId: string) {
@@ -281,7 +353,7 @@ export function watchSse(
   sseBuffer.delete(sessionId);
   sseHandlers.set(sessionId, onData);
   if (onEnd) sseEndHandlers.set(sessionId, onEnd);
-  if (queued) queued.forEach(onData);
+  if (queued) for (const item of queued.items) onData(item);
 }
 
 export function unwatchSse(sessionId: string) {

@@ -72,6 +72,14 @@
 }
 
 :root {
+  --ui-font-secondary: 0.8125rem;
+  --ui-font-caption: 0.75rem;
+  --ui-text-secondary: color-mix(in srgb, var(--color-content) 85%, var(--color-background-base));
+  --ui-text-disabled: color-mix(in srgb, var(--color-content) 50%, var(--color-background-base));
+  --ui-control-height: 2.25rem;
+  --ui-control-height-compact: 1.75rem;
+  --ui-focus-width: 2px;
+  --ui-focus-offset: 2px;
   --motion-reorder-duration: 160ms;
   --motion-tab-close-duration: 200ms;
   --motion-feedback-duration: 120ms;
@@ -96,6 +104,21 @@
   --color-skill: #e8c547;
   --color-mention: #38bdf8;
   --color-markdown-heading: #f9a8c9;
+}
+
+.ui-secondary-text {
+  font-size: var(--ui-font-secondary);
+  color: var(--ui-text-secondary);
+}
+
+.ui-caption-text {
+  font-size: var(--ui-font-caption);
+  color: var(--ui-text-secondary);
+}
+
+:where(button, input, select, textarea, a[href], [tabindex]):focus-visible {
+  outline: var(--ui-focus-width) solid var(--color-accent);
+  outline-offset: var(--ui-focus-offset);
 }
 
 html {
@@ -1583,6 +1606,41 @@ header[data-tauri-drag-region] button {
   cursor: default !important;
 }
 
+header[data-tauri-drag-region] [data-tab-draggable="true"],
+header[data-tauri-drag-region] [data-tab-draggable="true"] * {
+  cursor: grab !important;
+}
+
+header[data-tauri-drag-region] [data-tab-draggable="true"] [data-no-drag],
+header[data-tauri-drag-region] [data-tab-draggable="true"] [data-no-drag] * {
+  cursor: default !important;
+}
+
+html.is-grabbing body *,
+html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable],
+html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
+  cursor: inherit !important;
+}
+
+.pointer-drop-hint {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: none;
+  padding: 6px 10px;
+  border: 1px solid var(--color-accent);
+  border-radius: 6px;
+  background: var(--color-background-base);
+  color: var(--color-content, #fff);
+  box-shadow: 0 3px 12px #0005;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pointer-drop-hint[data-action="blocked"] {
+  border-color: var(--color-stroke, #666);
+  opacity: 0.85;
+}
+
 .material-icon svg {
   display: block;
   width: 100%;
@@ -2143,7 +2201,16 @@ header[data-tauri-drag-region] button {
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
-  animation: shimmer-text var(--shimmer-duration, 2s) linear infinite;
+  /* background-position on clipped text repaints on the main thread, so step it:
+     20 steps = 10 repaints/s at the 2s default (12.5/s at 1.6s, 20/s at 1s)
+     instead of one per frame. */
+  animation: shimmer-text var(--shimmer-duration, 2s) steps(20) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+  }
 }
 
 /* One light sweep across a composer mode command as it appears. */
@@ -2757,10 +2824,9 @@ header[data-tauri-drag-region] button {
   }
 }
 
-/* Keep the original glass tint in dark mode. Light popovers use an opaque
-   surface so underlying content cannot show through. */
+/* Menus need a stable surface above bright buttons and custom backgrounds. */
 .popover-backdrop {
-  background: color-mix(in srgb, var(--color-content) 2%, transparent);
+  background: color-mix(in srgb, var(--color-background-base) 95%, transparent);
 }
 
 html.theme-light .popover-backdrop {

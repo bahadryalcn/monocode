@@ -18,7 +18,7 @@ const KIND_BY_EXTENSION: Record<string, DocumentKind> = {
  */
 export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
 
-/** Rows and columns a sheet shows; `sheetRows` stops SheetJS parsing past it. */
+/** Preview extents. The worker stores only bounded populated cells, never a dense rectangle. */
 export const MAX_SHEET_ROWS = 100_000;
 export const MAX_SHEET_COLUMNS = 200;
 
@@ -83,11 +83,23 @@ export function buildSheetGrid(
   maxColumns = MAX_SHEET_COLUMNS,
 ): SheetGrid {
   const columnCount = Math.min(totalColumns, maxColumns);
-  const rows = cells.slice(0, maxRows).map((row) => {
+  // This small dense helper is also used by callers/tests with already-parsed
+  // rows. Keep it bounded independently of the worker's sparse preview path.
+  const rowLimit = Math.min(
+    maxRows,
+    Math.floor(200_000 / Math.max(1, columnCount)),
+  );
+  let remainingText = 4_000_000;
+  let textLimited = false;
+  const rows = cells.slice(0, rowLimit).map((row) => {
     const out: string[] = [];
     for (let column = 0; column < columnCount; column += 1) {
       const value = row[column];
-      out.push(value == null ? "" : String(value));
+      const raw = value == null ? "" : String(value);
+      const text = raw.slice(0, Math.min(16_000, remainingText));
+      if (text.length < raw.length) textLimited = true;
+      remainingText -= text.length;
+      out.push(text);
     }
     return out;
   });
@@ -98,7 +110,8 @@ export function buildSheetGrid(
     rows,
     totalRows,
     totalColumns,
-    truncated: totalRows > rows.length || totalColumns > columnCount,
+    truncated:
+      totalRows > rows.length || totalColumns > columnCount || textLimited,
   };
 }
 

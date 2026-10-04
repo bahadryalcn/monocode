@@ -13,6 +13,23 @@ import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { sessionNeedsInput } from "../src/features/sessions/model/session";
 
 const CACHED_SESSIONS = 32;
+// Retried commands are deduplicated by receipt; a week far outlives any retry.
+const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const RECEIPT_PRUNE_EVERY = 500;
+// Saves caused only by streamed deltas ("soft") update memory at once but reach
+// SQLite at most this often per session. Durability trade-off accepted by the
+// owner: if the host process dies mid-stream, up to this much streamed text of
+// the running turn may be lost and the turn is marked interrupted on restart.
+// Every other save ("hard") writes immediately and flushes pending soft state
+// first, so no hard event and no settled turn is ever lost.
+const CHECKPOINT_MS = 1_000;
+
+/** Latest unwritten state of a session plus its event rows, in revision order. */
+interface PendingWrite {
+  value: HostSession;
+  events: { revision: number; event: unknown }[];
+  timer?: ReturnType<typeof setTimeout>;
+}
 
 export class HostStore {
   readonly db: DatabaseSync;
@@ -22,6 +39,14 @@ export class HostStore {
   // served from memory instead of re-parsing whole transcripts. Callers must
   // treat returned values as immutable.
   private cache = new Map<string, HostSession>();
+  private receiptWrites = 0;
+  // Write-behind state, consulted before the cache and SQLite by every read.
+  // Kept apart from the LRU cache so eviction can never drop unwritten data.
+  private pending = new Map<string, PendingWrite>();
+  private inTransaction = false;
+  private flushedInTransaction: PendingWrite[] = [];
+  /** Snapshot upserts issued so far; lets tests count checkpoints. */
+  snapshotWrites = 0;
 
   constructor(path: string) {
     this.attachmentDir = join(dirname(path), "attachments");
@@ -38,6 +63,55 @@ export class HostStore {
     const columns = this.db.prepare("PRAGMA table_info(sessions)").all();
     if (!columns.some((column) => column.name === "summary"))
       this.db.exec("ALTER TABLE sessions ADD COLUMN summary TEXT");
+    // Plain columns mirroring snapshot fields so adopted() never parses
+    // transcripts. save() is the only snapshot writer and keeps them in sync.
+    if (!columns.some((column) => column.name === "has_desktop")) {
+      // One transaction: a crash midway must not leave has_desktop without
+      // the other columns or the backfill.
+      this.db.exec(`BEGIN;
+        ALTER TABLE sessions ADD COLUMN has_desktop INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE sessions ADD COLUMN revision INTEGER;
+        ALTER TABLE sessions ADD COLUMN updated_at INTEGER;
+        ALTER TABLE sessions ADD COLUMN status TEXT;
+        UPDATE sessions SET
+          has_desktop = json_extract(snapshot, '$.desktop') IS NOT NULL,
+          revision = json_extract(snapshot, '$.revision'),
+          updated_at = json_extract(snapshot, '$.updatedAt'),
+          status = json_extract(snapshot, '$.status');
+        COMMIT;`);
+    }
+    // What host startup reads from every session, so it never parses a
+    // transcript it does not have to rewrite. save() keeps them in sync.
+    if (!columns.some((column) => column.name === "provider_session_id")) {
+      this.db.exec(`BEGIN;
+        ALTER TABLE sessions ADD COLUMN provider_session_id TEXT;
+        ALTER TABLE sessions ADD COLUMN harness TEXT;
+        ALTER TABLE sessions ADD COLUMN session_cwd TEXT;
+        ALTER TABLE sessions ADD COLUMN shell_running INTEGER NOT NULL DEFAULT 0;
+        UPDATE sessions SET
+          provider_session_id = NULLIF(json_extract(snapshot, '$.session.providerSessionId'), ''),
+          harness = json_extract(snapshot, '$.session.harness'),
+          session_cwd = json_extract(snapshot, '$.session.cwd'),
+          shell_running = EXISTS (
+            SELECT 1 FROM json_each(snapshot, '$.session.blocks')
+            WHERE COALESCE(json_extract(value, '$.shell.running'), 0) <> 0
+          );
+        COMMIT;`);
+    }
+    // Receipts only dedupe retried commands, so old ones are dead weight.
+    // Existing rows are stamped now, so they get a full retention window.
+    const receiptColumns = this.db.prepare("PRAGMA table_info(receipts)").all();
+    if (!receiptColumns.some((column) => column.name === "created_at")) {
+      this.db.exec(`BEGIN;
+        ALTER TABLE receipts ADD COLUMN created_at INTEGER;
+        UPDATE receipts SET created_at = ${Date.now()};
+        COMMIT;`);
+    }
+    this.pruneReceipts();
+    // Covering partial index: adopted() is answered from the index alone.
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS sessions_adopted ON sessions(id, project_id, revision, updated_at, status) WHERE has_desktop=1",
+    );
     this.db
       .prepare("INSERT OR IGNORE INTO metadata VALUES ('environmentId', ?)")
       .run(randomUUID());
@@ -50,12 +124,20 @@ export class HostStore {
 
   transaction<T>(fn: () => T): T {
     this.db.exec("BEGIN IMMEDIATE");
+    this.inTransaction = true;
+    this.flushedInTransaction = [];
     try {
       const value = fn();
       this.db.exec("COMMIT");
+      this.inTransaction = false;
+      this.flushedInTransaction = [];
       return value;
     } catch (error) {
+      this.inTransaction = false;
       this.cache.clear();
+      // Pending state flushed inside this transaction is rolled back with it.
+      for (const entry of this.flushedInTransaction.splice(0))
+        this.restore(entry);
       try {
         this.db.exec("ROLLBACK");
       } catch (rollbackError) {
@@ -95,6 +177,8 @@ export class HostStore {
   }
 
   private find(id: string): HostSession | undefined {
+    const unwritten = this.pending.get(id);
+    if (unwritten) return unwritten.value;
     const cached = this.cache.get(id);
     if (cached) return this.remember(cached);
     const row = this.db
@@ -116,6 +200,8 @@ export class HostStore {
       .prepare("SELECT id, summary FROM sessions WHERE project_id=?")
       .all(projectId)
       .map((row) => {
+        const unwritten = this.pending.get(String(row.id));
+        if (unwritten) return summary(unwritten.value);
         const cached = row.summary
           ? (JSON.parse(String(row.summary)) as HostSessionSummary)
           : undefined;
@@ -165,37 +251,105 @@ export class HostStore {
     updatedAt: number;
     status: HostSession["status"];
   }[] {
+    const rows = new Map(
+      this.db
+        .prepare(
+          `SELECT id, project_id, revision, updated_at, status
+        FROM sessions WHERE has_desktop=1`,
+        )
+        .all()
+        .map((row) => [
+          String(row.id),
+          {
+            id: String(row.id),
+            projectId: String(row.project_id),
+            revision: Number(row.revision),
+            updatedAt: Number(row.updated_at),
+            status: String(row.status) as HostSession["status"],
+          },
+        ]),
+    );
+    for (const [id, { value }] of this.pending) {
+      if (value.desktop == null) rows.delete(id);
+      else
+        rows.set(id, {
+          id,
+          projectId: value.projectId,
+          revision: value.revision,
+          updatedAt: value.updatedAt,
+          status: value.status,
+        });
+    }
+    return [...rows.values()];
+  }
+
+  /** Everything startup needs per session, without parsing transcripts. */
+  startupStates(): {
+    id: string;
+    hasDesktop: boolean;
+    running: boolean;
+    shellRunning: boolean;
+    providerSessionId: string | null;
+    harness: string | null;
+    cwd: string | null;
+  }[] {
     return this.db
       .prepare(
-        `SELECT id, project_id,
-          json_extract(snapshot, '$.revision') AS revision,
-          json_extract(snapshot, '$.updatedAt') AS updated_at,
-          json_extract(snapshot, '$.status') AS status
-        FROM sessions WHERE json_extract(snapshot, '$.desktop') IS NOT NULL`,
+        `SELECT id, has_desktop, status, shell_running, provider_session_id, harness, session_cwd
+        FROM sessions ORDER BY updated_at DESC`,
       )
       .all()
-      .map((row) => ({
+      .map((row) => {
+        const unwritten = this.pending.get(String(row.id))?.value;
+        if (unwritten)
+          return {
+            id: unwritten.session.id,
+            hasDesktop: unwritten.desktop != null,
+            running: unwritten.status === "running",
+            shellRunning: unwritten.session.blocks.some(
+              (block) => block.shell?.running,
+            ),
+            providerSessionId: unwritten.session.providerSessionId || null,
+            harness: unwritten.session.harness ?? null,
+            cwd: unwritten.session.cwd ?? null,
+          };
+        return {
         id: String(row.id),
-        projectId: String(row.project_id),
-        revision: Number(row.revision),
-        updatedAt: Number(row.updated_at),
-        status: String(row.status) as HostSession["status"],
-      }));
+        hasDesktop: !!Number(row.has_desktop),
+        running: row.status === "running",
+        shellRunning: !!Number(row.shell_running),
+        providerSessionId: row.provider_session_id
+          ? String(row.provider_session_id)
+          : null,
+        harness: row.harness == null ? null : String(row.harness),
+        cwd: row.session_cwd == null ? null : String(row.session_cwd),
+        };
+      });
   }
 
   sessions(projectId?: string): HostSession[] {
     const rows = projectId
       ? this.db
-          .prepare("SELECT snapshot FROM sessions WHERE project_id=?")
+          .prepare("SELECT id, snapshot FROM sessions WHERE project_id=?")
           .all(projectId)
-      : this.db.prepare("SELECT snapshot FROM sessions").all();
+      : this.db.prepare("SELECT id, snapshot FROM sessions").all();
     return rows
-      .map((row) => JSON.parse(String(row.snapshot)) as HostSession)
+      .map(
+        (row) =>
+          this.pending.get(String(row.id))?.value ??
+          (JSON.parse(String(row.snapshot)) as HostSession),
+      )
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  /** Returns the saved value, stamped with per-block change revisions. */
-  save(input: HostSession, event: unknown): HostSession {
+  /** Returns the saved value, stamped with per-block change revisions.
+   * `deferred` marks a save caused purely by streamed deltas: memory is
+   * current at once, SQLite catches up at the next checkpoint. */
+  save(
+    input: HostSession,
+    event: unknown,
+    options: { deferred?: boolean } = {},
+  ): HostSession {
     const previous = this.find(input.session.id);
     const value = {
       ...input,
@@ -205,23 +359,119 @@ export class HostStore {
         input.createdAt ?? previous?.createdAt ?? previous?.updatedAt ?? input.updatedAt,
       blockRevisions: blockRevisions(previous, input),
     };
-    this.db
-      .prepare(
-        "INSERT INTO sessions (id, project_id, snapshot, summary) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot, summary=excluded.summary",
-      )
-      .run(
-        value.session.id,
-        value.projectId,
-        JSON.stringify(value),
-        JSON.stringify(summary(value)),
-      );
-    this.db
-      .prepare("INSERT INTO events VALUES (?, ?, ?)")
-      .run(value.session.id, value.revision, JSON.stringify(event));
-    this.db
-      .prepare("DELETE FROM events WHERE session_id=? AND revision<?")
-      .run(value.session.id, value.revision - 2_000);
+    const id = value.session.id;
+    const row = { revision: value.revision, event };
+    if (options.deferred && previous) {
+      const entry = this.pending.get(id) ?? { value, events: [] };
+      entry.value = value;
+      entry.events.push(row);
+      this.pending.set(id, entry);
+      this.arm(id, entry);
+      return value;
+    }
+    // Pending soft state goes out in the same write, so the stored snapshot
+    // never goes backwards and event rows stay in revision order.
+    const entry = this.take(id);
+    try {
+      this.write(value, [...(entry?.events ?? []), row]);
+    } catch (error) {
+      if (entry) this.restore(entry);
+      throw error;
+    }
     return this.remember(value);
+  }
+
+  /** Writes every session whose latest state is still only in memory. */
+  flushAll(): void {
+    for (const id of [...this.pending.keys()]) this.flushPending(id);
+  }
+
+  private flushPending(id: string): void {
+    const entry = this.take(id);
+    if (!entry) return;
+    try {
+      this.write(entry.value, entry.events);
+    } catch (error) {
+      this.restore(entry);
+      throw error;
+    }
+    this.remember(entry.value);
+  }
+
+  private take(id: string): PendingWrite | undefined {
+    const entry = this.pending.get(id);
+    if (!entry) return undefined;
+    clearTimeout(entry.timer);
+    entry.timer = undefined;
+    this.pending.delete(id);
+    if (this.inTransaction) this.flushedInTransaction.push(entry);
+    return entry;
+  }
+
+  /** Puts back state whose write failed or was rolled back. */
+  private restore(entry: PendingWrite): void {
+    const id = entry.value.session.id;
+    const newer = this.pending.get(id);
+    if (newer === entry) return;
+    if (newer) {
+      newer.events = [...entry.events, ...newer.events];
+      return;
+    }
+    this.pending.set(id, entry);
+    this.arm(id, entry);
+  }
+
+  private arm(id: string, entry: PendingWrite): void {
+    if (entry.timer) return;
+    entry.timer = setTimeout(() => {
+      entry.timer = undefined;
+      try {
+        this.flushPending(id);
+      } catch (error) {
+        // Stays pending and is retried; a timer must never take the host down.
+        console.error(
+          "Session checkpoint failed:",
+          error instanceof Error ? error.message : "unknown error",
+        );
+      }
+    }, CHECKPOINT_MS);
+    entry.timer.unref?.();
+  }
+
+  private write(
+    value: HostSession,
+    rows: { revision: number; event: unknown }[],
+  ): void {
+    const run = () => {
+      this.db
+        .prepare(
+          `INSERT INTO sessions (id, project_id, snapshot, summary, has_desktop, revision, updated_at, status, provider_session_id, harness, session_cwd, shell_running) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot, summary=excluded.summary, has_desktop=excluded.has_desktop, revision=excluded.revision, updated_at=excluded.updated_at, status=excluded.status, provider_session_id=excluded.provider_session_id, harness=excluded.harness, session_cwd=excluded.session_cwd, shell_running=excluded.shell_running`,
+        )
+        .run(
+          value.session.id,
+          value.projectId,
+          JSON.stringify(value),
+          JSON.stringify(summary(value)),
+          value.desktop == null ? 0 : 1,
+          value.revision,
+          value.updatedAt,
+          value.status,
+          value.session.providerSessionId || null,
+          value.session.harness ?? null,
+          value.session.cwd ?? null,
+          value.session.blocks.some((block) => block.shell?.running) ? 1 : 0,
+        );
+      const insert = this.db.prepare("INSERT INTO events VALUES (?, ?, ?)");
+      for (const row of rows)
+        insert.run(value.session.id, row.revision, JSON.stringify(row.event));
+      this.db
+        .prepare("DELETE FROM events WHERE session_id=? AND revision<?")
+        .run(value.session.id, value.revision - 2_000);
+    };
+    if (this.inTransaction) run();
+    else this.transaction(run);
+    this.snapshotWrites++;
   }
 
   updateSession(
@@ -257,6 +507,7 @@ export class HostStore {
       const current = this.session(id);
       if (current.status === "running")
         throw new Error("Stop this session before deleting it");
+      this.take(id);
       this.db.prepare("DELETE FROM events WHERE session_id=?").run(id);
       this.db.prepare("DELETE FROM sessions WHERE id=?").run(id);
       this.cache.delete(id);
@@ -273,8 +524,18 @@ export class HostStore {
 
   recordReceipt(signature: string, receipt: CommandReceipt): void {
     this.db
-      .prepare("INSERT INTO receipts VALUES (?, ?, ?)")
-      .run(receipt.commandId, signature, JSON.stringify(receipt));
+      .prepare(
+        "INSERT INTO receipts (id, signature, receipt, created_at) VALUES (?, ?, ?, ?)",
+      )
+      .run(receipt.commandId, signature, JSON.stringify(receipt), Date.now());
+    if (++this.receiptWrites % RECEIPT_PRUNE_EVERY === 0) this.pruneReceipts();
+  }
+
+  /** Clients retry a command for seconds to minutes, never days. */
+  pruneReceipts(now = Date.now()): void {
+    this.db
+      .prepare("DELETE FROM receipts WHERE created_at IS NULL OR created_at < ?")
+      .run(now - RECEIPT_RETENTION_MS);
   }
 
   events(
@@ -282,11 +543,18 @@ export class HostStore {
     after: number,
   ): { snapshot?: HostSession; events?: unknown[]; revision: number } {
     const snapshot = this.session(id);
-    const rows = this.db
+    const rows: { revision: number; event: unknown }[] = this.db
       .prepare(
         "SELECT revision, payload FROM events WHERE session_id=? AND revision>? ORDER BY revision",
       )
-      .all(id, after);
+      .all(id, after)
+      .map((row) => ({
+        revision: Number(row.revision),
+        event: JSON.parse(String(row.payload)),
+      }));
+    // Event rows of unwritten soft saves are newer than every stored row.
+    for (const row of this.pending.get(id)?.events ?? [])
+      if (row.revision > after) rows.push(row);
     if (
       after > snapshot.revision ||
       (after < snapshot.revision && Number(rows[0]?.revision) !== after + 1)
@@ -294,10 +562,7 @@ export class HostStore {
       return { snapshot, revision: snapshot.revision };
     }
     return {
-      events: rows.map((row) => ({
-        revision: row.revision,
-        event: JSON.parse(String(row.payload)),
-      })),
+      events: rows,
       revision: snapshot.revision,
     };
   }
@@ -340,7 +605,11 @@ export class HostStore {
     return createHash("sha256").update(token).digest("hex");
   }
   close(): void {
-    this.db.close();
+    try {
+      this.flushAll();
+    } finally {
+      this.db.close();
+    }
   }
 }
 

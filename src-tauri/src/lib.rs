@@ -19,8 +19,8 @@ mod inbox_media;
 mod jira;
 mod keep_awake;
 mod linear;
-mod local_host;
 mod link_preview;
+mod local_host;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -45,9 +45,9 @@ mod session_import;
 mod session_store;
 mod skills;
 pub mod ssh_askpass;
+mod terminal_profiles;
 #[cfg(target_os = "windows")]
 mod tray;
-mod terminal_profiles;
 mod turn_probe;
 mod turn_steps;
 mod window;
@@ -207,9 +207,20 @@ fn set_dock_badge(
     macos::set_window_badge(&window, count);
 }
 
+// Async: building a webview from a sync command deadlocks the Windows event loop (wry#583).
 #[tauri::command]
-fn open_new_window(app: tauri::AppHandle) -> Result<(), String> {
-    window::open_new_window(&app)
+async fn open_new_window(
+    app: tauri::AppHandle,
+    transfer: Option<String>,
+    x: Option<f64>,
+    y: Option<f64>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || match transfer {
+        Some(payload) => window::open_transfer_window(&app, payload, x.zip(y)),
+        None => window::open_new_window(&app),
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn should_request_quit(code: Option<i32>) -> bool {
@@ -488,6 +499,7 @@ pub fn run() {
             harness::harness_write,
             harness::harness_kill,
             harness::harness_kill_all,
+            harness::harness_set_owner,
             harness::harness_http,
             harness::harness_sse_open,
             harness::harness_sse_close,
@@ -597,8 +609,10 @@ pub fn run() {
             quick_composer::git_popup::quick_git_complete,
             #[cfg(target_os = "macos")]
             quick_composer::git_popup::quick_composer_dismiss,
-            window_transfer::stage_window_transfer,
             window_transfer::take_window_transfer,
+            window_transfer::window_transfer_ready,
+            window_transfer::reject_window_transfer,
+            window_transfer::move_window_tabs,
             chat_background::save_chat_background,
             chat_background::remove_chat_background,
             chat_background::save_project_chat_background,

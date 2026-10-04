@@ -3,8 +3,8 @@
 use crate::remote_ssh::{self, Job, JobView, SshTarget, Tunnel, Tunnels};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -101,7 +101,44 @@ fn endpoint(value: &str) -> Result<String, String> {
     Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
+struct CachedMachines {
+    path: PathBuf,
+    modified: std::time::SystemTime,
+    length: u64,
+    machines: Vec<StoredMachine>,
+}
+
+static MACHINE_CACHE: Mutex<Option<CachedMachines>> = Mutex::new(None);
+
 fn read(path: &Path) -> Result<Vec<StoredMachine>, String> {
+    let mut cache = MACHINE_CACHE
+        .lock()
+        .map_err(|_| "Connection cache is locked")?;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            *cache = None;
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let modified = metadata.modified().ok();
+    if let Some(hit) = cache.as_ref() {
+        if hit.path == path && Some(hit.modified) == modified && hit.length == metadata.len() {
+            return Ok(hit.machines.clone());
+        }
+    }
+    let machines = read_uncached(path)?;
+    *cache = modified.map(|modified| CachedMachines {
+        path: path.to_path_buf(),
+        modified,
+        length: metadata.len(),
+        machines: machines.clone(),
+    });
+    Ok(machines)
+}
+
+fn read_uncached(path: &Path) -> Result<Vec<StoredMachine>, String> {
     match std::fs::read(path) {
         Ok(bytes) => {
             serde_json::from_slice(&bytes).map_err(|_| "Remote connection store is invalid".into())
@@ -133,12 +170,63 @@ fn write(path: &Path, machines: &[StoredMachine]) -> Result<(), String> {
     if result.is_err() {
         let _ = std::fs::remove_file(temporary);
     }
+    // Writes include edits, disconnects and credential replacements. Do not
+    // rely on timestamp precision when this process changes the store.
+    if let Ok(mut cache) = MACHINE_CACHE.lock() {
+        *cache = None;
+    }
     result
 }
 
 /// Hosts split large session syncs into pieces below this cap
 /// (`host/sync-transfer.ts`), so it bounds memory without limiting transcripts.
 const MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+static RPC_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+
+fn rpc_agent() -> &'static ureq::Agent {
+    RPC_AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .redirects(0)
+            .max_idle_connections(32)
+            .max_idle_connections_per_host(4)
+            .timeout_connect(std::time::Duration::from_secs(5))
+            .timeout(DEFAULT_RPC_TIMEOUT)
+            .build()
+    })
+}
+
+const DEFAULT_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The single method -> client timeout map. A git network operation runs up to
+/// 120 s on the host (`NETWORK_MS` in `host/git-actions.ts`) and `git_sync`
+/// chains a 30 s pull and a push (150 s); the client must outlast them,
+/// otherwise a valid Push/Fetch/Pull looks failed while it still runs and the
+/// user resends it. Push/Fetch/Pull/Sync arrive as `workspace.run` commands.
+fn rpc_timeout(method: &str, params: &Value) -> std::time::Duration {
+    const GIT_ACTION: std::time::Duration = std::time::Duration::from_secs(135);
+    const GIT_NETWORK_RUN: std::time::Duration = std::time::Duration::from_secs(165);
+    match method {
+        "git.action" => GIT_ACTION,
+        "workspace.run"
+            if matches!(
+                params.get("command").and_then(Value::as_str),
+                Some(
+                    "git_push"
+                        | "git_pull"
+                        | "git_sync"
+                        | "git_fetch"
+                        | "git_merge"
+                        | "git_rebase"
+                        | "git_delete_remote_branch"
+                        | "git_pr_create"
+                )
+            ) =>
+        {
+            GIT_NETWORK_RUN
+        }
+        _ => DEFAULT_RPC_TIMEOUT,
+    }
+}
 
 fn rpc(
     endpoint: &str,
@@ -147,14 +235,11 @@ fn rpc(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    let agent = ureq::AgentBuilder::new()
-        .redirects(0)
-        .timeout_connect(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(30))
-        .build();
+    let agent = rpc_agent();
     let payload = json!({ "version": 1, "environmentId": environment_id, "method": method, "params": params });
     let response = agent
         .post(&format!("{endpoint}/rpc"))
+        .timeout(rpc_timeout(method, &params))
         .set("Authorization", &format!("Bearer {token}"))
         .set("Content-Type", "application/json")
         .send_string(&payload.to_string());
@@ -300,6 +385,7 @@ fn apply_edit(
     name: &str,
     target: String,
     port: Option<u16>,
+    alternate: Option<String>,
 ) -> Result<StoredMachine, String> {
     let machine = machines
         .iter_mut()
@@ -314,6 +400,8 @@ fn apply_edit(
         target,
         port,
         remote_port: old.remote_port,
+        alternate,
+        host_key_alias: None,
     };
     machine.endpoint = format!("ssh://{}", ssh.target);
     machine.ssh = Some(ssh);
@@ -337,8 +425,11 @@ pub fn remote_machine_update(
     name: String,
     target: String,
     port: Option<u16>,
+    alternate: Option<String>,
 ) -> Result<Machine, String> {
     let target = remote_ssh::validate_target(&target, port)?;
+    let alternate = remote_ssh::validate_alternate(alternate.as_deref(), port)?
+        .filter(|alternate| *alternate != target);
     // A running setup would write its older copy of the machine back over this.
     if state
         .jobs
@@ -359,7 +450,7 @@ pub fn remote_machine_update(
         .iter()
         .find(|m| m.id == machine_id)
         .and_then(|m| m.ssh.clone());
-    let machine = apply_edit(&mut machines, &machine_id, &name, target, port)?;
+    let machine = apply_edit(&mut machines, &machine_id, &name, target, port, alternate)?;
     write(&path, &machines)?;
     if before != machine.ssh {
         state.tunnels.remove(&machine_id);
@@ -509,7 +600,53 @@ fn supported_remote_method(method: &str) -> bool {
             | "sync.push"
             | "shell.profiles"
             | "shell.setProfile"
+            | "sessions.get"
+            | "automations.list"
+            | "automations.save"
+            | "automations.delete"
+            | "automations.runs"
+            | "automations.runNow"
+            | "tasks.list"
+            | "tasks.save"
+            | "tasks.move"
+            | "tasks.delete"
+            | "goals.list"
+            | "goals.create"
+            | "goals.approve"
+            | "goals.replan"
+            | "goals.cancel"
+            | "goals.delete"
     )
+}
+
+/// A machine set up again: it keeps its id, so its projects and sessions stay
+/// linked. Added anew from another address (its Tailscale one, say), it keeps
+/// the address it had and takes the new one as its other address, rather
+/// than losing the first; it keeps its name unless a new one was given.
+fn merge_known_machine(
+    machine: &mut StoredMachine,
+    old: &StoredMachine,
+    adding: bool,
+    named: bool,
+) {
+    machine.id = old.id.clone();
+    if !adding {
+        return;
+    }
+    let (Some(new), Some(previous)) = (machine.ssh.as_mut(), old.ssh.as_ref()) else {
+        return;
+    };
+    if new.target != previous.target {
+        let added = std::mem::replace(&mut new.target, previous.target.clone());
+        new.alternate = Some(added);
+        new.port = previous.port.or(new.port);
+        machine.endpoint = format!("ssh://{}", new.target);
+    } else {
+        new.alternate = previous.alternate.clone();
+    }
+    if !named {
+        machine.name = old.name.clone();
+    }
 }
 
 fn start_ssh_job(
@@ -519,6 +656,8 @@ fn start_ssh_job(
     existing: Option<StoredMachine>,
     upgrade: bool,
 ) -> Result<String, String> {
+    let adding = existing.is_none();
+    let named = !name.trim().is_empty();
     let job = Job::new();
     let id = job.view().id;
     {
@@ -663,7 +802,7 @@ fn start_ssh_job(
             Ok((machine, tunnel))
         })();
         job.complete(|| {
-            let (mut machine, tunnel) = prepared?;
+            let (mut machine, mut tunnel) = prepared?;
             let state = app.state::<RemoteConnections>();
             let _guard = state
                 .store
@@ -675,7 +814,10 @@ fn start_ssh_job(
                 .iter()
                 .find(|m| m.environment_id == machine.environment_id)
             {
-                machine.id = old.id.clone();
+                merge_known_machine(&mut machine, old, adding, named);
+                if let Some(ssh) = &machine.ssh {
+                    tunnel.retarget(ssh.clone());
+                }
             }
             machines.retain(|m| m.id != machine.id);
             machines.push(machine.clone());
@@ -703,6 +845,8 @@ pub fn remote_ssh_begin(
             target,
             port,
             remote_port: 3774,
+            alternate: None,
+            host_key_alias: None,
         },
         name.trim().chars().take(100).collect(),
         None,
@@ -770,6 +914,98 @@ pub fn remote_ssh_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_actions_outlast_the_hosts_network_limit_and_others_keep_the_default() {
+        use std::time::Duration;
+        // Host NETWORK_MS is 120 s; git_sync chains a 30 s pull and a push.
+        let none = json!({});
+        assert!(rpc_timeout("git.action", &none) >= Duration::from_secs(135));
+        for command in ["git_push", "git_pull", "git_sync", "git_fetch"] {
+            let run = json!({ "command": command });
+            assert!(rpc_timeout("workspace.run", &run) >= Duration::from_secs(165));
+        }
+        let read = json!({ "command": "read_text_file" });
+        assert_eq!(rpc_timeout("workspace.run", &read), DEFAULT_RPC_TIMEOUT);
+        assert_eq!(rpc_timeout("workspace.run", &none), DEFAULT_RPC_TIMEOUT);
+        assert_eq!(rpc_timeout("git.index", &none), DEFAULT_RPC_TIMEOUT);
+        assert_eq!(rpc_timeout("environment.describe", &none), DEFAULT_RPC_TIMEOUT);
+    }
+
+    #[test]
+    fn rpc_reuses_a_connection_without_reusing_request_credentials() {
+        use std::io::{BufRead, BufReader};
+        use std::{net::TcpListener, thread, time::Duration};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut authorizations = Vec::new();
+            for _ in 0..2 {
+                let mut size = 0;
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if lower.starts_with("content-length:") {
+                        size = line
+                            .split(':')
+                            .nth(1)
+                            .unwrap()
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap();
+                    }
+                    if lower.starts_with("authorization:") {
+                        authorizations.push(line.trim().to_string());
+                    }
+                }
+                let mut body = vec![0; size];
+                reader.read_exact(&mut body).unwrap();
+                let body = r#"{"result":{"ok":true}}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+                stream.flush().unwrap();
+            }
+            authorizations
+        });
+        assert_eq!(
+            rpc(
+                &url,
+                "first",
+                Some("env"),
+                "environment.describe",
+                json!({})
+            )
+            .unwrap(),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            rpc(
+                &url,
+                "second",
+                Some("env"),
+                "environment.describe",
+                json!({})
+            )
+            .unwrap(),
+            json!({"ok": true})
+        );
+        let headers = server.join().unwrap();
+        assert!(headers[0].ends_with("Bearer first"));
+        assert!(headers[1].ends_with("Bearer second"));
+    }
     #[test]
     fn a_slow_host_does_not_look_like_a_dead_tunnel() {
         use std::{net::TcpListener, thread, time::Duration};
@@ -844,6 +1080,8 @@ mod tests {
                 target: target.into(),
                 port: None,
                 remote_port: 3999,
+                alternate: None,
+                host_key_alias: None,
             }),
         }
     }
@@ -857,6 +1095,7 @@ mod tests {
             " Mac ",
             "me@new.local".into(),
             Some(2222),
+            Some("me@100.64.0.5".into()),
         )
         .unwrap();
         assert_eq!(edited.id, "a");
@@ -869,19 +1108,70 @@ mod tests {
             (ssh.target.as_str(), ssh.port, ssh.remote_port),
             ("me@new.local", Some(2222), 3999)
         );
+        assert_eq!(ssh.alternate.as_deref(), Some("me@100.64.0.5"));
         // Only the edited machine changed, and a blank name keeps the old one.
         assert_eq!(machines[1].ssh.as_ref().unwrap().target, "me@other");
-        let again =
-            apply_edit(&mut machines, "a", "  ", "me@new.local".into(), Some(2222)).unwrap();
+        let again = apply_edit(
+            &mut machines,
+            "a",
+            "  ",
+            "me@new.local".into(),
+            Some(2222),
+            None,
+        )
+        .unwrap();
         assert_eq!(again.name, "Mac");
+    }
+
+    #[test]
+    fn adding_a_known_machine_from_another_address_keeps_both() {
+        let old = StoredMachine {
+            name: "llm".into(),
+            ..saved("a", "me@192.168.2.145")
+        };
+        let mut added = StoredMachine {
+            name: "Bahadir's MacBook Pro".into(),
+            token: "new-token".into(),
+            ..saved("fresh-id", "me@100.97.82.0")
+        };
+        merge_known_machine(&mut added, &old, true, false);
+        assert_eq!(added.id, "a");
+        assert_eq!(added.name, "llm");
+        assert_eq!(added.token, "new-token");
+        assert_eq!(added.endpoint, "ssh://me@192.168.2.145");
+        let ssh = added.ssh.unwrap();
+        assert_eq!(ssh.target, "me@192.168.2.145");
+        assert_eq!(ssh.alternate.as_deref(), Some("me@100.97.82.0"));
+    }
+
+    #[test]
+    fn adding_a_known_machine_again_keeps_its_other_address_and_a_new_name() {
+        let mut old = saved("a", "me@home");
+        old.ssh.as_mut().unwrap().alternate = Some("me@tailnet".into());
+        let mut added = StoredMachine {
+            name: "Studio".into(),
+            ..saved("fresh-id", "me@home")
+        };
+        merge_known_machine(&mut added, &old, true, true);
+        assert_eq!(added.name, "Studio");
+        assert_eq!(added.ssh.unwrap().alternate.as_deref(), Some("me@tailnet"));
+    }
+
+    #[test]
+    fn reconnecting_a_machine_keeps_only_its_identity() {
+        let old = saved("a", "me@home");
+        let mut again = saved("fresh-id", "me@moved");
+        merge_known_machine(&mut again, &old, false, false);
+        assert_eq!(again.id, "a");
+        assert_eq!(again.ssh.unwrap().target, "me@moved");
     }
 
     #[test]
     fn only_a_saved_ssh_machine_can_be_edited() {
         let mut machines = vec![saved("a", "me@home")];
         machines[0].ssh = None;
-        assert!(apply_edit(&mut machines, "a", "", "me@x".into(), None).is_err());
-        assert!(apply_edit(&mut machines, "missing", "", "me@x".into(), None).is_err());
+        assert!(apply_edit(&mut machines, "a", "", "me@x".into(), None, None).is_err());
+        assert!(apply_edit(&mut machines, "missing", "", "me@x".into(), None, None).is_err());
     }
 
     #[test]
@@ -890,7 +1180,7 @@ mod tests {
             std::env::temp_dir().join(format!("monocode-edit-{}.json", uuid::Uuid::new_v4()));
         let mut machines = vec![saved("a", "me@192.168.1.5")];
         write(&path, &machines).unwrap();
-        apply_edit(&mut machines, "a", "", "me@new.local".into(), None).unwrap();
+        apply_edit(&mut machines, "a", "", "me@new.local".into(), None, None).unwrap();
         write(&path, &machines).unwrap();
         let loaded = read(&path).unwrap();
         let _ = std::fs::remove_file(&path);

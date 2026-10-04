@@ -87,7 +87,7 @@ export function DocumentView({ path, cwd }: Props) {
 
   const remote = !!parseRemotePath(path);
   const detail = (
-    <p className="mt-1 truncate font-mono text-[11px] text-content/35">
+    <p className="ui-caption-text mt-1 break-all font-mono">
       {displayPath(path, cwd)}
     </p>
   );

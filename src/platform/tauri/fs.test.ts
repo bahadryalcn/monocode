@@ -8,6 +8,7 @@ import {
   gitStash,
   gitHeadMessage,
   isCheckoutBlockedByChanges,
+  listProjectFiles,
   listSkills,
   pickFolders,
   resolveProjectLocation,
@@ -174,5 +175,38 @@ describe("gitHeadMessage", () => {
     vi.mocked(invoke).mockResolvedValueOnce("Subject\n\nBody");
     await expect(gitHeadMessage("/repo")).resolves.toBe("Subject\n\nBody");
     expect(invoke).toHaveBeenCalledWith("git_head_message", { cwd: "/repo" });
+  });
+});
+
+describe("listProjectFiles", () => {
+  const entries = [
+    { name: "a.ts", relative: "src/a.ts" },
+    { name: "README.md", relative: "README.md" },
+  ];
+
+  it("rebuilds absolute paths from a Windows-style root", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ root: "C:/Users/me/proj", files: entries });
+    await expect(listProjectFiles("C:\\Users\\me\\proj")).resolves.toEqual([
+      { name: "a.ts", path: "C:/Users/me/proj/src/a.ts", relative: "src/a.ts" },
+      { name: "README.md", path: "C:/Users/me/proj/README.md", relative: "README.md" },
+    ]);
+  });
+
+  it("rebuilds absolute paths from POSIX roots, including a bare slash", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ root: "/home/me/proj", files: entries });
+    const posix = await listProjectFiles("/home/me/proj");
+    expect(posix[0]).toEqual({
+      name: "a.ts",
+      path: "/home/me/proj/src/a.ts",
+      relative: "src/a.ts",
+    });
+    vi.mocked(invoke).mockResolvedValueOnce({ root: "/", files: entries });
+    expect((await listProjectFiles("/"))[1]?.path).toBe("/README.md");
+  });
+
+  it("passes a remote host's full entries through untouched", async () => {
+    const full = [{ name: "a.ts", path: "remote://m/p/a.ts", relative: "a.ts" }];
+    vi.mocked(invoke).mockResolvedValueOnce(full);
+    await expect(listProjectFiles("/p")).resolves.toBe(full);
   });
 });

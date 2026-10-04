@@ -106,9 +106,15 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
   }, []);
 
   const refresh = useCallback(async () => {
-    await settlePendingSaves();
-    setNotes(await loadNotes(true));
-    setLoaded(true);
+    try {
+      await settlePendingSaves();
+      setNotes(await loadNotes(true));
+      setError(null);
+    } catch (err: unknown) {
+      setError(errorText(err));
+    } finally {
+      setLoaded(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -268,7 +274,7 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
               setWantFocus(true);
             }}
           />
-          {hasNotes ? null : (
+          {hasNotes || error || !loaded ? null : (
             <p className="px-2 py-1.5 text-[12px] text-content/50">
               No notes yet.
             </p>
@@ -277,7 +283,14 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
       ) : null}
       {error ? (
         <p role="alert" className="px-3 py-2 text-[12px] text-red-400/90">
-          {error}
+          {error}{" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => void refresh()}
+          >
+            Retry
+          </button>
         </p>
       ) : null}
       {selected ? (
@@ -289,7 +302,7 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
           onSaved={onSaved}
           onDelete={onDelete}
         />
-      ) : (
+      ) : error ? null : (
         <EmptyPanel
           loaded={loaded}
           autoFocus={wantFocus}
@@ -608,7 +621,8 @@ function PanelNoteEditor({
           label="Delete note"
           onClick={() => {
             skipSave.current = true;
-            if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+            if (saveTimer.current != null)
+              window.clearTimeout(saveTimer.current);
             void enqueueSave(note.id, async () => {
               await onDelete(note.id);
             });

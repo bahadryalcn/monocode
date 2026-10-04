@@ -11,6 +11,7 @@ import {
   newTaskDraft,
   taskTimeLabel,
   tasksInColumn,
+  todoUnsupportedMessage,
 } from "./taskClient";
 import {
   NO_VERDICT,
@@ -114,6 +115,30 @@ describe("task board", () => {
     ).toThrow(TASK_AGENT_ERROR);
   });
 
+  it("only offers to-do items on machines whose host advertises them", () => {
+    const machines = [mac, local];
+    expect(todoUnsupportedMessage(machines, [local], "G:/app")).toBeUndefined();
+    expect(todoUnsupportedMessage(machines, [], "G:/app")).toBe(
+      "Update MonoCode Host on this computer to add to-do items",
+    );
+    expect(
+      todoUnsupportedMessage(machines, [local], "remote://env-mac/Users/me/app"),
+    ).toBe("Update MonoCode Host on MacBook to add to-do items");
+    // No machine at all has its own message.
+    expect(todoUnsupportedMessage([], [], "G:/app")).toBeUndefined();
+  });
+
+  it("lists to-do items first, oldest first, and times them from creation", () => {
+    const board = [
+      { ...stored, id: "b", status: "todo" as const, createdAt: 2 },
+      { ...stored, id: "a", status: "todo" as const, createdAt: 1 },
+    ].map((task) => boardTaskFromHost(mac, "remote://env-mac/app", task));
+    expect(tasksInColumn(board, "todo").map((task) => task.id)).toEqual(["a", "b"]);
+    expect(
+      taskTimeLabel({ status: "todo", createdAt: 0, updatedAt: 0 }, 5 * 60_000),
+    ).toBe("Added 5m ago");
+  });
+
   it("orders waiting columns oldest first and finished ones newest first", () => {
     const board = [
       { ...stored, id: "b", status: "queued" as const, createdAt: 2 },
@@ -182,14 +207,24 @@ describe("host task rules", () => {
       ),
     );
     expect(allowed).toEqual([
+      "todo>queued",
+      "todo>done",
+      "queued>todo",
       "running>blocked",
       "verifying>blocked",
       "review>queued",
       "review>done",
+      "done>todo",
       "done>queued",
+      "blocked>todo",
       "blocked>queued",
     ]);
-    expect(TASK_STATUSES.filter(canEditTask)).toEqual(["queued", "blocked"]);
+    expect(TASK_STATUSES.filter(canEditTask)).toEqual([
+      "todo",
+      "queued",
+      "blocked",
+    ]);
+    expect(TASK_COLUMNS[0]).toBe("todo");
   });
 
   it("validates a task and reports what is wrong", () => {
@@ -227,8 +262,10 @@ describe("host task rules", () => {
     expect(() => parseHostTask({ ...input, title: " " })).toThrow(
       "Task title is required",
     );
-    expect(() => parseHostTask({ ...input, prompt: "" })).toThrow(
-      "Task prompt is required.",
+    // A to-do item may have no description; the host checks before starting.
+    expect(parseHostTask({ ...input, prompt: "" }).prompt).toBe("");
+    expect(() => parseHostTask({ ...input, prompt: 5 })).toThrow(
+      "Invalid task description.",
     );
     expect(() => parseHostTask({ ...input, projectId: "" })).toThrow(
       "Choose a project for this task.",
@@ -264,5 +301,27 @@ describe("host task rules", () => {
     expect(hasUnmergedBranch({ branch: "mc/abcd1234" })).toBe(true);
     expect(hasUnmergedBranch({ branch: "mc/abcd1234", merged: true })).toBe(false);
     expect(hasUnmergedBranch({})).toBe(false);
+  });
+});
+
+describe("missing machines notice", () => {
+  it("is empty when every machine answered", async () => {
+    const { missingMachinesNotice } = await import("./taskClient");
+    expect(missingMachinesNotice({ outdated: [], unreachable: [] })).toBeNull();
+  });
+
+  it("names offline machines and machines with an older host", async () => {
+    const { missingMachinesNotice } = await import("./taskClient");
+    expect(
+      missingMachinesNotice({ outdated: [], unreachable: ["MacBook"] }),
+    ).toBe("MacBook isn’t reachable right now, so its tasks aren’t shown.");
+    expect(
+      missingMachinesNotice({
+        outdated: ["this computer"],
+        unreachable: ["MacBook", "Mini"],
+      }),
+    ).toBe(
+      "MacBook, Mini aren’t reachable right now, so their tasks aren’t shown. Update MonoCode Host on this computer to see its tasks.",
+    );
   });
 });

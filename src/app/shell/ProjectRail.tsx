@@ -89,7 +89,10 @@ import {
   updateProjectGroup,
   type ProjectGroup,
 } from "../../features/projects/model/projectGroups";
-import type { LiveAgent } from "../../features/sessions/model/liveAgents";
+import {
+  shouldShowLiveAgents,
+  type LiveAgent,
+} from "../../features/sessions/model/liveAgents";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
@@ -135,6 +138,13 @@ import {
   useRailSections,
   type RailSectionDrag,
 } from "./useRailSections";
+
+/** The macOS window buttons take the top 78px, plus room for the panel toggle. */
+const PROJECT_RAIL_MAC_MIN = 112;
+
+// The rail goes icon-only below PROJECT_RAIL_COMPACT_WIDTH (140px). That is a
+// container query on `@container/rail`, so it follows a drag with no re-render.
+// Tailwind needs the classes written out: spell it `@max-[140px]/rail:`.
 
 type Props = {
   visible?: boolean;
@@ -219,7 +229,7 @@ export function ProjectRail({
   onDismissUpdate,
 }: Props) {
   const resize = useDragResize({
-    min: PROJECT_RAIL_WIDTH_MIN,
+    min: IS_MAC ? PROJECT_RAIL_MAC_MIN : PROJECT_RAIL_WIDTH_MIN,
     max: () =>
       Math.min(PROJECT_RAIL_WIDTH_MAX, Math.floor(window.innerWidth * 0.35)),
     defaultWidth: PROJECT_RAIL_WIDTH_DEFAULT,
@@ -481,6 +491,7 @@ export function ProjectRail({
     tasksActive;
   const sectionNodes: Record<RailSectionId, ReactNode> = {
     "last-sessions": recentSessions ? (
+      <div className="shrink-0 @max-[140px]/rail:hidden">
       <LastSessionsSection
         source={recentSessions}
         projectKeys={railProjectKeys}
@@ -497,6 +508,7 @@ export function ProjectRail({
         groupLogos={groupLogos}
         groupMascots={groupMascots}
       />
+      </div>
     ) : null,
     pinned:
       pinnedProjects.length > 0 ? (
@@ -614,21 +626,31 @@ export function ProjectRail({
       className={`sidebar-glass relative shrink-0 flex-col border-r border-stroke ${visible ? "flex" : "hidden"}`}
     >
       <div
-        className="flex h-10 shrink-0 select-none items-center pr-1.5"
+        className="@container/rail flex h-10 shrink-0 select-none items-center overflow-hidden pr-1.5"
         data-tauri-drag-region="deep"
       >
         {IS_MAC ? <div className="w-[78px] shrink-0" /> : null}
         <DevModeSlot />
-        <TabVisitNav
-          canGoBack={canGoBack}
-          canGoForward={canGoForward}
-          onGoBack={onGoBack}
-          onGoForward={onGoForward}
-          onTogglePanel={settingsOpen ? undefined : onTogglePanel}
-          panelActive
-        />
+        {/* Icon-only, just the panel toggle fits; in settings nothing does. */}
+        <div
+          className={`shrink-0 ${
+            settingsOpen
+              ? "@max-[140px]/rail:hidden"
+              : "@max-[140px]/rail:[&_button:not(:last-child)]:hidden"
+          }`}
+        >
+          <TabVisitNav
+            canGoBack={canGoBack}
+            canGoForward={canGoForward}
+            onGoBack={onGoBack}
+            onGoForward={onGoForward}
+            onTogglePanel={settingsOpen ? undefined : onTogglePanel}
+            panelActive
+          />
+        </div>
       </div>
 
+      <div className="@container/rail flex min-h-0 flex-1 flex-col">
       {settingsOpen ? (
         <SettingsNav
           section={settingsSection}
@@ -699,7 +721,18 @@ export function ProjectRail({
               <Fragment key={id}>{sectionNodes[id]}</Fragment>
             ))}
           </div>
-          <LiveAgentsPreview
+          <div className="shrink-0 @max-[140px]/rail:hidden">
+            <LiveAgentsPreview
+              agents={visibleLiveAgents}
+              activeSessionId={activeSessionId}
+              onSelect={onSelectAgent}
+              groupLabels={groupLabels}
+              groupColors={groupColors}
+              groupCustomColors={groupCustomColors}
+              groupMascots={groupMascots}
+            />
+          </div>
+          <CompactLiveAgents
             agents={visibleLiveAgents}
             activeSessionId={activeSessionId}
             onSelect={onSelectAgent}
@@ -708,13 +741,17 @@ export function ProjectRail({
             groupCustomColors={groupCustomColors}
             groupMascots={groupMascots}
           />
-          <SidebarUpdateFooter
-            update={updateNotice}
-            onOpenWhatsNew={onOpenWhatsNew}
-            onDismissUpdate={onDismissUpdate}
-          />
+          <div className="shrink-0 @max-[140px]/rail:hidden">
+            <SidebarUpdateFooter
+              update={updateNotice}
+              onOpenWhatsNew={onOpenWhatsNew}
+              onDismissUpdate={onDismissUpdate}
+            />
+          </div>
           <div className="flex shrink-0 flex-col gap-px p-2">
-            <GithubStarPrompt />
+            <div className="@max-[140px]/rail:hidden">
+              <GithubStarPrompt />
+            </div>
             <RailAction
               label="Settings"
               icon={Settings}
@@ -725,6 +762,7 @@ export function ProjectRail({
           </div>
         </>
       )}
+      </div>
       {visible ? projectMenu.element : null}
       {visible ? rail.element : null}
       {visible && inboxMenu ? (
@@ -814,7 +852,7 @@ function ProjectSection({
     >
       <ProjectSectionHeader label={label} onAdd={onAdd} drag={drag} />
       {items.length === 0 && emptyLabel && !drag.folded ? (
-        <p className="px-4 pb-1 text-[11px] leading-tight text-content/40">
+        <p className="px-4 pb-1 text-[11px] leading-tight text-content/40 @max-[140px]/rail:hidden">
           {emptyLabel}
         </p>
       ) : null}
@@ -854,7 +892,7 @@ function ProjectSection({
                       : `${project.name}, on a machine that is not connected`
                   }
                   onClick={() => void onOpenSynced(project.projectId, project.name)}
-                  className="flex h-8 min-w-0 cursor-default items-center gap-2 rounded-md px-2 text-left opacity-40 hover:bg-content/8 hover:opacity-70"
+                  className="flex h-8 min-w-0 cursor-default items-center gap-2 rounded-md px-2 text-left opacity-40 hover:bg-content/8 hover:opacity-70 @max-[140px]/rail:justify-center @max-[140px]/rail:px-0"
                 >
                   <LinkIcon className="size-4 shrink-0" strokeWidth={1.75} />
                   <span className={nameClassName}>{project.name}</span>
@@ -884,9 +922,9 @@ function ProjectSectionHeader({
       tabIndex={0}
       aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
       title="Drag to reorder"
-      className={`${RAIL_SECTION_HEADER} ${RAIL_DRAG_HANDLE} rounded-md outline-none focus-visible:bg-content/8`}
+      className={`${RAIL_SECTION_HEADER} ${RAIL_DRAG_HANDLE} rounded-md outline-none focus-visible:bg-content/8 @max-[140px]/rail:justify-center @max-[140px]/rail:px-0`}
     >
-      <span className="min-w-0 flex-1 truncate px-1 text-xs text-content/50">
+      <span className="min-w-0 flex-1 truncate px-1 text-xs text-content/50 @max-[140px]/rail:hidden">
         {label}
       </span>
       {onAddGroup ? (
@@ -905,7 +943,9 @@ function ProjectSectionHeader({
         </button>
       ) : null}
       {onAdd ? <AddProjectButton onOpenFolder={onAdd} /> : null}
-      <SectionMenuButton label={label} onOpen={drag.openMenu} />
+      <span className="contents @max-[140px]/rail:hidden">
+        <SectionMenuButton label={label} onOpen={drag.openMenu} />
+      </span>
     </div>
   );
 }
@@ -1007,7 +1047,7 @@ function ProjectGroupSection({
       aria-label={group.name}
     >
       <div
-        className={`project-reorder-item group relative flex h-8 items-stretch rounded-md px-2 opacity-65 ${RAIL_DRAG_HANDLE}`}
+        className={`project-reorder-item group relative flex h-8 items-stretch rounded-md px-2 opacity-65 @max-[140px]/rail:px-0 ${RAIL_DRAG_HANDLE}`}
         aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
         onPointerDown={(event) => {
           if (event.button !== 0) return;
@@ -1042,7 +1082,7 @@ function ProjectGroupSection({
           aria-label={locked ? `${group.name}, locked` : `${group.name}, ${countLabel}`}
           title={locked ? `${group.name} · Locked` : `${group.name} · ${countLabel}`}
           onClick={onToggleCollapsed}
-          className="flex min-w-0 flex-1 cursor-grab items-center gap-2 text-left"
+          className="flex min-w-0 flex-1 cursor-grab items-center gap-2 text-left @max-[140px]/rail:justify-center"
         >
           <div className="grid size-4 shrink-0 place-items-center">
             {collapsed ? (
@@ -1089,7 +1129,7 @@ The group was left as it is.`
               }
               className={`grid size-4 shrink-0 place-items-center ${
                 linkStatus ? "text-amber-400" : "text-content/45"
-              }`}
+              } @max-[140px]/rail:hidden`}
             >
               {linkStatus ? (
                 <AlertCircle className="size-3" strokeWidth={1.75} aria-hidden="true" />
@@ -1099,7 +1139,7 @@ The group was left as it is.`
             </span>
           ) : null}
         </button>
-        <div className="my-auto flex shrink-0 items-center transition-[margin] duration-150 group-hover:mr-6 group-has-[:focus-visible]:mr-6 motion-reduce:transition-none">
+        <div className="my-auto flex shrink-0 items-center transition-[margin] duration-150 group-hover:mr-6 group-has-[:focus-visible]:mr-6 motion-reduce:transition-none @max-[140px]/rail:hidden">
         {localPaths.length > 0 ? (
           <button
             ref={gitAnchor}
@@ -1170,7 +1210,7 @@ The group was left as it is.`
             event.stopPropagation();
             openMenu(event.currentTarget);
           }}
-          className="absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[:focus-visible]:grid"
+          className="absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[:focus-visible]:grid @max-[140px]/rail:hidden!"
         >
           <MoreHorizontal className="size-4" strokeWidth={1.75} />
         </button>
@@ -1208,7 +1248,7 @@ The group was left as it is.`
 }
 
 const nameClassName =
-  "min-w-0 flex-1 truncate text-sm font-medium leading-tight";
+  "min-w-0 flex-1 truncate text-sm font-medium leading-tight @max-[140px]/rail:hidden";
 
 function ProjectCard({
   item,
@@ -1287,7 +1327,7 @@ function ProjectCard({
     busy,
   );
   const labelClassName = machine
-    ? "min-w-0 max-w-[75%] shrink-0 truncate text-sm font-medium leading-tight"
+    ? "min-w-0 max-w-[75%] shrink-0 truncate text-sm font-medium leading-tight @max-[140px]/rail:hidden"
     : nameClassName;
 
   return (
@@ -1295,7 +1335,7 @@ function ProjectCard({
       ref={(el) => sortable.setItemRef(item.path, el)}
       data-selected={selected || undefined}
       data-project-path={item.path}
-      className={`reorder-item project-reorder-item group relative flex touch-none items-stretch rounded-md px-2 h-8 ${
+      className={`reorder-item project-reorder-item group relative flex touch-none items-stretch rounded-md px-2 h-8 @max-[140px]/rail:px-0 ${
         selected
           ? "bg-selection-strong text-content"
           : "opacity-65"
@@ -1331,9 +1371,9 @@ function ProjectCard({
         title={muteStatus ? `${cardTitle}\n${muteStatus}` : cardTitle}
         aria-label={muteStatus ? `${cardAriaLabel}, ${muteStatus}` : cardAriaLabel}
         aria-current={selected ? "true" : undefined}
-        className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[:focus-visible]:pr-6"
+        className="flex min-w-0 flex-1 cursor-default items-center gap-2 text-left transition-[padding] duration-150 motion-reduce:transition-none group-hover:pr-6 group-has-[:focus-visible]:pr-6 @max-[140px]/rail:justify-center @max-[140px]/rail:pr-0!"
       >
-        <div className="project-card-logo grid size-4 shrink-0 place-items-center transition-opacity group-hover:opacity-0">
+        <div className="project-card-logo grid size-4 shrink-0 place-items-center transition-opacity group-hover:opacity-0 @max-[140px]/rail:opacity-100!">
           {logoPath && !busy ? (
             <ProjectLogoIcon
               path={logoPath}
@@ -1358,12 +1398,12 @@ function ProjectCard({
           <span className={labelClassName}>{name}</span>
         )}
         {machine ? (
-          <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-content/45">
+          <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-content/45 @max-[140px]/rail:hidden">
             {machine.name}
           </span>
         ) : null}
         {hasChanges ? (
-          <span className="project-card-stats shrink-0 group-hover:hidden group-has-[:focus-visible]:hidden">
+          <span className="project-card-stats shrink-0 group-hover:hidden group-has-[:focus-visible]:hidden @max-[140px]/rail:hidden!">
             <ProjectDiffStat additions={additions} deletions={deletions} />
           </span>
         ) : null}
@@ -1383,7 +1423,7 @@ Click to reconnect` : undefined}
                   }
                 : undefined
             }
-            className={`relative grid size-4 shrink-0 place-items-center text-content/45 ${
+            className={`relative grid size-4 shrink-0 place-items-center text-content/45 @max-[140px]/rail:hidden ${
               reconnectable ? "cursor-pointer hover:text-content" : ""
             }`}
           >
@@ -1405,12 +1445,18 @@ Click to reconnect` : undefined}
             role="img"
             aria-label={muteStatus}
             title={muteStatus}
-            className="grid size-4 shrink-0 place-items-center text-amber-400"
+            className="grid size-4 shrink-0 place-items-center text-amber-400 @max-[140px]/rail:hidden"
           >
             <BellOff className="size-3.5" strokeWidth={1.75} aria-hidden="true" />
           </span>
         ) : null}
       </button>
+      {hasChanges ? (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute right-1.5 top-1.5 hidden size-1.5 rounded-full bg-emerald-400 @max-[140px]/rail:block"
+        />
+      ) : null}
       <button
         type="button"
         data-no-drag
@@ -1427,7 +1473,7 @@ Click to reconnect` : undefined}
             event.detail === 0 ? rect.bottom : event.clientY,
           );
         }}
-        className="absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[:focus-visible]:grid"
+        className="absolute right-1 top-1/2 hidden size-6 -translate-y-1/2 place-items-center rounded-md text-content/55 hover:bg-content/8 hover:text-content group-hover:grid group-has-[:focus-visible]:grid @max-[140px]/rail:hidden!"
       >
         <MoreHorizontal className="size-4" strokeWidth={1.75} />
       </button>
@@ -1441,7 +1487,7 @@ Click to reconnect` : undefined}
           event.stopPropagation();
           onTogglePin(item.path);
         }}
-        className="absolute left-2 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-sm text-content/55 opacity-0 pointer-events-none transition-opacity hover:text-content group-hover:pointer-events-auto group-hover:opacity-100"
+        className="absolute left-2 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-sm text-content/55 opacity-0 pointer-events-none transition-opacity hover:text-content group-hover:pointer-events-auto group-hover:opacity-100 @max-[140px]/rail:hidden!"
       >
         {pinned ? (
           <PinOff className="size-3.5" strokeWidth={1.75} />
@@ -1450,6 +1496,94 @@ Click to reconnect` : undefined}
         )}
       </button>
     </div>
+  );
+}
+
+/** The live-agent list as one mascot per agent, for the icon-only rail. */
+function CompactLiveAgents({
+  agents,
+  activeSessionId,
+  onSelect,
+  groupLabels,
+  groupColors,
+  groupCustomColors,
+  groupMascots,
+}: {
+  agents: LiveAgent[];
+  activeSessionId?: string;
+  onSelect?: (sessionId: string) => void;
+  groupLabels: Record<string, string>;
+  groupColors: Record<string, number>;
+  groupCustomColors: Record<string, string>;
+  groupMascots: Record<string, string>;
+}) {
+  if (!shouldShowLiveAgents(agents, activeSessionId)) return null;
+  const working = agents.filter((agent) => !agent.done).length;
+  const heading = working > 0 ? "Working" : "Finished";
+  return (
+    <section
+      aria-label={`${heading} agents`}
+      className="hidden shrink-0 flex-col items-center gap-px px-2 pb-1 @max-[140px]/rail:flex"
+    >
+      <div
+        role="img"
+        aria-label={`${heading}, ${agents.length}`}
+        title={`${heading} · ${agents.length}`}
+        className={`my-1 size-1.5 shrink-0 rounded-full ${
+          working > 0
+            ? "bg-accent shadow-[0_0_8px_var(--color-accent)] motion-safe:animate-pulse"
+            : "bg-content/35"
+        }`}
+      />
+      <div className="flex max-h-[30vh] w-full flex-col gap-px overflow-y-auto overscroll-none">
+        {agents.map((agent) => {
+          const seed = projectName(agent.cwd);
+          const key = projectKey(agent.cwd);
+          const project = resolveTabGroupLabel(key, groupLabels, seed);
+          const color = resolveTabGroupColor(
+            key,
+            groupColors,
+            groupCustomColors,
+            seed,
+          );
+          const activity = agent.needsApproval
+            ? "Need approval"
+            : agent.done
+              ? "Done"
+              : agent.activity;
+          const parts = [agent.title, project, activity].filter(Boolean);
+          return (
+            <button
+              key={agent.id}
+              type="button"
+              title={parts.join("\n")}
+              aria-label={parts.join(", ")}
+              aria-current={agent.id === activeSessionId ? "true" : undefined}
+              onClick={() => onSelect?.(agent.id)}
+              className={`relative grid h-8 w-full shrink-0 place-items-center rounded-md ${
+                agent.id === activeSessionId
+                  ? "bg-selection"
+                  : "hover:bg-content/8"
+              }`}
+            >
+              <ProjectMascot
+                project={seed}
+                color={color}
+                name={resolveTabGroupMascot(key, groupMascots)}
+                className="size-3"
+                active={!agent.needsApproval && !agent.done}
+              />
+              {agent.needsApproval ? (
+                <span
+                  aria-hidden
+                  className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-amber-400"
+                />
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

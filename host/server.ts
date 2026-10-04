@@ -5,6 +5,7 @@ import {
 } from "node:http";
 import { hostname, homedir } from "node:os";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import {
@@ -19,6 +20,7 @@ import { HostAutomations } from "./automations";
 import { HostTasks } from "./tasks";
 import { HostGoals } from "./goals";
 import { DesktopSessions } from "./desktopSessions";
+import { branchCache } from "./git-actions";
 import { withOverlay } from "./desktopLive";
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
@@ -55,11 +57,17 @@ import { discoverClaudeModels } from "../src/integrations/harness/providers/clau
 import { discoverCursorModels } from "../src/integrations/harness/providers/cursor/cursorCatalog";
 import { discoverGrokModels } from "../src/integrations/harness/providers/grok/grokCatalog";
 import { discoverOpenCodeModels } from "../src/integrations/harness/providers/opencode/opencodeCatalog";
-import { discoverPiModels, discoverOmpModels } from "../src/integrations/harness/providers/pi/piCatalog";
+import {
+  discoverPiModels,
+  discoverOmpModels,
+} from "../src/integrations/harness/providers/pi/piCatalog";
 import { discoverFxModels } from "../src/integrations/harness/providers/fx/fxCatalog";
 import { discoverHermesModels } from "../src/integrations/harness/providers/hermes/hermesCatalog";
 import { discoverAntigravityModels } from "../src/integrations/harness/providers/antigravity/antigravityCatalog";
-import { setHarnessModels, type AgentModel } from "../src/features/sessions/model/models";
+import {
+  setHarnessModels,
+  type AgentModel,
+} from "../src/features/sessions/model/models";
 import { listShellProfiles, setChosenProfile } from "./shellProfiles";
 import {
   resolveAntigravityBinary,
@@ -92,7 +100,10 @@ const resolveBinary: Record<RemoteProvider, () => Promise<{ path: string }>> = {
 // A 1 MiB text file can expand to 6 MiB when JSON escapes control characters.
 // Existing files.write sends both the original and replacement contents.
 const MAX_BODY = 16 * 1024 * 1024;
-const discoverModels: Record<RemoteProvider, (cwd: string) => Promise<AgentModel[]>> = {
+const discoverModels: Record<
+  RemoteProvider,
+  (cwd: string) => Promise<AgentModel[]>
+> = {
   codex: discoverCodexModels,
   claude: discoverClaudeModels,
   cursor: discoverCursorModels,
@@ -166,7 +177,8 @@ export function createHostServer(
       ? engine.store.projects().find((p) => desktop.samePath(p.cwd, cwd))
       : undefined;
     const snapshot = project && desktop.snapshot(id, project.id);
-    return snapshot && providers.includes(snapshot.session.harness as RemoteProvider)
+    return snapshot &&
+      providers.includes(snapshot.session.harness as RemoteProvider)
       ? snapshot
       : undefined;
   };
@@ -210,7 +222,8 @@ export function createHostServer(
     if (hosted && !hosted.desktop) return undefined;
     const stamp = desktop.stamp(id);
     if (!stamp) return undefined;
-    if (hosted && (!stamp.running || hosted.status === "running")) return undefined;
+    if (hosted && (!stamp.running || hosted.status === "running"))
+      return undefined;
     const overlay = desktop.live.overlay(id);
     return {
       projectId: hosted?.projectId,
@@ -220,8 +233,13 @@ export function createHostServer(
   };
   /** The desktop copy with its live prompts; a running one carries a run id
    * so watchers can stop it and answer its prompts. */
-  const desktopView = (id: string, projectId?: string): HostSession | undefined => {
-    const snapshot = projectId ? desktop.snapshot(id, projectId) : desktopSnapshot(id);
+  const desktopView = (
+    id: string,
+    projectId?: string,
+  ): HostSession | undefined => {
+    const snapshot = projectId
+      ? desktop.snapshot(id, projectId)
+      : desktopSnapshot(id);
     if (!snapshot) return undefined;
     const overlay = desktop.live.overlay(id);
     return {
@@ -235,7 +253,12 @@ export function createHostServer(
    * fetches only what changed, as for the host's own sessions. */
   const views = new Map<
     string,
-    { revision: number; first: number; revs: Map<string, number>; json: Map<string, string> }
+    {
+      revision: number;
+      first: number;
+      revs: Map<string, number>;
+      json: Map<string, string>;
+    }
   >();
   const desktopSync = (view: HostSession, client?: number): SessionSync => {
     const id = view.session.id;
@@ -253,12 +276,19 @@ export function createHostServer(
             : view.revision,
         );
       }
-      entry = { revision: view.revision, first: entry?.first ?? view.revision, revs, json };
+      entry = {
+        revision: view.revision,
+        first: entry?.first ?? view.revision,
+        revs,
+        json,
+      };
       views.delete(id);
       views.set(id, entry);
-      if (views.size > MAX_DESKTOP_VIEWS) views.delete(views.keys().next().value!);
+      if (views.size > MAX_DESKTOP_VIEWS)
+        views.delete(views.keys().next().value!);
     }
-    if (client === view.revision) return { kind: "unchanged", revision: client };
+    if (client === view.revision)
+      return { kind: "unchanged", revision: client };
     if (client === undefined || client < entry.first || client > view.revision)
       return { kind: "snapshot", value: view };
     const {
@@ -271,7 +301,9 @@ export function createHostServer(
       base: client,
       value: { ...rest, session },
       blockIds: blocks.map((block) => block.id),
-      blocks: blocks.filter((block) => (revs.get(block.id) ?? view.revision) > client),
+      blocks: blocks.filter(
+        (block) => (revs.get(block.id) ?? view.revision) > client,
+      ),
     };
   };
   /** Like `refresh`, for reads: a running desktop turn just isn't pulled yet. */
@@ -290,9 +322,8 @@ export function createHostServer(
     { binaries: string; probed: number; catalog: Promise<HostModelCatalog> }
   >();
   const transfers = new SyncTransfers();
-  const workspace = new WorkspaceCommands(
-    engine.store,
-    (projectId, action) => engine.withIdleProject(projectId, action),
+  const workspace = new WorkspaceCommands(engine.store, (projectId, action) =>
+    engine.withIdleProject(projectId, action),
   );
   const models = async (projectId?: unknown) => {
     const cwd =
@@ -340,7 +371,7 @@ export function createHostServer(
     }
     return catalog;
   };
-  return createServer(
+  const server = createServer(
     { requestTimeout: 20_000, headersTimeout: 10_000, maxHeaderSize: 8192 },
     async (request, response) => {
       if (request.url === "/lifecycle" && lifecycle) {
@@ -380,9 +411,11 @@ export function createHostServer(
         // Reading a request body yields: a device may have been revoked since
         // the headers arrived. Reject it before dispatching any operation.
         if (!engine.store.authenticated(token)) {
-          response.writeHead(401).end(JSON.stringify({
-            error: "Device credential is invalid or revoked",
-          }));
+          response.writeHead(401).end(
+            JSON.stringify({
+              error: "Device credential is invalid or revoked",
+            }),
+          );
           return;
         }
         if (input.version !== HOST_PROTOCOL_VERSION)
@@ -412,7 +445,7 @@ export function createHostServer(
               providers: providers.filter((provider) =>
                 Array.isArray(params.supportedProviders)
                   ? params.supportedProviders.includes(provider)
-                  : provider === "codex" || provider === "claude"
+                  : provider === "codex" || provider === "claude",
               ),
               capabilities: [
                 "sessions",
@@ -450,6 +483,7 @@ export function createHostServer(
                 "sync",
                 "automations",
                 "tasks",
+                "tasks.todo",
                 "goals",
               ],
             };
@@ -481,7 +515,9 @@ export function createHostServer(
             const projectId = String(params.projectId ?? "");
             const project = engine.store.project(projectId);
             const local = desktop.list(project.cwd, projectId, providers);
-            const stamps = new Map(local.map((session) => [session.id, session]));
+            const stamps = new Map(
+              local.map((session) => [session.id, session]),
+            );
             for (const adopted of engine.store.adopted()) {
               const stamp = stamps.get(adopted.id);
               if (adopted.projectId === projectId && stamp)
@@ -491,31 +527,51 @@ export function createHostServer(
                 });
             }
             // An adopted session the desktop app is running a turn in.
-            const own = engine.store.summaries(projectId).map((session) =>
-              session.status !== "running" &&
-              stamps.get(session.id)?.status === "running"
-                ? { ...session, status: "running" as const }
-                : session,
-            );
+            const own = engine.store
+              .summaries(projectId)
+              .map((session) =>
+                session.status !== "running" &&
+                stamps.get(session.id)?.status === "running"
+                  ? { ...session, status: "running" as const }
+                  : session,
+              );
             const known = new Set(own.map((session) => session.id));
             const summaries = [
               ...own,
               ...local.filter((session) => !known.has(session.id)),
             ].sort((a, b) => b.updatedAt - a.updatedAt);
-            const paths = [...new Set(summaries.map((session) => session.cwd ?? project.cwd))];
-            const branches = new Map(await Promise.all(paths.map(async (cwd) => {
-              const branch = await exec("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
-                cwd, timeout: 2_000,
-              }).then(({ stdout }) => stdout.trim()).catch(() => "");
-              return [cwd, branch] as const;
-            })));
-            result = summaries.map((session) => ({
+            const paths = [
+              ...new Set(
+                summaries.map((session) => session.cwd ?? project.cwd),
+              ),
+            ];
+            const branches = new Map(
+              await Promise.all(
+                paths.map(
+                  async (cwd) => [cwd, await branchCache.get(cwd)] as const,
+                ),
+              ),
+            );
+            const list = summaries.map((session) => ({
               ...session,
               repo: project.name,
               branch: branches.get(session.cwd ?? project.cwd) || undefined,
-              worktreeCwd: session.cwd && session.cwd !== project.cwd
-                ? session.cwd : undefined,
+              worktreeCwd:
+                session.cwd && session.cwd !== project.cwd
+                  ? session.cwd
+                  : undefined,
             }));
+            // A client that sends `known` can take "unchanged" instead of the
+            // array. Clients that omit it keep getting the plain array.
+            if (typeof params.known === "string") {
+              const etag = createHash("sha256")
+                .update(JSON.stringify(list))
+                .digest("base64url");
+              result =
+                params.known === etag
+                  ? { unchanged: true, etag }
+                  : { etag, sessions: list };
+            } else result = list;
             break;
           }
           case "sessions.update": {
@@ -524,35 +580,50 @@ export function createHostServer(
             const current = engine.store.session(sessionId);
             if (current.projectId !== params.projectId)
               throw new Error("Session does not belong to this project");
-            const patch: { title?: string; archived?: boolean; pinned?: boolean; linkedWorkItem?: LinkedWorkItem | null } = {};
+            const patch: {
+              title?: string;
+              archived?: boolean;
+              pinned?: boolean;
+              linkedWorkItem?: LinkedWorkItem | null;
+            } = {};
             if (params.title !== undefined) {
-              if (typeof params.title !== "string") throw new Error("Invalid session title");
+              if (typeof params.title !== "string")
+                throw new Error("Invalid session title");
               patch.title = params.title;
             }
             if (params.archived !== undefined) {
-              if (typeof params.archived !== "boolean") throw new Error("Invalid archive value");
+              if (typeof params.archived !== "boolean")
+                throw new Error("Invalid archive value");
               patch.archived = params.archived;
             }
             if (params.pinned !== undefined) {
-              if (typeof params.pinned !== "boolean") throw new Error("Invalid pin value");
+              if (typeof params.pinned !== "boolean")
+                throw new Error("Invalid pin value");
               patch.pinned = params.pinned;
             }
             if (params.linkedWorkItem !== undefined) {
               const item = params.linkedWorkItem;
-              const parsed = item && typeof item === "object" && !Array.isArray(item)
-                ? parseGithubWorkItemUrl(String((item as LinkedWorkItem).url ?? ""))
-                : null;
-              if (item !== null && (
-                typeof item !== "object" || Array.isArray(item) ||
-                !parsed ||
-                parsed.kind !== (item as LinkedWorkItem).kind ||
-                parsed.repo !== (item as LinkedWorkItem).repo ||
-                parsed.number !== (item as LinkedWorkItem).number ||
-                parsed.url !== (item as LinkedWorkItem).url
-              )) throw new Error("Invalid linked work item");
+              const parsed =
+                item && typeof item === "object" && !Array.isArray(item)
+                  ? parseGithubWorkItemUrl(
+                      String((item as LinkedWorkItem).url ?? ""),
+                    )
+                  : null;
+              if (
+                item !== null &&
+                (typeof item !== "object" ||
+                  Array.isArray(item) ||
+                  !parsed ||
+                  parsed.kind !== (item as LinkedWorkItem).kind ||
+                  parsed.repo !== (item as LinkedWorkItem).repo ||
+                  parsed.number !== (item as LinkedWorkItem).number ||
+                  parsed.url !== (item as LinkedWorkItem).url)
+              )
+                throw new Error("Invalid linked work item");
               patch.linkedWorkItem = item as LinkedWorkItem | null;
             }
-            if (Object.keys(patch).length === 0) throw new Error("No session changes supplied");
+            if (Object.keys(patch).length === 0)
+              throw new Error("No session changes supplied");
             result = engine.updateSession(sessionId, patch);
             break;
           }
@@ -584,7 +655,10 @@ export function createHostServer(
               }
               const view = desktopView(sessionId, watch.projectId);
               if (view) {
-                result = transfers.respond(sessionId, desktopSync(view, revision));
+                result = transfers.respond(
+                  sessionId,
+                  desktopSync(view, revision),
+                );
                 break;
               }
             }
@@ -612,7 +686,8 @@ export function createHostServer(
             const id = String(params.sessionId ?? "");
             const watch = desktopWatch(id);
             const value =
-              (watch && desktopView(id, watch.projectId)) ?? engine.store.session(id);
+              (watch && desktopView(id, watch.projectId)) ??
+              engine.store.session(id);
             result = value.revision === params.revision ? null : value;
             break;
           }
@@ -647,7 +722,11 @@ export function createHostServer(
                   command.type === "answer"
                 )
                   desktop.live.enqueue(command);
-                result = { commandId: command.commandId, sessionId, revision: watch.revision };
+                result = {
+                  commandId: command.commandId,
+                  sessionId,
+                  revision: watch.revision,
+                };
                 break;
               }
             }
@@ -656,13 +735,29 @@ export function createHostServer(
             break;
           }
           case "sync.pull": {
-            const sinceRev = Number.isSafeInteger(params.sinceRev) ? Number(params.sinceRev) : 0;
-            result = syncPull(engine.store.db, sinceRev);
+            const sinceRev = Number.isSafeInteger(params.sinceRev)
+              ? Number(params.sinceRev)
+              : 0;
+            result = syncPull(
+              engine.store.db,
+              sinceRev,
+              params.paginated === true
+                ? {
+                    untilRev:
+                      Number.isSafeInteger(params.untilRev) &&
+                      Number(params.untilRev) >= sinceRev
+                        ? Number(params.untilRev)
+                        : undefined,
+                  }
+                : undefined,
+            );
             break;
           }
           case "sync.push": {
             if (!Array.isArray(params.ops)) throw new Error("Invalid sync ops");
-            result = engine.store.transaction(() => syncPush(engine.store.db, params.ops as SyncOp[]));
+            result = engine.store.transaction(() =>
+              syncPush(engine.store.db, params.ops as SyncOp[]),
+            );
             break;
           }
           case "automations.list":
@@ -936,4 +1031,7 @@ export function createHostServer(
       }
     },
   );
+  // Cached read-only desktop connections would keep the files locked.
+  server.on("close", () => desktop.close());
+  return server;
 }

@@ -205,6 +205,13 @@ export function abortQuit(): void {
   quitting = false;
 }
 
+/** A successfully drained pop-out must not save a stale workspace on unload. */
+export function relinquishTransferredWindow(): void {
+  quitting = true;
+  liveWorkspace = null;
+  bootingResumed = null;
+}
+
 /** Confirm and stop this window's work without terminating other windows. */
 export async function closeBusyWindow(): Promise<void> {
   if (!liveWorkspace) return;
@@ -230,22 +237,19 @@ export function loadResumedWorkspace(): Promise<ResumedWorkspace | null> {
 export function loadBootWorkspace(): Promise<BootWorkspace> {
   if (!bootPromise) {
     bootPromise = (async () => {
-      const hintedCwd = lastProjectPath();
-      const historyHint = listProjectHistory(hintedCwd);
       const windowTransfer = await loadWindowTransfer();
       if (windowTransfer) {
-        const listed = await historyForCwd(
-          windowTransfer.projectCwd,
-          hintedCwd,
-          historyHint,
-        );
+        // The transfer already contains everything needed to paint its tab.
+        // Workspace.refreshHistory loads the sidebar after mounting.
         return {
           windowTransfer,
           resumed: null,
-          history: listed?.rows ?? [],
-          historyCwd: listed?.cwd ?? null,
+          history: [],
+          historyCwd: null,
         };
       }
+      const hintedCwd = lastProjectPath();
+      const historyHint = listProjectHistory(hintedCwd);
       const [resumed, hinted] = await Promise.all([
         loadResumedWorkspace(),
         historyHint,

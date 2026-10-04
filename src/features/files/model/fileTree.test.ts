@@ -7,7 +7,9 @@ import {
   peekDir,
   refreshCachedDirs,
   refreshDir,
+  subscribeDirListings,
   subscribeDirsChanged,
+  windowEntries,
 } from "./fileTree";
 
 const root = "/tmp/empty-project";
@@ -32,6 +34,57 @@ vi.mock("../../../platform/tauri/fs", async (importOriginal) => {
 });
 
 describe("fileTree cache", () => {
+  it("refreshes only the requested root and bounds concurrent folder reads", async () => {
+    const current = `${root}/current`;
+    const old = `${root}/old`;
+    listDir.mockResolvedValue([]);
+    await Promise.all(
+      [old, ...Array.from({ length: 10 }, (_, i) => `${current}/${i}`)].map(
+        listCachedDir,
+      ),
+    );
+    listDir.mockClear();
+    let active = 0;
+    let peak = 0;
+    listDir.mockImplementation(async () => {
+      peak = Math.max(peak, ++active);
+      await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      active--;
+      return [];
+    });
+    expect(await refreshCachedDirs([current])).toEqual([]);
+    expect(listDir).toHaveBeenCalledTimes(10);
+    expect(listDir.mock.calls.some(([path]) => path === old)).toBe(false);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
+  it("does not publish unchanged listings or notify unrelated roots", async () => {
+    vi.useFakeTimers();
+    const a = `${root}/A`;
+    const b = `${root}/B`;
+    listDir.mockResolvedValue([]);
+    await listCachedDir(a);
+    await listCachedDir(b);
+    const changedA = vi.fn();
+    const changedB = vi.fn();
+    const stopA = subscribeDirsChanged(changedA, a);
+    const stopB = subscribeDirsChanged(changedB, b);
+    try {
+      notifyDirsChanged(a, true);
+      await vi.runAllTimersAsync();
+      expect(changedA).not.toHaveBeenCalled();
+      listDir.mockImplementation(async (path) =>
+        path === a ? [entry("new.ts")] : [],
+      );
+      notifyDirsChanged(a, true);
+      await vi.runAllTimersAsync();
+      expect(changedA).toHaveBeenCalledTimes(1);
+      expect(changedB).not.toHaveBeenCalled();
+    } finally {
+      stopA();
+      stopB();
+    }
+  });
   beforeEach(() => {
     forgetDir(root);
     listDir.mockReset();
@@ -77,5 +130,76 @@ describe("fileTree cache", () => {
     expect(peekDir(root)).toEqual([entry("from-agent.ts")]);
     expect(onChange).toHaveBeenCalledTimes(1);
     stop();
+  });
+
+  it("keeps the listing array identity when a refresh finds no change", async () => {
+    listDir.mockResolvedValueOnce([entry("a.ts")]);
+    const before = await listCachedDir(root);
+    listDir.mockResolvedValueOnce([entry("a.ts")]);
+    expect(await refreshCachedDirs()).toEqual([]);
+    expect(peekDir(root)).toBe(before);
+
+    listDir.mockResolvedValueOnce([entry("a.ts"), entry("b.ts")]);
+    expect(await refreshCachedDirs()).toEqual([root]);
+    expect(peekDir(root)).not.toBe(before);
+  });
+
+  it("notifies listing subscribers after a changed refresh", async () => {
+    vi.useFakeTimers();
+    listDir.mockResolvedValueOnce([]);
+    await listCachedDir(root);
+    const onListing = vi.fn();
+    const stop = subscribeDirListings(onListing);
+    listDir.mockResolvedValueOnce([entry("x.ts")]);
+    notifyDirsChanged();
+    await vi.runAllTimersAsync();
+    expect(onListing).toHaveBeenCalled();
+    stop();
+  });
+});
+
+describe("windowEntries", () => {
+  const many = (count: number): FsEntry[] =>
+    Array.from({ length: count }, (_, i) => entry(`f${i}.ts`));
+
+  it("returns everything at or below the threshold", () => {
+    const entries = many(300);
+    expect(windowEntries(entries, 10, [])).toEqual({
+      shown: entries,
+      hidden: 0,
+    });
+  });
+
+  it("cuts to the limit above the threshold, keeping order", () => {
+    const { shown, hidden } = windowEntries(many(1000), 200, []);
+    expect(shown).toHaveLength(200);
+    expect(shown[0].name).toBe("f0.ts");
+    expect(hidden).toBe(800);
+  });
+
+  it("keeps a selected entry past the cut and an open ancestor of it", () => {
+    const entries = many(1000);
+    entries[700] = { ...entry("dir"), isDir: true };
+    const { shown, hidden } = windowEntries(entries, 200, [
+      `${root}/f900.ts`,
+      `${root}/dir/deep/file.ts`,
+    ]);
+    expect(shown.map((e) => e.name)).toContain("f900.ts");
+    expect(shown.map((e) => e.name)).toContain("dir");
+    expect(shown).toHaveLength(202);
+    expect(hidden).toBe(798);
+  });
+
+  it("does not match a sibling that only shares a name prefix", () => {
+    const entries = many(1000);
+    entries[500] = { ...entry("src"), isDir: true };
+    const { shown } = windowEntries(entries, 200, [`${root}/src2/a.ts`]);
+    expect(shown.map((e) => e.name)).not.toContain("src");
+  });
+
+  it("shows everything once the limit reaches the length", () => {
+    const entries = many(500);
+    expect(windowEntries(entries, 500, []).hidden).toBe(0);
+    expect(windowEntries(entries, Infinity, []).shown).toHaveLength(500);
   });
 });

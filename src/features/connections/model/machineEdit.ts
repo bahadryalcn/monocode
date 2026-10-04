@@ -3,17 +3,33 @@ import type { RemoteMachine } from "./protocol";
 /** The fields of a saved SSH machine that can be edited, as the form holds them.
  * The machine's id and environment id are not among them: projects, sessions and
  * drafts are keyed by those, so an edit never changes them. */
-export type MachineDraft = { name: string; target: string; port: string };
+export type MachineDraft = {
+  name: string;
+  target: string;
+  port: string;
+  /** A second address for the same machine; blank for none. */
+  alternate?: string;
+};
 
-export type ParsedMachineDraft = { name: string; target: string; port: number | null };
+export type ParsedMachineDraft = {
+  name: string;
+  target: string;
+  port: number | null;
+  /** Absent from callers that predate second addresses: then none. */
+  alternate?: string | null;
+};
 
 export function draftFromMachine(machine: RemoteMachine): MachineDraft {
   return {
     name: machine.name,
     target: machine.ssh?.target ?? "",
     port: machine.ssh?.port ? String(machine.ssh.port) : "",
+    alternate: machine.ssh?.alternate ?? "",
   };
 }
+
+const validTarget = (target: string) =>
+  !!target && target.length <= 255 && !target.startsWith("-") && TARGET.test(target);
 
 /** The same rules as the desktop's `validate_target`, which has the last word. */
 const TARGET = /^[A-Za-z0-9._\-:[\]]+(@[A-Za-z0-9._\-:[\]]+)?$/;
@@ -22,16 +38,30 @@ export function parseMachineDraft(
   draft: MachineDraft,
 ): { ok: true; value: ParsedMachineDraft } | { ok: false; error: string } {
   const target = draft.target.trim();
-  if (!target || target.length > 255 || target.startsWith("-") || !TARGET.test(target))
+  if (!validTarget(target))
     return {
       ok: false,
       error: "Enter an SSH hostname or alias, such as user@my-mac-mini, and a valid port.",
+    };
+  const other = draft.alternate?.trim() ?? "";
+  if (other && !validTarget(other))
+    return {
+      ok: false,
+      error: "Enter the other address like the first, such as user@100.64.0.5.",
     };
   const text = draft.port.trim();
   const port = text ? Number(text) : null;
   if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535))
     return { ok: false, error: "The SSH port must be a number from 1 to 65535." };
-  return { ok: true, value: { name: draft.name.trim(), target, port } };
+  return {
+    ok: true,
+    value: {
+      name: draft.name.trim(),
+      target,
+      port,
+      alternate: other && other !== target ? other : null,
+    },
+  };
 }
 
 /** What saving `next` must do for a machine that currently has `machine`'s
@@ -42,7 +72,9 @@ export function editImpact(
   next: ParsedMachineDraft,
 ): { changed: boolean; reconnect: boolean } {
   const reconnect =
-    next.target !== machine.ssh?.target || next.port !== (machine.ssh?.port ?? null);
+    next.target !== machine.ssh?.target ||
+    next.port !== (machine.ssh?.port ?? null) ||
+    (next.alternate ?? null) !== (machine.ssh?.alternate ?? null);
   // A blank name keeps the saved one.
   const renamed = next.name !== "" && next.name !== machine.name;
   return { changed: reconnect || renamed, reconnect };

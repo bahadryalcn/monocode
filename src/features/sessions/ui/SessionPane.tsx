@@ -1,8 +1,15 @@
-import { ChevronDown, File, GripVertical, X } from "../../../shared/ui/icons";
+import {
+  ChevronDown,
+  File,
+  GripVertical,
+  Loader,
+  X,
+} from "../../../shared/ui/icons";
 import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -47,6 +54,13 @@ import {
   type ComposerTurnOptions,
 } from "../model/session";
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
+import {
+  sameBlocksIgnoringStreamingText,
+  sameLastTurnRecall,
+  shallowArrayEqual,
+} from "../model/stableBlocks";
+import { useStableCallback } from "../../../shared/hooks/useStableCallback";
+import { useStableValue } from "../../../shared/hooks/useStableValue";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { ActivityDock } from "./ActivityDock";
 import { InterruptedNotice } from "./InterruptedNotice";
@@ -110,13 +124,18 @@ import {
 import type { SessionFolderTarget } from "../model/sessionFolders";
 import { markLinkedSessionUpdateSeen } from "../../inbox/model/linkedSessionSeen";
 import { RemoteSession } from "../../connections/ui/RemoteSession";
+import { useSession } from "../model/sessionsStore";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import type { HostSession } from "../../connections/model/protocol";
-import { ADOPTED_RUNNING_REASON } from "../../connections/model/adoptedSessions";
+import {
+  ADOPTED_CONFLICT_MESSAGE,
+  ADOPTED_RUNNING_REASON,
+} from "../../connections/model/adoptedSessions";
 
 export type SessionPaneProps = {
   session: Session;
   workspaceSwitchingSessionId?: string;
+  windowMovingSessionIds?: ReadonlySet<string>;
   reviewUndoLocked?: boolean;
   visible: boolean;
   focused: boolean;
@@ -254,7 +273,24 @@ type Props = SessionPaneProps & {
   allowedModelHarnesses?: readonly HarnessId[];
 };
 
+function sameRemoteFeatures(
+  a: Props["remoteFeatures"],
+  b: Props["remoteFeatures"],
+): boolean {
+  return (
+    a === b ||
+    (!!a &&
+      !!b &&
+      a.attachments === b.attachments &&
+      a.plan === b.plan &&
+      a.draft === b.draft)
+  );
+}
+
 export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
+  // The shell hands down sessions that lag behind by streamed text; the store
+  // holds the live one, and this subscription is what repaints the stream.
+  const live = useSession(props.session.id) ?? props.session;
   // Sessions in a project on another machine render this same pane, backed by
   // the host instead of this computer's session runtime.
   if (isRemoteProjectPath(props.session.cwd))
@@ -269,7 +305,7 @@ export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
         render={(remote) => <LocalSessionPane {...props} {...remote} />}
       />
     );
-  return <LocalSessionPane {...props} />;
+  return <LocalSessionPane {...props} session={live} />;
 });
 
 const LocalSessionPane = memo(function LocalSessionPane({
@@ -282,6 +318,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   allowedModelHarnesses,
   session,
   workspaceSwitchingSessionId,
+  windowMovingSessionIds,
   reviewUndoLocked = false,
   visible,
   focused,
@@ -358,7 +395,25 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const recallLastTurnRef = useRef<(() => void) | null>(null);
   const remote = remoteSession;
   const editLastTurnSupported = !remote && canEditLastTurn(session);
-  const turnRecall = editLastTurnSupported ? lastTurnRecall(session) : null;
+  // `session.blocks` is a new array every streamed frame; these keep one
+  // reference while only the streaming text changed, so the memoized Composer
+  // and its siblings stay put.
+  const turnRecall = useStableValue(
+    editLastTurnSupported ? lastTurnRecall(session) : null,
+    sameLastTurnRecall,
+  );
+  const stableBlocks = useStableValue(
+    session.blocks,
+    sameBlocksIgnoringStreamingText,
+  );
+  const stableRemoteFeatures = useStableValue(remoteFeatures, sameRemoteFeatures);
+  const stableAllowedHarnesses = useStableValue(
+    allowedModelHarnesses,
+    shallowArrayEqual,
+  );
+  // Find and the outline read live text only while a search or a card is open.
+  const [findSearching, setFindSearching] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
   const draftBlock = sessionDraftBlock(session);
   useSyncExternalStore(
     subscribeProjectChatBackground,
@@ -454,8 +509,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       !!onBtwSubmit &&
       !!onBtwRetry &&
       (supportsBtwHarness(session.harness) ||
-        sessionHasBtwThreads(session.blocks)),
-    blocks: session.blocks,
+        sessionHasBtwThreads(stableBlocks)),
+    blocks: stableBlocks,
     harness: session.harness,
     managed,
     model: session.model,
@@ -511,12 +566,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
     },
     [navigateBlock],
   );
-  const subagentSheet = useSubagentSheet(session.blocks, visible);
+  const subagentSheet = useSubagentSheet(stableBlocks, visible);
   const closeSubagentSheet = subagentSheet.close;
   // Claude can end one task on its own; the others only end the whole turn.
   const perItemStop = canStopHarnessBackgroundWork(session.harness);
-  const stopBackground = (callId?: string) =>
-    stopHarnessBackgroundWork(session.harness, session.id, callId);
+  const stopBackground = useStableCallback((callId?: string) =>
+    stopHarnessBackgroundWork(session.harness, session.id, callId),
+  );
   // Only one sheet over the pane at a time: a side question takes over.
   useEffect(() => {
     if (btw.open) closeSubagentSheet();
@@ -619,17 +675,214 @@ const LocalSessionPane = memo(function LocalSessionPane({
     (!draftBlock && (!isEmpty || inSplit || !!session.inboxAsk));
   const composerDockMotion = useComposerDockMotion(dockComposer);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
+  // Composer is memoized: every handler keeps one identity and calls the
+  // latest closure, so it re-renders only when something it shows changed.
+  const composerDraftChange = useStableCallback((text: string) => {
+    draftRef.current = text;
+    setComposerDraft(session.id, text);
+  });
+  const composerInboxCardDismiss = useStableCallback(() =>
+    onInboxCardDismiss?.(session.id),
+  );
+  const composerNoteCardDismiss = useStableCallback(() =>
+    onNoteCardDismiss?.(session.id),
+  );
+  const composerHandoffCardDismiss = useStableCallback(() =>
+    onHandoffCardDismiss?.(session.id),
+  );
+  const composerQuestionInteraction = useStableCallback((id: number) =>
+    onQuestionInteraction?.(session.id, id),
+  );
+  const composerFocus = useStableCallback(() => onFocus(session.id));
+  const composerCwdChange = useStableCallback((cwd: string) =>
+    onCwdChange(session.id, cwd),
+  );
+  const composerBranchChange = useStableCallback(() =>
+    onBranchChange(session.id),
+  );
+  const composerWorktreeChange = useStableCallback(
+    onWorktreeChange
+      ? (tree: Worktree) => onWorktreeChange(session.id, tree)
+      : undefined,
+  );
+  const composerWorkspaceModeChange = useStableCallback(
+    (mode: WorkspaceMode, base?: string) =>
+      onWorkspaceModeChange(session.id, mode, base),
+  );
+  const composerWorktreeBaseChange = useStableCallback((base: string) =>
+    onWorktreeBaseChange(session.id, base),
+  );
+  const composerNewTerminal = useStableCallback(() =>
+    onNewTerminal(session.id),
+  );
+  const composerModelChange = useStableCallback(
+    (harness: HarnessId, model: string) => {
+      onModelChange(session.id, harness, model);
+      const selected = resolveModel(harness, model);
+      // A new key restarts the animation and its cleanup timer on every pick.
+      const kind = isAstraModel(selected)
+        ? "astra"
+        : isOpus55Model(selected)
+          ? "opus"
+          : null;
+      setModelWelcome(kind && { kind, run: ++modelWelcomeSequence.current });
+    },
+  );
+  const composerModelSettingsChange = useStableCallback(
+    (settings: Record<string, string>) =>
+      onModelSettingsChange(session.id, settings),
+  );
+  const composerRuntimeModeChange = useStableCallback((mode: RuntimeMode) =>
+    onRuntimeModeChange(session.id, mode),
+  );
+  const composerSaveDraft = useStableCallback(
+    (text: string, attachments: Attachment[]) =>
+      onSaveDraft(session.id, text, attachments),
+  );
+  const composerSubmit = useStableCallback(
+    (
+      text: string,
+      attachments: Attachment[],
+      options?: ComposerTurnOptions,
+    ) => {
+      if (!dockComposer) composerDockMotion.captureLaunch();
+      return onSubmit(session.id, text, attachments, options);
+    },
+  );
+  const composerBtwCommand = useStableCallback(btw.openWith);
+  const composerStop = useStableCallback(() => onStop(session.id));
+  const composerCompactContext = useStableCallback(() =>
+    onCompactContext(session.id),
+  );
+  const composerPlaceInFolder = useStableCallback(
+    (target: SessionFolderTarget) =>
+      onPlaceSessionInFolder(session.id, target),
+  );
+  const composerResumeProviderSession = useStableCallback(
+    onResumeProviderSession
+      ? () => onResumeProviderSession(session.id)
+      : undefined,
+  );
+  const composerDeleteQueuedMessage = useStableCallback((messageId: string) =>
+    onDeleteQueuedMessage(session.id, messageId),
+  );
+  const composerEditQueuedMessage = useStableCallback(
+    (messageId: string, text: string, attachments: Attachment[]) =>
+      onEditQueuedMessage(session.id, messageId, text, attachments),
+  );
+  const composerQueuedMessageEditingChange = useStableCallback(
+    (messageId?: string) => onQueuedMessageEditingChange(session.id, messageId),
+  );
+  const composerReorderQueuedMessages = useStableCallback(
+    onReorderQueuedMessages
+      ? (messageIds: string[]) =>
+          onReorderQueuedMessages(session.id, messageIds)
+      : undefined,
+  );
+  const composerSteerQueuedMessage = useStableCallback((messageId: string) =>
+    onSteerQueuedMessage(session.id, messageId),
+  );
+  const composerResumeQueue = useStableCallback(() =>
+    onResumeQueue(session.id),
+  );
+  const composerUsageLimitResume = useStableCallback(() =>
+    onUsageLimitResume(session.id),
+  );
+  const composerUsageLimitResumeAtReset = useStableCallback(
+    (enabled: boolean) => onUsageLimitResumeAtReset(session.id, enabled),
+  );
+  const composerUsageLimitDismiss = useStableCallback(() =>
+    onUsageLimitDismiss(session.id),
+  );
+  const composerPromptHistory = useStableCallback(() =>
+    userPromptHistory(session),
+  );
+  const composerRecallLastTurnReady = useCallback((recall: () => void) => {
+    recallLastTurnRef.current = recall;
+  }, []);
+  const stopDockAgent = useStableCallback((agent: DockAgent) =>
+    agent.callId
+      ? stopBackground(agent.callId)
+      : Promise.reject(new Error("No call to stop")),
+  );
+  const stopDockAll = useStableCallback(() =>
+    perItemStop ? stopBackground() : Promise.resolve(onStop(session.id)),
+  );
+  const continueInterruptedTurn = useStableCallback(() =>
+    onSubmit(session.id, CONTINUE_PROMPT, []),
+  );
+  const interruptedNotice =
+    (interruptedTurn ?? canAutoContinue(session)) &&
+    !isAutoContinueDue(session.id);
+  const sessionBusy = !!session.busy;
+  const hasPendingQuestion = !!session.pendingQuestion;
+  const dockAtEnd = !showJumpToBottom;
+  const composerChildren = useMemo(
+    () => (
+      <>
+        {/* Above the queue and the input, below any question form. */}
+        <ActivityDock
+          sessionId={session.id}
+          blocks={stableBlocks}
+          busy={sessionBusy}
+          pendingQuestion={hasPendingQuestion}
+          backgroundTasks={session.backgroundTasks}
+          backgroundAgents={session.backgroundAgents}
+          visible={visible}
+          atEnd={dockAtEnd}
+          onOpenAgent={openDockAgent}
+          perItemStop={perItemStop}
+          onStopAgent={stopDockAgent}
+          onStopAll={stopDockAll}
+        />
+        {interruptedNotice ? (
+          <InterruptedNotice
+            message={
+              remote
+                ? "The host stopped this turn before it finished."
+                : undefined
+            }
+            onContinue={continueInterruptedTurn}
+          />
+        ) : null}
+      </>
+    ),
+    [
+      session.id,
+      stableBlocks,
+      sessionBusy,
+      hasPendingQuestion,
+      session.backgroundTasks,
+      session.backgroundAgents,
+      visible,
+      dockAtEnd,
+      openDockAgent,
+      perItemStop,
+      stopDockAgent,
+      stopDockAll,
+      interruptedNotice,
+      remote,
+      continueInterruptedTurn,
+    ],
+  );
   const composer = (
     <Composer
       key={session.id}
-      disabled={workspaceSwitchingSessionId === session.id}
+      disabled={
+        workspaceSwitchingSessionId === session.id ||
+        windowMovingSessionIds?.has(session.id)
+      }
       remoteSession={remoteSession}
       sendBlockedReason={sendBlockedReason}
       sendHeldReason={
-        session.continuingElsewhere ? ADOPTED_RUNNING_REASON : undefined
+        windowMovingSessionIds?.has(session.id)
+          ? "Opening new window… Your draft will move with the conversation."
+          : session.continuingElsewhere
+            ? ADOPTED_RUNNING_REASON
+            : undefined
       }
-      remoteFeatures={remoteFeatures}
-      allowedModelHarnesses={allowedModelHarnesses}
+      remoteFeatures={stableRemoteFeatures}
+      allowedModelHarnesses={stableAllowedHarnesses}
       enabled={visible}
       focused={focused && composerFocused && !btw.open}
       focusToken={composerFocusToken}
@@ -659,28 +912,21 @@ const LocalSessionPane = memo(function LocalSessionPane({
           ? undefined
           : session.composerSeed)
       }
-      onDraftChange={(text) => {
-        draftRef.current = text;
-        setComposerDraft(session.id, text);
-      }}
+      onDraftChange={composerDraftChange}
       inboxCard={session.inboxCard}
       noteCard={session.noteCard}
       handoffCard={session.handoffCard}
       question={session.pendingQuestion}
       onQuoteRequestConsumed={acknowledgeQuote}
-      onInboxCardDismiss={() => onInboxCardDismiss?.(session.id)}
-      onNoteCardDismiss={() => onNoteCardDismiss?.(session.id)}
-      onHandoffCardDismiss={() => onHandoffCardDismiss?.(session.id)}
+      onInboxCardDismiss={composerInboxCardDismiss}
+      onNoteCardDismiss={composerNoteCardDismiss}
+      onHandoffCardDismiss={composerHandoffCardDismiss}
       onQuestionReply={replyQuestion}
-      onQuestionInteraction={(id) => onQuestionInteraction?.(session.id, id)}
-      onFocus={() => onFocus(session.id)}
-      onCwdChange={(cwd) => onCwdChange(session.id, cwd)}
-      onBranchChange={() => onBranchChange(session.id)}
-      onWorktreeChange={
-        onWorktreeChange
-          ? (tree) => onWorktreeChange(session.id, tree)
-          : undefined
-      }
+      onQuestionInteraction={composerQuestionInteraction}
+      onFocus={composerFocus}
+      onCwdChange={composerCwdChange}
+      onBranchChange={composerBranchChange}
+      onWorktreeChange={composerWorktreeChange}
       draftWorkspace={
         !session.inboxAsk &&
         !session.worktreeRemoved &&
@@ -691,28 +937,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       workspaceMode={session.workspaceMode}
       worktreeBase={session.worktreeBase}
-      onWorkspaceModeChange={(mode, base) =>
-        onWorkspaceModeChange(session.id, mode, base)
-      }
-      onWorktreeBaseChange={(base) => onWorktreeBaseChange(session.id, base)}
+      onWorkspaceModeChange={composerWorkspaceModeChange}
+      onWorktreeBaseChange={composerWorktreeBaseChange}
       worktreeRemoved={session.worktreeRemoved}
       onManageWorktrees={onManageWorktrees}
-      onNewTerminal={() => onNewTerminal(session.id)}
-      onModelChange={(harness, model) => {
-        onModelChange(session.id, harness, model);
-        const selected = resolveModel(harness, model);
-        // A new key restarts the animation and its cleanup timer on every pick.
-        const kind = isAstraModel(selected)
-          ? "astra"
-          : isOpus55Model(selected)
-            ? "opus"
-            : null;
-        setModelWelcome(kind && { kind, run: ++modelWelcomeSequence.current });
-      }}
-      onModelSettingsChange={(settings) =>
-        onModelSettingsChange(session.id, settings)
-      }
-      onRuntimeModeChange={(mode) => onRuntimeModeChange(session.id, mode)}
+      onNewTerminal={composerNewTerminal}
+      onModelChange={composerModelChange}
+      onModelSettingsChange={composerModelSettingsChange}
+      onRuntimeModeChange={composerRuntimeModeChange}
       canSaveDraft={
         (!remote || !!remoteFeatures?.draft) &&
         !session.busy &&
@@ -722,47 +954,25 @@ const LocalSessionPane = memo(function LocalSessionPane({
         !session.noteCard &&
         !session.handoffCard
       }
-      onSaveDraft={(text, attachments) =>
-        onSaveDraft(session.id, text, attachments)
-      }
-      onSubmit={(text, attachments, options) => {
-        if (!dockComposer) composerDockMotion.captureLaunch();
-        return onSubmit(session.id, text, attachments, options);
-      }}
-      onBtwCommand={btw.openWith}
-      onStop={() => onStop(session.id)}
-      onCompactContext={() => onCompactContext(session.id)}
-      onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
-      onResumeProviderSession={
-        onResumeProviderSession
-          ? () => onResumeProviderSession(session.id)
-          : undefined
-      }
+      onSaveDraft={composerSaveDraft}
+      onSubmit={composerSubmit}
+      onBtwCommand={composerBtwCommand}
+      onStop={composerStop}
+      onCompactContext={composerCompactContext}
+      onPlaceInFolder={composerPlaceInFolder}
+      onResumeProviderSession={composerResumeProviderSession}
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}
-      onDeleteQueuedMessage={(messageId) =>
-        onDeleteQueuedMessage(session.id, messageId)
-      }
-      onEditQueuedMessage={(messageId, text, attachments) =>
-        onEditQueuedMessage(session.id, messageId, text, attachments)
-      }
-      onQueuedMessageEditingChange={(messageId) =>
-        onQueuedMessageEditingChange(session.id, messageId)
-      }
-      onReorderQueuedMessages={
-        onReorderQueuedMessages &&
-        ((messageIds) => onReorderQueuedMessages(session.id, messageIds))
-      }
-      onSteerQueuedMessage={(messageId) =>
-        onSteerQueuedMessage(session.id, messageId)
-      }
-      onResumeQueue={() => onResumeQueue(session.id)}
+      onDeleteQueuedMessage={composerDeleteQueuedMessage}
+      onEditQueuedMessage={composerEditQueuedMessage}
+      onQueuedMessageEditingChange={composerQueuedMessageEditingChange}
+      onReorderQueuedMessages={composerReorderQueuedMessages}
+      onSteerQueuedMessage={composerSteerQueuedMessage}
+      onResumeQueue={composerResumeQueue}
       usageLimit={session.usageLimit}
-      onUsageLimitResume={() => onUsageLimitResume(session.id)}
-      onUsageLimitResumeAtReset={(enabled) =>
-        onUsageLimitResumeAtReset(session.id, enabled)
-      }
-      onUsageLimitDismiss={() => onUsageLimitDismiss(session.id)}
+      onUsageLimitResume={composerUsageLimitResume}
+      onUsageLimitResumeAtReset={composerUsageLimitResumeAtReset}
+      onUsageLimitDismiss={composerUsageLimitDismiss}
       onOpenFile={onOpenFile}
       busy={!!session.busy}
       backgroundOnly={isBackgroundOnly(
@@ -772,44 +982,34 @@ const LocalSessionPane = memo(function LocalSessionPane({
       )}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
-      promptHistory={() => userPromptHistory(session)}
-      onRecallLastTurnReady={(recall) => {
-        recallLastTurnRef.current = recall;
-      }}
+      promptHistory={composerPromptHistory}
+      onRecallLastTurnReady={composerRecallLastTurnReady}
       onEditingLastTurnChange={setEditingLastTurn}
     >
-      {/* Above the queue and the input, below any question form. */}
-      <ActivityDock
-        sessionId={session.id}
-        blocks={session.blocks}
-        busy={!!session.busy}
-        pendingQuestion={!!session.pendingQuestion}
-        backgroundTasks={session.backgroundTasks}
-        backgroundAgents={session.backgroundAgents}
-        visible={visible}
-        atEnd={!showJumpToBottom}
-        onOpenAgent={openDockAgent}
-        perItemStop={perItemStop}
-        onStopAgent={(agent) =>
-          agent.callId
-            ? stopBackground(agent.callId)
-            : Promise.reject(new Error("No call to stop"))
-        }
-        onStopAll={() =>
-          perItemStop ? stopBackground() : Promise.resolve(onStop(session.id))
-        }
-      />
-      {(interruptedTurn ?? canAutoContinue(session)) &&
-      !isAutoContinueDue(session.id) ? (
-        <InterruptedNotice
-          message={
-            remote ? "The host stopped this turn before it finished." : undefined
-          }
-          onContinue={() => onSubmit(session.id, CONTINUE_PROMPT, [])}
-        />
-      ) : null}
+      {composerChildren}
     </Composer>
   );
+
+  const notesShortcut = keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`);
+  const notesButton =
+    notesEnabled && visible && focused && !showNotesPanel ? (
+      <button
+        type="button"
+        title={`Notes${notesShortcut ? ` (${notesShortcut})` : ""}`}
+        aria-label="Open notes panel"
+        data-no-drag
+        onPointerDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={toggleNotesPanel}
+        className={
+          inSplit
+            ? "grid size-5 shrink-0 place-items-center rounded text-content/35 hover:bg-content/10 hover:text-content"
+            : "absolute right-3 top-1.5 z-10 grid size-6 place-items-center rounded-md text-content/35 hover:bg-content/10 hover:text-content"
+        }
+      >
+        <File className="size-3.5" strokeWidth={1.75} />
+      </button>
+    ) : null;
 
   const pane = (
     <div
@@ -841,6 +1041,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           className={`flex h-9 shrink-0 touch-none items-center gap-1.5 border-b border-stroke px-2 select-none ${
             onPaneDragStart ? "cursor-grab active:cursor-grabbing" : ""
           }`}
+          onDragStart={(event) => event.preventDefault()}
           onPointerDown={(event) => {
             if (event.button !== 0 || !onPaneDragStart) return;
             if (
@@ -866,6 +1067,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             {title}
           </span>
+          {notesButton}
           <button
             type="button"
             title={`Close Pane (${MOD}W)`}
@@ -884,6 +1086,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
         </div>
       ) : null}
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        {session.adoptedSyncConflict ? (
+          <div
+            role="alert"
+            className="shrink-0 border-b border-amber-400/20 bg-amber-400/5 px-4 py-2 text-xs text-content/80"
+          >
+            {ADOPTED_CONFLICT_MESSAGE}
+          </div>
+        ) : null}
         <div
           ref={transcriptScope}
           className="@container relative min-h-0 flex-1"
@@ -915,7 +1125,19 @@ const LocalSessionPane = memo(function LocalSessionPane({
               }
             />
           ) : null}
-          {remoteSessionLoading ? null : isEmpty ? (
+          {remoteSessionLoading ? (
+            <div
+              role="status"
+              className="flex h-full min-h-0 items-center justify-center gap-2 text-[13px] text-content/50"
+            >
+              <Loader
+                className="size-4 shrink-0 animate-spin"
+                strokeWidth={1.75}
+                aria-hidden
+              />
+              Loading conversation…
+            </div>
+          ) : isEmpty ? (
             session.inboxAsk ? (
               <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
                 <DiscussionEmpty message="Explore this item with your agent." />
@@ -1046,10 +1268,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
               {!session.inboxAsk ? (
                 <TranscriptFind
                   sessionId={session.id}
-                  blocks={session.blocks}
+                  blocks={findSearching ? session.blocks : stableBlocks}
                   visible={visible}
                   focused={focused}
                   onNavigate={navigateBlock}
+                  onSearchingChange={setFindSearching}
                   side={
                     session.linkedWorkItemUpdateCard &&
                     session.linkedWorkItemUpdateCard.status !== "loading"
@@ -1059,7 +1282,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                 />
               ) : null}
               <PromptOutline
-                blocks={session.blocks}
+                blocks={outlineOpen ? session.blocks : stableBlocks}
+                onOpenChange={setOutlineOpen}
                 scope={transcriptScope}
                 scroller={transcriptScroller}
                 visible={visible}
@@ -1128,23 +1352,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
       </div>
     </div>
   );
-  const notesShortcut = keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`);
-
   return (
     <div className="relative flex h-full min-h-0 min-w-0 flex-1">
       {pane}
       {showNotesPanel ? (
         <SessionNotesPanel sessionId={session.id} cwd={session.cwd} />
-      ) : notesEnabled && visible && focused ? (
-        <button
-          type="button"
-          title={`Notes${notesShortcut ? ` (${notesShortcut})` : ""}`}
-          aria-label="Open notes panel"
-          onClick={toggleNotesPanel}
-          className="absolute right-3 top-1.5 z-10 grid size-6 place-items-center rounded-md text-content/35 hover:bg-content/10 hover:text-content"
-        >
-          <File className="size-3.5" strokeWidth={1.75} />
-        </button>
+      ) : !inSplit ? (
+        notesButton
       ) : null}
     </div>
   );

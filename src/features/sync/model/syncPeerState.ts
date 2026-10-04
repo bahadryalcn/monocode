@@ -1,7 +1,18 @@
 import { canonicalizeJsonText, canonicalJson } from "./canonicalJson";
-import type { SyncOp, SyncPushResult, SyncRecord, SyncRecordValue, SyncTable } from "./syncProtocol";
+import type {
+  SyncOp,
+  SyncPushResult,
+  SyncRecord,
+  SyncRecordValue,
+  SyncTable,
+} from "./syncProtocol";
 
-type OutboxEntry = { table: SyncTable; id: string; baseRev: number; value: SyncRecordValue | null };
+type OutboxEntry = {
+  table: SyncTable;
+  id: string;
+  baseRev: number;
+  value: SyncRecordValue | null;
+};
 type PeerState = {
   rev: number;
   /** A pull from this peer has completed at least once. */
@@ -18,20 +29,34 @@ const keyFor = (machineId: string) => `monocode.sync.peer.v2:${machineId}`;
 const recordKey = (table: SyncTable, id: string) => `${table}:${id}`;
 
 function emptyState(): PeerState {
-  return { rev: 0, pulled: false, recordRevs: {}, recordValues: {}, outbox: [] };
+  return {
+    rev: 0,
+    pulled: false,
+    recordRevs: {},
+    recordValues: {},
+    outbox: [],
+  };
 }
 
 function load(machineId: string): PeerState {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(keyFor(machineId)) ?? "null");
+    const parsed: unknown = JSON.parse(
+      localStorage.getItem(keyFor(machineId)) ?? "null",
+    );
     if (!parsed || typeof parsed !== "object") return emptyState();
     const raw = parsed as Partial<PeerState>;
     const rev = typeof raw.rev === "number" ? raw.rev : 0;
     return {
       rev,
-      pulled: raw.pulled === true || rev > 0,
-      recordRevs: raw.recordRevs && typeof raw.recordRevs === "object" ? raw.recordRevs : {},
-      recordValues: raw.recordValues && typeof raw.recordValues === "object" ? raw.recordValues : {},
+      pulled: typeof raw.pulled === "boolean" ? raw.pulled : rev > 0,
+      recordRevs:
+        raw.recordRevs && typeof raw.recordRevs === "object"
+          ? raw.recordRevs
+          : {},
+      recordValues:
+        raw.recordValues && typeof raw.recordValues === "object"
+          ? raw.recordValues
+          : {},
       outbox: Array.isArray(raw.outbox) ? raw.outbox : [],
     };
   } catch {
@@ -39,11 +64,13 @@ function load(machineId: string): PeerState {
   }
 }
 
-function save(machineId: string, state: PeerState): void {
+function save(machineId: string, state: PeerState): boolean {
   try {
     localStorage.setItem(keyFor(machineId), JSON.stringify(state));
+    return true;
   } catch {
     // private mode / quota: this peer's sync falls behind until storage frees up
+    return false;
   }
 }
 
@@ -98,20 +125,30 @@ export function queueLocalChange(
   const state = load(machineId);
   const key = recordKey(table, id);
   const json = canonicalJson(value);
-  const index = state.outbox.findIndex((entry) => entry.table === table && entry.id === id);
+  const index = state.outbox.findIndex(
+    (entry) => entry.table === table && entry.id === id,
+  );
   if (index === -1) {
     if (json === knownCanonical(state, key)) return;
     const baseRev = state.recordRevs[key] ?? 0;
     state.outbox = [...state.outbox, { table, id, baseRev, value }];
   } else {
     if (canonicalJson(state.outbox[index].value) === json) return;
-    state.outbox = state.outbox.map((entry, i) => (i === index ? { ...entry, value } : entry));
+    state.outbox = state.outbox.map((entry, i) =>
+      i === index ? { ...entry, value } : entry,
+    );
   }
   save(machineId, state);
 }
 
-export function hasPendingOp(machineId: string, table: SyncTable, id: string): boolean {
-  return load(machineId).outbox.some((entry) => entry.table === table && entry.id === id);
+export function hasPendingOp(
+  machineId: string,
+  table: SyncTable,
+  id: string,
+): boolean {
+  return load(machineId).outbox.some(
+    (entry) => entry.table === table && entry.id === id,
+  );
 }
 
 /** Ids of a table's records the host is known to hold with a non-null value. */
@@ -123,7 +160,11 @@ export function knownRecordIds(machineId: string, table: SyncTable): string[] {
 }
 
 /** The value the host is last known to hold for a record (`undefined` when never seen). */
-export function knownRecordValue(machineId: string, table: SyncTable, id: string): unknown {
+export function knownRecordValue(
+  machineId: string,
+  table: SyncTable,
+  id: string,
+): unknown {
   const stored = load(machineId).recordValues[recordKey(table, id)];
   if (typeof stored !== "string") return undefined;
   try {
@@ -134,20 +175,32 @@ export function knownRecordValue(machineId: string, table: SyncTable, id: string
 }
 
 export function takeOutbox(machineId: string): SyncOp[] {
-  return load(machineId).outbox.map(({ table, id, baseRev, value }) => ({ table, id, baseRev, value }));
+  return load(machineId).outbox.map(({ table, id, baseRev, value }) => ({
+    table,
+    id,
+    baseRev,
+    value,
+  }));
 }
 
 /** Records a batch of records this peer just told us about: advances the
  * peer's revision watermark and each record's own last-known revision. */
-export function markPulled(machineId: string, records: readonly SyncRecord[]): void {
+export function markPulled(
+  machineId: string,
+  records: readonly SyncRecord[],
+  page?: { rev: number; complete: boolean },
+): boolean {
   const state = load(machineId);
   for (const record of records) {
     state.recordRevs[recordKey(record.table, record.id)] = record.rev;
-    state.recordValues[recordKey(record.table, record.id)] = canonicalJson(record.value);
+    state.recordValues[recordKey(record.table, record.id)] = canonicalJson(
+      record.value,
+    );
     state.rev = Math.max(state.rev, record.rev);
   }
-  state.pulled = true;
-  save(machineId, state);
+  if (page) state.rev = Math.max(state.rev, page.rev);
+  state.pulled ||= page?.complete !== false;
+  return save(machineId, state);
 }
 
 /**
@@ -156,11 +209,17 @@ export function markPulled(machineId: string, records: readonly SyncRecord[]): v
  * them unchanged would just be rejected again) and returned so the caller
  * can apply the host's current value locally instead.
  */
-export function applyPushResult(machineId: string, result: SyncPushResult, sent: SyncOp[]): SyncRecord[] {
+export function applyPushResult(
+  machineId: string,
+  result: SyncPushResult,
+  sent: SyncOp[],
+): SyncRecord[] {
   const state = load(machineId);
   for (const entry of result.applied) {
     const key = recordKey(entry.table, entry.id);
-    const sentOp = sent.find((op) => op.table === entry.table && op.id === entry.id);
+    const sentOp = sent.find(
+      (op) => op.table === entry.table && op.id === entry.id,
+    );
     if (!sentOp) continue;
     const sentJson = canonicalJson(sentOp.value);
     state.outbox = state.outbox.flatMap((item) => {
@@ -174,12 +233,22 @@ export function applyPushResult(machineId: string, result: SyncPushResult, sent:
   const adopted: SyncRecord[] = [];
   for (const entry of result.rejected) {
     const key = recordKey(entry.table, entry.id);
-    const sentOp = sent.find((op) => op.table === entry.table && op.id === entry.id);
-    const pending = state.outbox.find((item) => item.table === entry.table && item.id === entry.id);
+    const sentOp = sent.find(
+      (op) => op.table === entry.table && op.id === entry.id,
+    );
+    const pending = state.outbox.find(
+      (item) => item.table === entry.table && item.id === entry.id,
+    );
     state.recordRevs[key] = entry.current.rev;
     state.recordValues[key] = canonicalJson(entry.current.value);
-    if (pending && sentOp && canonicalJson(pending.value) !== canonicalJson(sentOp.value)) {
-      state.outbox = state.outbox.map((item) => (item === pending ? { ...item, baseRev: entry.current.rev } : item));
+    if (
+      pending &&
+      sentOp &&
+      canonicalJson(pending.value) !== canonicalJson(sentOp.value)
+    ) {
+      state.outbox = state.outbox.map((item) =>
+        item === pending ? { ...item, baseRev: entry.current.rev } : item,
+      );
       continue;
     }
     state.outbox = state.outbox.filter((item) => item !== pending);

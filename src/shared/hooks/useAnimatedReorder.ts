@@ -59,7 +59,7 @@ export function useAnimatedReorder<T extends string>(
       suppressClickUntil.current = 0;
       const items = latest.current.ids;
       const from = items.indexOf(id);
-      if (items.length < 2 || from < 0) return;
+      if (from < 0 || (items.length < 2 && !latest.current.externalDrop)) return;
       const elements = items.map((item) => nodes.current.get(item));
       if (elements.some((element) => !element)) return;
       const tabs = elements as HTMLElement[];
@@ -89,6 +89,8 @@ export function useAnimatedReorder<T extends string>(
       }
       const pointerId = event.pointerId;
       let startPosition = event[coordinate];
+      const startX = event.clientX;
+      const startY = event.clientY;
       const reducedMotion = window.matchMedia(
         "(prefers-reduced-motion: reduce)",
       ).matches;
@@ -192,7 +194,10 @@ export function useAnimatedReorder<T extends string>(
         if (ev.pointerId !== pointerId || settling) return;
         pointerPosition = ev[coordinate];
         if (!active) {
-          if (Math.abs(pointerPosition - startPosition) < 5) return;
+          const distance = latest.current.externalDrop
+            ? Math.hypot(ev.clientX - startX, ev.clientY - startY)
+            : Math.abs(pointerPosition - startPosition);
+          if (distance < 5) return;
           active = true;
           if (foldOnDrag) {
             // Folding moves the blocks: measure again, and keep the grabbed

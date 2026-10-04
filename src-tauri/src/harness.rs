@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
-#[cfg(not(windows))]
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -17,10 +16,10 @@ use crate::dirs_home;
 use crate::fs::expand_home;
 use crate::passwd_identity;
 
-const STDOUT_EVENT: &str = "harness-stdout";
-const STDERR_EVENT: &str = "harness-stderr";
+const STDOUT_EVENT: &str = "harness-stdout-lines";
+const STDERR_EVENT: &str = "harness-stderr-lines";
 const EXIT_EVENT: &str = "harness-exit";
-const SSE_EVENT: &str = "harness-sse";
+const SSE_EVENT: &str = "harness-sse-batch";
 const SSE_END_EVENT: &str = "harness-sse-end";
 
 pub(crate) const DEFAULT_PROVIDER_ACCOUNT_ID: &str = "default";
@@ -34,9 +33,9 @@ pub struct HarnessAccount {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct HarnessLine {
+struct HarnessLines {
     session_id: String,
-    line: String,
+    lines: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -49,9 +48,9 @@ struct HarnessExit {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-struct HarnessSse {
+struct HarnessSseBatch {
     session_id: String,
-    data: String,
+    data: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -119,10 +118,69 @@ struct LiveChild {
     stdin: Mutex<ChildStdin>,
     pid: u32,
     account: Option<HarnessAccount>,
+    /// Windows that consume this child's output.
+    owners: Arc<Owners>,
 }
 
 struct LiveSse {
     stop: Arc<AtomicBool>,
+    owners: Arc<Owners>,
+}
+
+/// Where a child's events go: only the windows that consume them, instead of
+/// every webview. Each window's frontend listens scoped to its own label and
+/// discards output for children it does not own, so broadcasting only costs
+/// serialisation and a JS callback per window.
+#[derive(Default)]
+struct Owners(Mutex<Vec<String>>);
+
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    Windows(Vec<String>),
+    /// No owner is known or alive; correctness beats savings.
+    Broadcast,
+}
+
+impl Owners {
+    fn new(label: &str) -> Self {
+        Self(Mutex::new(vec![label.to_string()]))
+    }
+
+    fn add(&self, label: &str) {
+        let mut labels = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !labels.iter().any(|existing| existing == label) {
+            labels.push(label.to_string());
+        }
+    }
+
+    /// Owners whose window still exists, or a broadcast when there are none.
+    fn route(&self, window_exists: impl Fn(&str) -> bool) -> Route {
+        let labels = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let live: Vec<String> = labels
+            .iter()
+            .filter(|label| window_exists(label))
+            .cloned()
+            .collect();
+        if live.is_empty() {
+            Route::Broadcast
+        } else {
+            Route::Windows(live)
+        }
+    }
+}
+
+fn emit_routed<P: Serialize + Clone>(app: &AppHandle, owners: &Owners, event: &str, payload: P) {
+    let route = owners.route(|label| app.get_webview_window(label).is_some());
+    if let Route::Windows(labels) = route {
+        let mut delivered = false;
+        for label in &labels {
+            delivered |= app.emit_to(label.as_str(), event, payload.clone()).is_ok();
+        }
+        if delivered {
+            return;
+        }
+    }
+    let _ = app.emit(event, payload);
 }
 
 struct HarnessInner {
@@ -854,6 +912,7 @@ pub fn harness_free_port() -> Result<u16, String> {
 #[allow(clippy::too_many_arguments)]
 pub fn harness_spawn(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     host: State<'_, HarnessHost>,
     session_id: String,
     command: String,
@@ -908,11 +967,14 @@ pub fn harness_spawn(
         .take()
         .ok_or_else(|| "Failed to open harness stderr".to_string())?;
 
+    // The spawning window consumes the output; its JS state owns the turn.
+    let owners = Arc::new(Owners::new(window.label()));
     let live = Arc::new(LiveChild {
         cwd: workdir.clone(),
         stdin: Mutex::new(stdin),
         pid,
         account,
+        owners: Arc::clone(&owners),
     });
     if let Some(rejected) = host.install_spawn(session_id.clone(), epoch, kill_all, live) {
         // A kill, or a newer spawn, won the race while this one was forking.
@@ -926,34 +988,44 @@ pub fn harness_spawn(
         return Err(SPAWN_CANCELLED.to_string());
     }
 
+    // Each reader drops its `done` sender only after its last batch is emitted,
+    // so the wait thread can order the exit event after all output.
+    let (done_tx, done_rx) = mpsc::channel::<()>();
     let stdout_app = app.clone();
     let stdout_id = session_id.clone();
+    let stdout_done = done_tx.clone();
+    let stdout_owners = Arc::clone(&owners);
     thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            let _ = stdout_app.emit(
+        let _done = stdout_done;
+        read_lines_batched(stdout, move |lines| {
+            emit_routed(
+                &stdout_app,
+                &stdout_owners,
                 STDOUT_EVENT,
-                HarnessLine {
+                HarnessLines {
                     session_id: stdout_id.clone(),
-                    line,
+                    lines,
                 },
             );
-        }
+        });
     });
 
     let stderr_app = app.clone();
     let stderr_id = session_id.clone();
+    let stderr_owners = Arc::clone(&owners);
     thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
-            let _ = stderr_app.emit(
+        let _done = done_tx;
+        read_lines_batched(stderr, move |lines| {
+            emit_routed(
+                &stderr_app,
+                &stderr_owners,
                 STDERR_EVENT,
-                HarnessLine {
+                HarnessLines {
                     session_id: stderr_id.clone(),
-                    line,
+                    lines,
                 },
             );
-        }
+        });
     });
 
     let wait_app = app.clone();
@@ -966,7 +1038,12 @@ pub fn harness_spawn(
                 host.stop_sse(&wait_id);
             }
         }
-        let _ = wait_app.emit(
+        // Output first, then exit. A grandchild that inherited the pipes can
+        // keep them open after the child is gone, so the wait is bounded.
+        wait_for_readers(&done_rx, EXIT_DRAIN_GRACE);
+        emit_routed(
+            &wait_app,
+            &owners,
             EXIT_EVENT,
             HarnessExit {
                 session_id: wait_id,
@@ -1139,6 +1216,14 @@ pub fn harness_kill_all(host: State<'_, HarnessHost>) -> Result<(), String> {
     Ok(())
 }
 
+static HTTP_AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+
+/// One agent so calls to the local provider server reuse connections. The
+/// per-call timeout is set on each request.
+fn http_agent() -> &'static ureq::Agent {
+    HTTP_AGENT.get_or_init(|| ureq::AgentBuilder::new().build())
+}
+
 #[tauri::command]
 pub async fn harness_http(
     url: String,
@@ -1150,8 +1235,7 @@ pub async fn harness_http(
     tauri::async_runtime::spawn_blocking(move || {
         assert_loopback(&url)?;
         let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000).max(1));
-        let agent = ureq::AgentBuilder::new().timeout(timeout).build();
-        let mut request = agent.request(&method, &url);
+        let mut request = http_agent().request(&method, &url).timeout(timeout);
         if let Some(headers) = &headers {
             for (key, value) in headers {
                 request = request.set(key, value);
@@ -1174,9 +1258,35 @@ pub async fn harness_http(
     .map_err(|e| e.to_string())?
 }
 
+/// Lets the calling window also receive a running child's output (and its SSE
+/// stream). Call it before expecting output; the spawning window keeps its own
+/// registration. Nothing hands a live child to another window today: a busy
+/// session cannot be popped out (`busySessionsInTabs`), and a window closed
+/// while busy is hidden, not destroyed.
+#[tauri::command]
+pub fn harness_set_owner(
+    host: State<'_, HarnessHost>,
+    window: tauri::WebviewWindow,
+    session_id: String,
+) -> Result<(), String> {
+    if let Some(live) = host.get(&session_id) {
+        live.owners.add(window.label());
+    }
+    if let Some(sse) = host
+        .sse
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&session_id)
+    {
+        sse.owners.add(window.label());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn harness_sse_open(
     app: AppHandle,
+    window: tauri::WebviewWindow,
     host: State<HarnessHost>,
     session_id: String,
     url: String,
@@ -1185,10 +1295,12 @@ pub fn harness_sse_open(
     assert_loopback(&url)?;
     host.stop_sse(&session_id);
     let stop = Arc::new(AtomicBool::new(false));
+    let owners = Arc::new(Owners::new(window.label()));
     host.insert_sse(
         session_id.clone(),
         Arc::new(LiveSse {
             stop: Arc::clone(&stop),
+            owners: Arc::clone(&owners),
         }),
     );
 
@@ -1206,18 +1318,19 @@ pub fn harness_sse_open(
         }
         let result = request.call();
         if stop.load(Ordering::SeqCst) {
-            emit_sse_end(&app, &session_id, None);
+            emit_sse_end(&app, &owners, &session_id, None);
             return;
         }
         match result {
             Ok(response) => {
                 let reader = BufReader::new(response.into_reader());
-                read_sse(reader, &app, &session_id, &stop);
-                emit_sse_end(&app, &session_id, None);
+                read_sse(reader, &app, &owners, &session_id, &stop);
+                emit_sse_end(&app, &owners, &session_id, None);
             }
             Err(error) => {
                 emit_sse_end(
                     &app,
+                    &owners,
                     &session_id,
                     Some(format!("OpenCode event stream failed: {error}")),
                 );
@@ -1234,6 +1347,147 @@ pub fn harness_sse_close(host: State<HarnessHost>, session_id: String) -> Result
     Ok(())
 }
 
+/// Longest a line waits behind the previous emit; the first line after a quiet
+/// spell is not held at all.
+const LINE_BATCH_WINDOW: Duration = Duration::from_millis(8);
+const LINE_BATCH_BYTES: usize = 64 * 1024;
+const LINE_BATCH_LINES: usize = 512;
+/// Bounds what the reader can run ahead of the emitter; a full queue blocks the
+/// reader, which backs up the child's pipe.
+const LINE_QUEUE: usize = 256;
+/// How long the exit event waits for the readers to flush after the child exits.
+const EXIT_DRAIN_GRACE: Duration = Duration::from_secs(1);
+
+/// Merges what `rx` delivers into few emits, in order. The first line after a
+/// quiet spell goes out at once; otherwise a batch waits until `window` has
+/// passed since the last emit, or until it holds `max_bytes` or `max_lines`.
+/// Lines are never split or merged, and one that would push a batch past
+/// `max_bytes` starts the next batch (an oversized line is a batch of its own).
+/// Returns after the channel closes and the last lines are emitted.
+fn coalesce_lines<F: FnMut(Vec<String>)>(
+    rx: &mpsc::Receiver<String>,
+    window: Duration,
+    max_bytes: usize,
+    max_lines: usize,
+    mut emit: F,
+) {
+    use mpsc::{RecvTimeoutError, TryRecvError};
+
+    let mut last_emit: Option<Instant> = None;
+    let mut carry: Option<String> = None;
+    loop {
+        let first = match carry.take() {
+            Some(line) => line,
+            None => match rx.recv() {
+                Ok(line) => line,
+                Err(_) => return,
+            },
+        };
+        let mut bytes = first.len();
+        let mut batch = vec![first];
+        let deadline = last_emit.map(|at| at + window);
+        let mut closed = false;
+        while bytes < max_bytes && batch.len() < max_lines {
+            let next = match rx.try_recv() {
+                Ok(line) => line,
+                Err(TryRecvError::Disconnected) => {
+                    closed = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) => {
+                    let Some(wait) =
+                        deadline.map(|at| at.saturating_duration_since(Instant::now()))
+                    else {
+                        break;
+                    };
+                    if wait.is_zero() {
+                        break;
+                    }
+                    match rx.recv_timeout(wait) {
+                        Ok(line) => line,
+                        Err(RecvTimeoutError::Timeout) => break,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+            };
+            if bytes + next.len() > max_bytes {
+                carry = Some(next);
+                break;
+            }
+            bytes += next.len();
+            batch.push(next);
+        }
+        emit(batch);
+        last_emit = Some(Instant::now());
+        if closed {
+            return;
+        }
+    }
+}
+
+/// Feeds lines to a worker thread that emits them in batches. Dropping it
+/// closes the queue and waits for the last batch to go out.
+struct LineBatcher {
+    tx: Option<mpsc::SyncSender<String>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl LineBatcher {
+    fn new<F: FnMut(Vec<String>) + Send + 'static>(emit: F) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<String>(LINE_QUEUE);
+        let worker = thread::spawn(move || {
+            coalesce_lines(
+                &rx,
+                LINE_BATCH_WINDOW,
+                LINE_BATCH_BYTES,
+                LINE_BATCH_LINES,
+                emit,
+            )
+        });
+        Self {
+            tx: Some(tx),
+            worker: Some(worker),
+        }
+    }
+
+    fn push(&self, line: String) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(line);
+        }
+    }
+}
+
+impl Drop for LineBatcher {
+    fn drop(&mut self) {
+        self.tx.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// Reads `reader` to EOF and emits its lines in batches; returns once the
+/// last batch is out.
+fn read_lines_batched<R: Read, F: FnMut(Vec<String>) + Send + 'static>(reader: R, emit: F) {
+    let batcher = LineBatcher::new(emit);
+    for line in BufReader::new(reader).lines() {
+        let Ok(line) = line else { break };
+        batcher.push(line);
+    }
+}
+
+/// Returns once every reader has dropped its sender, or after `grace`.
+fn wait_for_readers(done: &mpsc::Receiver<()>, grace: Duration) {
+    let deadline = Instant::now() + grace;
+    while done
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .is_ok()
+    {}
+}
+
 fn read_http_response(response: ureq::Response) -> Result<HarnessHttpResponse, String> {
     let status = response.status();
     let body = response
@@ -1242,7 +1496,29 @@ fn read_http_response(response: ureq::Response) -> Result<HarnessHttpResponse, S
     Ok(HarnessHttpResponse { status, body })
 }
 
-fn read_sse<R: BufRead>(reader: R, app: &AppHandle, session_id: &str, stop: &AtomicBool) {
+/// Returns after every event read has been emitted, so the caller can send the
+/// end event behind them.
+fn read_sse<R: BufRead>(
+    reader: R,
+    app: &AppHandle,
+    owners: &Arc<Owners>,
+    session_id: &str,
+    stop: &AtomicBool,
+) {
+    let emit_app = app.clone();
+    let emit_owners = Arc::clone(owners);
+    let emit_id = session_id.to_string();
+    let batcher = LineBatcher::new(move |data| {
+        emit_routed(
+            &emit_app,
+            &emit_owners,
+            SSE_EVENT,
+            HarnessSseBatch {
+                session_id: emit_id.clone(),
+                data,
+            },
+        );
+    });
     let mut data = String::new();
     for line in reader.lines() {
         if stop.load(Ordering::SeqCst) {
@@ -1256,14 +1532,7 @@ fn read_sse<R: BufRead>(reader: R, app: &AppHandle, session_id: &str, stop: &Ato
             if data.is_empty() {
                 continue;
             }
-            let payload = std::mem::take(&mut data);
-            let _ = app.emit(
-                SSE_EVENT,
-                HarnessSse {
-                    session_id: session_id.to_string(),
-                    data: payload,
-                },
-            );
+            batcher.push(std::mem::take(&mut data));
             continue;
         }
         if let Some(rest) = line.strip_prefix("data:") {
@@ -1276,8 +1545,10 @@ fn read_sse<R: BufRead>(reader: R, app: &AppHandle, session_id: &str, stop: &Ato
     }
 }
 
-fn emit_sse_end(app: &AppHandle, session_id: &str, error: Option<String>) {
-    let _ = app.emit(
+fn emit_sse_end(app: &AppHandle, owners: &Owners, session_id: &str, error: Option<String>) {
+    emit_routed(
+        app,
+        owners,
         SSE_END_EVENT,
         HarnessSseEnd {
             session_id: session_id.to_string(),
@@ -1326,10 +1597,39 @@ pub(crate) fn is_resolved_harness_binary(
     };
     let resolved = match binary_path {
         Some(binary_path) => resolve_harness_binary_override(provider, binary_path),
-        None => resolve_harness_binary_default(provider)
-            .ok_or_else(|| format!("Unsupported configured harness provider: {provider}")),
+        None => return default_binary_matches(provider, Path::new(command)),
     };
     resolved.is_ok_and(|path| path == Path::new(command))
+}
+
+const DEFAULT_BINARY_TTL: Duration = Duration::from_secs(30);
+type DefaultBinaryCache = HashMap<(String, Option<String>), (Instant, Option<PathBuf>)>;
+static DEFAULT_BINARIES: OnceLock<Mutex<DefaultBinaryCache>> = OnceLock::new();
+
+/// The PATH walk behind a default resolution runs on every spawn. A cached hit
+/// skips it for `DEFAULT_BINARY_TTL`; anything else (a miss, a different
+/// path) re-resolves and refreshes the entry, so an install or move is never
+/// rejected for up to a TTL. User-configured paths do not come through here.
+fn default_binary_matches(provider: &str, command: &Path) -> bool {
+    let key = (provider.to_string(), std::env::var("PATH").ok());
+    let cache = DEFAULT_BINARIES.get_or_init(|| Mutex::new(HashMap::new()));
+    let hit = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .is_some_and(|(at, path)| {
+            at.elapsed() < DEFAULT_BINARY_TTL && path.as_deref() == Some(command)
+        });
+    if hit {
+        return true;
+    }
+    let resolved = resolve_harness_binary_default(provider);
+    let matches = resolved.as_deref() == Some(command);
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, (Instant::now(), resolved));
+    matches
 }
 
 /// One-shot capture of stdout (used for `cursor-agent --list-models`).
@@ -3188,6 +3488,7 @@ mod tests {
                 stdin: Mutex::new(stdin),
                 pid,
                 account: None,
+                owners: Arc::new(Owners::default()),
             }),
             child,
         )
@@ -3349,6 +3650,7 @@ mod tests {
                 stdin: Mutex::new(stdin),
                 pid,
                 account: None,
+                owners: Arc::new(Owners::default()),
             }),
             child,
         )
@@ -4198,5 +4500,214 @@ mod reap_logic_tests {
         assert!(!is_legacy_orphaned_cursor_acp(
             "node /usr/local/bin/typescript-language-server --stdio"
         ));
+    }
+}
+
+#[cfg(test)]
+mod line_batch_tests {
+    use super::*;
+    use std::sync::mpsc::{channel, sync_channel};
+
+    #[test]
+    fn output_goes_only_to_the_owner_window_while_it_exists() {
+        let owners = Owners::new("main-2");
+        let route = owners.route(|label| label == "main-2" || label == "main");
+        assert_eq!(route, Route::Windows(vec!["main-2".to_string()]));
+    }
+
+    #[test]
+    fn output_is_broadcast_when_no_owner_is_known_or_alive() {
+        assert_eq!(Owners::default().route(|_| true), Route::Broadcast);
+        let gone = Owners::new("closed");
+        assert_eq!(gone.route(|_| false), Route::Broadcast);
+    }
+
+    #[test]
+    fn extra_owners_fan_out_and_a_closed_one_is_skipped() {
+        let owners = Owners::new("a");
+        owners.add("b");
+        owners.add("b");
+        owners.add("c");
+        let route = owners.route(|label| label != "c");
+        assert_eq!(
+            route,
+            Route::Windows(vec!["a".to_string(), "b".to_string()])
+        );
+    }
+
+    fn lines(range: std::ops::Range<usize>) -> Vec<String> {
+        range.map(|i| format!("line {i}")).collect()
+    }
+
+    fn run(rx: mpsc::Receiver<String>, max_bytes: usize, max_lines: usize) -> Vec<Vec<String>> {
+        let mut emits = Vec::new();
+        coalesce_lines(&rx, LINE_BATCH_WINDOW, max_bytes, max_lines, |batch| {
+            emits.push(batch)
+        });
+        emits
+    }
+
+    #[test]
+    fn a_queued_burst_is_one_batch_in_order() {
+        let (tx, rx) = channel();
+        for line in lines(0..50) {
+            tx.send(line).unwrap();
+        }
+        drop(tx);
+        let emits = run(rx, LINE_BATCH_BYTES, LINE_BATCH_LINES);
+        assert_eq!(emits, vec![lines(0..50)]);
+    }
+
+    #[test]
+    fn lines_before_close_are_flushed() {
+        let (tx, rx) = channel();
+        tx.send("tail".to_string()).unwrap();
+        drop(tx);
+        assert_eq!(
+            run(rx, LINE_BATCH_BYTES, LINE_BATCH_LINES),
+            vec![vec!["tail".to_string()]]
+        );
+    }
+
+    #[test]
+    fn an_empty_closed_channel_emits_nothing() {
+        let (tx, rx) = channel::<String>();
+        drop(tx);
+        assert!(run(rx, LINE_BATCH_BYTES, LINE_BATCH_LINES).is_empty());
+    }
+
+    #[test]
+    fn a_lone_line_goes_out_while_the_channel_stays_open() {
+        let (tx, rx) = channel();
+        let (out_tx, out_rx) = channel();
+        let worker = thread::spawn(move || {
+            coalesce_lines(
+                &rx,
+                LINE_BATCH_WINDOW,
+                LINE_BATCH_BYTES,
+                LINE_BATCH_LINES,
+                |batch| out_tx.send((Instant::now(), batch)).unwrap(),
+            );
+        });
+        let sent = Instant::now();
+        tx.send("x".to_string()).unwrap();
+        let (at, batch) = out_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(batch, vec!["x".to_string()]);
+        assert!(at.duration_since(sent) < LINE_BATCH_WINDOW + Duration::from_millis(100));
+        drop(tx);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn the_line_count_bound_splits_a_burst() {
+        let (tx, rx) = channel();
+        for line in lines(0..25) {
+            tx.send(line).unwrap();
+        }
+        drop(tx);
+        let emits = run(rx, LINE_BATCH_BYTES, 10);
+        assert_eq!(
+            emits.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![10, 10, 5]
+        );
+        assert_eq!(emits.concat(), lines(0..25));
+    }
+
+    #[test]
+    fn the_byte_bound_splits_without_cutting_lines() {
+        let (tx, rx) = channel();
+        let all: Vec<String> = (0..30).map(|i| format!("{i:0>9}")).collect();
+        for line in &all {
+            tx.send(line.clone()).unwrap();
+        }
+        drop(tx);
+        let emits = run(rx, 50, LINE_BATCH_LINES);
+        assert!(emits.len() >= 5);
+        assert!(emits
+            .iter()
+            .all(|batch| batch.iter().map(String::len).sum::<usize>() <= 50));
+        assert_eq!(emits.concat(), all);
+    }
+
+    #[test]
+    fn an_oversized_line_is_a_batch_of_its_own() {
+        let (tx, rx) = channel();
+        let big = "x".repeat(200);
+        for line in ["a", big.as_str(), "b"] {
+            tx.send(line.to_string()).unwrap();
+        }
+        drop(tx);
+        let emits = run(rx, 50, LINE_BATCH_LINES);
+        assert_eq!(
+            emits,
+            vec![vec!["a".to_string()], vec![big], vec!["b".to_string()]]
+        );
+    }
+
+    #[test]
+    fn sustained_output_stays_under_the_emit_rate_bound() {
+        let (tx, rx) = sync_channel(LINE_QUEUE);
+        let feeder = thread::spawn(move || {
+            let start = Instant::now();
+            let mut sent = Vec::new();
+            while start.elapsed() < Duration::from_millis(200) {
+                let line = format!("line {}", sent.len());
+                tx.send(line.clone()).unwrap();
+                sent.push(line);
+                thread::sleep(Duration::from_millis(1));
+            }
+            sent
+        });
+        let started = Instant::now();
+        let emits = run(rx, LINE_BATCH_BYTES, LINE_BATCH_LINES);
+        let secs = started.elapsed().as_secs_f64();
+        let sent = feeder.join().unwrap();
+        assert_eq!(emits.concat(), sent);
+        assert!(emits.len() as f64 <= secs / LINE_BATCH_WINDOW.as_secs_f64() + 2.0);
+    }
+
+    #[test]
+    fn dropping_the_batcher_flushes_everything_before_returning() {
+        let (out_tx, out_rx) = channel();
+        let batcher = LineBatcher::new(move |batch| out_tx.send(batch).unwrap());
+        for line in lines(0..1000) {
+            batcher.push(line);
+        }
+        drop(batcher);
+        let all: Vec<String> = out_rx.try_iter().flatten().collect();
+        assert_eq!(all, lines(0..1000));
+    }
+
+    #[test]
+    fn readers_are_awaited_but_only_for_the_grace_period() {
+        let (tx, rx) = channel::<()>();
+        let held = tx.clone();
+        let release = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            drop(tx);
+        });
+        let started = Instant::now();
+        wait_for_readers(&rx, Duration::from_millis(100));
+        // One sender is still held, so this returns on the grace deadline.
+        assert!(started.elapsed() >= Duration::from_millis(90));
+        release.join().unwrap();
+        drop(held);
+        let started = Instant::now();
+        wait_for_readers(&rx, Duration::from_secs(5));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn read_lines_batched_keeps_every_line_in_order() {
+        let input = lines(0..300).join(
+            "
+",
+        );
+        let (out_tx, out_rx) = channel();
+        read_lines_batched(std::io::Cursor::new(input), move |batch| {
+            out_tx.send(batch).unwrap()
+        });
+        let all: Vec<String> = out_rx.try_iter().flatten().collect();
+        assert_eq!(all, lines(0..300));
     }
 }

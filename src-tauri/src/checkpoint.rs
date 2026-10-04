@@ -2,7 +2,6 @@
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -11,8 +10,8 @@ use tauri::{AppHandle, Manager, State};
 #[cfg(test)]
 use crate::fs::GitDiffStats;
 use crate::fs::{
-    expand_home, git_checked, git_diff_files_for, path_to_js, resolve_repo_path, GitChangedFile,
-    GitDiffIndex, MAX_TEXT_FILE_BYTES,
+    expand_home, git_checked, git_cmd, git_cmd_output, git_diff_files_for, git_output, path_to_js,
+    resolve_repo_path, GitChangedFile, GitDiffIndex, MAX_TEXT_FILE_BYTES,
 };
 
 const MAX_SNAPSHOT_FILES: usize = 500;
@@ -59,14 +58,22 @@ impl CheckpointStore {
 
         let mut files = BTreeMap::new();
         let mut tracked = BTreeSet::new();
+        let mut relatives = Vec::new();
+        let mut seen = HashSet::new();
         for file in git_diff_files_for(&root).files {
-            if files.len() >= MAX_SNAPSHOT_FILES {
+            if seen.len() >= MAX_SNAPSHOT_FILES {
                 break;
             }
             let Ok(relative) = resolve_repo_path(&root, &file.relative) else {
                 continue;
             };
-            if in_head(&root, &relative) {
+            if seen.insert(relative.clone()) {
+                relatives.push(relative);
+            }
+        }
+        let in_head = paths_in_head(&root, &relatives);
+        for relative in relatives {
+            if in_head.contains(&relative) {
                 tracked.insert(relative.clone());
             }
             files.insert(relative.clone(), snapshot_file(&dir, &root, &relative)?);
@@ -98,6 +105,12 @@ impl CheckpointStore {
         };
 
         let mut dirty = false;
+        let valid: Vec<String> = paths
+            .iter()
+            .filter_map(|path| relative_to_root(&root, path).ok())
+            .collect();
+        // Looked up once, and only if some path gets past the early exits.
+        let mut in_head: Option<HashSet<String>> = None;
         for path in paths {
             let Ok(relative) = relative_to_root(&root, path) else {
                 continue;
@@ -128,7 +141,8 @@ impl CheckpointStore {
             if manifest.prepared.insert(relative.clone()) {
                 dirty = true;
             }
-            if in_head(&root, &relative) && manifest.tracked.insert(relative) {
+            let head = in_head.get_or_insert_with(|| paths_in_head(&root, &valid));
+            if head.contains(&relative) && manifest.tracked.insert(relative) {
                 dirty = true;
             }
         }
@@ -150,6 +164,11 @@ impl CheckpointStore {
         };
 
         let mut dirty = false;
+        let valid: Vec<String> = paths
+            .iter()
+            .filter_map(|path| relative_to_root(&root, path).ok())
+            .collect();
+        let in_head = paths_in_head(&root, &valid);
         for path in paths {
             if manifest.touched.len() >= MAX_SNAPSHOT_FILES {
                 break;
@@ -158,7 +177,7 @@ impl CheckpointStore {
                 continue;
             };
             manifest.touched.insert(relative.clone());
-            let tracked_in_head = in_head(&root, &relative);
+            let tracked_in_head = in_head.contains(&relative);
             if tracked_in_head {
                 manifest.tracked.insert(relative.clone());
             }
@@ -872,16 +891,15 @@ fn path_contains_symlink(root: &Path, relative: &str) -> bool {
 }
 
 fn git_head(root: &Path) -> Result<Vec<u8>, String> {
-    let mut command = Command::new("git");
-    crate::hide_window_console(&mut command);
-    let output = command
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--verify", "HEAD"])
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .map_err(|e| e.to_string())?;
+    let output = git_cmd_output(
+        git_cmd()
+            .arg("-C")
+            .arg(root)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )
+    .map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -1067,14 +1085,13 @@ fn calculate_session_stats(dir: &Path, manifest: &Manifest, relative: &str) -> O
 }
 
 fn diff_numstat(before: &Path, after: &Path) -> Option<(i64, i64)> {
-    let mut cmd = Command::new("git");
-    crate::hide_window_console(&mut cmd);
-    let output = cmd
-        .args(["diff", "--no-index", "--no-ext-diff", "--numstat", "--"])
-        .arg(before)
-        .arg(after)
-        .output()
-        .ok()?;
+    let output = git_cmd_output(
+        git_cmd()
+            .args(["diff", "--no-index", "--no-ext-diff", "--numstat", "--"])
+            .arg(before)
+            .arg(after),
+    )
+    .ok()?;
     if !output.status.success() && output.status.code() != Some(1) {
         return None;
     }
@@ -1155,7 +1172,53 @@ fn revert_new_change(root: &Path, relative: &str) -> Result<(), String> {
 }
 
 fn in_head(root: &Path, relative: &str) -> bool {
-    git_checked(root, &["cat-file", "-e", &format!("HEAD:{relative}")]).is_ok()
+    paths_in_head(root, &[relative.to_string()]).contains(relative)
+}
+
+/// Argument-length budget per `ls-tree` call (Windows allows ~32k chars).
+const HEAD_LOOKUP_CHUNK_CHARS: usize = 24_000;
+
+/// Which of `paths` exist in HEAD (as a blob or a tree, like `cat-file -e
+/// HEAD:<path>`), answered with one `ls-tree` per argument-length chunk.
+/// An unborn HEAD makes every call fail, so nothing is in HEAD.
+fn paths_in_head(root: &Path, paths: &[String]) -> HashSet<String> {
+    let mut found = HashSet::new();
+    let mut unique: Vec<&str> = paths.iter().map(String::as_str).collect();
+    unique.sort_unstable();
+    unique.dedup();
+    let mut start = 0;
+    while start < unique.len() {
+        let mut end = start;
+        let mut chars = 0;
+        while end < unique.len()
+            && (end == start || chars + unique[end].len() < HEAD_LOOKUP_CHUNK_CHARS)
+        {
+            chars += unique[end].len() + 1;
+            end += 1;
+        }
+        // Not recursive: a directory path matches its own tree entry, as with
+        // cat-file. `--full-tree` keeps paths repo-root relative like
+        // `HEAD:<path>`; `-z` leaves names unquoted; matching below is exact.
+        let mut args = vec![
+            "--literal-pathspecs",
+            "ls-tree",
+            "--full-tree",
+            "--name-only",
+            "-z",
+            "HEAD",
+            "--",
+        ];
+        args.extend_from_slice(&unique[start..end]);
+        if let Some(out) = git_output(root, &args) {
+            for name in out.split(|byte| *byte == 0).filter(|name| !name.is_empty()) {
+                if let Ok(name) = std::str::from_utf8(name) {
+                    found.insert(name.to_string());
+                }
+            }
+        }
+        start = end;
+    }
+    found
 }
 
 fn snapshot_file(dir: &Path, root: &Path, relative: &str) -> Result<SnapshotKind, String> {
@@ -2062,6 +2125,106 @@ mod tests {
             .apply("worker", &from, &to)
             .unwrap_err()
             .contains("not captured"));
+    }
+
+    #[test]
+    fn paths_in_head_answers_many_paths_at_once() {
+        let repo = tmp("in-head");
+        if !init_git_commit(
+            &repo.0,
+            &[
+                ("tracked.txt", "a\n"),
+                ("dir/with space.txt", "b\n"),
+                ("dir/\u{00fc}n\u{00ef}code-\u{65e5}.txt", "c\n"),
+                ("gone.txt", "d\n"),
+            ],
+        ) {
+            return;
+        }
+        std::fs::remove_file(repo.0.join("gone.txt")).unwrap();
+        std::fs::write(repo.0.join("untracked.txt"), "u\n").unwrap();
+        let wanted: Vec<String> = [
+            "tracked.txt",
+            "dir/with space.txt",
+            "dir/\u{00fc}n\u{00ef}code-\u{65e5}.txt",
+            "gone.txt",
+            "untracked.txt",
+            "missing/nope.txt",
+            "Tracked.txt",
+        ]
+        .iter()
+        .map(|path| path.to_string())
+        .collect();
+        let mut found: Vec<_> = paths_in_head(&repo.0, &wanted).into_iter().collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "dir/with space.txt".to_string(),
+                "dir/\u{00fc}n\u{00ef}code-\u{65e5}.txt".to_string(),
+                "gone.txt".to_string(),
+                "tracked.txt".to_string(),
+            ]
+        );
+        assert!(in_head(&repo.0, "tracked.txt"));
+        assert!(in_head(&repo.0, "dir"));
+        assert!(!in_head(&repo.0, "untracked.txt"));
+        assert!(paths_in_head(&repo.0, &[]).is_empty());
+    }
+
+    #[test]
+    fn paths_in_head_is_empty_on_unborn_head() {
+        let repo = tmp("in-head-unborn");
+        if !git(&repo.0, &["init"]) {
+            return;
+        }
+        std::fs::write(repo.0.join("a.txt"), "a\n").unwrap();
+        let _ = git(&repo.0, &["add", "a.txt"]);
+        assert!(paths_in_head(&repo.0, &["a.txt".to_string()]).is_empty());
+        assert!(!in_head(&repo.0, "a.txt"));
+    }
+
+    #[test]
+    fn paths_in_head_chunks_long_path_lists() {
+        let repo = tmp("in-head-chunks");
+        let names: Vec<String> = (0..400)
+            .map(|index| format!("long/{}/file-{index}.txt", "d".repeat(100)))
+            .collect();
+        let files: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "x\n")).collect();
+        if !init_git_commit(&repo.0, &files) {
+            return;
+        }
+        // Even indices are in HEAD, odd ones are not.
+        let wanted: Vec<String> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                if index % 2 == 0 {
+                    name.clone()
+                } else {
+                    format!("{name}.absent")
+                }
+            })
+            .collect();
+        assert!(wanted.iter().map(|path| path.len()).sum::<usize>() > HEAD_LOOKUP_CHUNK_CHARS);
+        let found = paths_in_head(&repo.0, &wanted);
+        assert_eq!(found.len(), 200);
+        assert!(names
+            .iter()
+            .step_by(2)
+            .all(|name| found.contains(name.as_str())));
+    }
+
+    #[test]
+    fn paths_in_head_from_a_subdirectory_uses_repo_root_paths() {
+        let repo = tmp("in-head-sub");
+        if !init_git_commit(&repo.0, &[("pkg/a.txt", "a\n"), ("top.txt", "t\n")]) {
+            return;
+        }
+        let sub = repo.0.join("pkg");
+        let found = paths_in_head(&sub, &["pkg/a.txt".to_string(), "top.txt".to_string()]);
+        assert_eq!(found.len(), 2);
+        assert!(!in_head(&sub, "a.txt"));
     }
 
     #[test]

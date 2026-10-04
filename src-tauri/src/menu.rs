@@ -136,7 +136,12 @@ pub fn dispatch(app: &AppHandle, id: &str) {
             );
         }
         "new_window" => {
-            let _ = crate::window::open_new_window(app);
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = crate::window::open_new_window(&app) {
+                    eprintln!("Could not open workspace window: {error}");
+                }
+            });
         }
         #[cfg(target_os = "macos")]
         "toggle_autosave" => {
@@ -162,7 +167,13 @@ pub fn dispatch(app: &AppHandle, id: &str) {
         | "zoom_reset"
         | "reload"
         | "open_command_palette"
-        | "close_all_tabs" => emit_to_focused(app, id),
+        | "close_all_tabs"
+        | "layout_columns"
+        | "layout_rows"
+        | "layout_grid"
+        | "layout_main_left"
+        | "layout_main_top"
+        | "layout_equalize" => emit_to_focused(app, id),
         _ => {}
     }
 }
@@ -475,7 +486,20 @@ fn build(
         .item(&forward_tab)
         .build()?;
 
+    let layout = SubmenuBuilder::new(app, "Layout")
+        .item(&split_right)
+        .item(&split_down)
+        .separator()
+        .text("layout_columns", "Columns")
+        .text("layout_rows", "Rows")
+        .text("layout_grid", "Grid")
+        .text("layout_main_left", "Main + Stack")
+        .text("layout_main_top", "Main + Row")
+        .text("layout_equalize", "Equalize Sizes")
+        .build()?;
+
     let view = SubmenuBuilder::new(app, "View")
+        .item(&layout)
         .item(&toggle_sidebar)
         .item(&toggle_session_sidebar)
         .item(&open_inbox)

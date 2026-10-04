@@ -25,6 +25,7 @@ import {
   type GitActionCommand,
 } from "./git-actions";
 import type { HostStore } from "./store";
+import { listHostSkills } from "./skills";
 import {
   createHostPath,
   existingPath,
@@ -85,6 +86,7 @@ export const WORKSPACE_COMMANDS = [
   ...GIT_ACTION_COMMANDS,
   "git_worktrees",
   "search_project",
+  "list_skills",
 ] as const;
 export type WorkspaceCommand = (typeof WORKSPACE_COMMANDS)[number];
 
@@ -211,6 +213,8 @@ export class WorkspaceCommands {
         return this.gitWorktrees(input.cwd);
       case "search_project":
         return this.searchProject(input.options);
+      case "list_skills":
+        return this.listSkills(input.cwd);
     }
   }
 
@@ -462,6 +466,13 @@ export class WorkspaceCommands {
     const { path } = await this.existing(input, true);
     if (!(await stat(path)).isDirectory()) throw new Error("Not a working copy");
     return path;
+  }
+
+  /** This machine's skills for a project folder here; the desktop drops
+   * the ones it hides, as it does for its own. */
+  private async listSkills(input: unknown) {
+    const { path } = await this.existing(input, true);
+    return listHostSkills(path);
   }
 
   private async searchProject(input: unknown) {

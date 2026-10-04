@@ -9,11 +9,13 @@ import {
   invalidateProjectFiles,
   loadProjectFiles,
   peekProjectFiles,
+  rankProjectFiles,
   rememberOpenedFile,
   resolveFileOpenRequest,
   resolveOpenablePath,
   subscribeProjectFiles,
 } from "./fileIndex";
+import { scorePath } from "../../../shared/lib/fuzzy";
 import { notifyDirsChanged } from "./fileTree";
 
 const cwd = "/Users/me/project";
@@ -267,5 +269,57 @@ describe("loadProjectFiles", () => {
 
     expect(await scan).toEqual(files);
     expect(peekProjectFiles(other)).toEqual(files);
+  });
+});
+
+describe("rankProjectFiles", () => {
+  function oldRank(
+    all: ProjectFile[],
+    query: string,
+    recents: string[],
+    limit: number,
+  ) {
+    const recentRank = new Map(recents.map((path, index) => [path, index]));
+    const scored = [];
+    for (const file of all) {
+      const hit = scorePath(query, file.relative, file.name);
+      if (!hit) continue;
+      const recency = recentRank.get(file.path);
+      const score = hit.score + (recency == null ? 0 : (30 - recency) * 8);
+      scored.push({ ...file, score, positions: hit.positions });
+    }
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.relative.length !== b.relative.length) {
+        return a.relative.length - b.relative.length;
+      }
+      return a.relative.localeCompare(b.relative);
+    });
+    return scored.slice(0, limit);
+  }
+
+  const synthetic: ProjectFile[] = [];
+  const dirs = ["src", "src/app", "lib", "packages/core/src", "test"];
+  const names = ["index.ts", "main.ts", "util.ts", "App.tsx", "mod.rs", "a.ts"];
+  for (let i = 0; i < 400; i += 1) {
+    const relative = `${dirs[i % dirs.length]}/${names[i % names.length]}`;
+    // Repeated relative paths and equal lengths force every tie-break level.
+    const rel = i % 7 === 0 ? relative : `${relative.slice(0, -3)}${i % 10}.ts`;
+    synthetic.push({
+      name: rel.split("/").pop()!,
+      path: `/p/${i}/${rel}`,
+      relative: rel,
+    });
+  }
+
+  it("returns the same ordered list as a full sort, for several limits", () => {
+    const recents = [synthetic[5].path, synthetic[300].path, synthetic[17].path];
+    for (const query of ["ts", "main", "src/app", "idx", "zzz"]) {
+      for (const limit of [1, 7, 80, 1000]) {
+        expect(rankProjectFiles(synthetic, query, recents, limit)).toEqual(
+          oldRank(synthetic, query, recents, limit),
+        );
+      }
+    }
   });
 });

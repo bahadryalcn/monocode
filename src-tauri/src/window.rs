@@ -71,12 +71,50 @@ pub fn open_new_window(app: &AppHandle) -> Result<(), String> {
     open_session_window(app, true).map(|_| ())
 }
 
+/// Opens a window with its top-left corner at the given screen position
+/// (logical pixels), e.g. where a tab was dropped outside its window.
+/// Opens a workspace window seeded with `payload`, which only that window can
+/// take, so two quick pop-outs cannot swap or overwrite each other's tabs.
+pub fn open_transfer_window(
+    app: &AppHandle,
+    payload: String,
+    position: Option<(f64, f64)>,
+) -> Result<(), String> {
+    // The source keeps its tab until the destination has actually mounted.
+    let (window, ready) = build_session_window(app, true, Some(WindowSeed { payload, position }))?;
+    let state = app.state::<crate::window_transfer::WindowTransferState>();
+    // Registered before build below; boot can acknowledge before build returns.
+    let result = ready
+        .ok_or_else(|| "missing window readiness waiter".to_string())?
+        .recv_timeout(Duration::from_secs(30));
+    state.discard(window.label());
+    if result.is_err() {
+        let _ = window.destroy();
+        return Err("The new window did not become ready. Your conversation remains in the original window.".into());
+    }
+    result.unwrap()?;
+    Ok(())
+}
+
+struct WindowSeed {
+    payload: String,
+    position: Option<(f64, f64)>,
+}
+
 fn configure_session_window(config: &mut tauri::utils::config::WindowConfig, reveal: bool) {
     config.visible = reveal;
     config.focus = reveal;
 }
 
 pub fn open_session_window(app: &AppHandle, reveal: bool) -> Result<WebviewWindow, String> {
+    build_session_window(app, reveal, None).map(|(window, _)| window)
+}
+
+fn build_session_window(
+    app: &AppHandle,
+    reveal: bool,
+    seed: Option<WindowSeed>,
+) -> Result<(WebviewWindow, Option<crate::window_transfer::WindowReady>), String> {
     let mut config = app
         .config()
         .app
@@ -94,23 +132,48 @@ pub fn open_session_window(app: &AppHandle, reveal: bool) -> Result<WebviewWindo
         format!("quick-session-{}", uuid::Uuid::new_v4())
     };
 
+    let label = config.label.clone();
+    let position = seed.as_ref().and_then(|seed| seed.position);
+    let ready = if let Some(seed) = seed {
+        // Staged before the webview exists, so its boot always finds it.
+        let state = app.state::<crate::window_transfer::WindowTransferState>();
+        state.stage(&label, seed.payload)?;
+        Some(state.watch_ready(&label)?)
+    } else {
+        None
+    };
+
     let build = || {
-        WebviewWindowBuilder::from_config(app, &config)
-            .map_err(|err| err.to_string())?
-            .build()
-            .map_err(|err| err.to_string())
+        let builder =
+            WebviewWindowBuilder::from_config(app, &config).map_err(|err| err.to_string())?;
+        let builder = match position {
+            Some((x, y)) => builder.position(x, y),
+            None => builder,
+        };
+        builder.build().map_err(|err| err.to_string())
     };
     #[cfg(target_os = "macos")]
     let window = if reveal {
-        build()?
+        build()
     } else {
-        crate::macos_background::without_activation(build)?
+        crate::macos_background::without_activation(build)
     };
     #[cfg(not(target_os = "macos"))]
-    let window = build()?;
+    let window = build();
+    let window = window.inspect_err(|_| {
+        app.state::<crate::window_transfer::WindowTransferState>()
+            .discard(&label);
+    })?;
 
     #[cfg(target_os = "macos")]
-    crate::macos::install(&window);
+    {
+        // Pop-outs are built on a blocking worker. AppKit chrome must be
+        // installed on the main thread; readiness is still awaited off-thread.
+        let chrome_window = window.clone();
+        window
+            .run_on_main_thread(move || crate::macos::install(&chrome_window))
+            .map_err(|error| error.to_string())?;
+    }
 
     #[cfg(not(target_os = "macos"))]
     {
@@ -121,7 +184,7 @@ pub fn open_session_window(app: &AppHandle, reveal: bool) -> Result<WebviewWindo
     if reveal {
         let _ = window.set_focus();
     }
-    Ok(window)
+    Ok((window, ready))
 }
 
 /// The page colour to fill the window with when glass is off. Not a constant:
@@ -218,7 +281,13 @@ fn workspace_labels(app: &AppHandle) -> Vec<String> {
 pub fn show_hidden_or_open_new(app: &AppHandle) -> Result<(), String> {
     let windows = workspace_windows(app);
     if windows.is_empty() {
-        return open_new_window(app);
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(error) = open_new_window(&app) {
+                eprintln!("Could not open workspace window: {error}");
+            }
+        });
+        return Ok(());
     }
     for window in &windows {
         let _ = window.unminimize();

@@ -30,6 +30,17 @@ import {
   THEME_PREFERENCE_DEFAULT,
   THEME_DARK_LIGHTNESS_DEFAULT,
   NEW_THREAD_BACKGROUND_EFFECT_DEFAULT,
+  loadProjectRailWidth,
+  saveProjectRailWidth,
+  PROJECT_RAIL_COMPACT_WIDTH,
+  PROJECT_RAIL_WIDTH_DEFAULT,
+  PROJECT_RAIL_WIDTH_MAX,
+  PROJECT_RAIL_WIDTH_MIN,
+  loadSessionSidebarWidth,
+  saveSessionSidebarWidth,
+  SESSION_SIDEBAR_WIDTH_DEFAULT,
+  SESSION_SIDEBAR_WIDTH_MAX,
+  SESSION_SIDEBAR_WIDTH_MIN,
 } from "./appearance";
 
 const KEY = "monocode.transcriptLayout";
@@ -285,5 +296,60 @@ describe("dark theme lightness setting", () => {
     expect(loadThemeDarkLightness()).toBe(0);
     saveThemeDarkLightness(100);
     expect(loadThemeDarkLightness()).toBe(30);
+  });
+});
+
+describe("project rail width", () => {
+  const WIDTH_KEY = "monocode.projectRailWidth";
+  beforeEach(() => localStorage.removeItem(WIDTH_KEY));
+
+  it("goes down to an icon-only strip", () => {
+    expect(PROJECT_RAIL_WIDTH_MIN).toBe(56);
+    expect(PROJECT_RAIL_COMPACT_WIDTH).toBeGreaterThan(PROJECT_RAIL_WIDTH_MIN);
+    expect(PROJECT_RAIL_COMPACT_WIDTH).toBeLessThan(PROJECT_RAIL_WIDTH_DEFAULT);
+  });
+
+  it("defaults, and keeps widths saved before the lower minimum", () => {
+    expect(loadProjectRailWidth()).toBe(PROJECT_RAIL_WIDTH_DEFAULT);
+    localStorage.setItem(WIDTH_KEY, "260");
+    expect(loadProjectRailWidth()).toBe(260);
+    localStorage.setItem(WIDTH_KEY, "180");
+    expect(loadProjectRailWidth()).toBe(180);
+  });
+
+  it("clamps saved and loaded widths into range", () => {
+    saveProjectRailWidth(20);
+    expect(localStorage.getItem(WIDTH_KEY)).toBe(String(PROJECT_RAIL_WIDTH_MIN));
+    saveProjectRailWidth(900);
+    expect(loadProjectRailWidth()).toBe(PROJECT_RAIL_WIDTH_MAX);
+    localStorage.setItem(WIDTH_KEY, "10");
+    expect(loadProjectRailWidth()).toBe(PROJECT_RAIL_WIDTH_MIN);
+    localStorage.setItem(WIDTH_KEY, "nope");
+    expect(loadProjectRailWidth()).toBe(PROJECT_RAIL_WIDTH_DEFAULT);
+  });
+});
+
+describe("session sidebar width", () => {
+  const WIDTH_KEY = "monocode.sessionSidebarWidth";
+  beforeEach(() => localStorage.removeItem(WIDTH_KEY));
+
+  it("defaults to the old fixed width and goes down to 180", () => {
+    expect(SESSION_SIDEBAR_WIDTH_MIN).toBe(180);
+    expect(loadSessionSidebarWidth()).toBe(SESSION_SIDEBAR_WIDTH_DEFAULT);
+  });
+
+  it("persists the width and rounds it", () => {
+    saveSessionSidebarWidth(301.6);
+    expect(localStorage.getItem(WIDTH_KEY)).toBe("302");
+    expect(loadSessionSidebarWidth()).toBe(302);
+  });
+
+  it("clamps out-of-range widths", () => {
+    saveSessionSidebarWidth(100);
+    expect(loadSessionSidebarWidth()).toBe(SESSION_SIDEBAR_WIDTH_MIN);
+    localStorage.setItem(WIDTH_KEY, "5000");
+    expect(loadSessionSidebarWidth()).toBe(SESSION_SIDEBAR_WIDTH_MAX);
+    localStorage.setItem(WIDTH_KEY, "x");
+    expect(loadSessionSidebarWidth()).toBe(SESSION_SIDEBAR_WIDTH_DEFAULT);
   });
 });

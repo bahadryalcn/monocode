@@ -1,6 +1,8 @@
 import React, { useLayoutEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
+import { restoreTransferredDrafts } from "./app/model/windowTransfer";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   activateWindowAppearance,
@@ -22,6 +24,9 @@ import { initializeProviderBinaryPaths } from "./features/providers/model/provid
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
 import "./styles/index.css";
+import { bootstrap } from "./app/model/bootstrap";
+import { BootFailure } from "./app/shell/BootFailure";
+import { NoteDraftRecoveryNotice } from "./features/notes/ui/NoteDraftRecoveryNotice";
 
 performance.mark("monocode:bootstrap");
 // Let local boot IPC overlap loading/evaluating the workspace UI.
@@ -62,10 +67,27 @@ function dismissBootSplash() {
   });
 }
 
-function BootGate({ children }: { children: React.ReactNode }) {
+function BootGate({
+  children,
+  transferred,
+}: {
+  children: React.ReactNode;
+  transferred: boolean;
+}) {
   useLayoutEffect(() => {
     dismissBootSplash();
-  }, []);
+    if (!transferred) return;
+    let secondFrame = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        void invoke("window_transfer_ready").catch(console.error);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+    };
+  }, [transferred]);
   return children;
 }
 
@@ -88,14 +110,19 @@ void listen("quit_aborted", () => {
   abortQuit();
 });
 
-void Promise.all([
-  homeDirPrimed,
-  providerBinaryPathsPrimed,
-  loadBootWorkspace(),
-  // Saved drafts are in the cache before the first composer mounts.
-  hydrateComposerDrafts(),
-  appLoaded,
-]).then(
+const appRoot = ReactDOM.createRoot(
+  document.getElementById("root") as HTMLElement,
+);
+void bootstrap(
+  () =>
+    Promise.all([
+      homeDirPrimed,
+      providerBinaryPathsPrimed,
+      loadBootWorkspace(),
+      // Saved drafts are in the cache before the first composer mounts.
+      hydrateComposerDrafts(),
+      appLoaded,
+    ]),
   ([
     ,
     ,
@@ -105,9 +132,10 @@ void Promise.all([
   ]) => {
     performance.mark("monocode:workspace-ready");
     const installedUpdate = windowTransfer ? null : consumeInstalledUpdate();
-    ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    if (windowTransfer) restoreTransferredDrafts(windowTransfer);
+    appRoot.render(
       <React.StrictMode>
-        <BootGate>
+        <BootGate transferred={!!windowTransfer}>
           <App
             windowTransfer={windowTransfer}
             resumed={resumed}
@@ -115,8 +143,15 @@ void Promise.all([
             history={history}
             historyCwd={historyCwd}
           />
+          <NoteDraftRecoveryNotice />
         </BootGate>
       </React.StrictMode>,
+    );
+  },
+  (error) => {
+    document.getElementById("boot-splash")?.remove();
+    appRoot.render(
+      <BootFailure error={error} onRetry={() => window.location.reload()} />,
     );
   },
 );

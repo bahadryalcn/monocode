@@ -12,6 +12,16 @@ import {
 } from "../../connections/model/remoteProjects";
 import { pathKey } from "../../../shared/lib/paths";
 import {
+  collectMachineResults,
+  type LastGoodLists,
+  type MachineResult,
+} from "./machineResults";
+import {
+  invalidateMachineSnapshot,
+  machineCapabilities,
+  machineProjects,
+} from "./machineSnapshot";
+import {
   createAutomationTrigger,
   type Automation,
   type AutomationDraft,
@@ -32,27 +42,54 @@ export const BACKGROUND_MACHINE_ERROR =
 /** Machines whose host does background work on its own, this computer's
  * included. `capability` is what the host must advertise: automations unless
  * another kind of background work is asked for. */
-export async function backgroundMachines(
+/** What each saved machine answered: whether its host does this kind of
+ * background work, is too old for it, or could not be reached. Names use
+ * "this computer" for the local host. */
+export type MachineReach = {
+  capable: RemoteMachine[];
+  outdated: string[];
+  unreachable: string[];
+  /** The machines behind `unreachable`, for keeping their last-known cards. */
+  unreachableMachines: RemoteMachine[];
+};
+
+export async function probeMachines(
   capability: string = HOST_AUTOMATIONS,
-): Promise<RemoteMachine[]> {
+): Promise<MachineReach> {
   const machines = await invoke<RemoteMachine[]>("remote_machines");
-  const capable = await Promise.all(
+  const reach: MachineReach = {
+    capable: [],
+    outdated: [],
+    unreachable: [],
+    unreachableMachines: [],
+  };
+  const answers = await Promise.all(
     (Array.isArray(machines) ? machines : []).map(async (machine) => {
       try {
-        const host = await remoteRequest<{ capabilities?: unknown }>(
-          machine.id,
-          "environment.describe",
-        );
-        return Array.isArray(host.capabilities) &&
-          host.capabilities.includes(capability)
-          ? machine
-          : null;
+        // Shared with every other board and notification round in flight.
+        const advertised = await machineCapabilities(machine);
+        return { machine, capable: advertised.includes(capability) };
       } catch {
-        return null;
+        return { machine, capable: null };
       }
     }),
   );
-  return capable.filter((machine) => machine !== null);
+  for (const { machine, capable } of answers) {
+    const name = isLocalSyncMachine(machine) ? "this computer" : machine.name;
+    if (capable) reach.capable.push(machine);
+    else if (capable === false) reach.outdated.push(name);
+    else {
+      reach.unreachable.push(name);
+      reach.unreachableMachines.push(machine);
+    }
+  }
+  return reach;
+}
+
+export async function backgroundMachines(
+  capability: string = HOST_AUTOMATIONS,
+): Promise<RemoteMachine[]> {
+  return (await probeMachines(capability)).capable;
 }
 
 /** The machine that would run a background automation for the project at
@@ -85,16 +122,16 @@ export async function hostProjectFor(
   cwd: string,
 ): Promise<HostProject> {
   const hostPath = parseRemotePath(cwd)?.hostPath ?? cwd;
-  const projects = await remoteRequest<HostProject[]>(
-    machine.id,
-    "projects.list",
+  const projects = await machineProjects(machine);
+  const known = projects.find(
+    (entry) => pathKey(entry.cwd) === pathKey(hostPath),
   );
-  return (
-    projects.find((entry) => pathKey(entry.cwd) === pathKey(hostPath)) ??
-    (await remoteRequest<HostProject>(machine.id, "projects.open", {
-      cwd: hostPath,
-    }))
-  );
+  if (known) return known;
+  const opened = await remoteRequest<HostProject>(machine.id, "projects.open", {
+    cwd: hostPath,
+  });
+  invalidateMachineSnapshot(machine.id);
+  return opened;
 }
 
 export function automationFromHost(
@@ -179,38 +216,52 @@ export function hostAutomationFromDraft(
   };
 }
 
-/** Every reachable machine's background automations. A machine that does not
- * answer is left out rather than failing the list. */
+const lastHostAutomations: LastGoodLists<Automation> = new Map();
+
+/** Each machine's background automations. A machine that does not answer keeps
+ * its last successful list, flagged stale; `down` machines are not asked. */
+export function listHostAutomationResults(
+  machines: readonly RemoteMachine[],
+  down: readonly RemoteMachine[] = [],
+): Promise<MachineResult<Automation>[]> {
+  return collectMachineResults(
+    lastHostAutomations,
+    machines,
+    async (machine) => {
+      const [automations, projects] = await Promise.all([
+        remoteRequest<HostAutomation[]>(machine.id, "automations.list"),
+        machineProjects(machine),
+      ]);
+      return automations.flatMap((automation) => {
+        const project = projects.find(
+          (entry) => entry.id === automation.projectId,
+        );
+        return project
+          ? [
+              automationFromHost(
+                machine,
+                hostProjectCwd(machine, project),
+                automation,
+              ),
+            ]
+          : [];
+      });
+    },
+    (automation) =>
+      automation.host
+        ? { ...automation, host: { ...automation.host, stale: true } }
+        : automation,
+    down,
+  );
+}
+
+/** Every machine's background automations, last-known ones included. */
 export async function listHostAutomations(
   machines: readonly RemoteMachine[],
 ): Promise<Automation[]> {
-  const lists = await Promise.all(
-    machines.map(async (machine) => {
-      try {
-        const [automations, projects] = await Promise.all([
-          remoteRequest<HostAutomation[]>(machine.id, "automations.list"),
-          remoteRequest<HostProject[]>(machine.id, "projects.list"),
-        ]);
-        return automations.flatMap((automation) => {
-          const project = projects.find(
-            (entry) => entry.id === automation.projectId,
-          );
-          return project
-            ? [
-                automationFromHost(
-                  machine,
-                  hostProjectCwd(machine, project),
-                  automation,
-                ),
-              ]
-            : [];
-        });
-      } catch {
-        return [];
-      }
-    }),
+  return (await listHostAutomationResults(machines)).flatMap(
+    (result) => result.data,
   );
-  return lists.flat();
 }
 
 export async function saveHostAutomation(

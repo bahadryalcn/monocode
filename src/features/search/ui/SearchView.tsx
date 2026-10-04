@@ -1,4 +1,9 @@
-import { Folder, LoaderCircle, MessageSquare, Search } from "../../../shared/ui/icons";
+import {
+  Folder,
+  LoaderCircle,
+  MessageSquare,
+  Search,
+} from "../../../shared/ui/icons";
 import {
   useEffect,
   useMemo,
@@ -36,7 +41,10 @@ import {
 } from "../../files/model/fileIndex";
 import { prettyCwd, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { isLocalProject, type RecentProject } from "../../projects/model/recents";
+import {
+  isLocalProject,
+  type RecentProject,
+} from "../../projects/model/recents";
 import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
 import { isProjectLockedIn } from "../../group-lock/model/lockState";
 import {
@@ -45,12 +53,7 @@ import {
   type OpenFileFn,
 } from "../model/search";
 import { type Session } from "../../sessions/model/session";
-import {
-  cancelSessionSearch,
-  searchSessionContent,
-  type SessionContentSession,
-  type SessionSummary,
-} from "../../sessions/data/sessionStore";
+import { type SessionSummary } from "../../sessions/data/sessionStore";
 import {
   loadProjectGroupAssignments,
   loadProjectGroups,
@@ -66,9 +69,8 @@ import {
   type ChatFilters,
 } from "../model/chatSearch";
 import { ChatFilterBar, ChatSearchResults } from "./ChatSearchResults";
-
-// Messages indexed after a search started show up on the next poll.
-const INDEX_POLL_MS = 2000;
+import { useConversationSearch } from "../model/useConversationSearch";
+import { hasActiveOverlay } from "../../../shared/ui/overlay";
 
 const SCOPES: { id: SearchScope; label: string }[] = [
   { id: "all", label: "All" },
@@ -110,7 +112,6 @@ export function SearchView({
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const activeProjectSearchId = useRef<string | null>(null);
-  const activeSessionOwner = useRef<string | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
@@ -119,21 +120,14 @@ export function SearchView({
   const [active, setActive] = useState(0);
   const [files, setFiles] = useState(() => peekProjectFiles(cwd) ?? []);
   const [contentHits, setContentHits] = useState<AppSearchHit[]>([]);
-  const [chatSessions, setChatSessions] = useState<SessionContentSession[]>([]);
-  const [chatFilters, setChatFilters] = useState<ChatFilters>(
-    DEFAULT_CHAT_FILTERS,
-  );
-  const [pendingIndex, setPendingIndex] = useState(0);
-  const [indexPoll, setIndexPoll] = useState(0);
+  const [chatFilters, setChatFilters] =
+    useState<ChatFilters>(DEFAULT_CHAT_FILTERS);
   const [contentTruncated, setContentTruncated] = useState(false);
-  const [sessionTruncated, setSessionTruncated] = useState(false);
   const [filesLoading, setFilesLoading] = useState(false);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [fileRetry, setFileRetry] = useState(0);
 
   const trimmed = query.trim();
-  const loading = filesLoading || sessionsLoading;
-  const truncated = contentTruncated || sessionTruncated;
 
   useEffect(() => {
     if (!open) return;
@@ -141,11 +135,8 @@ export function SearchView({
     setScope("all");
     setActive(0);
     setContentHits([]);
-    setChatSessions([]);
     setChatFilters(DEFAULT_CHAT_FILTERS);
-    setPendingIndex(0);
     setContentTruncated(false);
-    setSessionTruncated(false);
     setError(null);
   }, [open]);
 
@@ -160,7 +151,12 @@ export function SearchView({
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (
+        event.key !== "Escape" ||
+        event.defaultPrevented ||
+        hasActiveOverlay()
+      )
+        return;
       event.preventDefault();
       event.stopPropagation();
       onCloseRef.current();
@@ -234,12 +230,32 @@ export function SearchView({
     [open, recents],
   );
   // The filters belong to the Conversations tab; the All tab searches everywhere.
-  const filters = scope === "conversations" ? chatFilters : DEFAULT_CHAT_FILTERS;
+  const filters =
+    scope === "conversations" ? chatFilters : DEFAULT_CHAT_FILTERS;
+  const conversationOptions = useMemo(
+    () => ({
+      query: trimmed,
+      cwds: scopeCwds(filters.scope, cwd, recents, grouping),
+      harness: filters.harness === "any" ? undefined : filters.harness,
+      includeArchived: filters.archived,
+      since: sinceFor(filters.range),
+    }),
+    [trimmed, filters, cwd, recents, grouping],
+  );
+  const conversation = useConversationSearch(
+    open && (scope === "all" || scope === "conversations"),
+    conversationOptions,
+  );
+  const chatSessions = conversation.result.sessions;
+  const pendingIndex = conversation.result.pending;
+  const loading = filesLoading || conversation.loading;
+  const truncated = contentTruncated || conversation.result.truncated;
   // "Everywhere" searches every stored conversation, so results from locked
   // groups are dropped here, and again if a group locks while they are shown.
   const lock = useLockSnapshot();
   const visibleChatSessions = useMemo(
-    () => chatSessions.filter((session) => !isProjectLockedIn(lock, session.cwd)),
+    () =>
+      chatSessions.filter((session) => !isProjectLockedIn(lock, session.cwd)),
     [chatSessions, lock],
   );
   const remoteHits = useMemo(
@@ -297,75 +313,7 @@ export function SearchView({
         void cancelProjectSearch(cwd, searchId).catch(() => undefined);
       }
     };
-  }, [cwd, open, scope, trimmed]);
-
-  // Message content of every stored session. Debounced, and the previous query
-  // is cancelled in the backend when a newer one supersedes it.
-  useEffect(() => {
-    const wantSessions = scope === "all" || scope === "conversations";
-    if (!open || !trimmed || !wantSessions) {
-      setChatSessions([]);
-      setSessionTruncated(false);
-      setPendingIndex(0);
-      setSessionsLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    const searchOwner = crypto.randomUUID();
-    const timer = window.setTimeout(() => {
-      activeSessionOwner.current = searchOwner;
-      setSessionsLoading(true);
-      searchSessionContent({
-        query: trimmed,
-        searchOwner,
-        cwds: scopeCwds(filters.scope, cwd, recents, grouping),
-        harness: filters.harness === "any" ? undefined : filters.harness,
-        includeArchived: filters.archived,
-        since: sinceFor(filters.range),
-      })
-        .then((result) => {
-          if (cancelled) return;
-          setChatSessions(result.sessions);
-          setSessionTruncated(result.truncated);
-          setPendingIndex(result.pending);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          setChatSessions([]);
-          setSessionTruncated(false);
-          setPendingIndex(0);
-        })
-        .finally(() => {
-          if (activeSessionOwner.current === searchOwner) {
-            activeSessionOwner.current = null;
-          }
-          if (!cancelled) setSessionsLoading(false);
-        });
-    }, 200);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-      if (activeSessionOwner.current === searchOwner) {
-        activeSessionOwner.current = null;
-        void cancelSessionSearch(searchOwner).catch(() => undefined);
-      }
-    };
-    // `recents` and `grouping` only shape the scope; changing them must not
-    // restart a search the user is waiting on.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, open, scope, trimmed, filters, indexPoll]);
-
-  // Text that is not indexed yet is searched again once the index has caught up.
-  useEffect(() => {
-    if (!open || !trimmed || pendingIndex === 0) return;
-    const timer = window.setTimeout(
-      () => setIndexPoll((tick) => tick + 1),
-      INDEX_POLL_MS,
-    );
-    return () => window.clearTimeout(timer);
-  }, [open, trimmed, pendingIndex]);
+  }, [cwd, open, scope, trimmed, fileRetry]);
 
   const hits = useMemo(() => {
     if (!trimmed) return [];
@@ -406,7 +354,9 @@ export function SearchView({
     if (active >= rowCount) setActive(0);
   }, [active, rowCount]);
 
-  const openChat = (entry: { sessionId: string; blockId?: string } | undefined) => {
+  const openChat = (
+    entry: { sessionId: string; blockId?: string } | undefined,
+  ) => {
     if (!entry) return;
     onOpenSession(entry.sessionId, entry.blockId, trimmed);
     onClose();
@@ -453,7 +403,8 @@ export function SearchView({
   if (!open) return null;
 
   const empty = !trimmed;
-  const noResults = !empty && rowCount === 0 && !loading;
+  const noResults =
+    !empty && rowCount === 0 && !loading && !error && !conversation.error;
   const limitNotice = truncated ? (
     <p className="px-2.5 py-1 text-[11px] text-content/45">
       Results limited to the first matches
@@ -538,6 +489,41 @@ export function SearchView({
         />
       ) : null}
 
+      {!empty && (error || conversation.error) ? (
+        <div
+          role="alert"
+          className="shrink-0 space-y-1 border-b border-stroke px-4 py-2 text-xs text-content"
+        >
+          {error ? (
+            <p>
+              File search failed: {error}{" "}
+              <button
+                type="button"
+                className="underline"
+                onClick={() => setFileRetry((value) => value + 1)}
+              >
+                Retry file search
+              </button>
+            </p>
+          ) : null}
+          {conversation.error ? (
+            <p>
+              Conversation search failed: {conversation.error}{" "}
+              <button
+                type="button"
+                className="underline"
+                onClick={conversation.retry}
+              >
+                Retry conversation search
+              </button>
+            </p>
+          ) : null}
+          {rowCount > 0 ? (
+            <p className="text-content/75">Results below may be incomplete.</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div
         ref={lockOverscroll}
         className={
@@ -548,11 +534,11 @@ export function SearchView({
       >
         {empty ? (
           <EmptyState />
-        ) : error && hits.length === 0 ? (
-          <p className="px-2 py-1.5 text-[12px] text-red-400">{error}</p>
         ) : noResults ? (
           <>
-            <p className="px-2 py-1.5 text-[12px] text-content/50">No results</p>
+            <p className="px-2 py-1.5 text-[12px] text-content/50">
+              No results
+            </p>
             {indexNotice}
             {limitNotice}
           </>

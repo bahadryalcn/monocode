@@ -34,6 +34,10 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 pub struct SessionStore {
     conn: Mutex<Connection>,
     read_conn: Mutex<Option<Connection>>,
+    /// Query-only connection for the UI's list/get reads. Search holds
+    /// `read_conn` for its whole scan, so sharing it would queue these behind
+    /// a search. `None` for in-memory stores, which fall back to `conn`.
+    list_conn: Mutex<Option<Connection>>,
     /// One search-index builder at a time: the startup pass and a search both
     /// run `content_search::sync_index`, and indexing a session twice is waste.
     search_index_lock: Mutex<()>,
@@ -45,17 +49,28 @@ impl SessionStore {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let conn = Connection::open(&path).map_err(|e| e.to_string())?;
-        conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
-            .map_err(|e| e.to_string())?;
+        // NORMAL in WAL mode survives an app crash; only an OS crash or power
+        // loss can drop the last commits (never corrupts), and skips a WAL
+        // fsync on every autocommit write.
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;",
+        )
+        .map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
         crate::worktrees::reconcile_removals(&conn)?;
-        let read_conn = Connection::open(&path).map_err(|e| e.to_string())?;
-        read_conn
-            .execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
-            .map_err(|e| e.to_string())?;
+        let open_reader = || -> Result<Connection, String> {
+            let reader = Connection::open(&path).map_err(|e| e.to_string())?;
+            reader
+                .execute_batch("PRAGMA query_only = ON; PRAGMA busy_timeout = 5000;")
+                .map_err(|e| e.to_string())?;
+            Ok(reader)
+        };
+        let read_conn = open_reader()?;
+        let list_conn = open_reader()?;
         Ok(Self {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(Some(read_conn)),
+            list_conn: Mutex::new(Some(list_conn)),
             search_index_lock: Mutex::new(()),
         })
     }
@@ -69,8 +84,29 @@ impl SessionStore {
         Ok(Self {
             conn: Mutex::new(conn),
             read_conn: Mutex::new(None),
+            list_conn: Mutex::new(None),
             search_index_lock: Mutex::new(()),
         })
+    }
+
+    /// Runs a pure read on the dedicated read connection so it does not queue
+    /// behind a long write on `conn` (WAL lets readers run alongside it). An
+    /// in-memory store has no second connection, so it reads on `conn`.
+    /// Only for commands that never write, even lazily.
+    fn with_read_conn<T>(
+        &self,
+        read: impl FnOnce(&Connection) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let list_conn = self
+            .list_conn
+            .lock()
+            .map_err(|_| "Session read store is locked")?;
+        if let Some(conn) = list_conn.as_ref() {
+            read(conn)
+        } else {
+            let conn = self.conn.lock().map_err(|_| "Session store is locked")?;
+            read(&conn)
+        }
     }
 
     pub(crate) fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
@@ -240,11 +276,33 @@ pub struct SessionRecord {
 pub fn session_upsert(
     store: State<'_, SessionStore>,
     session: SessionUpsert,
-) -> Result<SessionSummary, String> {
+    expected_updated_at: Option<i64>,
+    expect_missing: Option<bool>,
+) -> Result<Option<SessionSummary>, String> {
     validate_upsert(&session)?;
+    // Git lookups can spawn processes; never do that while holding the
+    // connection every other store command waits on.
+    let git = upsert_git_info(&session);
+    // `expectMissing` means "the row must not exist"; `expectedUpdatedAt` means
+    // "the row must still carry this stamp". Neither is the unguarded write.
+    let expected = if expect_missing == Some(true) {
+        Some(None)
+    } else {
+        expected_updated_at.map(Some)
+    };
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
-    Ok(summary)
+    // `None` back means the precondition failed and nothing was written.
+    upsert_session_with_git(&conn, &session, git, expected).map_err(|e| e.to_string())
+}
+
+fn upsert_git_info(session: &SessionUpsert) -> crate::fs::GitInfo {
+    crate::fs::git_info_for(&crate::fs::expand_home(
+        session
+            .worktree_cwd
+            .as_deref()
+            .filter(|cwd| !cwd.is_empty())
+            .unwrap_or(&session.cwd),
+    ))
 }
 
 fn validate_upsert(session: &SessionUpsert) -> Result<(), String> {
@@ -286,13 +344,12 @@ pub fn session_import(
     session: SessionUpsert,
 ) -> Result<Option<SessionSummary>, String> {
     validate_upsert(&session)?;
+    let git = upsert_git_info(&session);
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     if import_already_stored(&conn, &session).map_err(|e| e.to_string())? {
         return Ok(None);
     }
-    upsert_session(&conn, &session)
-        .map(Some)
-        .map_err(|e| e.to_string())
+    upsert_session_with_git(&conn, &session, git, None).map_err(|e| e.to_string())
 }
 
 fn import_already_stored(conn: &Connection, session: &SessionUpsert) -> rusqlite::Result<bool> {
@@ -356,8 +413,10 @@ pub fn session_list_by_project(
     if cwd.trim().is_empty() {
         return Err("cwd is required".into());
     }
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    list_by_project(&conn, &cwd).map_err(|e| e.to_string())
+    // Git lookups can spawn processes; do them before taking any connection.
+    let git = crate::fs::git_info_for(&crate::fs::expand_home(&cwd));
+    store
+        .with_read_conn(|conn| list_by_project_with_git(conn, &cwd, git).map_err(|e| e.to_string()))
 }
 
 #[tauri::command(async)]
@@ -383,8 +442,7 @@ fn rebase_project(conn: &Connection, from_cwd: &str, to_cwd: &str) -> rusqlite::
 
 #[tauri::command(async)]
 pub fn session_list_linked(store: State<'_, SessionStore>) -> Result<Vec<SessionSummary>, String> {
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    list_linked(&conn).map_err(|e| e.to_string())
+    store.with_read_conn(|conn| list_linked(conn).map_err(|e| e.to_string()))
 }
 
 #[tauri::command(async)]
@@ -392,18 +450,18 @@ pub fn session_list_recent(
     store: State<'_, SessionStore>,
     limit: i64,
 ) -> Result<Vec<SessionSummary>, String> {
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    list_recent(&conn, limit).map_err(|e| e.to_string())
+    store.with_read_conn(|conn| list_recent(conn, limit).map_err(|e| e.to_string()))
 }
 
 #[tauri::command(async)]
 pub fn session_get(
     store: State<'_, SessionStore>,
     session_id: String,
-) -> Result<Option<SessionRecord>, String> {
+) -> Result<tauri::ipc::Response, String> {
     validate_id(&session_id, "session")?;
-    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    get_session(&conn, &session_id).map_err(|e| e.to_string())
+    store
+        .with_read_conn(|conn| get_session_json(conn, &session_id).map_err(|e| e.to_string()))
+        .map(tauri::ipc::Response::new)
 }
 
 const MAX_SEARCH_SCAN: usize = 400;
@@ -1229,6 +1287,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                         linked_work_item_json, worktree_cwd, worktree_removed,
                         is_draft, automation_id);",
     )?;
+    // `list_recent` and `list_linked` pin these; both are partial so they only
+    // carry the rows those lists can return (live threads, linked threads).
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS sessions_recent_idx
+           ON sessions (pinned, updated_at DESC, id)
+           WHERE has_user_message = 1 AND archived = 0;
+         CREATE INDEX IF NOT EXISTS sessions_linked_idx
+           ON sessions (updated_at DESC, id)
+           WHERE linked_work_item_json IS NOT NULL;",
+    )?;
     crate::notes::ensure_notes_table(conn)?;
     crate::reminders::ensure_table(conn)?;
     crate::automations::ensure_tables(conn)?;
@@ -1354,7 +1422,22 @@ fn orchestration_summary(conn: &Connection, id: &str) -> rusqlite::Result<Option
     ))
 }
 
+#[cfg(test)]
 fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Result<SessionSummary> {
+    upsert_session_with_git(conn, session, upsert_git_info(session), None)
+        .map(|summary| summary.expect("an unguarded upsert always writes"))
+}
+
+/// `expected` is an optional precondition on the stored row: `Some(Some(t))`
+/// needs `updated_at == t`, `Some(None)` needs no row. It is checked against
+/// the same read the write uses, under the caller's connection lock, and a
+/// failed check writes nothing and returns `Ok(None)`.
+fn upsert_session_with_git(
+    conn: &Connection,
+    session: &SessionUpsert,
+    git: crate::fs::GitInfo,
+    expected: Option<Option<i64>>,
+) -> rusqlite::Result<Option<SessionSummary>> {
     let now = now_millis();
     let model_settings = serde_json::to_string(&session.model_settings)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -1381,13 +1464,6 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty());
-    let git = crate::fs::git_info_for(&crate::fs::expand_home(
-        session
-            .worktree_cwd
-            .as_deref()
-            .filter(|cwd| !cwd.is_empty())
-            .unwrap_or(&session.cwd),
-    ));
     let branch = if session.worktree_removed {
         None
     } else {
@@ -1411,21 +1487,29 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
     let has_user_message = has_user_block(&session.blocks);
     let is_draft = has_draft_block(&session.blocks);
 
-    let existing: Option<(i64, i64, String, i64, i64)> = conn
+    // The stored blob comes from this same serialiser (serde_json's `Value`
+    // keeps keys sorted), so equal text means equal blocks. SQLite compares
+    // the bytes itself, so the old blob is neither copied out nor parsed. Text
+    // written another way only reads as "changed", which just moves
+    // `updated_at` once.
+    let existing: Option<(i64, i64, bool, i64, i64)> = conn
         .query_row(
-            "SELECT created_at, updated_at, blocks_json, archived, pinned FROM sessions WHERE id = ?1",
-            params![session.id],
+            "SELECT created_at, updated_at, blocks_json = ?2, archived, pinned FROM sessions WHERE id = ?1",
+            params![session.id, blocks_json],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .optional()?;
+    if let Some(expected) = expected {
+        if existing.as_ref().map(|(_, updated, _, _, _)| *updated) != expected {
+            return Ok(None);
+        }
+    }
     let created_at = existing
         .as_ref()
         .map(|(value, _, _, _, _)| *value)
         .unwrap_or_else(|| session.created_at.unwrap_or(now));
     let updated_at = match &existing {
-        Some((_, prev_updated, prev_blocks, _, _)) if json_eq(prev_blocks, &session.blocks) => {
-            *prev_updated
-        }
+        Some((_, prev_updated, true, _, _)) => *prev_updated,
         Some(_) => now,
         None => session.updated_at.unwrap_or(now),
     };
@@ -1492,7 +1576,7 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
     )?;
 
     remember_worker_from_blocks(conn, &session.id, &session.blocks)?;
-    Ok(SessionSummary {
+    Ok(Some(SessionSummary {
         id: session.id.clone(),
         orchestration_lead_id: worker_parent(conn, &session.id)?,
         orchestration: orchestration_summary(conn, &session.id)?,
@@ -1515,7 +1599,7 @@ fn upsert_session(conn: &Connection, session: &SessionUpsert) -> rusqlite::Resul
         draft: is_draft,
         linked_work_item: session.linked_work_item.clone(),
         automation_id: automation_id.map(str::to_owned),
-    })
+    }))
 }
 
 struct SearchProgressGuard<'a>(&'a Connection);
@@ -1841,8 +1925,20 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
+#[cfg(test)]
 fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<SessionSummary>> {
-    let git = crate::fs::git_info_for(&crate::fs::expand_home(cwd));
+    list_by_project_with_git(
+        conn,
+        cwd,
+        crate::fs::git_info_for(&crate::fs::expand_home(cwd)),
+    )
+}
+
+fn list_by_project_with_git(
+    conn: &Connection,
+    cwd: &str,
+    git: crate::fs::GitInfo,
+) -> rusqlite::Result<Vec<SessionSummary>> {
     let mut statement = conn.prepare(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
@@ -1893,20 +1989,23 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
     rows.collect()
 }
 
-fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
-    let mut statement = conn.prepare(
-        "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
+// The partial index holds only linked threads, so this walks them already in
+// order instead of scanning every session and sorting the hits. Pinned like
+// `sessions_cwd_cover_idx`: `migrate` always restores it.
+const LIST_LINKED_SQL: &str = "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
                 worktree_removed, is_draft, automation_id
-         FROM sessions
+         FROM sessions INDEXED BY sessions_linked_idx
          WHERE has_user_message = 1
            AND linked_work_item_json IS NOT NULL
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
-         ORDER BY updated_at DESC, id ASC",
-    )?;
+         ORDER BY updated_at DESC, id ASC";
+
+fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
+    let mut statement = conn.prepare(LIST_LINKED_SQL)?;
     let rows = statement.query_map([], |row| {
         let archived: i64 = row.get(10)?;
         let pinned: i64 = row.get(11)?;
@@ -1951,27 +2050,29 @@ fn list_recent(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<SessionSum
     Ok(rows)
 }
 
-fn recent_rows(
-    conn: &Connection,
-    pinned: bool,
-    limit: i64,
-) -> rusqlite::Result<Vec<SessionSummary>> {
-    // The covering index answers the whole filter without reading transcripts;
-    // the unscoped search pins it for the same reason.
-    let mut statement = conn.prepare(
-        "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
+// `sessions_recent_idx` is ordered by (pinned, updated_at DESC, id), so the
+// LIMIT stops after a few rows instead of sorting every session; the cover
+// index leads with `cwd` and could not give that order. Pinned for the same
+// reason the search pins its index: `migrate` always restores it.
+const RECENT_ROWS_SQL: &str = "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json, worktree_cwd, worktree_removed, is_draft,
                 automation_id
-         FROM sessions INDEXED BY sessions_cwd_cover_idx
+         FROM sessions INDEXED BY sessions_recent_idx
          WHERE has_user_message = 1
            AND archived = 0
            AND pinned = ?1
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
          ORDER BY updated_at DESC, id ASC
-         LIMIT ?2",
-    )?;
+         LIMIT ?2";
+
+fn recent_rows(
+    conn: &Connection,
+    pinned: bool,
+    limit: i64,
+) -> rusqlite::Result<Vec<SessionSummary>> {
+    let mut statement = conn.prepare(RECENT_ROWS_SQL)?;
     let rows = statement.query_map(params![pinned as i64, limit], |row| {
         let worktree_removed = row.get::<_, i64>(14)? != 0;
         let branch: Option<String> = row.get(9)?;
@@ -2028,13 +2129,6 @@ fn has_draft_block(blocks: &Value) -> bool {
 
 fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
-}
-
-fn json_eq(raw: &str, incoming: &Value) -> bool {
-    match serde_json::from_str::<Value>(raw) {
-        Ok(previous) => previous == *incoming,
-        Err(_) => false,
-    }
 }
 
 fn optional_json(raw: Option<String>) -> Option<Value> {
@@ -2189,7 +2283,12 @@ fn set_linked_work_item(
     Ok(())
 }
 
-fn get_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<SessionRecord>> {
+/// Reads a session row with `blocks` and `model_settings` left as `Null`,
+/// returning the stored JSON texts of those two fields next to it.
+fn read_session_row(
+    conn: &Connection,
+    session_id: &str,
+) -> rusqlite::Result<Option<(SessionRecord, String, String)>> {
     conn.query_row(
         "SELECT id, cwd, harness, model, model_settings, runtime_mode, title,
                 provider_session_id, blocks_json, created_at, updated_at,
@@ -2202,31 +2301,17 @@ fn get_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<S
         |row| {
             let model_settings_raw: String = row.get(4)?;
             let blocks_raw: String = row.get(8)?;
-            let model_settings = serde_json::from_str(&model_settings_raw).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    4,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-            let blocks = serde_json::from_str(&blocks_raw).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    8,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
-            Ok(SessionRecord {
+            let record = SessionRecord {
                 id: row.get(0)?,
                 orchestration_lead_id: worker_parent(conn, session_id)?,
                 cwd: row.get(1)?,
                 harness: row.get(2)?,
                 model: row.get(3)?,
-                model_settings,
+                model_settings: Value::Null,
                 runtime_mode: row.get(5)?,
                 title: row.get(6)?,
                 provider_session_id: row.get(7)?,
-                blocks,
+                blocks: Value::Null,
                 context_used: row.get(11)?,
                 context_window: row.get(12)?,
                 branch: row.get(13)?,
@@ -2237,10 +2322,61 @@ fn get_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<S
                 automation_id: nonempty(row.get(18)?),
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
-            })
+            };
+            Ok((record, model_settings_raw, blocks_raw))
         },
     )
     .optional()
+}
+
+fn json_conversion_error(index: usize, error: serde_json::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Text,
+        Box::new(error),
+    )
+}
+
+fn get_session(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<SessionRecord>> {
+    let Some((mut record, model_settings_raw, blocks_raw)) = read_session_row(conn, session_id)?
+    else {
+        return Ok(None);
+    };
+    record.model_settings =
+        serde_json::from_str(&model_settings_raw).map_err(|e| json_conversion_error(4, e))?;
+    record.blocks = serde_json::from_str(&blocks_raw).map_err(|e| json_conversion_error(8, e))?;
+    Ok(Some(record))
+}
+
+/// Same JSON as serialising `get_session`'s record, but the two large stored
+/// texts are spliced in verbatim after a validity check instead of being
+/// parsed into a `Value` tree and serialised again.
+fn get_session_json(conn: &Connection, session_id: &str) -> rusqlite::Result<String> {
+    let Some((record, model_settings_raw, blocks_raw)) = read_session_row(conn, session_id)? else {
+        return Ok("null".to_string());
+    };
+    serde_json::from_str::<serde::de::IgnoredAny>(&model_settings_raw)
+        .map_err(|e| json_conversion_error(4, e))?;
+    serde_json::from_str::<serde::de::IgnoredAny>(&blocks_raw)
+        .map_err(|e| json_conversion_error(8, e))?;
+    let mut head = match serde_json::to_value(&record) {
+        Ok(Value::Object(mut map)) => {
+            map.remove("blocks");
+            map.remove("modelSettings");
+            serde_json::to_string(&map)
+        }
+        Ok(_) => unreachable!("SessionRecord serialises as an object"),
+        Err(e) => Err(e),
+    }
+    .map_err(|e| json_conversion_error(0, e))?;
+    // `head` is a non-empty object ("id" is always present); reopen it.
+    head.pop();
+    head.push_str(",\"modelSettings\":");
+    head.push_str(model_settings_raw.trim());
+    head.push_str(",\"blocks\":");
+    head.push_str(blocks_raw.trim());
+    head.push('}');
+    Ok(head)
 }
 
 fn list_in_flight(conn: &Connection) -> rusqlite::Result<Vec<InFlightSession>> {
@@ -2336,6 +2472,42 @@ mod tests {
     use rusqlite::hooks::{AuthAction, Authorization};
     use serde_json::json;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn session_get_json_equals_the_typed_record() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (
+               id, cwd, harness, model, model_settings, runtime_mode, title,
+               blocks_json, created_at, updated_at, branch, linked_work_item_json
+             ) VALUES ('s1', '/w', 'codex', 'm', ' {\"effort\": \"high\"} ', 'supervised',
+                       'T', ?1, 5, 7, 'main', '{\"id\":\"w\"}')",
+            [r#" [{"id":"a","role":"user","text":"héllo \"q\""},{"id":"b","n":1.50}] "#],
+        )
+        .unwrap();
+        let typed = serde_json::to_value(get_session(&conn, "s1").unwrap().unwrap()).unwrap();
+        let raw: Value = serde_json::from_str(&get_session_json(&conn, "s1").unwrap()).unwrap();
+        assert_eq!(raw, typed);
+        assert_eq!(raw["modelSettings"]["effort"], "high");
+        assert_eq!(raw["blocks"][0]["text"], "h\u{e9}llo \"q\"");
+        assert_eq!(get_session_json(&conn, "missing").unwrap(), "null");
+    }
+
+    #[test]
+    fn session_get_json_rejects_corrupt_stored_json() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (
+               id, cwd, harness, model, runtime_mode, title, blocks_json, created_at, updated_at
+             ) VALUES ('bad', '/w', 'codex', 'm', 'supervised', 'T', '[{', 1, 1)",
+            [],
+        )
+        .unwrap();
+        assert!(get_session(&conn, "bad").is_err());
+        assert!(get_session_json(&conn, "bad").is_err());
+    }
 
     #[test]
     fn startup_does_not_read_saved_transcripts() {
@@ -2719,6 +2891,44 @@ mod tests {
     }
 
     #[test]
+    fn upsert_moves_updated_at_only_when_blocks_change() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let first = upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        // Same blocks, different key order in the source JSON: still unchanged.
+        let mut same = sample("s1", "/tmp/a", "Retitled");
+        same.blocks =
+            serde_json::from_str(r#"[{"text":"hello","role":"user","id":"b1"}]"#).unwrap();
+        let unchanged = upsert_session(&conn, &same).unwrap();
+        assert_eq!(unchanged.updated_at, first.updated_at);
+        assert_eq!(unchanged.title, "Retitled");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut changed = sample("s1", "/tmp/a", "Retitled");
+        changed.blocks = json!([{ "id": "b1", "role": "user", "text": "hello!" }]);
+        let bumped = upsert_session(&conn, &changed).unwrap();
+        assert!(bumped.updated_at > first.updated_at);
+    }
+
+    #[test]
+    fn upsert_treats_non_canonical_stored_blocks_as_changed() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let first = upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        conn.execute(
+            "UPDATE sessions SET blocks_json = '[ {\"id\":\"b1\",\"role\":\"user\",\"text\":\"hello\"} ]' WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let again = upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        assert!(again.updated_at > first.updated_at);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let settled = upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+        assert_eq!(settled.updated_at, again.updated_at);
+    }
+
+    #[test]
     fn context_usage_round_trips() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
@@ -2856,6 +3066,104 @@ mod tests {
         assert_eq!(ids(2), ["a-new", "b-mid", "old-pinned"]);
         assert_eq!(ids(10), ["a-new", "b-mid", "oldest", "old-pinned"]);
         assert!(list_recent(&conn, 10).unwrap().iter().any(|row| row.pinned));
+    }
+
+    fn guarded_upsert(
+        conn: &Connection,
+        session: &SessionUpsert,
+        expected: Option<Option<i64>>,
+    ) -> Option<SessionSummary> {
+        upsert_session_with_git(conn, session, upsert_git_info(session), expected).unwrap()
+    }
+
+    #[test]
+    fn guarded_upsert_writes_only_when_the_stored_stamp_matches() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut first = sample("s1", "/tmp/a", "First");
+        first.updated_at = Some(1_000);
+        // "No row" expectation on an empty store writes.
+        assert!(guarded_upsert(&conn, &first, Some(None)).is_some());
+
+        let mut next = sample("s1", "/tmp/a", "Second");
+        next.blocks = json!([{ "id": "b1", "role": "user", "text": "changed" }]);
+        // Stale stamp: refused, row untouched.
+        assert!(guarded_upsert(&conn, &next, Some(Some(999))).is_none());
+        let stored = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(stored.title, "First");
+        assert_eq!(stored.updated_at, 1_000);
+
+        // Matching stamp writes.
+        let written = guarded_upsert(&conn, &next, Some(Some(1_000))).unwrap();
+        assert_eq!(written.title, "Second");
+        assert_eq!(get_session(&conn, "s1").unwrap().unwrap().title, "Second");
+    }
+
+    #[test]
+    fn guarded_upsert_expecting_no_row_refuses_when_one_exists() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &sample("s1", "/tmp/a", "First")).unwrap();
+
+        let replacement = sample("s1", "/tmp/a", "Replacement");
+        assert!(guarded_upsert(&conn, &replacement, Some(None)).is_none());
+        assert_eq!(get_session(&conn, "s1").unwrap().unwrap().title, "First");
+        // A stamp for a row that does not exist is stale too.
+        assert!(guarded_upsert(&conn, &sample("s2", "/tmp/a", "X"), Some(Some(5))).is_none());
+        assert!(get_session(&conn, "s2").unwrap().is_none());
+    }
+
+    #[test]
+    fn unguarded_upsert_always_writes() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        assert!(guarded_upsert(&conn, &sample("s1", "/tmp/a", "First"), None).is_some());
+        let again = sample("s1", "/tmp/a", "Again");
+        assert!(guarded_upsert(&conn, &again, None).is_some());
+        assert_eq!(get_session(&conn, "s1").unwrap().unwrap().title, "Again");
+    }
+
+    /// The plan's detail lines for `sql` on a migrated, populated store.
+    fn query_plan(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Vec<String> {
+        let mut statement = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap();
+        statement
+            .query_map(params, |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    fn assert_indexed_and_presorted(plan: &[String], index: &str) {
+        let text = plan.join("\n");
+        assert!(text.contains(index), "plan does not use {index}:\n{text}");
+        assert!(
+            !text.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "plan sorts:\n{text}"
+        );
+        for line in plan {
+            if line.starts_with("SCAN sessions") {
+                assert!(line.contains("USING"), "unindexed table scan:\n{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn recent_and_linked_lists_read_in_index_order() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut linked = sample("s1", "/tmp/a", "Linked");
+        linked.linked_work_item = Some(json!({"kind": "pr", "number": 1}));
+        upsert_session(&conn, &linked).unwrap();
+        upsert_session(&conn, &sample("s2", "/tmp/b", "Plain")).unwrap();
+
+        let recent = query_plan(&conn, RECENT_ROWS_SQL, &[&0_i64, &50_i64]);
+        assert_indexed_and_presorted(&recent, "sessions_recent_idx");
+        let pinned = query_plan(&conn, RECENT_ROWS_SQL, &[&1_i64, &-1_i64]);
+        assert_indexed_and_presorted(&pinned, "sessions_recent_idx");
+        let linked = query_plan(&conn, LIST_LINKED_SQL, &[]);
+        assert_indexed_and_presorted(&linked, "sessions_linked_idx");
     }
 
     #[test]
@@ -3716,6 +4024,78 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn list_and_get_read_their_own_writes_on_the_read_connection() {
+        let path = std::env::temp_dir().join(format!(
+            "monocode-session-list-conn-{}-{}.db",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = SessionStore::open(path.clone()).unwrap();
+        assert!(store.list_conn.lock().unwrap().is_some());
+        upsert_session(
+            &store.conn.lock().unwrap(),
+            &sample("s1", "/tmp/a", "First"),
+        )
+        .unwrap();
+
+        let listed = store
+            .with_read_conn(|conn| list_by_project(conn, "/tmp/a").map_err(|e| e.to_string()))
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        let record = store
+            .with_read_conn(|conn| get_session(conn, "s1").map_err(|e| e.to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.title, "First");
+
+        // A later commit is visible to the next read, and the connection is read-only.
+        upsert_session(
+            &store.conn.lock().unwrap(),
+            &sample("s2", "/tmp/a", "Second"),
+        )
+        .unwrap();
+        let listed = store
+            .with_read_conn(|conn| list_by_project(conn, "/tmp/a").map_err(|e| e.to_string()))
+            .unwrap();
+        assert_eq!(listed.len(), 2);
+        assert!(store
+            .with_read_conn(|conn| conn
+                .execute("UPDATE sessions SET title = 'nope'", [])
+                .map_err(|e| e.to_string()))
+            .is_err());
+        let synchronous: i64 = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(synchronous, 1, "NORMAL");
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn in_memory_store_reads_through_the_write_connection() {
+        let store = SessionStore::open_in_memory().unwrap();
+        assert!(store.list_conn.lock().unwrap().is_none());
+        upsert_session(&store.conn.lock().unwrap(), &sample("s1", "/tmp/a", "Mem")).unwrap();
+        let listed = store
+            .with_read_conn(|conn| list_by_project(conn, "/tmp/a").map_err(|e| e.to_string()))
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(store
+            .with_read_conn(|conn| get_session(conn, "s1").map_err(|e| e.to_string()))
+            .unwrap()
+            .is_some());
     }
 
     #[test]

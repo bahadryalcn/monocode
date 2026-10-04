@@ -63,6 +63,56 @@ afterEach(() => {
 });
 
 describe("title tab pane drops", () => {
+  it("pops the only active tab out with a vertical drag", () => {
+    const onMoveToNewWindow = vi.fn();
+    act(() =>
+      root.render(
+        createElement(TitleBar, {
+          tabs: [tab("first")],
+          activeId: "first",
+          cwd: "/project",
+          onToggleSidebar: vi.fn(),
+          onNew: vi.fn(),
+          onSelect: vi.fn(),
+          onClose: vi.fn(),
+          onCloseMany: vi.fn(),
+          onReorder: vi.fn(),
+          onMoveToNewWindow,
+        }),
+      ),
+    );
+    const button = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="project · first"]',
+    )!;
+    const item = button.parentElement!;
+    item.getBoundingClientRect = () => new DOMRect(0, 0, 100, 32);
+    let captured = false;
+    item.setPointerCapture = () => {
+      captured = true;
+    };
+    item.hasPointerCapture = () => captured;
+    item.releasePointerCapture = () => {
+      captured = false;
+    };
+    pointer(button, "pointerdown", 50, 16);
+    pointer(window, "pointermove", 50, -40);
+    expect(document.body.style.cursor).toBe("alias");
+    expect(document.querySelector(".pointer-drop-hint")?.textContent).toBe(
+      "Move to another window",
+    );
+    expect(document.documentElement.classList.contains("is-grabbing")).toBe(
+      true,
+    );
+    pointer(window, "pointerup", 50, -40);
+    expect(onMoveToNewWindow).toHaveBeenCalledExactlyOnceWith("first", {
+      position: expect.objectContaining({ clientX: 50, clientY: -40 }),
+    });
+    expect(captured).toBe(false);
+    expect(document.querySelector(".pointer-drop-hint")).toBeNull();
+    expect(document.documentElement.classList.contains("is-grabbing")).toBe(
+      false,
+    );
+  });
   it("joins compact navigation and tabs in one title bar", () => {
     const onGoBack = vi.fn();
     const onGoForward = vi.fn();
@@ -106,64 +156,86 @@ describe("title tab pane drops", () => {
     expect(onGoBack).toHaveBeenCalledOnce();
   });
 
-  it("keeps the current tab visible and places the dragged tab on a pane edge", () => {
-    const onSelect = vi.fn();
-    const onPlaceOnPane = vi.fn();
-    act(() =>
-      root.render(
-        createElement(TitleBar, {
-          tabs: [tab("first"), tab("second")],
-          activeId: "first",
-          cwd: "/project",
-          onToggleSidebar: vi.fn(),
-          onNew: vi.fn(),
-          onSelect,
-          onClose: vi.fn(),
-          onCloseMany: vi.fn(),
-          onReorder: vi.fn(),
-          onPlaceOnPane,
-        }),
-      ),
-    );
+  it.each(["first", "second", "self"])(
+    "places tab %s on a pane edge, including the active tab",
+    (source) => {
+      const draggedId = source === "self" ? "first" : source;
+      const onSelect = vi.fn();
+      const onPlaceOnPane = vi.fn();
+      act(() =>
+        root.render(
+          createElement(TitleBar, {
+            tabs: [
+              {
+                ...tab("first"),
+                focusedPaneId: source === "self" ? "session-one" : undefined,
+              },
+              tab("second"),
+            ],
+            activeId: "first",
+            cwd: "/project",
+            onToggleSidebar: vi.fn(),
+            onNew: vi.fn(),
+            onSelect,
+            onClose: vi.fn(),
+            onCloseMany: vi.fn(),
+            onReorder: vi.fn(),
+            onPlaceOnPane,
+          }),
+        ),
+      );
 
-    const titleButtons = ["first", "second"].map((id) =>
-      container.querySelector<HTMLButtonElement>(
-        `button[aria-label="project · ${id}"]`,
-      )!,
-    );
-    const titleItems = titleButtons.map((button) => button.parentElement!);
-    titleItems.forEach((item, index) => {
-      item.getBoundingClientRect = () => new DOMRect(index * 100, 0, 100, 32);
-      const captured = new Set<number>();
-      item.setPointerCapture = (id) => captured.add(id);
-      item.hasPointerCapture = (id) => captured.has(id);
-      item.releasePointerCapture = (id) => captured.delete(id);
-    });
+      const titleButtons = ["first", "second"].map((id) =>
+        container.querySelector<HTMLButtonElement>(
+          `button[aria-label="project · ${id}"]`,
+        )!,
+      );
+      const titleItems = titleButtons.map((button) => button.parentElement!);
+      titleItems.forEach((item, index) => {
+        item.getBoundingClientRect = () => new DOMRect(index * 100, 0, 100, 32);
+        const captured = new Set<number>();
+        item.setPointerCapture = (id) => captured.add(id);
+        item.hasPointerCapture = (id) => captured.has(id);
+        item.releasePointerCapture = (id) => captured.delete(id);
+      });
 
-    const pane = document.createElement("div");
-    pane.dataset.paneId = "session-one";
-    pane.getBoundingClientRect = () => new DOMRect(0, 40, 400, 400);
-    document.body.append(pane);
-    vi.spyOn(document, "elementFromPoint").mockReturnValue(pane);
+      const pane = document.createElement("div");
+      pane.dataset.paneId = "session-one";
+      pane.getBoundingClientRect = () => new DOMRect(0, 40, 400, 400);
+      document.body.append(pane);
+      vi.spyOn(document, "elementFromPoint").mockReturnValue(pane);
 
-    pointer(titleButtons[1], "pointerdown", 150, 16);
-    pointer(window, "pointermove", 390, 200);
-    expect(getExternalPaneDrop()).toMatchObject({
-      fromId: "second",
-      overId: "session-one",
-      edge: "right",
-    });
-    pointer(window, "pointerup", 390, 200);
+      const index = draggedId === "first" ? 0 : 1;
+      expect(titleItems[index].dataset.tabDraggable).toBe("true");
+      pointer(titleButtons[index], "pointerdown", index * 100 + 50, 16);
+      pointer(window, "pointermove", 390, 200);
+      if (source === "self") {
+        expect(document.body.style.cursor).toBe("not-allowed");
+        expect(getExternalPaneDrop()).toBeNull();
+        pointer(window, "pointerup", 390, 200);
+        expect(onPlaceOnPane).not.toHaveBeenCalled();
+        expect(document.querySelector(".pointer-drop-hint")).toBeNull();
+        pane.remove();
+        return;
+      }
+      expect(document.body.style.cursor).toBe("move");
+      expect(getExternalPaneDrop()).toMatchObject({
+        fromId: draggedId,
+        overId: "session-one",
+        edge: "right",
+      });
+      pointer(window, "pointerup", 390, 200);
 
-    expect(onPlaceOnPane).toHaveBeenCalledExactlyOnceWith(
-      "second",
-      "session-one",
-      "right",
-    );
-    expect(onSelect).not.toHaveBeenCalled();
-    expect(getExternalPaneDrop()).toBeNull();
-    pane.remove();
-  });
+      expect(onPlaceOnPane).toHaveBeenCalledExactlyOnceWith(
+        draggedId,
+        "session-one",
+        "right",
+      );
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(getExternalPaneDrop()).toBeNull();
+      pane.remove();
+    },
+  );
 
   it("resolves pane insertion on either side of a title tab", () => {
     act(() =>

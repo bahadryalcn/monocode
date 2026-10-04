@@ -3,7 +3,7 @@ import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FilePaneTab } from "../model/layout";
-import { SurfaceTabs } from "./SurfaceTabs";
+import { SurfaceTabs, surfaceTabMenuItems } from "./SurfaceTabs";
 
 const actions = vi.hoisted(() => ({
   copyText: vi.fn(async () => {}),
@@ -170,5 +170,24 @@ describe("file tab context menu", () => {
       document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
     ).find((button) => button.textContent === "Close Others");
     expect(item?.disabled).toBe(true);
+  });
+});
+
+describe("Open in New Window menu item", () => {
+  const ids = (items: ReturnType<typeof surfaceTabMenuItems>) =>
+    items.flatMap((item) => (item.kind === "item" ? [item.id] : []));
+
+  it("is offered for files only when a handler exists", () => {
+    expect(ids(surfaceTabMenuItems(files[0]))).not.toContain("new-window");
+    expect(ids(surfaceTabMenuItems(files[0], true, { dirty: false }))).toContain(
+      "new-window",
+    );
+  });
+
+  it("is disabled while the file has unsaved changes", () => {
+    const item = surfaceTabMenuItems(files[0], true, { dirty: true }).find(
+      (entry) => entry.kind === "item" && entry.id === "new-window",
+    );
+    expect(item).toMatchObject({ disabled: true });
   });
 });

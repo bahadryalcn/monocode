@@ -1,8 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { leaf, newTab, newTerminalFile, type WorkspaceTab } from "../../features/workspace/model/layout";
+import {
+  leaf,
+  newTab,
+  newTerminalFile,
+  type WorkspaceTab,
+} from "../../features/workspace/model/layout";
 import { createProjectTerminal } from "../../features/projects/model/projectTerminal";
 import type { Session } from "../../features/sessions/model/session";
-import { collectWindowTransfer } from "./windowTransfer";
+import {
+  collectWindowTransfer,
+  mergeWindowTransfer,
+  restoreTransferredDrafts,
+} from "./windowTransfer";
+import {
+  composerDraftOf,
+  clearComposerDraft,
+  setComposerDraft,
+} from "../../features/sessions/model/draftCache";
 
 function session(id: string, cwd: string): Session {
   return {
@@ -19,6 +33,65 @@ function session(id: string, cwd: string): Session {
 }
 
 describe("collectWindowTransfer", () => {
+  it("reattaches a tab while retaining the destination's tabs and drafts", () => {
+    const existing = newTab("existing");
+    const moved = newTab("moved");
+    const payload = collectWindowTransfer(
+      [moved],
+      [session("moved", "/p")],
+      [moved.id],
+      moved.id,
+      new Set(),
+      "/p",
+    )!;
+    const merged = mergeWindowTransfer(
+      [existing],
+      [session("existing", "/p")],
+      [],
+      payload,
+    );
+    expect(merged.tabs).toEqual([existing, moved]);
+    expect(merged.sessions.map((s) => s.id)).toEqual(["existing", "moved"]);
+    expect(() =>
+      mergeWindowTransfer(merged.tabs, merged.sessions, [], payload),
+    ).toThrow("already open");
+  });
+
+  it("rejects a duplicate conversation under a different tab ID", () => {
+    const incoming = newTab("shared");
+    const existing = newTab("shared");
+    const payload = collectWindowTransfer(
+      [incoming],
+      [session("shared", "/p")],
+      [incoming.id],
+      incoming.id,
+      new Set(),
+      "/p",
+    )!;
+    expect(() => mergeWindowTransfer([existing], [], [], payload)).toThrow(
+      "already open",
+    );
+  });
+  it("moves the latest unsent text and leaves unrelated drafts alone", () => {
+    setComposerDraft("moving", "message not sent yet");
+    setComposerDraft("staying", "keep here");
+    const tab = { ...newTab("moving"), id: "moving-tab" };
+    const payload = collectWindowTransfer(
+      [tab],
+      [session("moving", "/p"), session("staying", "/p")],
+      [tab.id],
+      tab.id,
+      new Set(),
+      "/p",
+    )!;
+    expect(Object.keys(payload.composerDrafts!)).toEqual(["moving"]);
+    clearComposerDraft("moving");
+    restoreTransferredDrafts(payload);
+    expect(composerDraftOf("moving").text).toBe("message not sent yet");
+    expect(composerDraftOf("staying").text).toBe("keep here");
+    clearComposerDraft("moving");
+    clearComposerDraft("staying");
+  });
   it("collects tabs, sessions, and dirty files for a group", () => {
     const s1 = session("s1", "/Users/me/agent-terminal");
     const s2 = session("s2", "/Users/me/agent-terminal");
@@ -40,7 +113,10 @@ describe("collectWindowTransfer", () => {
       projectCwd: "/Users/me/agent-terminal",
     });
     expect(payload?.tabs.map((tab) => tab.id)).toEqual(["t1", "t2"]);
-    expect(payload?.sessions.map((session) => session.id)).toEqual(["s1", "s2"]);
+    expect(payload?.sessions.map((session) => session.id)).toEqual([
+      "s1",
+      "s2",
+    ]);
     expect(payload?.projectTerminals).toBeUndefined();
   });
 

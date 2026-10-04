@@ -30,6 +30,8 @@ export function SidebarUpdateFooter({
     phase: "idle",
     currentVersion: "…",
   });
+  const phaseRef = useRef(snapshot.phase);
+  phaseRef.current = snapshot.phase;
 
   // The automatic probe runs on mount whether or not it ends up rendering
   // anything, so a newly published version still surfaces on its own. The
@@ -37,32 +39,47 @@ export function SidebarUpdateFooter({
   // padding entirely when neither child has anything to show.
   useEffect(() => {
     let cancelled = false;
+    let checking = false;
 
-    (async () => {
-      const currentVersion = await readAppVersion();
-      if (cancelled) return;
-      setSnapshot({ phase: "checking", currentVersion });
-
+    const probe = async () => {
+      if (
+        checking ||
+        phaseRef.current === "available" ||
+        phaseRef.current === "downloading"
+      )
+        return;
+      checking = true;
       try {
-        const update = await probeForUpdate();
+        const currentVersion = await readAppVersion();
         if (cancelled) return;
-        if (update) {
-          setSnapshot({
-            phase: "available",
-            currentVersion,
-            availableVersion: update.version,
-          });
-          return;
+        setSnapshot({ phase: "checking", currentVersion });
+
+        try {
+          const update = await probeForUpdate();
+          if (cancelled) return;
+          if (update) {
+            setSnapshot({
+              phase: "available",
+              currentVersion,
+              availableVersion: update.version,
+            });
+            return;
+          }
+          setSnapshot({ phase: "current", currentVersion });
+        } catch {
+          if (cancelled) return;
+          setSnapshot({ phase: "idle", currentVersion });
         }
-        setSnapshot({ phase: "current", currentVersion });
-      } catch {
-        if (cancelled) return;
-        setSnapshot({ phase: "idle", currentVersion });
+      } finally {
+        checking = false;
       }
-    })();
+    };
+    void probe();
+    const interval = window.setInterval(() => void probe(), 30 * 60 * 1000);
 
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
     };
   }, []);
 

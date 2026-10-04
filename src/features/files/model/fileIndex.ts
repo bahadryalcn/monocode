@@ -4,11 +4,14 @@ import {
   statFiles,
   type ProjectFile,
 } from "../../../platform/tauri/fs";
-import { subscribeDirsChanged } from "./fileTree";
+import { dirBelongsToRoot, subscribeDirsChanged } from "./fileTree";
 import { scorePath, type FuzzyHit } from "../../../shared/lib/fuzzy";
 import { resolveWorkspacePath, slash } from "../../../shared/lib/paths";
 import { looksLikeProject } from "../../projects/model/recents";
-import { normalizeEditorPath, type FileOpenOptions } from "../../search/model/search";
+import {
+  normalizeEditorPath,
+  type FileOpenOptions,
+} from "../../search/model/search";
 
 const MAX_RECENTS = 30;
 const MAX_RESULTS = 80;
@@ -166,24 +169,42 @@ export function rankProjectFiles(
     return out;
   }
 
-  const scored: RankedFile[] = [];
+  // Bounded selection under the picker's total order: only the best `limit`
+  // hits are kept (best first), and result objects are built just for those.
+  type Candidate = { file: ProjectFile; score: number; positions: number[] };
+  const best: Candidate[] = [];
   for (const file of files) {
     const hit = scorePath(query, file.relative, file.name);
     if (!hit) continue;
     const recency = recentRank.get(file.path);
     const score =
       hit.score + (recency == null ? 0 : (MAX_RECENTS - recency) * 8);
-    scored.push({ ...file, score, positions: hit.positions });
+    if (best.length >= limit && score < best[best.length - 1].score) continue;
+    const candidate: Candidate = { file, score, positions: hit.positions };
+    // Insert after every candidate that does not rank below it, which keeps
+    // ties in index order like a stable sort would.
+    let at = best.length;
+    while (at > 0 && compareRanked(best[at - 1], candidate) > 0) at -= 1;
+    if (at >= limit) continue;
+    best.splice(at, 0, candidate);
+    if (best.length > limit) best.pop();
   }
+  return best.map((item) => ({
+    ...item.file,
+    score: item.score,
+    positions: item.positions,
+  }));
+}
 
-  scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    if (a.relative.length !== b.relative.length) {
-      return a.relative.length - b.relative.length;
-    }
-    return a.relative.localeCompare(b.relative);
-  });
-  return scored.slice(0, limit);
+function compareRanked(
+  a: { file: ProjectFile; score: number },
+  b: { file: ProjectFile; score: number },
+): number {
+  if (b.score !== a.score) return b.score - a.score;
+  if (a.file.relative.length !== b.file.relative.length) {
+    return a.file.relative.length - b.file.relative.length;
+  }
+  return a.file.relative.localeCompare(b.file.relative);
 }
 
 /** Resolve a transcript or markdown file link to an existing project file. */
@@ -385,7 +406,13 @@ function pickOpenableFile(
   return candidates.sort((a, b) => a.relative.length - b.relative.length)[0];
 }
 
-subscribeDirsChanged(scheduleIndexRefresh);
+subscribeDirsChanged((_roots, paths) => {
+  if (
+    !paths ||
+    (lastCwd && paths.some((path) => dirBelongsToRoot(path, lastCwd!)))
+  )
+    scheduleIndexRefresh();
+});
 
 if (typeof document !== "undefined") {
   window.addEventListener("focus", () => {

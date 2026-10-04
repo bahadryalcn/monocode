@@ -118,3 +118,10 @@ export function scanOscCwd(
   const rest = tail.length > 256 ? tail.slice(-256) : tail;
   return { cwd, rest };
 }
+
+/** Path from the payload of an OSC 7 sequence (`file://host/path`), as xterm's parser hands it over. */
+export function parseOsc7Cwd(data: string): string | undefined {
+  const match = /^file:\/\/[^/]*(\/.*)$/s.exec(data);
+  const path = match ? decodeOscPath(match[1] ?? "") : "";
+  return path || undefined;
+}

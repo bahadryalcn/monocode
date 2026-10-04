@@ -5,6 +5,7 @@ import {
   DESKTOP_LIVE_MS,
   runDesktopLiveTick,
   supportsDesktopLive,
+  type DesktopLiveBeat,
   type DesktopLiveCommand,
   type DesktopLiveHandlers,
 } from "./desktopLive";
@@ -13,6 +14,8 @@ import { isLocalSyncMachine } from "./localSync";
 import type { RemoteMachine } from "./protocol";
 
 const MACHINE_RECHECK_MS = 15_000;
+// One identity per WebView, stable across StrictMode effect remounts.
+const desktopClientId = crypto.randomUUID();
 
 /** Tells the local host this desktop is alive and which sessions are busy or
  * waiting on input, and runs the stop/approve/answer commands watchers sent
@@ -25,13 +28,14 @@ export function useDesktopLive(
   const state = useRef({
     unacked: new Set<string>(),
     handled: new Set<string>(),
+    beat: {} as DesktopLiveBeat,
   });
   useEffect(() => {
     let stopped = false;
     let running = false;
     let machineId: string | undefined;
     let checkedAt = 0;
-    const { unacked, handled } = state.current;
+    const { unacked, handled, beat } = state.current;
 
     const tick = async () => {
       if (running || !hostReachable.current) return;
@@ -49,6 +53,7 @@ export function useDesktopLive(
         }
         const id = machineId;
         await runDesktopLiveTick({
+          clientId: desktopClientId,
           request: (payload) =>
             remoteRequest<{ commands?: DesktopLiveCommand[] }>(id, "sessions.desktopLive", payload),
           sessions: () => sessionsRef.current,
@@ -59,9 +64,11 @@ export function useDesktopLive(
           },
           unacked,
           handled,
+          beat,
         });
       } catch {
         machineId = undefined; // Host unreachable; the next tick looks again.
+        beat.idleAt = undefined;
       } finally {
         running = false;
       }

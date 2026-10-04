@@ -47,6 +47,7 @@ function setup(
   axis: "x" | "y" = "x",
   externalDrop?: ReorderExternalDrop<string>,
   foldOnDrag = false,
+  itemIds = ids,
 ) {
   Object.assign(browser, { matchMedia: () => ({ matches: reducedMotion }) });
   const onReorder = vi.fn();
@@ -54,7 +55,7 @@ function setup(
   // Render the real hook to obtain its gesture interface without mocking React.
   // Mount/unmount effects and native click targeting need a browser check.
   function Probe() {
-    reorder = useAnimatedReorder(ids, onReorder, axis, externalDrop, {
+    reorder = useAnimatedReorder(itemIds, onReorder, axis, externalDrop, {
       foldOnDrag,
     });
     return null;
@@ -114,6 +115,35 @@ afterEach(() => {
 });
 
 describe("workspace tab gestures", () => {
+  it.each([{ itemIds: ids }, { itemIds: [ids[0]] }])(
+    "allows vertical external drops with $itemIds",
+    ({ itemIds }) => {
+      const onDrop = vi.fn(() => true);
+      const { press, onReorder } = setup(
+        true,
+        "x",
+        {
+          onMove: () => true,
+          onDrop,
+        },
+        false,
+        itemIds,
+      );
+      press();
+      for (const type of ["pointermove", "pointerup"]) {
+        browser.dispatchEvent(
+          Object.assign(new Event(type), {
+            clientX: 50,
+            clientY: 200,
+            pointerId: 1,
+          }),
+        );
+      }
+      expect(onDrop).toHaveBeenCalledOnce();
+      expect(onReorder).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ["x", 150, 100, "translate3d(200px, 0, 0)"],
     ["y", 49, 33, "translate3d(0, 66px, 0)"],
@@ -314,7 +344,14 @@ describe("workspace tab gestures", () => {
     tabs.forEach((tab, index) => {
       tab.getBoundingClientRect = () => {
         const top = (isFolded ? folded : unfolded)[index];
-        return { left: 0, right: 100, width: 100, top, bottom: top + 32, height: 32 };
+        return {
+          left: 0,
+          right: 100,
+          width: 100,
+          top,
+          bottom: top + 32,
+          height: 32,
+        };
       };
     });
     reorder.onItemPointerDown(ids[2], {

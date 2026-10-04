@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { RemoteOutboxNotice } from "./RemoteOutboxNotice";
+import { useRemoteOutboxIssues } from "../model/remoteOutbox";
 import type { SessionPaneProps } from "../../sessions/ui/SessionPane";
 import type {
   Attachment,
@@ -13,6 +15,7 @@ import type {
 import { uploadRemoteAttachments } from "../model/remoteAttachments";
 import { temporaryWorktreeBranchName } from "../../source-control/model/worktrees";
 import type { AgentModel } from "../../sessions/model/models";
+import { remoteSessionPollDelay } from "../model/remotePollingPolicy";
 import {
   ModelSourceContext,
   type ModelSource,
@@ -40,7 +43,11 @@ import {
   savePendingRemoteCommand,
   useRemoteMachines,
 } from "../model/connections";
-import { blocksSending, needsSignIn, sendAfterReconnect } from "../model/remoteConnection";
+import {
+  blocksSending,
+  needsSignIn,
+  sendAfterReconnect,
+} from "../model/remoteConnection";
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import {
   nextRemoteQueuedMessage,
@@ -50,10 +57,18 @@ import {
 import { remoteTurnInterrupted } from "../model/remoteRecovery";
 import { forgetRemoteQueue, useRemoteQueue } from "../model/useRemoteQueue";
 import { useRemoteRecovery } from "../model/useRemoteRecovery";
-import { reportRemoteConnection, subscribeRemoteRecovered } from "../model/remoteHealth";
+import {
+  reportRemoteConnection,
+  subscribeRemoteRecovered,
+} from "../model/remoteHealth";
 import { useRemoteConnection } from "../model/useRemoteConnection";
 import { RemoteConnectionBanner } from "./RemoteConnectionBanner";
-import { parseRemotePath, remotePath, remoteProjectFor, type RemoteProject } from "../model/remoteProjects";
+import {
+  parseRemotePath,
+  remotePath,
+  remoteProjectFor,
+  type RemoteProject,
+} from "../model/remoteProjects";
 import {
   carryModelSettings,
   findRemoteModel,
@@ -239,9 +254,20 @@ function ConnectedRemoteSession({
         setError("");
         setRemovingDraft(undefined);
         preparingRef.current = false;
-        setSnapshot(next ? cachedSessionSnapshots.get(snapshotKey(machine.id, next)) : undefined);
+        setSnapshot(
+          next
+            ? cachedSessionSnapshots.get(snapshotKey(machine.id, next))
+            : undefined,
+        );
       }
-      setPending(pendingRemoteCommand(project.key, machine.environmentId, next ?? null, shell.id));
+      setPending(
+        pendingRemoteCommand(
+          project.key,
+          machine.environmentId,
+          next ?? null,
+          shell.id,
+        ),
+      );
       setSessionId(next);
     };
     window.addEventListener(REMOTE_HISTORY_CHANGE, changed);
@@ -288,7 +314,12 @@ function ConnectedRemoteSession({
     OptimisticTurn & { failed?: boolean }
   >();
   const [pending, setPending] = useState(() =>
-    pendingRemoteCommand(project.key, machine.environmentId, sessionId ?? null, shell.id),
+    pendingRemoteCommand(
+      project.key,
+      machine.environmentId,
+      sessionId ?? null,
+      shell.id,
+    ),
   );
   const [draft, setDraft] = useState<Configuration>(() => ({
     harness: isRemoteProvider(shell.harness) ? shell.harness : "codex",
@@ -342,7 +373,10 @@ function ConnectedRemoteSession({
     pending.sessionId === activeSessionId &&
     !hasHostBlock(pending.commandId);
   const busy =
-    !!hostSession?.busy || unseenActive || (startingActive && !starting?.draft) || pendingSendActive;
+    !!hostSession?.busy ||
+    unseenActive ||
+    (startingActive && !starting?.draft) ||
+    pendingSendActive;
   // Follow-ups sent while a turn runs wait here, on this computer, and go out
   // one by one when it ends. Keyed by the host's session id.
   const queue = useRemoteQueue(activeSessionId);
@@ -377,13 +411,18 @@ function ConnectedRemoteSession({
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     let failed = 0;
+    let polling = false;
     const version = bindingVersion.current;
-    const stale = () => disposed || version !== bindingVersion.current ||
+    const stale = () =>
+      disposed ||
+      version !== bindingVersion.current ||
       (!!sessionId && deletingSession.current === sessionId);
     // Every request carries the expected host identity; describe again only
     // after a failure, when the host may have been replaced.
     let described = false;
     const poll = async () => {
+      if (disposed || polling) return;
+      polling = true;
       let active = false;
       try {
         if (!described) {
@@ -432,23 +471,36 @@ function ConnectedRemoteSession({
         reportRemoteMachineStatus(machine.id, false, reason);
         described = false;
         failed++;
+      } finally {
+        polling = false;
       }
       if (!disposed)
         timer = setTimeout(
           () => void poll(),
-          failed
-            ? Math.min(10_000, 750 * 2 ** Math.min(failed, 4))
-            : active
-              ? 750
-              : visible
-                ? 3_000
-                : 10_000,
+          remoteSessionPollDelay(active, visible, document.hidden, failed),
         );
     };
+    const onVisibility = () => {
+      clearTimeout(timer);
+      if (polling) return; // The current read schedules with the new visibility.
+      if (!document.hidden) void poll();
+      else
+        timer = setTimeout(
+          () => void poll(),
+          remoteSessionPollDelay(
+            !!snapshotRef.current?.session.busy,
+            visible,
+            true,
+            failed,
+          ),
+        );
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     void poll();
     return () => {
       disposed = true;
       clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [
     machine.id,
@@ -598,7 +650,13 @@ function ConnectedRemoteSession({
     // Keep the original ID across disconnects and app restarts. An ambiguous
     // response is retried explicitly instead of silently sending a new prompt.
     try {
-      savePendingRemoteCommand(project.key, machine.environmentId, command, shell.id, followup);
+      savePendingRemoteCommand(
+        project.key,
+        machine.environmentId,
+        command,
+        shell.id,
+        followup,
+      );
       setPending(command);
       const receipt = await remoteRequest<CommandReceipt>(
         machine.id,
@@ -608,10 +666,18 @@ function ConnectedRemoteSession({
         true,
       );
       if (command.type === "create") {
-        const next = pendingRemoteFollowup(project.key, machine.environmentId, command.commandId);
+        const next = pendingRemoteFollowup(
+          project.key,
+          machine.environmentId,
+          command.commandId,
+        );
         if (next && next.type !== "create")
-          savePendingRemoteCommand(project.key, machine.environmentId,
-            { ...next, sessionId: receipt.sessionId }, shell.id);
+          savePendingRemoteCommand(
+            project.key,
+            machine.environmentId,
+            { ...next, sessionId: receipt.sessionId },
+            shell.id,
+          );
         if (version === bindingVersion.current) openSession(receipt.sessionId);
       }
       clearPendingRemoteCommand(
@@ -623,21 +689,39 @@ function ConnectedRemoteSession({
       if (command.type === "draft") {
         // Accepted drafts are actionable before the next snapshot arrives.
         setSnapshot((current) => ({
-          ...(current?.session.id === command.sessionId ? current : {
-            projectId: project.projectId, revision: 0, updatedAt: Date.now(),
-          }),
+          ...(current?.session.id === command.sessionId
+            ? current
+            : {
+                projectId: project.projectId,
+                revision: 0,
+                updatedAt: Date.now(),
+              }),
           status: "idle",
           session: {
-            ...(current?.session.id === command.sessionId ? current.session : shell),
-            id: command.sessionId, cwd: selectedCwd,
-            harness: configuration.harness, model: configuration.model,
-            modelSettings: configuration.settings, runtimeMode: configuration.mode,
+            ...(current?.session.id === command.sessionId
+              ? current.session
+              : shell),
+            id: command.sessionId,
+            cwd: selectedCwd,
+            harness: configuration.harness,
+            model: configuration.model,
+            modelSettings: configuration.settings,
+            runtimeMode: configuration.mode,
             busy: false,
             blocks: [
-              ...(current?.session.id === command.sessionId ? current.session.blocks : [])
-                .filter((block) => !block.draft && block.id !== command.commandId),
-              { id: command.commandId, role: "user", text: command.text,
-                draft: true, attachments: optimistic?.attachments ?? [] },
+              ...(current?.session.id === command.sessionId
+                ? current.session.blocks
+                : []
+              ).filter(
+                (block) => !block.draft && block.id !== command.commandId,
+              ),
+              {
+                id: command.commandId,
+                role: "user",
+                text: command.text,
+                draft: true,
+                attachments: optimistic?.attachments ?? [],
+              },
             ],
           },
         }));
@@ -655,7 +739,8 @@ function ConnectedRemoteSession({
       return receipt;
     } catch (reason) {
       reportRemoteConnection(project.key, "session", reason);
-      if (!alive.current || version !== bindingVersion.current) return undefined;
+      if (!alive.current || version !== bindingVersion.current)
+        return undefined;
       const message = String(reason);
       if (message.includes("Host rejected request:")) {
         if (command.type === "send" || command.type === "compact")
@@ -824,26 +909,47 @@ function ConnectedRemoteSession({
         }
       }
       const followup: Exclude<HostCommand, { type: "create" }> = turn.draft
-        ? { type: "draft", commandId: turn.commandId, sessionId: "", text: turn.text, attachments: uploaded }
-        : message("", turn.text, turn.commandId, uploaded, turn.intent, turn.draftBlockId, turn.planBlockId);
-      const receipt = await run({
-        type: "create",
-        commandId: crypto.randomUUID(),
-        projectId: project.projectId,
-        ...(worktreeCwd !== project.cwd ? { worktreeCwd } : {}),
-        ...(autoWorktreeBranch ? { autoWorktreeBranch } : {}),
-        harness: draft.harness,
-        model: draft.model,
-        modelSettings: draft.settings,
-        runtimeMode: draft.mode,
-      }, turn, followup);
+        ? {
+            type: "draft",
+            commandId: turn.commandId,
+            sessionId: "",
+            text: turn.text,
+            attachments: uploaded,
+          }
+        : message(
+            "",
+            turn.text,
+            turn.commandId,
+            uploaded,
+            turn.intent,
+            turn.draftBlockId,
+            turn.planBlockId,
+          );
+      const receipt = await run(
+        {
+          type: "create",
+          commandId: crypto.randomUUID(),
+          projectId: project.projectId,
+          ...(worktreeCwd !== project.cwd ? { worktreeCwd } : {}),
+          ...(autoWorktreeBranch ? { autoWorktreeBranch } : {}),
+          harness: draft.harness,
+          model: draft.model,
+          modelSettings: draft.settings,
+          runtimeMode: draft.mode,
+        },
+        turn,
+        followup,
+      );
       if (version !== bindingVersion.current) return;
       if (!receipt) {
         if (alive.current) setStarting({ ...turn, failed: true });
         return;
       }
       if (version !== bindingVersion.current) return;
-      const sent = await run({ ...followup, sessionId: receipt.sessionId }, turn);
+      const sent = await run(
+        { ...followup, sessionId: receipt.sessionId },
+        turn,
+      );
       if (alive.current && version === bindingVersion.current)
         if (!sent) setStarting({ ...turn, failed: true });
     } catch (reason) {
@@ -949,20 +1055,29 @@ function ConnectedRemoteSession({
   // Send while the machine is out of reach: reconnect first, then send. The
   // composer has let go of the message, so when that fails it goes back there
   // (or stays here as a failed message with Try again); it is never dropped.
-  const sendWhenConnected = async (turn: OptimisticTurn, options?: ComposerTurnOptions) => {
+  const sendWhenConnected = async (
+    turn: OptimisticTurn,
+    options?: ComposerTurnOptions,
+  ) => {
     const version = bindingVersion.current;
     const outcome = await sendAfterReconnect({
       status: connection.status,
       reconnect: () => connection.reconnect(),
       ready: whenOnline,
-      send: () => alive.current && version === bindingVersion.current && launchRef.current(turn),
+      send: () =>
+        alive.current &&
+        version === bindingVersion.current &&
+        launchRef.current(turn),
     });
-    if (outcome.sent || !alive.current || version !== bindingVersion.current) return;
+    if (outcome.sent || !alive.current || version !== bindingVersion.current)
+      return;
     preparingRef.current = false;
     // The connection banner already says why a reconnect failed.
     if (outcome.failure === "offline") setError(outcome.error ?? "");
     if (options?.onSendRejected?.())
-      setStarting((current) => (current?.commandId === turn.commandId ? undefined : current));
+      setStarting((current) =>
+        current?.commandId === turn.commandId ? undefined : current,
+      );
     else setStarting({ ...turn, failed: true });
   };
 
@@ -970,7 +1085,12 @@ function ConnectedRemoteSession({
     remoteRequest<CommandReceipt>(
       machine.id,
       "commands.dispatch",
-      { type: "shell", commandId: crypto.randomUUID(), sessionId: id, line: command },
+      {
+        type: "shell",
+        commandId: crypto.randomUUID(),
+        sessionId: id,
+        line: command,
+      },
       false,
       true,
     ).then(() => {
@@ -1003,7 +1123,9 @@ function ConnectedRemoteSession({
     // A new conversation: the command needs a session to run in.
     if (sessionId || !draft.model) return false;
     if (draftWorkspaceMode === "worktree") {
-      setError("Send a message first to create the worktree, then run commands in it.");
+      setError(
+        "Send a message first to create the worktree, then run commands in it.",
+      );
       return false;
     }
     preparingRef.current = true;
@@ -1109,9 +1231,13 @@ function ConnectedRemoteSession({
   useEffect(() => {
     if (!nextQueued) return;
     const timer = setTimeout(() => {
-      const accepted = submitRef.current(nextQueued.text, nextQueued.attachments, {
-        intent: nextQueued.intent,
-      });
+      const accepted = submitRef.current(
+        nextQueued.text,
+        nextQueued.attachments,
+        {
+          intent: nextQueued.intent,
+        },
+      );
       if (accepted) queue.sent(nextQueued.id);
       else setDrainRetry((value) => value + 1);
     }, 0);
@@ -1263,46 +1389,61 @@ function ConnectedRemoteSession({
   const retryPending = async () => {
     if (!pending || sendingRef.current) return;
     const version = bindingVersion.current;
-    setStarting((current) => current ? { ...current, failed: false } : current);
+    setStarting((current) =>
+      current ? { ...current, failed: false } : current,
+    );
     const receipt = await run(pending);
-    if (receipt && pending.type === "create" && version === bindingVersion.current) {
-      const next = pendingRemoteCommand(project.key, machine.environmentId, receipt.sessionId, shell.id);
+    if (
+      receipt &&
+      pending.type === "create" &&
+      version === bindingVersion.current
+    ) {
+      const next = pendingRemoteCommand(
+        project.key,
+        machine.environmentId,
+        receipt.sessionId,
+        shell.id,
+      );
       if (next) await run(next);
     }
   };
-  const notice = pending && !sending
-    ? { text: "Waiting for the host to confirm your request.", detail: error,
-        action: { label: "Retry", run: () => void retryPending() } }
-    : starting?.failed
+  const notice =
+    pending && !sending
       ? {
-          text: `Couldn’t ${starting.draft ? "save the draft" : "send the message"} on ${machine.name}.`,
+          text: "Waiting for the host to confirm your request.",
           detail: error,
-          action: {
-            label: "Try again",
-            run: () => {
-              const turn = { ...starting, failed: false };
-              setStarting(turn);
-              preparingRef.current = true;
-              if (!sessionId) void startSession(turn);
-              else
-                void dispatchTurn(sessionId, turn)
-                  .then((sent) => {
-                    if (alive.current)
-                      if (!sent) setStarting({ ...turn, failed: true });
-                  })
-                  .catch((reason) => {
-                    if (alive.current) {
-                      setError(String(reason));
-                      setStarting({ ...turn, failed: true });
-                    }
-                  })
-                  .finally(() => {
-                    preparingRef.current = false;
-                  });
-            },
-          },
+          action: { label: "Retry", run: () => void retryPending() },
         }
-      : error
+      : starting?.failed
+        ? {
+            text: `Couldn’t ${starting.draft ? "save the draft" : "send the message"} on ${machine.name}.`,
+            detail: error,
+            action: {
+              label: "Try again",
+              run: () => {
+                const turn = { ...starting, failed: false };
+                setStarting(turn);
+                preparingRef.current = true;
+                if (!sessionId) void startSession(turn);
+                else
+                  void dispatchTurn(sessionId, turn)
+                    .then((sent) => {
+                      if (alive.current)
+                        if (!sent) setStarting({ ...turn, failed: true });
+                    })
+                    .catch((reason) => {
+                      if (alive.current) {
+                        setError(String(reason));
+                        setStarting({ ...turn, failed: true });
+                      }
+                    })
+                    .finally(() => {
+                      preparingRef.current = false;
+                    });
+              },
+            },
+          }
+        : error
           ? {
               text: error,
               action: { label: "Dismiss", run: () => setError("") },
@@ -1342,10 +1483,18 @@ function ConnectedRemoteSession({
         target.model !== configuration.model ||
         !sameModelSettings(target.modelSettings, configuration.settings))
     ) {
-      setError("Select that model in the composer before building this remote plan.");
+      setError(
+        "Select that model in the composer before building this remote plan.",
+      );
       return;
     }
-    submit(`Build the approved plan:\n\n${block.text}`, [], { intent: "build" }, false, blockId);
+    submit(
+      `Build the approved plan:\n\n${block.text}`,
+      [],
+      { intent: "build" },
+      false,
+      blockId,
+    );
   };
 
   const stopTurn = () => {
@@ -1406,27 +1555,36 @@ function ConnectedRemoteSession({
   const saveDraft = (text: string, attachments: Attachment[]) =>
     submit(text, attachments, undefined, true);
   useEffect(
-    () => registerRemoteSessionActions(shell.id, {
-      buildPlan,
-      submit: (text, attachments, options) => submit(text, attachments, options),
-      saveDraft,
-      stop: stopTurn,
-      compact,
-      approve,
-      answer,
-    }),
+    () =>
+      registerRemoteSessionActions(shell.id, {
+        buildPlan,
+        submit: (text, attachments, options) =>
+          submit(text, attachments, options),
+        saveDraft,
+        stop: stopTurn,
+        compact,
+        approve,
+        answer,
+      }),
     [shell.id, buildPlan, saveDraft, stopTurn, compact, approve, answer],
   );
 
   const hostFilePath = (path: string) => {
     const existing = parseRemotePath(path);
     if (existing) return path;
-    const absolute = path.startsWith("/") || path.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(path)
-      ? path
-      : `${executionCwd.replace(/[\\/]+$/, "")}/${path.replace(/^\.\//, "")}`;
+    const absolute =
+      path.startsWith("/") ||
+      path.startsWith("\\\\") ||
+      /^[A-Za-z]:[\\/]/.test(path)
+        ? path
+        : `${executionCwd.replace(/[\\/]+$/, "")}/${path.replace(/^\.\//, "")}`;
     return remotePath(machine.environmentId, absolute);
   };
 
+  const outboxIssues = useRemoteOutboxIssues(
+    project.key,
+    machine.environmentId,
+  );
   const overrides: RemoteSessionOverrides = {
     session,
     remoteSession: true,
@@ -1437,11 +1595,13 @@ function ConnectedRemoteSession({
     },
     remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     remoteSessionStarted: !!sessionId,
-    sendBlockedReason: blocksSending(connection.status)
-      ? needsSignIn(connection.status)
-        ? `${machine.name} needs you to sign in first. Use “Sign in and reconnect” above.`
-        : `Can’t reach ${machine.name}. Send reconnects first.`
-      : undefined,
+    sendBlockedReason: outboxIssues.length
+      ? "An unfinished request needs recovery. Check the host and review the request above."
+      : blocksSending(connection.status)
+        ? needsSignIn(connection.status)
+          ? `${machine.name} needs you to sign in first. Use “Sign in and reconnect” above.`
+          : `Can’t reach ${machine.name}. Send reconnects first.`
+        : undefined,
     allowedModelHarnesses: hostSession
       ? [hostSession.harness]
       : providers.length
@@ -1503,7 +1663,8 @@ function ConnectedRemoteSession({
     },
     onPlaceSessionInFolder: noop,
     onDeleteQueuedMessage: (_, id) => queue.remove(id),
-    onEditQueuedMessage: (_, id, text, attachments) => queue.edit(id, text, attachments),
+    onEditQueuedMessage: (_, id, text, attachments) =>
+      queue.edit(id, text, attachments),
     onQueuedMessageEditingChange: (_, id) => queue.setEditing(id),
     onReorderQueuedMessages: (_, ids) => queue.reorder(ids),
     // A host turn cannot be steered: "Send next" lets the queue drain, which
@@ -1533,6 +1694,10 @@ function ConnectedRemoteSession({
     <ModelSourceContext.Provider value={modelSource}>
       <div className="relative flex h-full min-h-0 flex-col">
         <RemoteConnectionBanner cwd={project.key} stale={!!hostSession} />
+        <RemoteOutboxNotice
+          project={project.key}
+          environment={machine.environmentId}
+        />
         {notice ? (
           <div
             role={error ? "alert" : "status"}

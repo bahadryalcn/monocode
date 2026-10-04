@@ -1,11 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   ExplorerMenu,
   type ExplorerMenuItem,
 } from "../../features/files/ui/ExplorerMenu";
 import { ALT, MOD, SHIFT } from "../../platform/tauri/platform";
 import { runUpdateFlow } from "../model/updater";
+import type { TitleBarLayout } from "./TitleBar";
+import {
+  SPLIT_DOWN_ID,
+  SPLIT_RIGHT_ID,
+  buildLayoutMenuItems,
+  layoutPresetFromMenuId,
+} from "./layoutMenu";
 import {
   keybindingShortcutLabel,
   loadAutosave,
@@ -36,9 +43,10 @@ type Props = {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onZoomReset?: () => void;
+  layout?: TitleBarLayout;
 };
 
-export function MenuBar({
+export const MenuBar = memo(function MenuBar({
   onNew,
   onNewTerminal,
   onToggleTerminal,
@@ -57,6 +65,7 @@ export function MenuBar({
   onZoomIn,
   onZoomOut,
   onZoomReset,
+  layout,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<MenuKey | null>(null);
@@ -206,9 +215,20 @@ export function MenuBar({
         case "zoom_reset":
           onZoomReset?.();
           break;
+        case SPLIT_RIGHT_ID:
+          layout?.onSplit("right");
+          break;
+        case SPLIT_DOWN_ID:
+          layout?.onSplit("down");
+          break;
+        default: {
+          const preset = layoutPresetFromMenuId(id);
+          if (preset) layout?.onArrange(preset);
+        }
       }
     },
     [
+      layout,
       closeMenu,
       autosave,
       onCloseCurrentTab,
@@ -346,6 +366,27 @@ export function MenuBar({
             shortcut: shortcut("App: Switch Model", `${MOD}.`),
           },
           { kind: "item", id: "toggle_diff", label: "Toggle Changes" },
+          ...(layout
+            ? [
+                {
+                  kind: "item" as const,
+                  id: "layout_menu",
+                  label: "Layout",
+                  submenu: buildLayoutMenuItems({
+                    current: layout.current,
+                    canArrange: layout.canArrange,
+                    splitRightShortcut: shortcut(
+                      "Pane: Split Right",
+                      `${MOD}D`,
+                    ),
+                    splitDownShortcut: shortcut(
+                      "Pane: Split Down",
+                      `${MOD}${SHIFT}D`,
+                    ),
+                  }),
+                },
+              ]
+            : []),
           { kind: "sep" },
           {
             kind: "item",
@@ -442,4 +483,4 @@ export function MenuBar({
       ) : null}
     </div>
   );
-}
+});

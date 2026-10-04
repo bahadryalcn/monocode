@@ -38,3 +38,35 @@ it("reads capabilities from the machine", async () => {
   expect(await loadRemoteCapabilities("env-c")).toEqual([GIT_ACTIONS]);
   expect(remoteSupports(remotePath("env-c", "/x"), GIT_ACTIONS)).toBe(true);
 });
+
+it("reuses a young describe answer and asks again after the TTL or an invalidation", async () => {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { invalidateRemoteCapabilities, REMOTE_CAPABILITIES_TTL_MS } =
+    await import("./connections");
+  vi.useFakeTimers();
+  try {
+    let describes = 0;
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "remote_machines")
+        return [{ id: "m1", name: "Mac", endpoint: "", environmentId: "env-c" }];
+      if (command === "remote_request") {
+        describes++;
+        return { capabilities: ["a"] };
+      }
+      throw new Error(command);
+    });
+    // env-c is the machine the previous test already loaded into the list.
+    invalidateRemoteCapabilities("env-c");
+    await loadRemoteCapabilities("env-c");
+    await loadRemoteCapabilities("env-c");
+    expect(describes).toBe(1);
+    invalidateRemoteCapabilities("env-c");
+    await loadRemoteCapabilities("env-c");
+    expect(describes).toBe(2);
+    vi.advanceTimersByTime(REMOTE_CAPABILITIES_TTL_MS + 1);
+    await loadRemoteCapabilities("env-c");
+    expect(describes).toBe(3);
+  } finally {
+    vi.useRealTimers();
+  }
+});

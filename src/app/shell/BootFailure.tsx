@@ -1,0 +1,47 @@
+import { useState } from "react";
+
+/** Must stay independent of App so a failed App chunk can still recover. */
+export function BootFailure({
+  error,
+  onRetry,
+}: {
+  error: unknown;
+  onRetry: () => void;
+}) {
+  const [details, setDetails] = useState(false);
+  const message =
+    error instanceof Error ? error.message : "Startup could not be completed.";
+  return (
+    <main className="grid h-dvh place-items-center bg-background-base p-6 text-content">
+      <section role="alert" className="w-full max-w-md space-y-4">
+        <h1 className="text-xl font-medium">MonoCode couldn’t start</h1>
+        <p className="text-sm text-content/75">
+          Your saved workspace is still available. Reload the app to try again.
+        </p>
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            autoFocus
+            onClick={onRetry}
+            className="rounded-md bg-content px-4 py-2 text-sm text-background-base focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Reload app
+          </button>
+          <button
+            type="button"
+            aria-expanded={details}
+            onClick={() => setDetails(!details)}
+            className="rounded-md px-3 py-2 text-sm underline focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            {details ? "Hide details" : "Show details"}
+          </button>
+        </div>
+        {details ? (
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-content/15 p-3 text-xs">
+            {message}
+          </pre>
+        ) : null}
+      </section>
+    </main>
+  );
+}

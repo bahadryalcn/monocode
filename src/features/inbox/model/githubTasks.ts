@@ -179,6 +179,33 @@ const INBOX_CACHE_FRESH_MS = 30_000;
 /** Closed history competes for the same slots, so an unfiltered fetch needs the wider page. */
 const INBOX_ALL_LIMIT = 100;
 
+/** Repo lookups and list calls of one provider that run at once. */
+export const INBOX_PROVIDER_CONCURRENCY = 4;
+
+/** `Promise.allSettled` over lazily started tasks, at most `limit` running at
+ * once; results keep the task order. */
+export async function settleWithLimit<T>(
+  tasks: readonly (() => Promise<T>)[],
+  limit: number = INBOX_PROVIDER_CONCURRENCY,
+): Promise<PromiseSettledResult<T>[]> {
+  const results = new Array<PromiseSettledResult<T>>(tasks.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < tasks.length) {
+      const index = cursor++;
+      try {
+        results[index] = { status: "fulfilled", value: await tasks[index]!() };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, limit), tasks.length) }, worker),
+  );
+  return results;
+}
+
 type InboxListCache = InboxListResult & {
   key: string;
   fetchedAt: number;
@@ -685,89 +712,93 @@ async function fetchInboxItems(
 ): Promise<InboxListResult> {
   const unique = uniqueInboxProjects(projects);
   const preferredPaths = unique.map((project) => project.path);
-  const discovery = await Promise.allSettled(
-    unique.map((project) => githubRepositories(project.path)),
-  );
-  const resolved = discovery.flatMap((result, index) =>
-    result.status === "fulfilled"
-      ? result.value.map((repo) => ({ path: unique[index]!.path, repo }))
-      : [],
-  );
-  const grouped = groupProjectsByRepo(resolved);
-  const githubJobs = grouped.flatMap((project) =>
-    (["issue", "pr"] as const).map(async (kind) => {
-      const items = await listGithubWorkItems(project.path, project.repo, {
-        ...query,
-        kind,
-      });
-      return items.map((item) => ({
-        ...item,
-        projectPath: project.path,
-        provider: "github" as const,
-        repo: item.repo || project.repo,
-      }));
-    }),
-  );
-  const discoveryFailures = discovery.filter(
-    (result): result is PromiseRejectedResult => result.status === "rejected",
-  );
-  const github = collectInboxResults(
-    [...(await Promise.allSettled(githubJobs)), ...discoveryFailures],
-    preferredPaths,
-  );
-  const errors: InboxProviderErrors = {};
-  if (github.error && unique.length > 0) errors.github = github.error;
 
-  let linearItems: InboxItem[] = [];
-  if ((await linearConnected()).connected) {
+  // Providers are independent, so a slow one does not hold the others back.
+  // Each reports its own error; the merge below keeps the fixed provider order.
+  const fetchGithub = async (): Promise<{ items: InboxItem[]; error?: string }> => {
+    const discovery = await settleWithLimit(
+      unique.map((project) => () => githubRepositories(project.path)),
+    );
+    const resolved = discovery.flatMap((result, index) =>
+      result.status === "fulfilled"
+        ? result.value.map((repo) => ({ path: unique[index]!.path, repo }))
+        : [],
+    );
+    const grouped = groupProjectsByRepo(resolved);
+    const githubJobs = grouped.flatMap((project) =>
+      (["issue", "pr"] as const).map((kind) => async () => {
+        const items = await listGithubWorkItems(project.path, project.repo, {
+          ...query,
+          kind,
+        });
+        return items.map((item) => ({
+          ...item,
+          projectPath: project.path,
+          provider: "github" as const,
+          repo: item.repo || project.repo,
+        }));
+      }),
+    );
+    const discoveryFailures = discovery.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    const github = collectInboxResults(
+      [...(await settleWithLimit(githubJobs)), ...discoveryFailures],
+      preferredPaths,
+    );
+    return github.error && unique.length > 0
+      ? { items: github.items, error: github.error }
+      : { items: github.items };
+  };
+
+  const fetchLinear = async (): Promise<{ items: InboxItem[]; error?: string }> => {
+    if (!(await linearConnected()).connected) return { items: [] };
     try {
-      linearItems = await fetchLinearInboxItems(query);
+      return { items: await fetchLinearInboxItems(query) };
     } catch (error) {
-      errors.linear = inboxErrorMessage(error);
+      return { items: [], error: inboxErrorMessage(error) };
     }
-  }
+  };
 
-  let jiraItems: InboxItem[] = [];
-  try {
-    if ((await jiraConnected()).connected) {
-      jiraItems = await fetchJiraInboxItems(query);
+  const fetchJira = async (): Promise<{ items: InboxItem[]; error?: string }> => {
+    try {
+      if (!(await jiraConnected()).connected) return { items: [] };
+      return { items: await fetchJiraInboxItems(query) };
+    } catch (error) {
+      return { items: [], error: inboxErrorMessage(error) };
     }
-  } catch (error) {
-    errors.jira = inboxErrorMessage(error);
-  }
+  };
 
-  let gitlabItems: InboxItem[] = [];
-  if ((await gitlabConnected()).connected) {
-    const gitlab = await fetchRepositoryInboxItems(
-      "gitlab",
-      unique,
-      query,
-      preferredPaths,
-    );
-    gitlabItems = gitlab.items;
-    if (gitlab.error) errors.gitlab = gitlab.error;
-  }
+  const fetchRepositoryProvider = async (
+    provider: "gitlab" | "azuredevops",
+    connected: () => Promise<{ connected: boolean }>,
+  ): Promise<{ items: InboxItem[]; error?: string }> =>
+    (await connected()).connected
+      ? fetchRepositoryInboxItems(provider, unique, query, preferredPaths)
+      : { items: [] };
 
-  let azureDevOpsItems: InboxItem[] = [];
-  if ((await azureDevOpsConnected()).connected) {
-    const azuredevops = await fetchRepositoryInboxItems(
-      "azuredevops",
-      unique,
-      query,
-      preferredPaths,
-    );
-    azureDevOpsItems = azuredevops.items;
-    if (azuredevops.error) errors.azuredevops = azuredevops.error;
-  }
+  const [github, linear, jira, gitlab, azuredevops] = await Promise.all([
+    fetchGithub(),
+    fetchLinear(),
+    fetchJira(),
+    fetchRepositoryProvider("gitlab", gitlabConnected),
+    fetchRepositoryProvider("azuredevops", azureDevOpsConnected),
+  ]);
+  const errors: InboxProviderErrors = {};
+  if (github.error) errors.github = github.error;
+  if (linear.error) errors.linear = linear.error;
+  if (jira.error) errors.jira = jira.error;
+  if (gitlab.error) errors.gitlab = gitlab.error;
+  if (azuredevops.error) errors.azuredevops = azuredevops.error;
 
   return {
     items: dedupeInboxItems(
       [
         ...github.items,
-        ...linearItems,
-        ...jiraItems,
-        ...gitlabItems,
-        ...azureDevOpsItems,
+        ...linear.items,
+        ...jira.items,
+        ...gitlab.items,
+        ...azuredevops.items,
       ],
       preferredPaths,
     ),
@@ -795,18 +826,20 @@ async function fetchRepositoryInboxItems(
           listWorkItems: listAzureDevOpsWorkItems,
           toInboxItem: azureDevOpsWorkItemToInboxItem,
         };
-  const resolved = await Promise.all(
-    projects.map(async (project) => {
-      try {
-        return {
-          path: project.path,
-          repo: (await findRepo(project.path)).trim(),
-        };
-      } catch {
-        return { path: project.path, repo: "" };
-      }
-    }),
-  );
+  const resolved = (
+    await settleWithLimit(
+      projects.map((project) => async () => {
+        try {
+          return {
+            path: project.path,
+            repo: (await findRepo(project.path)).trim(),
+          };
+        } catch {
+          return { path: project.path, repo: "" };
+        }
+      }),
+    )
+  ).flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
   const grouped = groupProjectsByRepo(
     resolved.filter((project) => project.repo.length > 0),
   );
@@ -815,7 +848,7 @@ async function fetchRepositoryInboxItems(
     const localPathByRepo = new Map(
       grouped.map((project) => [project.repo.toLowerCase(), project.path]),
     );
-    const jobs = (["issue", "pr"] as const).map(async (kind) => {
+    const jobs = (["issue", "pr"] as const).map((kind) => async () => {
       const items = await listTodos({
         kind,
         limit: query.state === "all" ? INBOX_ALL_LIMIT : undefined,
@@ -828,11 +861,11 @@ async function fetchRepositoryInboxItems(
         ),
       );
     });
-    return collectInboxResults(await Promise.allSettled(jobs), preferredPaths);
+    return collectInboxResults(await settleWithLimit(jobs), preferredPaths);
   }
 
   const jobs = grouped.flatMap((project) =>
-    (["issue", "pr"] as const).map(async (kind) => {
+    (["issue", "pr"] as const).map((kind) => async () => {
       const items = await listWorkItems(project.path, {
         kind,
         assignedToMe: false,
@@ -844,7 +877,7 @@ async function fetchRepositoryInboxItems(
       );
     }),
   );
-  return collectInboxResults(await Promise.allSettled(jobs), preferredPaths);
+  return collectInboxResults(await settleWithLimit(jobs), preferredPaths);
 }
 
 async function fetchLinearInboxItems(query: InboxQuery): Promise<InboxItem[]> {

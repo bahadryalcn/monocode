@@ -82,13 +82,15 @@ import {
 } from "../model/automationTemplates";
 import {
   backgroundMachineFor,
-  backgroundMachines,
+  probeMachines,
   deleteHostAutomation,
   listHostAutomationRuns,
-  listHostAutomations,
+  listHostAutomationResults,
   runHostAutomationNow,
   saveHostAutomation,
 } from "../model/hostAutomationClient";
+import { failedMachineNames } from "../model/machineResults";
+import { useRefreshLoop } from "../model/refreshScheduler";
 import type { RemoteMachine } from "../../connections/model/protocol";
 import {
   AZUREDEVOPS_CHANGE_EVENT,
@@ -214,6 +216,8 @@ function AutomationsContent({
   // Automations that machines' hosts run on their own, this computer's included.
   const [machines, setMachines] = useState<RemoteMachine[]>([]);
   const [hostAutomations, setHostAutomations] = useState<Automation[]>([]);
+  // Machines that did not answer; their automations shown are last-known ones.
+  const [unreachableNames, setUnreachableNames] = useState<string[]>([]);
   const hostAutomationsRef = useRef(hostAutomations);
   const showHostAutomations = useCallback((next: Automation[]) => {
     hostAutomationsRef.current = next;
@@ -269,22 +273,30 @@ function AutomationsContent({
     return subscribeAutomations(() => void refresh());
   }, [refresh]);
 
-  const refreshHost = useCallback(async () => {
-    try {
-      const capable = await backgroundMachines();
-      setMachines(capable);
-      showHostAutomations(await listHostAutomations(capable));
-    } catch {
-      // A machine that does not answer keeps its last known automations.
-    }
-  }, [showHostAutomations]);
+  const refreshHostRun = useCallback(
+    async (isCurrent: () => boolean) => {
+      try {
+        const reach = await probeMachines();
+        if (!isCurrent()) return;
+        const results = await listHostAutomationResults(
+          reach.capable,
+          reach.unreachableMachines,
+        );
+        if (!isCurrent()) return;
+        setMachines(reach.capable);
+        // A machine that does not answer keeps its last known automations.
+        setUnreachableNames(failedMachineNames(results));
+        showHostAutomations(results.flatMap((result) => result.data));
+      } catch {
+        // Automations that cannot be read keep what is shown.
+      }
+    },
+    [showHostAutomations],
+  );
 
-  // The host reports no changes, so its runs are polled while this view is open.
-  useEffect(() => {
-    void refreshHost();
-    const timer = window.setInterval(() => void refreshHost(), 30_000);
-    return () => window.clearInterval(timer);
-  }, [refreshHost]);
+  // The host reports no changes, so its runs are polled while this view is
+  // open; refreshes never overlap and a superseded one is dropped.
+  const refreshHost = useRefreshLoop(refreshHostRun, 30_000);
 
   useEffect(() => {
     rememberedAutomationId = selectedId;
@@ -472,6 +484,16 @@ function AutomationsContent({
           ref={listLock}
           className="min-h-0 flex-1 overflow-y-auto overscroll-none p-1.5"
         >
+          {unreachableNames.length ? (
+            <div className="mb-1.5 flex items-start gap-2 rounded-lg border border-content/10 bg-content/4 px-2.5 py-2 text-[11px] text-content/60">
+              <AlertCircle className="mt-0.5 size-3 shrink-0" />
+              <span>
+                {unreachableNames.join(", ")}{" "}
+                {unreachableNames.length === 1 ? "isn’t" : "aren’t"} reachable
+                right now, so its automations may be out of date.
+              </span>
+            </div>
+          ) : null}
           {loading ? (
             <div className="grid place-items-center py-12 text-content/35">
               <LoaderCircle className="size-4 animate-spin" />
@@ -641,6 +663,7 @@ function AutomationCard({
           <span className="min-w-0 truncate">
             {triggerLabel(automation)}
             {automation.host ? ` · on ${automation.host.machineName}` : ""}
+            {automation.host?.stale ? " (offline, last known)" : ""}
           </span>
         </span>
         <span className="mt-1 block truncate text-[13px] font-semibold text-content">

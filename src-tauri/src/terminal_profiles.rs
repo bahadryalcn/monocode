@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -85,7 +87,7 @@ pub(crate) fn chosen_id() -> Option<String> {
 /// The profile `id` names; else the one chosen for this computer; else the
 /// system default. A pick whose shell is gone falls through.
 pub(crate) fn resolve(id: Option<&str>) -> Option<ShellProfile> {
-    let profiles = detect();
+    let profiles = detect_cached();
     let find = |id: &str| profiles.iter().find(|profile| profile.id == id).cloned();
     id.and_then(find)
         .or_else(|| chosen_id().as_deref().and_then(find))
@@ -167,6 +169,31 @@ fn apply_profile_env(profile: &ShellProfile, cmd: &mut Command) {
     for (key, value) in profile_env(profile) {
         cmd.env(key, value);
     }
+}
+
+/// How long a spawn reuses the last PATH walk. A shell installed while the app
+/// runs shows up within this; the settings list always re-detects.
+const DETECT_TTL: Duration = Duration::from_secs(30);
+
+fn detect_cached() -> Vec<ShellProfile> {
+    static CACHE: Mutex<Option<(Instant, Vec<ShellProfile>)>> = Mutex::new(None);
+    cached(&CACHE, DETECT_TTL, detect)
+}
+
+fn cached(
+    cache: &Mutex<Option<(Instant, Vec<ShellProfile>)>>,
+    ttl: Duration,
+    load: impl FnOnce() -> Vec<ShellProfile>,
+) -> Vec<ShellProfile> {
+    let mut slot = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, profiles)) = slot.as_ref() {
+        if at.elapsed() < ttl {
+            return profiles.clone();
+        }
+    }
+    let profiles = load();
+    *slot = Some((Instant::now(), profiles.clone()));
+    profiles
 }
 
 fn detect() -> Vec<ShellProfile> {
@@ -325,6 +352,23 @@ mod tests {
             .unwrap_or(default);
         assert_eq!(resolve(Some("no-such-profile")).map(|p| p.id), Some(expected.clone()));
         assert_eq!(resolve(None).map(|p| p.id), Some(expected));
+    }
+
+    #[test]
+    fn detection_is_reused_until_the_ttl_passes() {
+        let cache = Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        let load = || {
+            calls.set(calls.get() + 1);
+            vec![profile("a", "A", Path::new("a"), "sh")]
+        };
+        let ttl = Duration::from_millis(60);
+        cached(&cache, ttl, load);
+        cached(&cache, ttl, load);
+        assert_eq!(calls.get(), 1);
+        std::thread::sleep(Duration::from_millis(80));
+        cached(&cache, ttl, load);
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]

@@ -94,6 +94,11 @@ type Props = {
   onStageFile?: (id: string) => void;
   onDiscardFile?: (id: string) => void;
   onStageHunk?: (id: string, pos: number) => void;
+  /**
+   * A section is expanded and near the viewport (`needed`), or stopped being.
+   * Lets a parent that loads bodies lazily fetch only what can be seen.
+   */
+  onSectionNeeded?: (id: string, needed: boolean) => void;
 };
 
 export function UnifiedDiffView({
@@ -111,6 +116,7 @@ export function UnifiedDiffView({
   onStageFile,
   onDiscardFile,
   onStageHunk,
+  onSectionNeeded,
 }: Props) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const colorScheme = useColorScheme();
@@ -323,6 +329,7 @@ export function UnifiedDiffView({
                 onDiscardFile={onDiscardFile}
                 onStageHunk={onStageHunk}
                 bindRef={bindFileRef}
+                onNeeded={onSectionNeeded}
               />
             ))}
           </DiffOverviewContext.Provider>
@@ -356,6 +363,7 @@ type FileSectionProps = {
   onDiscardFile?: (id: string) => void;
   onStageHunk?: (id: string, pos: number) => void;
   bindRef: (path: string, node: HTMLElement | null) => void;
+  onNeeded?: (id: string, needed: boolean) => void;
 };
 
 const FileSection = memo(function FileSection({
@@ -374,6 +382,7 @@ const FileSection = memo(function FileSection({
   onDiscardFile,
   onStageHunk,
   bindRef,
+  onNeeded,
 }: FileSectionProps) {
   const Chevron = expanded ? ChevronDown : ChevronRight;
   const name = basename(file.path);
@@ -393,6 +402,12 @@ const FileSection = memo(function FileSection({
       cancelled = true;
     };
   }, [colorScheme, expanded, file, near]);
+
+  useEffect(() => {
+    if (!onNeeded || !expanded || !near) return;
+    onNeeded(file.id, true);
+    return () => onNeeded(file.id, false);
+  }, [expanded, file.id, near, onNeeded]);
 
   const setSection = useCallback(
     (node: HTMLElement | null) => {
@@ -526,7 +541,8 @@ function equalFileSectionProps(
     previous.onStageFile === next.onStageFile &&
     previous.onDiscardFile === next.onDiscardFile &&
     previous.onStageHunk === next.onStageHunk &&
-    previous.bindRef === next.bindRef
+    previous.bindRef === next.bindRef &&
+    previous.onNeeded === next.onNeeded
   );
 }
 

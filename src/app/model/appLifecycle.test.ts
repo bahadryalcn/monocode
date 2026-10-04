@@ -414,7 +414,7 @@ describe("confirming reload", () => {
 
 describe("remembering the terminal dock side across restarts", () => {
   // The lifecycle caches its boot resume in module state, and the suites
-  // above have already consumed it â€” reset for a clean quit/restore cycle.
+  // above have already consumed it — reset for a clean quit/restore cycle.
   beforeEach(() => {
     vi.resetModules();
   });
@@ -509,4 +509,30 @@ describe("remembering the terminal dock side across restarts", () => {
     await handleQuitRequested();
     expect(await lastSavedDockSide()).toBe("left");
   });
+});
+
+it("paints transferred tabs without waiting for sidebar history", async () => {
+  vi.resetModules();
+  const { loadWindowTransfer } = await import("./windowTransferBootstrap");
+  const { listSessionsByProject } =
+    await import("../../features/sessions/data/sessionStore");
+  const { loadBootWorkspace } = await import("./appLifecycle");
+  const session = newSession("cursor", "/transferred");
+  const tab = newTab(session.id);
+  const payload = {
+    tabs: [tab],
+    sessions: [session],
+    activeTabId: tab.id,
+    projectCwd: session.cwd,
+    dirtyFileIds: [],
+  };
+  vi.mocked(loadWindowTransfer).mockResolvedValueOnce(payload);
+  vi.mocked(listSessionsByProject).mockClear();
+  expect(await loadBootWorkspace()).toMatchObject({
+    windowTransfer: payload,
+    resumed: null,
+    history: [],
+    historyCwd: null,
+  });
+  expect(listSessionsByProject).not.toHaveBeenCalled();
 });

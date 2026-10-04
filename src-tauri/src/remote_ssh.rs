@@ -17,6 +17,74 @@ pub struct SshTarget {
     pub target: String,
     pub port: Option<u16>,
     pub remote_port: u16,
+    /// A second way to the same machine, such as its Tailscale address next
+    /// to its home-network one. Whichever answers is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternate: Option<String>,
+    /// Set only on the address being dialled: the name its host key is
+    /// filed under, so the alternate address uses the primary's known key.
+    #[serde(skip)]
+    pub host_key_alias: Option<String>,
+}
+
+/// The addresses to try, in order: the one whose SSH port answers first,
+/// then the other. A machine with one address has just that one.
+pub fn dial_order(target: &SshTarget) -> Vec<SshTarget> {
+    let primary = SshTarget {
+        alternate: None,
+        host_key_alias: None,
+        ..target.clone()
+    };
+    let Some(alternate) = target
+        .alternate
+        .as_deref()
+        .map(str::trim)
+        .filter(|alternate| !alternate.is_empty() && *alternate != target.target)
+    else {
+        return vec![primary];
+    };
+    let second = SshTarget {
+        target: alternate.to_string(),
+        alternate: None,
+        host_key_alias: known_host_key_name(&primary),
+        ..target.clone()
+    };
+    // Both checks at once: an unreachable address costs its timeout only once.
+    let probe = |candidate: SshTarget| std::thread::spawn(move || ssh_server_reachable(&candidate));
+    let first = probe(primary.clone());
+    let other = probe(second.clone());
+    let first = first.join().ok().flatten();
+    let other = other.join().ok().flatten();
+    if first == Some(false) && other == Some(true) {
+        vec![second, primary]
+    } else {
+        vec![primary, second]
+    }
+}
+
+/// The name ssh files the primary address's host key under: its
+/// HostKeyAlias when the config sets one, else the host name it dials.
+fn known_host_key_name(primary: &SshTarget) -> Option<String> {
+    let output = ssh_config_dump(primary)?;
+    let mut hostname = None;
+    for line in output.lines() {
+        match line.split_once(' ') {
+            Some(("hostkeyalias", value)) if !value.trim().eq_ignore_ascii_case("none") => {
+                return Some(value.trim().to_string());
+            }
+            Some(("hostname", value)) => hostname = Some(value.trim().to_string()),
+            _ => {}
+        }
+    }
+    hostname
+}
+
+/// Accepts an empty alternate as none; otherwise it must be a valid target too.
+pub fn validate_alternate(alternate: Option<&str>, port: Option<u16>) -> Result<Option<String>, String> {
+    match alternate.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(value) => validate_target(value, port).map(Some),
+    }
 }
 
 pub fn validate_target(target: &str, port: Option<u16>) -> Result<String, String> {
@@ -213,6 +281,9 @@ fn command_with_keepalive(target: &SshTarget, interactive: bool, keepalive: u32)
     if let Some(port) = target.port {
         command.args(["-p", &port.to_string()]);
     }
+    if let Some(alias) = &target.host_key_alias {
+        command.args(["-o", &format!("HostKeyAlias={alias}")]);
+    }
     // Untranslated messages: failures are classified by their wording.
     command
         .env("LC_ALL", "C")
@@ -274,6 +345,8 @@ pub fn detect_platform(
     askpass: &Askpass,
 ) -> Result<HostPlatform, String> {
     job.message("Checking the remote machine…");
+    let dialed = dial_order(target).remove(0);
+    let target = &dialed;
     let output = run_remote_command(
         target,
         String::new(),
@@ -305,6 +378,8 @@ pub fn run_script(
     job: &Arc<Job>,
     askpass: &Askpass,
 ) -> Result<String, String> {
+    let dialed = dial_order(target).remove(0);
+    let target = &dialed;
     if platform == HostPlatform::Windows {
         let encoded = powershell_reader();
         run_remote_command(
@@ -515,6 +590,12 @@ fn parse_ssh_config_dump(output: &str) -> Option<(String, u16)> {
 /// that does not depend on ssh's wording. `None` when the address is unknown.
 /// Reads the user's config through `ssh -G`, which never connects.
 fn ssh_server_reachable(target: &SshTarget) -> Option<bool> {
+    let (host, port) = parse_ssh_config_dump(&ssh_config_dump(target)?)?;
+    Some(tcp_reachable(&host, port, Duration::from_secs(3)))
+}
+
+/// `ssh -G` for a target: the settings ssh would use, without connecting.
+fn ssh_config_dump(target: &SshTarget) -> Option<String> {
     let mut command = Command::new("ssh");
     command.arg("-G");
     if let Some(port) = target.port {
@@ -531,8 +612,7 @@ fn ssh_server_reachable(target: &SshTarget) -> Option<bool> {
         command.creation_flags(0x08000000);
     }
     let output = command.output().ok().filter(|o| o.status.success())?;
-    let (host, port) = parse_ssh_config_dump(&String::from_utf8_lossy(&output.stdout))?;
-    Some(tcp_reachable(&host, port, Duration::from_secs(3)))
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn tcp_reachable(host: &str, port: u16, timeout: Duration) -> bool {
@@ -662,17 +742,40 @@ impl Tunnel {
             }
         });
     }
+    /// The machine's saved target changed while this tunnel stays the way in
+    /// (an address added as its other one): keep it instead of restarting.
+    pub fn retarget(&mut self, target: SshTarget) {
+        self.target = Some(target);
+    }
+
+    /// Tries each of the machine's addresses in turn; the tunnel remembers
+    /// the machine's target as saved, whichever address carried it.
     pub fn start(
         target: &SshTarget,
         job: Option<&Arc<Job>>,
         askpass: Option<&Askpass>,
     ) -> Result<Self, String> {
-        Self::start_with_command(
-            target,
-            job,
-            askpass,
-            command_with_keepalive(target, askpass.is_some(), TUNNEL_KEEPALIVE_SECS),
-        )
+        let mut failure = String::new();
+        for dial in dial_order(target) {
+            match Self::start_with_command(
+                &dial,
+                job,
+                askpass,
+                command_with_keepalive(&dial, askpass.is_some(), TUNNEL_KEEPALIVE_SECS),
+            ) {
+                Ok(mut tunnel) => {
+                    tunnel.target = Some(target.clone());
+                    return Ok(tunnel);
+                }
+                Err(error) => {
+                    if job.is_some_and(|j| j.cancelled.load(Ordering::Relaxed)) {
+                        return Err(error);
+                    }
+                    failure = error;
+                }
+            }
+        }
+        Err(failure)
     }
 
     fn start_with_command(
@@ -1001,6 +1104,8 @@ mod tests {
             target: required("MONOCODE_TEST_SSH_TARGET"),
             port: Some(required("MONOCODE_TEST_SSH_PORT").parse().unwrap()),
             remote_port: required("MONOCODE_TEST_HOST_PORT").parse().unwrap(),
+            alternate: None,
+            host_key_alias: None,
         };
         let make_command = || {
             let mut command = command(&target, false);
@@ -1148,6 +1253,8 @@ mod tests {
             target: host.into(),
             port: None,
             remote_port: 3774,
+            alternate: None,
+            host_key_alias: None,
         };
         let mut tunnel = Tunnel::adopt(long_lived_child(), 4321);
         tunnel.target = Some(target("me@old"));
@@ -1171,6 +1278,8 @@ mod tests {
             target: "nowhere.invalid".into(),
             port: None,
             remote_port: 3774,
+            alternate: None,
+            host_key_alias: None,
         };
         let started = Instant::now();
         let error = tunnels
@@ -1189,6 +1298,8 @@ mod tests {
             target: "me@host".into(),
             port: Some(2222),
             remote_port: 3774,
+            alternate: None,
+            host_key_alias: None,
         };
         let args = |command: &Command| -> Vec<String> {
             command
@@ -1272,6 +1383,48 @@ mod tests {
         assert_eq!(parse_ssh_config_dump("hostname a\n"), None);
         assert_eq!(parse_ssh_config_dump(""), None);
     }
+    #[test]
+    fn a_machine_with_two_addresses_dials_the_one_that_answers_first() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let target = SshTarget {
+            target: "me@nowhere.invalid".into(),
+            port: Some(port),
+            remote_port: 3774,
+            alternate: Some("me@127.0.0.1".into()),
+            host_key_alias: None,
+        };
+        let order = dial_order(&target);
+        assert_eq!(
+            order.iter().map(|dial| dial.target.as_str()).collect::<Vec<_>>(),
+            ["me@127.0.0.1", "me@nowhere.invalid"]
+        );
+        // The other address checks the host key filed for the saved one.
+        assert_eq!(order[0].host_key_alias.as_deref(), Some("nowhere.invalid"));
+        assert_eq!(order[1].host_key_alias, None);
+        assert!(order.iter().all(|dial| dial.alternate.is_none()));
+
+        drop(listener);
+        let order = dial_order(&target);
+        assert_eq!(order[0].target, "me@nowhere.invalid");
+
+        let single = SshTarget { alternate: None, ..target.clone() };
+        assert_eq!(dial_order(&single).len(), 1);
+        let blank = SshTarget { alternate: Some("  ".into()), ..target };
+        assert_eq!(dial_order(&blank).len(), 1);
+    }
+
+    #[test]
+    fn the_other_address_is_checked_like_the_first() {
+        assert_eq!(validate_alternate(None, None), Ok(None));
+        assert_eq!(validate_alternate(Some("  "), None), Ok(None));
+        assert_eq!(
+            validate_alternate(Some(" me@100.64.0.5 "), None),
+            Ok(Some("me@100.64.0.5".into()))
+        );
+        assert!(validate_alternate(Some("-oProxyCommand=x"), None).is_err());
+    }
+
     #[test]
     fn tcp_reachability_and_failure_tags() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

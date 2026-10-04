@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import {
   applySessionSync,
-  type HostCommand,
   type HostSession,
   type HostSessionSummary,
   type RemoteMachine,
@@ -21,6 +20,12 @@ import {
 } from "./remoteHealth";
 import { loadRemoteAutoReconnect } from "../../settings/model/settings";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
+import {
+  RemoteSessionLists,
+  type SessionListReply,
+} from "./remoteSessionLists";
+import { remoteBackoffDelay } from "./remotePollingPolicy";
+import { startRailPoller } from "./remoteRailPoller";
 
 const CHANGE = "monocode:remote-machines";
 export const REMOTE_HISTORY_CHANGE = "monocode:remote-history";
@@ -45,7 +50,9 @@ export function requestMachineReconnect(machineId: string) {
 }
 
 /** The machine a view asked to reconnect, once, if it is one of `machines`. */
-export function takeReconnectRequest(machines: RemoteMachine[]): RemoteMachine | undefined {
+export function takeReconnectRequest(
+  machines: RemoteMachine[],
+): RemoteMachine | undefined {
   const machine = machines.find((entry) => entry.id === reconnectRequest);
   if (machine) reconnectRequest = undefined;
   return machine;
@@ -67,7 +74,9 @@ export function requestMachineEdit(machineId: string) {
 }
 
 /** The machine a view asked to edit, once, if it is one of `machines`. */
-export function takeEditRequest(machines: RemoteMachine[]): RemoteMachine | undefined {
+export function takeEditRequest(
+  machines: RemoteMachine[],
+): RemoteMachine | undefined {
   const machine = machines.find((entry) => entry.id === editRequest);
   if (machine) editRequest = undefined;
   return machine;
@@ -81,9 +90,22 @@ export function subscribeEditRequests(listener: () => void): () => void {
 const capabilitiesByEnvironment = new Map<string, string[]>();
 const capabilityListeners = new Set<() => void>();
 const capabilityLookups = new Map<string, Promise<string[] | undefined>>();
+const capabilityFetchedAt = new Map<string, number>();
+/** An `environment.describe` answer this young is reused; the machine status
+ * watcher refreshes it every 15 s anyway. */
+export const REMOTE_CAPABILITIES_TTL_MS = 20_000;
+
+/** Forces the next `loadRemoteCapabilities` to ask the machine again, for a
+ * machine that was edited, reconnected or removed. The last answer stays
+ * readable through `cachedRemoteCapabilities`. */
+export function invalidateRemoteCapabilities(environmentId: string) {
+  capabilityFetchedAt.delete(environmentId);
+}
 
 /** What a machine's host last advertised in `environment.describe`. */
-export function cachedRemoteCapabilities(environmentId: string): string[] | undefined {
+export function cachedRemoteCapabilities(
+  environmentId: string,
+): string[] | undefined {
   return capabilitiesByEnvironment.get(environmentId);
 }
 
@@ -92,25 +114,43 @@ export function subscribeRemoteCapabilities(listener: () => void): () => void {
   return () => capabilityListeners.delete(listener);
 }
 
-export function recordRemoteCapabilities(environmentId: string, advertised: unknown) {
+export function recordRemoteCapabilities(
+  environmentId: string,
+  advertised: unknown,
+) {
   const next = Array.isArray(advertised)
     ? advertised.filter((entry): entry is string => typeof entry === "string")
     : [];
+  capabilityFetchedAt.set(environmentId, Date.now());
   const previous = capabilitiesByEnvironment.get(environmentId);
-  if (previous?.length === next.length && previous.every((entry, i) => entry === next[i]))
+  if (
+    previous?.length === next.length &&
+    previous.every((entry, i) => entry === next[i])
+  )
     return;
   capabilitiesByEnvironment.set(environmentId, next);
   capabilityListeners.forEach((listener) => listener());
 }
 
 /** Asks a machine for its capabilities, to learn whether its host is new enough. */
-export function loadRemoteCapabilities(environmentId: string): Promise<string[] | undefined> {
+export function loadRemoteCapabilities(
+  environmentId: string,
+): Promise<string[] | undefined> {
+  const fetchedAt = capabilityFetchedAt.get(environmentId);
+  if (
+    fetchedAt !== undefined &&
+    Date.now() - fetchedAt < REMOTE_CAPABILITIES_TTL_MS
+  )
+    return Promise.resolve(cachedRemoteCapabilities(environmentId));
   const pending = capabilityLookups.get(environmentId);
   if (pending) return pending;
   const lookup = (async () => {
     const machine = await remoteMachineFor(environmentId);
     if (!machine) return undefined;
-    const host = await remoteRequest<{ capabilities?: unknown }>(machine.id, "environment.describe");
+    const host = await remoteRequest<{ capabilities?: unknown }>(
+      machine.id,
+      "environment.describe",
+    );
     recordRemoteCapabilities(environmentId, host.capabilities);
     return cachedRemoteCapabilities(environmentId);
   })().finally(() => capabilityLookups.delete(environmentId));
@@ -132,12 +172,16 @@ export function remotePendingWorktree(shellId: string): string | undefined {
 }
 
 /** The host checkout currently used by a remote tab. */
-export function remoteTabCwd(project: string, shellId?: string): string | undefined {
+export function remoteTabCwd(
+  project: string,
+  shellId?: string,
+): string | undefined {
   if (!shellId) return undefined;
   const sessionId = remoteSessionFor(shellId);
   return (
-    (sessionId ? cachedRemoteSessionSummary(project, sessionId)?.cwd : undefined) ??
-    remotePendingWorktree(shellId)
+    (sessionId
+      ? cachedRemoteSessionSummary(project, sessionId)?.cwd
+      : undefined) ?? remotePendingWorktree(shellId)
   );
 }
 
@@ -173,75 +217,12 @@ export function rememberRemoteSession(shellId: string, sessionId?: string) {
   window.dispatchEvent(new Event(REMOTE_HISTORY_CHANGE));
 }
 
-const pendingPrefix = (project: string, environment: string) =>
-  `monocode.remote-command.v1:${JSON.stringify([project, environment])}:`;
-
-type PendingEntry = { command: HostCommand; shellId?: string; followup?: HostCommand };
-const readPendingEntry = (value: string): PendingEntry => {
-  const parsed = JSON.parse(value) as PendingEntry | HostCommand;
-  return "command" in parsed ? parsed : { command: parsed };
-};
-
-export const pendingRemoteFollowup = (project: string, environment: string, id: string) => {
-  const value = localStorage.getItem(`${pendingPrefix(project, environment)}${id}`);
-  return value ? readPendingEntry(value).followup : undefined;
-};
-
-export const pendingRemoteCommand = (
-  project: string,
-  environment: string,
-  sessionId?: string | null,
-  shellId?: string,
-): HostCommand | undefined => {
-  const prefix = pendingPrefix(project, environment);
-  for (let index = 0; index < localStorage.length; index++) {
-    const key = localStorage.key(index);
-    if (key?.startsWith(prefix)) {
-      const value = localStorage.getItem(key);
-      if (value) {
-        const entry = readPendingEntry(value);
-        const command = entry.command;
-        if (
-          sessionId === undefined ||
-          (sessionId === null
-            ? command.type === "create" && (!entry.shellId || entry.shellId === shellId)
-            : command.type !== "create" && command.sessionId === sessionId)
-        )
-          return command;
-      }
-    }
-  }
-};
-
-// Each command owns its storage entry: a late receipt from another pane can
-// never erase this pane's uncertain request. Persistence must succeed before
-// dispatch; unlike preferences, silently dropping an outbox entry is unsafe.
-export const savePendingRemoteCommand = (
-  project: string,
-  environment: string,
-  command: HostCommand,
-  shellId?: string,
-  followup?: HostCommand,
-) => {
-  try {
-    localStorage.setItem(
-      `${pendingPrefix(project, environment)}${command.commandId}`,
-      JSON.stringify({ command, shellId,
-        followup: followup ?? pendingRemoteFollowup(project, environment, command.commandId),
-      } satisfies PendingEntry),
-    );
-  } catch {
-    throw new Error(
-      "Cannot save your request locally. Free up app storage before sending.",
-    );
-  }
-};
-export const clearPendingRemoteCommand = (
-  project: string,
-  environment: string,
-  commandId: string,
-) =>
-  localStorage.removeItem(`${pendingPrefix(project, environment)}${commandId}`);
+export {
+  pendingRemoteCommand,
+  pendingRemoteFollowup,
+  savePendingRemoteCommand,
+  clearPendingRemoteCommand,
+} from "./remoteOutbox";
 
 /** Whether a request may start a missing SSH tunnel. Always, unless the user
  * turned automatic reconnecting off: then only what the user did (`fresh`, or
@@ -254,8 +235,12 @@ export function mayStartTunnel(
   userInitiated: boolean,
 ): boolean {
   if (fresh || userInitiated || loadRemoteAutoReconnect()) return true;
-  const environmentId = cachedMachines.find((entry) => entry.id === machineId)?.environmentId;
-  return !environmentId || !blocksSending(readRemoteConnection(environmentId).status);
+  const environmentId = cachedMachines.find(
+    (entry) => entry.id === machineId,
+  )?.environmentId;
+  return (
+    !environmentId || !blocksSending(readRemoteConnection(environmentId).status)
+  );
 }
 
 /** `fresh` makes a dropped SSH tunnel be restarted now instead of answering
@@ -274,7 +259,9 @@ export function remoteRequest<T>(
     method,
     params,
     ...(fresh ? { fresh } : {}),
-    ...(mayStartTunnel(machineId, fresh, userInitiated) ? {} : { allowConnect: false }),
+    ...(mayStartTunnel(machineId, fresh, userInitiated)
+      ? {}
+      : { allowConnect: false }),
   });
 }
 
@@ -322,8 +309,9 @@ export async function loadRemoteSession(
   } catch {
     snapshot = applySessionSync(undefined, await sync());
   }
-  return withRemoteAttachmentPreviews(machineId, snapshot, known,
-    (params) => remoteRequest(machineId, "attachments.read", params));
+  return withRemoteAttachmentPreviews(machineId, snapshot, known, (params) =>
+    remoteRequest(machineId, "attachments.read", params),
+  );
 }
 
 /** The connected machine for an environment, from the last machine list read. */
@@ -359,6 +347,7 @@ export async function connectMachine(
     ...cachedMachines.filter((entry) => entry.id !== machine.id),
     machine,
   ];
+  invalidateRemoteCapabilities(machine.environmentId);
   machinesLoaded = true;
   window.dispatchEvent(new Event(CHANGE));
   return machine;
@@ -369,7 +358,12 @@ export async function connectMachine(
  * closes the old tunnel and the machine's connection status starts over. */
 export async function updateMachine(
   machine: RemoteMachine,
-  edit: { name: string; target: string; port: number | null },
+  edit: {
+    name: string;
+    target: string;
+    port: number | null;
+    alternate?: string | null;
+  },
   reconnect: boolean,
 ): Promise<RemoteMachine> {
   const saved = await invoke<RemoteMachine>("remote_machine_update", {
@@ -377,8 +371,12 @@ export async function updateMachine(
     name: edit.name,
     target: edit.target,
     port: edit.port,
+    alternate: edit.alternate ?? null,
   });
-  cachedMachines = cachedMachines.map((entry) => (entry.id === saved.id ? saved : entry));
+  cachedMachines = cachedMachines.map((entry) =>
+    entry.id === saved.id ? saved : entry,
+  );
+  invalidateRemoteCapabilities(saved.environmentId);
   if (reconnect) {
     machineOnline.delete(saved.id);
     resetRemoteConnection(saved.environmentId);
@@ -389,6 +387,10 @@ export async function updateMachine(
 
 export async function disconnectMachine(machineId: string): Promise<void> {
   await invoke("remote_disconnect", { machineId });
+  const environmentId = cachedMachines.find(
+    (entry) => entry.id === machineId,
+  )?.environmentId;
+  if (environmentId) invalidateRemoteCapabilities(environmentId);
   cachedMachines = cachedMachines.filter((entry) => entry.id !== machineId);
   window.dispatchEvent(new Event(CHANGE));
 }
@@ -441,16 +443,28 @@ const statusWatchers = new Map<
 
 /** Records whether a machine answered its latest request, for every view
  * that shows its connection state. `error` is why it did not. */
-export function reportRemoteMachineStatus(machineId: string, online: boolean, error?: unknown) {
-  const environmentId = cachedMachines.find((entry) => entry.id === machineId)?.environmentId;
+export function reportRemoteMachineStatus(
+  machineId: string,
+  online: boolean,
+  error?: unknown,
+) {
+  const environmentId = cachedMachines.find(
+    (entry) => entry.id === machineId,
+  )?.environmentId;
   if (environmentId)
-    recordRemoteConnection(environmentId, online ? undefined : (error ?? "Machine is unreachable"));
+    recordRemoteConnection(
+      environmentId,
+      online ? undefined : (error ?? "Machine is unreachable"),
+    );
   const wasOffline = machineOnline.get(machineId) === false;
   if (machineOnline.get(machineId) === online) return;
   machineOnline.set(machineId, online);
   window.dispatchEvent(new Event(STATUS));
   // Views that gave up on this machine reload as soon as it answers again.
-  if (online && wasOffline) notifyRemoteRecovered(environmentId);
+  if (online && wasOffline) {
+    if (environmentId) invalidateRemoteCapabilities(environmentId);
+    notifyRemoteRecovered(environmentId);
+  }
 }
 
 function watchMachineStatus(machineId: string): () => void {
@@ -458,17 +472,19 @@ function watchMachineStatus(machineId: string): () => void {
   if (existing) {
     existing.count++;
   } else {
-    const watcher: { count: number; timer?: ReturnType<typeof setTimeout> } =
-      { count: 1 };
+    const watcher: { count: number; timer?: ReturnType<typeof setTimeout> } = {
+      count: 1,
+    };
     statusWatchers.set(machineId, watcher);
     let failures = 0;
     const poll = async () => {
       try {
-        const host = await remoteRequest<{ environmentId?: string; capabilities?: unknown }>(
-          machineId,
-          "environment.describe",
-        );
-        if (host?.environmentId) recordRemoteCapabilities(host.environmentId, host.capabilities);
+        const host = await remoteRequest<{
+          environmentId?: string;
+          capabilities?: unknown;
+        }>(machineId, "environment.describe");
+        if (host?.environmentId)
+          recordRemoteCapabilities(host.environmentId, host.capabilities);
         failures = 0;
         reportRemoteMachineStatus(machineId, true);
       } catch (reason) {
@@ -478,7 +494,7 @@ function watchMachineStatus(machineId: string): () => void {
       if (statusWatchers.get(machineId) === watcher)
         watcher.timer = setTimeout(
           () => void poll(),
-          failures ? Math.min(30_000, 3_000 * 2 ** failures) : 15_000,
+          failures ? remoteBackoffDelay(failures) : 15_000,
         );
     };
     void poll();
@@ -492,7 +508,9 @@ function watchMachineStatus(machineId: string): () => void {
 }
 
 /** Whether a machine is reachable; undefined until the first check returns. */
-export function useRemoteMachineOnline(machineId?: string): boolean | undefined {
+export function useRemoteMachineOnline(
+  machineId?: string,
+): boolean | undefined {
   const [online, setOnline] = useState(() =>
     machineId ? machineOnline.get(machineId) : undefined,
   );
@@ -529,11 +547,32 @@ export function cachedRemoteSessionSummary(project: string, sessionId: string) {
   return cachedSessions(project).find((session) => session.id === sessionId);
 }
 
+/** The last `sessions.list` answer per remote project, so the rail and the
+ * open project's sidebar share one request instead of each asking. */
+const sharedSessionLists = new RemoteSessionLists(
+  (machineId, projectId, known) =>
+    remoteRequest<SessionListReply>(machineId, "sessions.list", {
+      projectId,
+      known,
+    }),
+);
+if (typeof window !== "undefined") {
+  window.addEventListener(REMOTE_HISTORY_CHANGE, () =>
+    sharedSessionLists.invalidate(),
+  );
+  window.addEventListener(CHANGE, () => sharedSessionLists.invalidate());
+}
+
 export type RemoteProjectSessions = {
   /** Undefined when this machine is not connected on this computer. */
   machine?: RemoteMachine;
   sessions: HostSessionSummary[];
   loaded: boolean;
+  /** Whether the list of machines has been read: until then `machine` is
+   * undefined because it is not known yet, not because it is missing. */
+  machinesLoaded: boolean;
+  /** The machine did not answer and no list has arrived yet. */
+  failed: boolean;
 };
 
 /** Lists a remote project's host sessions, keeping the last list visible
@@ -543,7 +582,7 @@ export function useRemoteProjectSessions(
   enabled = true,
 ): RemoteProjectSessions {
   const remote = enabled ? remoteProjectFor(project) : undefined;
-  const { machines } = useRemoteMachines(!!remote);
+  const { machines, loaded: machinesLoaded } = useRemoteMachines(!!remote);
   const machine = remote
     ? machines.find((entry) => entry.environmentId === remote.environmentId)
     : undefined;
@@ -551,6 +590,7 @@ export function useRemoteProjectSessions(
     remote ? cachedSessions(project) : [],
   );
   const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     if (!remote) return;
@@ -561,35 +601,40 @@ export function useRemoteProjectSessions(
   useEffect(() => {
     setSessions(remote ? cachedSessions(project) : []);
     setLoaded(false);
+    setFailed(false);
     if (!remote || !machine) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
     let failures = 0;
     const poll = async () => {
       try {
-        const next = await remoteRequest<HostSessionSummary[]>(
+        const next = await sharedSessionLists.load(
           machine.id,
-          "sessions.list",
-          { projectId: remote.projectId },
+          remote.projectId,
         );
         if (disposed) return;
         failures = 0;
         setSessions(next);
         setLoaded(true);
+        setFailed(false);
         try {
-          localStorage.setItem(historyKey(project), JSON.stringify(next));
-          window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
+          const serialized = JSON.stringify(next);
+          if (localStorage.getItem(historyKey(project)) !== serialized) {
+            localStorage.setItem(historyKey(project), serialized);
+            window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
+          }
         } catch {
           /* the list is refetched next time */
         }
       } catch {
         // Keep the cached list and back off while SSH is unavailable.
         failures = Math.min(4, failures + 1);
+        if (!disposed) setFailed(true);
       }
       if (!disposed)
         timer = setTimeout(
           () => void poll(),
-          failures ? Math.min(30_000, 3_000 * 2 ** failures) : 3_000,
+          failures ? remoteBackoffDelay(failures) : 3_000,
         );
     };
     void poll();
@@ -598,7 +643,7 @@ export function useRemoteProjectSessions(
       clearTimeout(timer);
     };
   }, [project, remote?.projectId, machine?.id, refresh]);
-  return { machine, sessions, loaded };
+  return { machine, sessions, loaded, machinesLoaded, failed };
 }
 
 /** Lists the host sessions of every remote project on the rail, so one that
@@ -613,80 +658,57 @@ export function useRemoteRailSessions(
   useEffect(() => {
     const targets = (key ? key.split("\n") : []).flatMap((project) => {
       const remote = remoteProjectFor(project);
-      const machine = remote && machines.find(
-        (entry) => entry.environmentId === remote.environmentId,
-      );
+      const machine =
+        remote &&
+        machines.find((entry) => entry.environmentId === remote.environmentId);
       return remote && machine ? [{ project, remote, machine }] : [];
     });
     if (targets.length === 0) {
       setSessions([]);
       return;
     }
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let failures = 0;
     // The cached list may be old: nothing in it counts as running until the host says so.
-    const lists = new Map<string, HostSessionSummary[]>(targets.map(({ project }) => [
-      project,
-      cachedSessions(project).map((session) => ({
-        ...session,
-        status: "idle" as const,
-        needsInput: false,
-      })),
-    ]));
+    const lists = new Map<string, HostSessionSummary[]>(
+      targets.map(({ project }) => [
+        project,
+        cachedSessions(project).map((session) => ({
+          ...session,
+          status: "idle" as const,
+          needsInput: false,
+        })),
+      ]),
+    );
     let shown = "";
     const publish = () => {
       const next = [...lists].flatMap(([project, list]) =>
-        list.map((session) => ({ project, session })));
+        list.map((session) => ({ project, session })),
+      );
       const serialized = JSON.stringify(next);
       if (serialized === shown) return;
       shown = serialized;
       setSessions(next);
     };
     publish();
-    const poll = async () => {
-      const results = await Promise.all(targets.map(async ({ project, remote, machine }) => {
+    // Each target is polled on its own schedule and published as it answers;
+    // the open project's sidebar lists it every few seconds already.
+    return startRailPoller({
+      targets,
+      load: ({ machine, remote }) =>
+        sharedSessionLists.load(machine.id, remote.projectId),
+      onResult: ({ project }, next) => {
+        lists.set(project, next);
+        const stored = JSON.stringify(next);
         try {
-          const next = await remoteRequest<HostSessionSummary[]>(
-            machine.id,
-            "sessions.list",
-            { projectId: remote.projectId },
-          );
-          return Array.isArray(next) ? { project, next } : undefined;
-        } catch {
-          return undefined;
-        }
-      }));
-      if (disposed) return;
-      let historyChanged = false;
-      for (const result of results) {
-        if (!result) continue;
-        lists.set(result.project, result.next);
-        const stored = JSON.stringify(result.next);
-        try {
-          if (localStorage.getItem(historyKey(result.project)) !== stored) {
-            localStorage.setItem(historyKey(result.project), stored);
-            historyChanged = true;
+          if (localStorage.getItem(historyKey(project)) !== stored) {
+            localStorage.setItem(historyKey(project), stored);
+            window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
           }
         } catch {
           /* the list is refetched next time */
         }
-      }
-      if (historyChanged) window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
-      publish();
-      failures = results.some(Boolean) ? 0 : Math.min(4, failures + 1);
-      const active = [...lists.values()].some((list) =>
-        list.some((session) => session.status === "running"));
-      timer = setTimeout(
-        () => void poll(),
-        failures ? Math.min(30_000, 3_000 * 2 ** failures) : active ? 4_000 : 10_000,
-      );
-    };
-    void poll();
-    return () => {
-      disposed = true;
-      clearTimeout(timer);
-    };
+        publish();
+      },
+    });
   }, [key, machines]);
   return sessions;
 }

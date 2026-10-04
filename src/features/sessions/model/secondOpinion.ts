@@ -39,6 +39,53 @@ export function harnessForTurn(
   return first?.from ?? sessionHarness;
 }
 
+/**
+ * `harnessForTurn` for several turns in one walk over `blocks`, so a render
+ * does not scan the whole transcript once per turn.
+ */
+export function harnessesForTurns(
+  blocks: Block[],
+  turns: Block[][],
+  sessionHarness: HarnessId,
+): HarnessId[] {
+  const recordedHarness = (turn: Block[]) =>
+    turn.find((block) => block.role === "user")?.turnModel?.harness;
+  // Turns that record their own model need no walk over the transcript.
+  if (turns.every((turn) => recordedHarness(turn))) {
+    return turns.map((turn) => recordedHarness(turn)!);
+  }
+  const startIndexes = new Map<string, number[]>();
+  turns.forEach((turn, index) => {
+    const id = turn[0]?.id;
+    if (!id) return;
+    const list = startIndexes.get(id);
+    if (list) list.push(index);
+    else startIndexes.set(id, [index]);
+  });
+  // The provider handed to by the latest handoff before each turn's first block.
+  const before = new Map<number, HarnessId | undefined>();
+  let handedTo: HarnessId | undefined;
+  let firstFrom: HarnessId | undefined;
+  let seen = false;
+  for (const block of blocks) {
+    const list = startIndexes.get(block.id);
+    if (list) {
+      for (const index of list) {
+        if (!before.has(index)) before.set(index, seen ? handedTo : undefined);
+      }
+      startIndexes.delete(block.id);
+    }
+    if (block.handoff) {
+      if (firstFrom === undefined) firstFrom = block.handoff.from;
+      handedTo = block.handoff.to;
+      seen = true;
+    }
+  }
+  return turns.map((turn, index) => {
+    return recordedHarness(turn) ?? before.get(index) ?? firstFrom ?? sessionHarness;
+  });
+}
+
 export function turnUserRequest(blocks: Block[]): string {
   const user = blocks.find((block) => block.role === "user");
   return user?.text.replace(/\r\n?/g, "\n").trim() ?? "";

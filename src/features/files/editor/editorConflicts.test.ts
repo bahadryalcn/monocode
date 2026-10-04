@@ -9,6 +9,7 @@ import {
   editorConflicts,
   resolveConflict,
   stepConflict,
+  touchesConflictMarker,
 } from "./editorConflicts";
 
 const TWO = [
@@ -126,5 +127,64 @@ describe("editorConflicts", () => {
     (bar.querySelector(".cm-conflictAction-theirs") as HTMLButtonElement).click();
     expect(conflictBlocks(view.state)).toHaveLength(1);
     expect(view.state.doc.toString()).toContain("top\ntheirs\nmiddle");
+  });
+});
+
+describe("conflictField incremental rebuild", () => {
+  const stateOf = (doc: string) =>
+    EditorState.create({ doc, extensions: [editorConflicts] });
+  const BLOCK = ["<<<<<<< HEAD", "a", "=======", "b", ">>>>>>> x"];
+
+  it("does not look for markers when ordinary text is typed", () => {
+    const state = stateOf("hello\nworld");
+    const tr = state.update({ changes: { from: 5, insert: " there" } });
+    expect(touchesConflictMarker(tr)).toBe(false);
+    expect(conflictBlocks(tr.state)).toEqual([]);
+  });
+
+  it("finds a block completed by typing the 7th marker character", () => {
+    const state = stateOf(["<<<<<<", "a", "=======", "b", ">>>>>>> x"].join("\n"));
+    expect(conflictBlocks(state)).toHaveLength(0);
+    const tr = state.update({ changes: { from: 6, insert: "<" } });
+    expect(touchesConflictMarker(tr)).toBe(true);
+    expect(conflictBlocks(tr.state)).toHaveLength(1);
+    expect(conflictBlocks(tr.state)[0].from).toBe(0);
+  });
+
+  it("finds a block completed by deleting text that joined two fragments", () => {
+    const state = stateOf(["<<<<<<<x", "a", "=======", "b", ">>>>>>> x"].join("\n"));
+    expect(conflictBlocks(state)).toHaveLength(0);
+    // Remove the `x` that kept the opener from being a marker.
+    const tr = state.update({ changes: { from: 7, to: 8 } });
+    expect(touchesConflictMarker(tr)).toBe(true);
+    expect(conflictBlocks(tr.state)).toHaveLength(1);
+
+    // Deleting a line break joins `<<<<` and `<<<` into an opener.
+    const joined = stateOf(["<<<<", "<<<", "=======", ">>>>>>>"].join("\n"));
+    expect(conflictBlocks(joined)).toHaveLength(0);
+    const tr2 = joined.update({ changes: { from: 4, to: 5 } });
+    expect(touchesConflictMarker(tr2)).toBe(true);
+    expect(conflictBlocks(tr2.state)).toHaveLength(1);
+  });
+
+  it("finds a block completed by a closing marker typed after the rest", () => {
+    const state = stateOf(["<<<<<<< HEAD", "a", "=======", "b", ""].join("\n"));
+    expect(conflictBlocks(state)).toHaveLength(0);
+    const tr = state.update({ changes: { from: state.doc.length, insert: ">>>>>>> x" } });
+    expect(conflictBlocks(tr.state)).toHaveLength(1);
+  });
+
+  it("keeps blocks right while text around and inside them is edited", () => {
+    let state = stateOf(["top", ...BLOCK, "end"].join("\n"));
+    expect(conflictBlocks(state)).toHaveLength(1);
+    state = state.update({ changes: { from: 0, insert: "more\n" } }).state;
+    expect(conflictBlocks(state)[0].startLine).toBe(3);
+    // Breaking the closing marker removes the block.
+    const close = state.doc.toString().indexOf(">>>>>>>");
+    state = state.update({ changes: { from: close, to: close + 1 } }).state;
+    expect(conflictBlocks(state)).toHaveLength(0);
+    // Fixing it brings the block back.
+    state = state.update({ changes: { from: close, insert: ">" } }).state;
+    expect(conflictBlocks(state)).toHaveLength(1);
   });
 });

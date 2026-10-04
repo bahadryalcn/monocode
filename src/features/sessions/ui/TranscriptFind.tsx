@@ -1,4 +1,5 @@
 import {
+  memo,
   useEffect,
   useMemo,
   useRef,
@@ -23,15 +24,18 @@ type Props = {
   /** Lets a jump from cross-session search open this find with its query. */
   sessionId?: string;
   side?: "left" | "right";
+  /** Tells the owner when results depend on live text, so it can feed every frame. */
+  onSearchingChange?: (searching: boolean) => void;
 };
 
-export function TranscriptFind({
+export const TranscriptFind = memo(function TranscriptFind({
   blocks,
   visible,
   focused,
   onNavigate,
   sessionId,
   side = "right",
+  onSearchingChange,
 }: Props) {
   const input = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState(false);
@@ -41,6 +45,11 @@ export function TranscriptFind({
     () => findTranscriptBlocks(blocks, query),
     [blocks, query],
   );
+  const searching = visible && open && query.trim() !== "";
+  useEffect(() => {
+    onSearchingChange?.(searching);
+    return () => onSearchingChange?.(false);
+  }, [searching, onSearchingChange]);
   const selected = matches[Math.min(active, matches.length - 1)] ?? null;
   const jump = useSyncExternalStore(
     subscribeTranscriptJump,
@@ -200,7 +209,7 @@ export function TranscriptFind({
       </div>
     </div>
   );
-}
+});
 
 function FindButton({
   label,

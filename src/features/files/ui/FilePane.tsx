@@ -31,6 +31,7 @@ import {
   subscribeDiffViewer,
 } from "../../settings/model/settings";
 import { AgentTabView } from "../../sessions/ui/AgentTabView";
+import { useSession } from "../../sessions/model/sessionsStore";
 import { MarkdownPreview } from "../../sessions/ui/AgentMarkdown";
 import { BinaryFileView } from "./BinaryFileView";
 import { DocumentView } from "./DocumentView";
@@ -70,6 +71,7 @@ type Props = {
   onSelectFile: (paneId: string, fileId: string) => void;
   onCloseFile: (paneId: string, fileId: string) => void;
   onCloseOtherFiles: (paneId: string, fileId: string) => void;
+  onOpenInNewWindow?: (paneId: string, fileId: string) => void;
   onPinFile?: (fileId: string) => void;
   onDirtyChange: (fileId: string, dirty: boolean) => void;
   onErrorCountChange: (fileId: string, count: number) => void;
@@ -97,6 +99,7 @@ function FilePaneComponent({
   onSelectFile,
   onCloseFile,
   onCloseOtherFiles,
+  onOpenInNewWindow,
   onPinFile,
   onDirtyChange,
   onErrorCountChange,
@@ -137,6 +140,11 @@ function FilePaneComponent({
           onSelectFile={(fileId) => onSelectFile(pane.id, fileId)}
           onCloseFile={(fileId) => onCloseFile(pane.id, fileId)}
           onCloseOtherFiles={(fileId) => onCloseOtherFiles(pane.id, fileId)}
+          onOpenInNewWindow={
+            onOpenInNewWindow
+              ? (fileId) => onOpenInNewWindow(pane.id, fileId)
+              : undefined
+          }
           onPinFile={onPinFile}
           onReorder={(ids) => onReorderFiles(pane.id, ids)}
           onPaneDragStart={onPaneDragStart}
@@ -258,6 +266,7 @@ export const FilePane = memo(FilePaneComponent, (previous, next) => {
     previous.onSelectFile !== next.onSelectFile ||
     previous.onCloseFile !== next.onCloseFile ||
     previous.onCloseOtherFiles !== next.onCloseOtherFiles ||
+    previous.onOpenInNewWindow !== next.onOpenInNewWindow ||
     previous.onPinFile !== next.onPinFile ||
     previous.onDirtyChange !== next.onDirtyChange ||
     previous.onErrorCountChange !== next.onErrorCountChange ||
@@ -304,9 +313,11 @@ function PlanSurface({
 }) {
   const plan = file.plan;
   const [mode, setMode] = useMarkdownMode(file.path);
-  const session = plan
-    ? sessions.find((entry) => entry.id === plan.sessionId)
-    : undefined;
+  // A streaming plan's text lives only in the store; the `sessions` prop lags.
+  const liveSession = useSession(plan?.sessionId);
+  const session =
+    liveSession ??
+    (plan ? sessions.find((entry) => entry.id === plan.sessionId) : undefined);
   const block = plan
     ? session?.blocks.find((entry) => entry.id === plan.blockId)
     : undefined;

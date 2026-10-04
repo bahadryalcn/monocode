@@ -13,6 +13,7 @@ import {
 import { createPortal } from "react-dom";
 import { GlassBackdrop } from "../../app/shell/GlassBackdrop";
 import { LAYER } from "../lib/layers";
+import { OverlayParent, useOverlay } from "./overlay";
 import {
   placePopover,
   type AnchorRect,
@@ -152,17 +153,12 @@ function NativePopover({
   ...props
 }: Props & { host: HTMLElement }) {
   const surface = useRef<HTMLDivElement | null>(null);
+  const overlayId = useOverlay(surface, false, onDismiss && dismissOnEscape ? () => onDismiss("escape") : undefined);
   useEffect(() => {
     if (autoFocus) surface.current?.focus({ preventScroll: true });
   }, [autoFocus]);
   useEffect(() => {
     if (!onDismiss) return;
-    const key = (event: KeyboardEvent) => {
-      if (!dismissOnEscape || event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onDismiss("escape");
-    };
     const outside = (event: PointerEvent) => {
       const target = event.target;
       if (
@@ -173,10 +169,8 @@ function NativePopover({
         return;
       onDismiss("outside");
     };
-    window.addEventListener("keydown", key, true);
     window.addEventListener("pointerdown", outside);
     return () => {
-      window.removeEventListener("keydown", key, true);
       window.removeEventListener("pointerdown", outside);
     };
   }, [onDismiss, dismissOnEscape, ignore]);
@@ -205,7 +199,7 @@ function NativePopover({
       style={{ maxHeight: maxHeight ?? 400, ...style }}
       className={`relative w-full outline-none ${className ?? ""}`}
     >
-      {children}
+      <OverlayParent.Provider value={overlayId}>{children}</OverlayParent.Provider>
     </div>,
     host,
   );
@@ -234,6 +228,7 @@ function WebPopover({
   ...rest
 }: Props) {
   const frame = useRef<HTMLDivElement | null>(null);
+  const overlayId = useOverlay(frame, false, onDismiss && dismissOnEscape ? () => onDismiss("escape") : undefined);
   const surface = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState<PopoverPosition | null>(null);
   const anchorRef = useRef(anchor);
@@ -289,17 +284,9 @@ function WebPopover({
       if (ignore && el?.closest(ignore)) return;
       dismissRef.current?.("outside");
     };
-    const onKey = (event: KeyboardEvent) => {
-      if (!dismissOnEscape || event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      dismissRef.current?.("escape");
-    };
     window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKey, true);
     return () => {
       window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKey, true);
     };
   }, [onDismiss, dismissOnEscape, ignore]);
 
@@ -360,7 +347,7 @@ function WebPopover({
         }}
         className={`${position ? "popover-open " : ""}relative z-[1] outline-none ${className ?? ""}`}
       >
-        {children}
+        <OverlayParent.Provider value={overlayId}>{children}</OverlayParent.Provider>
       </div>
     </div>,
     document.body,

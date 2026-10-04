@@ -1,19 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getIdentifier, getVersion, check, message, ask, relaunch } = vi.hoisted(() => ({
-  getIdentifier: vi.fn(),
-  getVersion: vi.fn(),
-  check: vi.fn(),
-  message: vi.fn(),
-  ask: vi.fn(),
-  relaunch: vi.fn(),
-}));
+const { getIdentifier, getVersion, check, message, ask, relaunch } = vi.hoisted(
+  () => ({
+    getIdentifier: vi.fn(),
+    getVersion: vi.fn(),
+    check: vi.fn(),
+    message: vi.fn(),
+    ask: vi.fn(),
+    relaunch: vi.fn(),
+  }),
+);
 
 vi.mock("@tauri-apps/api/app", () => ({ getIdentifier, getVersion }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask, message }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch }));
-vi.mock("../../features/settings/model/sounds", () => ({ announceUpdateAvailable: vi.fn() }));
+vi.mock("../../features/settings/model/sounds", () => ({
+  announceUpdateAvailable: vi.fn(),
+}));
 
 import { probeForUpdate, runUpdateFlow } from "./updater";
 
@@ -26,7 +30,7 @@ describe("updater", () => {
     vi.resetAllMocks();
   });
 
-  it.each(["com.monocode.desktop.fork", "com.monocode.desktop.dev"])(
+  it.each(["com.monocode.desktop.dev", "com.unknown.desktop"])(
     "never contacts the release feed from %s",
     async (identifier) => {
       getIdentifier.mockResolvedValue(identifier);
@@ -37,11 +41,20 @@ describe("updater", () => {
         phase: "idle",
         currentVersion: "0.6.0",
       });
-      await expect(runUpdateFlow(true)).resolves.toMatchObject({ phase: "idle" });
+      await expect(runUpdateFlow(true)).resolves.toMatchObject({
+        phase: "idle",
+      });
       expect(check).not.toHaveBeenCalled();
       expect(message).toHaveBeenCalledOnce();
     },
   );
+
+  it("checks the configured feed for the installed fork", async () => {
+    getIdentifier.mockResolvedValue("com.monocode.desktop.fork");
+    check.mockResolvedValue(null);
+    await expect(probeForUpdate()).resolves.toBeNull();
+    expect(check).toHaveBeenCalledOnce();
+  });
 
   it("treats an unreadable identifier as updates disabled", async () => {
     getIdentifier.mockRejectedValue(new Error("no tauri"));
@@ -53,7 +66,9 @@ describe("updater", () => {
 
   it("keeps automatic checks quiet when updater endpoints are missing", async () => {
     getVersion.mockResolvedValue("0.1.23");
-    check.mockRejectedValue(new Error("Updater does not have any endpoints set"));
+    check.mockRejectedValue(
+      new Error("Updater does not have any endpoints set"),
+    );
 
     await expect(runUpdateFlow(false)).resolves.toEqual({
       phase: "idle",
@@ -64,14 +79,18 @@ describe("updater", () => {
 
   it("points manual checks without updater endpoints to GitHub releases", async () => {
     getVersion.mockResolvedValue("0.1.23");
-    check.mockRejectedValue(new Error("Updater does not have any endpoints set"));
+    check.mockRejectedValue(
+      new Error("Updater does not have any endpoints set"),
+    );
 
     await expect(runUpdateFlow(true)).resolves.toEqual({
       phase: "idle",
       currentVersion: "0.1.23",
     });
     expect(message).toHaveBeenCalledWith(
-      expect.stringContaining("https://github.com/hardbeat920/monocode/releases/latest"),
+      expect.stringContaining(
+        "https://github.com/hardbeat920/monocode/releases/latest",
+      ),
       { title: "MonoCode" },
     );
   });

@@ -17,6 +17,8 @@ type MenuAction = {
   label: string;
   description?: string;
   shortcut?: string;
+  /** Native tooltip, useful to explain why an item is disabled. */
+  title?: string;
   disabled?: boolean;
   danger?: boolean;
   checked?: boolean;
@@ -213,6 +215,7 @@ export function ExplorerMenu({
             : undefined
         }
         disabled={item.disabled}
+        title={item.title}
         onMouseDown={(e) => e.preventDefault()}
         onMouseEnter={(e) => {
           cancelClose();
