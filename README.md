@@ -45,8 +45,8 @@ community improvements with their original authors credited.
 
 See the [fork guide](docs/fork.md), [remote access guide](docs/remote-access.md),
 [changelog](CHANGELOG.md) and [commit history](https://github.com/bahadryalcn/monocode/commits/main/)
-for details. The source branch can be ahead of the published application:
-Gemini CLI support is on `main`, but is not included in the v0.8.74 packages.
+for details. The source branch can be ahead of the published application.
+Gemini CLI support is included from v0.8.75; it is not in the older v0.8.74 packages.
 
 ## Install this fork
 
@@ -54,12 +54,12 @@ Download from [this fork's releases](https://github.com/bahadryalcn/monocode/rel
 Check the tag and asset list before installing; source changes do not update
 an already published package.
 
-The [v0.8.74 release](https://github.com/bahadryalcn/monocode/releases/tag/v0.8.74) includes:
+The [v0.8.75 release](https://github.com/bahadryalcn/monocode/releases/tag/v0.8.75) includes:
 
 | Platform | Application package | Installation |
 | --- | --- | --- |
-| Windows x64 | `MonoCode_0.8.74_x64-setup.exe` | Run the installer after saving work. |
-| macOS Apple Silicon | `MonoCode_0.8.74_aarch64.app.zip` | Extract and move `MonoCode.app` to Applications. |
+| Windows x64 | `MonoCode_0.8.75_x64-setup.exe` | Run the installer after saving work. |
+| macOS Apple Silicon | `MonoCode_0.8.75_aarch64.app.zip` | Extract and move `MonoCode.app` to Applications. |
 
 That release also includes Windows x64 and macOS arm64 host packages for remote
 sessions. The Mac application is ad-hoc signed and is not notarized, so macOS may
@@ -70,7 +70,7 @@ identities, data directories and updates.
 For the **original MonoCode**, use [the upstream releases](https://github.com/hardbeat920/monocode/releases).
 Those packages are maintained by the original project and have their own feature
 set and update channel. Intel macOS and Linux packages are not included in this
-fork's v0.8.74 release; consult the upstream asset list or build from source.
+fork's v0.8.75 release; consult the upstream asset list or build from source.
 
 ## Agent providers
 

@@ -71,17 +71,17 @@ Do not publish unrelated releases as latest: this feed follows GitHub's latest r
 To publish after committing and pushing the intended source changes:
 
 ```powershell
-pnpm run set-version 0.8.75
+pnpm run set-version 0.8.76
 # Review, commit and push the version changes along with your code.
-git tag v0.8.75
-git push origin v0.8.75
+git tag v0.8.76
+git push origin v0.8.76
 ```
 
 A failed upload leaves a draft release; delete the incomplete draft before rerunning.
 The manual workflow trigger must select an existing version tag, not a branch.
 Existing installations with updates disabled need this first installer installed
 manually. Subsequent releases can update in-app. The automated release workflow
-publishes the Windows x64 installer and updater feed. The v0.8.74 release also
+publishes the Windows x64 installer and updater feed. The v0.8.75 release also
 includes a Mac Apple Silicon app ZIP and Windows x64/Mac arm64 host packages
 prepared from the shared local coordinator. Mac packages are not notarized, and
 the updater feed currently has no macOS/Linux platform entries.
