@@ -537,7 +537,10 @@ import {
   withShellContext,
   type ShellResult,
 } from "../features/sessions/model/shellRun";
-import { exhaustedWindowResetAt } from "../features/providers/model/rateLimits";
+import {
+  exhaustedWindowResetAt,
+  type RateLimitProvider,
+} from "../features/providers/model/rateLimits";
 import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
   discardDraftSessionRecord,
@@ -1092,6 +1095,7 @@ type AppProps = {
 
 /** How often a running session's stored copy follows it, for a local host. */
 const LIVE_PERSIST_MS = 1_500;
+const USAGE_PROVIDERS: RateLimitProvider[] = ["claude", "codex", "opencode"];
 
 export default function App(props: AppProps) {
   return (
@@ -1922,16 +1926,7 @@ function Workspace({
     void refreshHarnessCatalogs([activeHarness]);
   }, [activeHarness]);
 
-  const usageProviders = useMemo(() => {
-    if (
-      active?.harness === "claude" ||
-      active?.harness === "codex" ||
-      active?.harness === "opencode"
-    ) {
-      return [active.harness];
-    }
-    return [];
-  }, [active?.harness]);
+  const usageProviders = USAGE_PROVIDERS;
   const usageSession = useMemo(() => {
     if (!active) return undefined;
     return {
