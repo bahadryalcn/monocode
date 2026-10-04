@@ -88,6 +88,8 @@ export type HostTask = HostTaskInput & {
   runId?: string;
   /** Why the task is blocked. */
   error?: string;
+  /** Failed checks carried into the next worker run, including via To do. */
+  retryFeedback?: string;
   /** The branch an isolated task works on, and the worktree it is checked
    * out in. Kept until the task is merged or discarded. */
   branch?: string;

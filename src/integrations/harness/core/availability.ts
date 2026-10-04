@@ -6,6 +6,7 @@ import {
 } from "../../../features/sessions/model/session";
 import {
   resolveAntigravityBinary,
+  resolveGeminiBinary,
   resolveClaudeBinary,
   resolveCodexBinary,
   resolveCursorBinary,
@@ -55,6 +56,7 @@ const CLI: Record<HarnessId, { name: string; install?: string }> = {
     install:
       "Install from hermes-agent.nousresearch.com, then run hermes model",
   },
+  gemini: { name: "Gemini CLI", install: "npm i -g @google/gemini-cli" },
   antigravity: {
     name: "Antigravity (agy.exe on Windows, agy_acp_server.par elsewhere)",
   },
@@ -76,12 +78,16 @@ export function harnessUnavailableHint(id: HarnessId): string {
   return `${name} not found${how}. Install it, or restart MonoCode if it is already installed.`;
 }
 
-export function probeHarnessAvailability(
-  options?: { force?: boolean },
-): Promise<void> {
+export function probeHarnessAvailability(options?: {
+  force?: boolean;
+}): Promise<void> {
   if (inflight) return inflight;
   const lastProbe = harnessAvailabilityProbedAt();
-  if (!options?.force && lastProbe > 0 && Date.now() - lastProbe < PROBE_TTL_MS) {
+  if (
+    !options?.force &&
+    lastProbe > 0 &&
+    Date.now() - lastProbe < PROBE_TTL_MS
+  ) {
     return Promise.resolve();
   }
   inflight = Promise.all(
@@ -154,6 +160,14 @@ export function probeHarnessAvailability(
       if (id === "hermes") {
         try {
           await resolveHermesBinary();
+          return [id, true] as const;
+        } catch {
+          return [id, false] as const;
+        }
+      }
+      if (id === "gemini") {
+        try {
+          await resolveGeminiBinary();
           return [id, true] as const;
         } catch {
           return [id, false] as const;

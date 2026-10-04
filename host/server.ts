@@ -83,6 +83,9 @@ import {
   resolvePiBinary,
 } from "../src/integrations/harness/core/child";
 
+import { resolveGeminiBinary } from "../src/integrations/harness/core/child";
+import { discoverGeminiModels } from "../src/integrations/harness/providers/gemini/geminiCatalog";
+
 const exec = promisify(execFile);
 // Providers also add models server-side, without a CLI update.
 const CATALOG_MAX_AGE_MS = 5 * 60_000;
@@ -97,6 +100,7 @@ const resolveBinary: Record<RemoteProvider, () => Promise<{ path: string }>> = {
   fx: () => resolveFxBinary(),
   hermes: () => resolveHermesBinary(),
   antigravity: () => resolveAntigravityBinary(),
+  gemini: () => resolveGeminiBinary(),
 };
 // A 1 MiB text file can expand to 6 MiB when JSON escapes control characters.
 // Existing files.write sends both the original and replacement contents.
@@ -115,6 +119,7 @@ const discoverModels: Record<
   fx: discoverFxModels,
   hermes: discoverHermesModels,
   antigravity: discoverAntigravityModels,
+  gemini: discoverGeminiModels,
 };
 
 async function body(

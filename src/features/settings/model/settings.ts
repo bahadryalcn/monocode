@@ -205,7 +205,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Lockable groups",
     keywords: "group rail project password lock now",
   },
-  { id: "remote-machines", section: "connections", label: "Your machines", keywords: "ssh remote connect host server environment" },
+  {
+    id: "remote-machines",
+    section: "connections",
+    label: "Your machines",
+    keywords: "ssh remote connect host server environment",
+  },
   {
     id: "remote-auto-reconnect",
     section: "connections",
@@ -449,13 +454,14 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "providers",
     label: "Agent CLIs",
     keywords:
-      "codex opencode cursor grok pi omp fx hermes antigravity binary path",
+      "codex opencode cursor grok pi omp fx hermes antigravity gemini google binary path",
   },
   {
     id: "enabled-models",
     section: "providers",
     label: "Models",
-    keywords: "model enable disable hide turn off sonnet opus haiku gpt default",
+    keywords:
+      "model enable disable hide turn off sonnet opus haiku gpt default",
   },
   {
     id: "harness-updates",
@@ -463,6 +469,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "CLI updates",
     keywords:
       "update upgrade version outdated latest release claude codex cursor grok opencode pi omp fx",
+  },
+  {
+    id: "gemini-account",
+    section: "providers",
+    label: "Gemini account",
+    keywords: "google gemini sign in login oauth account authentication",
   },
   {
     id: "provider-accounts",

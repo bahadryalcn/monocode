@@ -10,7 +10,24 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveProvider } from "./process";
+import { providerLaunch, resolveProvider } from "./process";
+
+it.each(["bundle/gemini.js", "dist/index.js"])(
+  "launches the Gemini Windows npm package at %s without interpreting a shell wrapper",
+  async (relative) => {
+    const directory = mkdtempSync(join(tmpdir(), "monocode-gemini-launch-"));
+    const launcher = join(directory, "gemini.cmd");
+    const entry = join(directory, "node_modules/@google/gemini-cli", relative);
+    mkdirSync(join(entry, ".."), { recursive: true });
+    writeFileSync(entry, "// fixture");
+    writeFileSync(launcher, "@echo wrapper must not execute");
+    try {
+      expect(await providerLaunch(launcher, ["--experimental-acp"], "win32")).toEqual({
+        command: process.execPath, args: [entry, "--experimental-acp"],
+      });
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  },
+);
 
 it.each(["cursor", "pi", "fx"] as const)(
   "does not execute an unrelated ambiguous %s binary while resolving providers",

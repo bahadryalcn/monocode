@@ -3,14 +3,18 @@
 This is an independently maintained version of [MonoCode by Nick](https://github.com/hardbeat920/monocode).
 The original MIT license and copyright remain in [LICENSE](../LICENSE); fork
 attribution is recorded in [NOTICE](../NOTICE). Fork changes use the same license.
+See [CREDITS.md](../CREDITS.md) for the original creator, community contributions
+and third-party acknowledgements. Imported patches retain their original authorship.
 
 This checkout builds as **MonoCode** with a separate fork identity and data
-directory, so it can run alongside the official app. Three identities keep their data apart:
+directory. On Windows, the default installer uses the same `%LOCALAPPDATA%\MonoCode`
+location as the official app; a default installation replaces its executable.
+The fork and upstream databases remain separate. Three identities keep their data apart:
 
 | Build                            | Product name | Identifier                  | Data dir (`%APPDATA%\<id>`) | Install dir                    |
 | -------------------------------- | ------------ | --------------------------- | --------------------------- | ------------------------------ |
 | Official release                 | MonoCode     | `com.monocode.desktop`      | `com.monocode.desktop`      | `%LOCALAPPDATA%\MonoCode`      |
-| Installed fork (`build:windows`) | MonoCode     | `com.monocode.desktop.fork` | `com.monocode.desktop.fork` | `%LOCALAPPDATA%\MonoCode Fork` |
+| Installed fork (`build:windows`) | MonoCode     | `com.monocode.desktop.fork` | `com.monocode.desktop.fork` | `%LOCALAPPDATA%\MonoCode`      |
 | `pnpm run tauri dev`             | MonoCode Dev | `com.monocode.desktop.dev`  | `com.monocode.desktop.dev`  | not installed                  |
 
 `src-tauri/tauri.conf.json` carries the **dev** identity so a plain `tauri dev`
@@ -36,8 +40,9 @@ is separate and is not configured, so SmartScreen may warn.
 pnpm run build:windows
 ```
 
-Output: `src-tauri\target\release\bundle\nsis\MonoCode_<version>_x64-setup.exe`
-(per-user install, no admin). Run it; it does not touch the official install.
+Output: `target\release\bundle\nsis\MonoCode_<version>_x64-setup.exe`
+(per-user install, no admin). The default install location replaces the official
+application executable, while the fork continues using its separate data directory.
 
 ## Automatic Windows updates
 
@@ -66,17 +71,20 @@ Do not publish unrelated releases as latest: this feed follows GitHub's latest r
 To publish after committing and pushing the intended source changes:
 
 ```powershell
-pnpm run set-version 0.8.34
+pnpm run set-version 0.8.75
 # Review, commit and push the version changes along with your code.
-git tag v0.8.34
-git push origin v0.8.34
+git tag v0.8.75
+git push origin v0.8.75
 ```
 
 A failed upload leaves a draft release; delete the incomplete draft before rerunning.
 The manual workflow trigger must select an existing version tag, not a branch.
 Existing installations with updates disabled need this first installer installed
-manually. Subsequent releases can update in-app. Initially only Windows x64 is
-published; macOS/Linux need their own build jobs and platform feed entries.
+manually. Subsequent releases can update in-app. The automated release workflow
+publishes the Windows x64 installer and updater feed. The v0.8.74 release also
+includes a Mac Apple Silicon app ZIP and Windows x64/Mac arm64 host packages
+prepared from the shared local coordinator. Mac packages are not notarized, and
+the updater feed currently has no macOS/Linux platform entries.
 Verify the first rollout with two versions: install the older updater-enabled
 build, publish the newer version, check its notification, install, and confirm
 version, settings and session data after restart. Also test offline checks and

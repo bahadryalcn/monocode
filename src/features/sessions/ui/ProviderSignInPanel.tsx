@@ -13,6 +13,8 @@ export function ProviderSignInPanel({
   onComplete,
   completeActionLabel,
   autoFocus = false,
+  idleTitle = "Authentication required",
+  completeDescription = "You can retry your last message now.",
 }: {
   harness: HarnessId;
   state: ProviderSignInState;
@@ -21,6 +23,8 @@ export function ProviderSignInPanel({
   onComplete?: () => void;
   completeActionLabel?: string;
   autoFocus?: boolean;
+  idleTitle?: string;
+  completeDescription?: string;
 }) {
   const title = HARNESS_TITLE[harness];
   const complete = state === "complete";
@@ -34,12 +38,14 @@ export function ProviderSignInPanel({
         <HarnessIcon harness={harness} className="size-9" />
       </span>
       <h2 className="mt-3.5 text-[15px] font-medium leading-5 text-content">
-        {complete ? `Signed in to ${title}` : "Authentication required"}
+        {complete ? `Signed in to ${title}` : idleTitle}
       </h2>
       <p className="mt-1 max-w-56 text-[11px] leading-4 text-content/45">
         {complete
-          ? "You can retry your last message now."
-          : `Sign in to continue using ${title}.`}
+          ? completeDescription
+          : harness === "gemini"
+            ? "Sign in with your Google account. Your browser will open to complete authentication."
+            : `Sign in to continue using ${title}.`}
       </p>
       <button
         type="button"
@@ -57,7 +63,9 @@ export function ProviderSignInPanel({
           ? "Waiting for browser…"
           : complete
             ? (completeActionLabel ?? "Signed in")
-            : `Sign in to ${title}`}
+            : harness === "gemini"
+              ? "Sign in with Google"
+              : `Sign in to ${title}`}
       </button>
       {state === "error" && error ? (
         <p

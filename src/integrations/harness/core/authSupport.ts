@@ -1,4 +1,7 @@
-import type { Block, HarnessId } from "../../../features/sessions/model/session";
+import type {
+  Block,
+  HarnessId,
+} from "../../../features/sessions/model/session";
 
 /**
  * Account-level login commands that can run without an interactive provider
@@ -16,7 +19,7 @@ const LOGIN_ARGS: Partial<Record<HarnessId, readonly string[]>> = {
 };
 
 export function supportsHarnessLogin(harness: HarnessId): boolean {
-  return LOGIN_ARGS[harness] != null;
+  return harness === "gemini" || LOGIN_ARGS[harness] != null;
 }
 
 /** Exposed for login execution, settings copy, and regression tests. */

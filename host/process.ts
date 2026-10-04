@@ -8,6 +8,7 @@ import type { RemoteProvider } from "../src/features/connections/model/protocol"
 const npmEntries: Record<string, string> = {
   codex: "node_modules/@openai/codex/bin/codex.js",
   claude: "node_modules/@anthropic-ai/claude-code/cli.js",
+  gemini: "node_modules/@google/gemini-cli/bundle/gemini.js",
 };
 
 const binaryNames: Record<RemoteProvider, string[]> = {
@@ -21,6 +22,7 @@ const binaryNames: Record<RemoteProvider, string[]> = {
   fx: ["fx"],
   hermes: ["hermes"],
   antigravity: ["agy_acp_server.par"],
+  gemini: ["gemini"],
 };
 
 const providerDirectories = (provider: RemoteProvider): string[] => {
@@ -159,6 +161,21 @@ export async function providerLaunch(
     const relative = npmEntries[provider];
     if (!relative) throw new Error("Unsupported Windows provider launcher");
     const entry = join(dirname(command), relative);
+    if (provider === "gemini") {
+      // Gemini moved its npm entry point from dist to bundle. Support both.
+      for (const candidate of [
+        entry,
+        join(dirname(command), "node_modules/@google/gemini-cli/dist/index.js"),
+      ]) {
+        try {
+          if ((await stat(candidate)).isFile())
+            return { command: process.execPath, args: [candidate, ...args] };
+        } catch {
+          /* try the other supported package layout */
+        }
+      }
+      throw new Error("Missing Gemini npm entry point");
+    }
     if (!(await stat(entry)).isFile())
       throw new Error("Missing npm provider entry point");
     return { command: process.execPath, args: [entry, ...args] };

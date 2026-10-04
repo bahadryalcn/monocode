@@ -118,6 +118,7 @@ import {
   ProviderBinaryControl,
 } from "./ProviderBinarySettings";
 import { ProviderUsageSettings } from "./ProviderUsageSettings";
+import { GeminiAccountSettings } from "./GeminiAccountSettings";
 import { ProviderAccountsSettings } from "./ProviderAccountsSettings";
 
 export function ProvidersPage({
@@ -322,6 +323,7 @@ export function ProvidersPage({
       </Group>
 
       <ProviderAccountsSettings />
+      <GeminiAccountSettings />
 
       <EnabledModelsGroup />
 

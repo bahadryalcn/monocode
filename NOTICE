@@ -4,6 +4,11 @@ Original project: https://github.com/hardbeat920/monocode
 Original copyright: Copyright (c) 2026 Nick, distributed under the MIT License.
 Fork modifications: Copyright (c) 2026 Bahadır Yalçın, distributed under the MIT License.
 The original copyright and license text are preserved in LICENSE.
+The fork incorporates contributions from the upstream community and imported
+pull requests. Their authors retain credit for their respective work; imported
+changes are not claimed as solely authored by the fork maintainer.
+The retained MonoCode project artwork and upstream README screenshot are
+credited to the original project. See CREDITS.md and Git history for attribution.
 This fork is not an official release of, or endorsed by, the upstream project.
 
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

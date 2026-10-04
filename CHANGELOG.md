@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.75] - 2026-10-04
+
+### Fork changes since 0.8.74
+
+- Add Gemini CLI provider integration.
+- Document concrete differences from the original MonoCode and attribute imported community improvements.
+- Consolidate the fork's development history while preserving upstream and community authorship; remove local artifacts from the new main history.
+
+The older entries below include upstream and imported community release notes.
+They are retained as historical context and are not claimed as solely authored
+by this fork's maintainer.
+
+## Inherited unreleased notes
+
 ### Added
 
 - A file's changes can be shown side by side, before on the left and after on the right, with aligned hunks, synchronized scrolling, and the same change navigator. The toggle sits beside the change counter and the choice is remembered. The right pane stays editable and saves as before; hunk stage, revert, and comment actions remain in the inline layout.

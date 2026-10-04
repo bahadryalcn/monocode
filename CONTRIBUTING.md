@@ -1,12 +1,20 @@
-# Contributing
+# Contributing to this fork
 
-MonoCode is early and I’m the only maintainer, so small and focused lands much faster than large and ambitious. Past that, the door is open - bug reports and fixes are genuinely welcome.
+This guide applies to [Bahadır Yalçın's MonoCode fork](https://github.com/bahadryalcn/monocode).
+The original project was created by [Nick](https://github.com/hardbeat920) and is
+maintained separately at [hardbeat920/monocode](https://github.com/hardbeat920/monocode).
+Thank you to the original authors and community contributors; see [CREDITS.md](CREDITS.md).
 
-Please don’t open PRs that add a new provider right now. The existing harnesses still need to agree on a few patterns, and a new adapter would copy whatever is there today. See [New providers](#new-providers).
+Open fork-specific issues and pull requests in this repository. For a contribution
+to the original project, follow its own [contribution guide](https://github.com/hardbeat920/monocode/blob/main/CONTRIBUTING.md)
+and review policies. A contribution accepted here does not imply upstream acceptance.
+
+Keep changes focused, explain the problem and preserve original authorship when
+importing work from another repository or pull request.
 
 ## Get it running
 
-You need Node.js 20+, a current stable Rust toolchain, and at least one provider CLI installed and logged in:
+You need Node.js 22.13+ and pnpm 12.8.2, a current stable Rust toolchain, and at least one provider CLI installed and logged in:
 
 - [Claude Code](https://claude.com/product/claude-code) - `claude auth login`
 - [Codex](https://developers.openai.com/codex/cli) - `codex login`
@@ -19,11 +27,11 @@ You need Node.js 20+, a current stable Rust toolchain, and at least one provider
 - [fx](https://fx.sh) - `curl -fsSL https://fx.sh/setup.sh | bash` then `fx login`
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) - macOS/Linux: `curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash`; Windows PowerShell: `iex (irm https://hermes-agent.nousresearch.com/install.ps1)`; then run `hermes model`
 
-macOS, Linux, and Windows are supported targets. On Debian/Ubuntu, `npm run setup:linux:deb` installs the native Tauri build dependencies.
+macOS, Linux, and Windows are supported targets. On Debian/Ubuntu, `pnpm run setup:linux:deb` installs the native Tauri build dependencies.
 
 ```bash
-npm install
-npm run tauri dev
+pnpm install --frozen-lockfile
+pnpm run tauri dev
 ```
 
 One provider is enough. MonoCode probes for each CLI at startup and disables the ones it can’t find, with a hint about how to install them, so a missing Codex doesn’t stop you from working on anything else.
@@ -37,28 +45,41 @@ One provider is enough. MonoCode probes for each CLI at startup and disables the
 - `src/shared/` - reusable UI, hooks, and small utilities that contain no feature behavior
 - `src-tauri/src/` - the Rust side: PTYs, filesystem and git, session storage, native window
 
-`src/integrations/harness/` is the most useful place to start if you want to fix something real. Each folder under `providers/` has an adapter (`claudeAdapter.ts`) that implements the shared `HarnessAdapter` lifecycle from `core/registry.ts`, and a protocol module (`claudeProtocol.ts`) that translates the CLI’s output into MonoCode’s own event types. The protocol modules are pure functions with unit tests beside them, so you can fix a Codex parsing bug with only Claude Code installed. That’s for the providers we already ship - please don’t add a new one yet.
+`src/integrations/harness/` is the most useful place to start if you want to fix something real. Each folder under `providers/` has an adapter (`claudeAdapter.ts`) that implements the shared `HarnessAdapter` lifecycle from `core/registry.ts`, and a protocol module (`claudeProtocol.ts`) that translates the CLI’s output into MonoCode’s own event types. The protocol modules are pure functions with unit tests beside them, so you can fix a Codex parsing bug with only Claude Code installed. Discuss a new provider proposal with the fork maintainer before implementation.
 
-## Before you push
+## Before you submit
+
+Use the pnpm version pinned in `package.json`:
 
 ```bash
-npm run check
+node scripts/check-repository-hygiene.mjs
+pnpm run check
+pnpm run test:host
 ```
 
-That runs what CI runs: vitest, `tsc --noEmit`, `cargo fmt`, `cargo clippy`, and `cargo test`. If it’s green locally it should be green on GitHub. `npm run check:web` and `npm run check:rust` run the two halves separately when you only touched one side.
+`check` runs frontend tests and TypeScript checks, then Rust formatting, Clippy
+and tests. `test:host` builds and tests the host. Use `check:web` or `check:rust`
+for focused iteration. CI also includes platform and packaging jobs; a local
+focused check does not prove the complete CI matrix or an installed application.
+For local Windows/Mac installs, use [the update coordinator](docs/local-update.md).
 
-## New providers
+## Provider proposals
 
-I’m pausing new harnesses until the current ones share the same patterns - session lifecycle, catalog probes, usage, approvals, and how slash commands and skills are wired. A PR that adds another provider will be closed for now, even if the work is good. Fixes, tests, and protocol bugs on Claude, Codex, Cursor, Grok, OpenCode, Antigravity, Pi, omp, fx, and Hermes Agent are still the best kind of contribution.
+Discuss scope before adding a provider. New adapters should use the existing
+harness lifecycle and document authentication, catalog discovery, usage, approvals
+and platform support. Include focused protocol/lifecycle tests. The upstream
+project's provider admission policy belongs to that project and is not presented
+as a statement by this fork's maintainer.
 
-When the pause lifts, this section goes away.
+## Pull requests and attribution
 
-## Pull requests
+Use the [PR template](.github/pull_request_template.md), describe the resulting
+behavior and list the checks you actually ran. Include before/after screenshots
+for UI changes. Discuss larger product or architecture changes in an issue first.
 
-Keep a PR to one thing, and say what changed and why. The [PR template](.github/pull_request_template.md) covers the rest. If it changes the UI, a before/after screenshot helps a lot.
+When importing a patch, retain its author information and any co-author trailers,
+link the original pull request or commit, and keep required license notices.
+Do not describe imported work as solely authored by this fork's maintainer.
 
-For anything that moves product direction - a new surface, new provider behavior, a refactor that changes the shape of the app - open an issue first. That’s not gatekeeping, I’d just rather you hear “I’m already halfway through that” before you write it than after. New providers are the exception: don’t send the adapter, even from an issue, until the pause above is gone.
-
-I might close a PR, ask you to shrink it, or end up implementing the idea differently. That’s a call about scope and timing, not about you or the quality of your work.
-
-Be kind: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security reports: [SECURITY.md](SECURITY.md).
+Be kind: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Report vulnerabilities as
+described in [SECURITY.md](SECURITY.md).

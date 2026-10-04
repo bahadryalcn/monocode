@@ -38,6 +38,7 @@ export const MAX_RUNNING_TASKS = DEFAULT_MAX_RUNNING_TASKS;
 export const VERIFY_TIMEOUT_MS = 15 * 60_000;
 const VERIFY_OUTPUT_LIMIT = 4000;
 const DIFF_STAT_LIMIT = 2000;
+const RETRY_FEEDBACK_LIMIT = 12_000;
 
 const exec = promisify(execFile);
 
@@ -91,7 +92,12 @@ async function checkoutBase(
   }
   try {
     return {
-      baseBranch: await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]),
+      baseBranch: await git(cwd, [
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "HEAD",
+      ]),
     };
   } catch {
     throw new Error(
@@ -192,11 +198,21 @@ function reviewPrompt(task: HostTask): string {
  * its own: an agent told to work in the project folder would otherwise edit
  * the main checkout, leaving the task's branch empty. */
 function workerPrompt(task: HostTask, projectCwd: string): string {
-  if (!task.worktreeCwd) return task.prompt;
+  const prompt = task.worktreeCwd
+    ? [
+        `You are working in ${task.worktreeCwd}, a separate checkout of the project at ${projectCwd}${task.branch ? ` on the branch ${task.branch}` : ""}. Make every change in this folder. Do not edit, commit in or switch branches in ${projectCwd}: paths under it in the task below mean the same files under this folder.`,
+        "",
+        task.prompt,
+      ].join("\n")
+    : task.prompt;
+  if (!task.retryFeedback) return prompt;
   return [
-    `You are working in ${task.worktreeCwd}, a separate checkout of the project at ${projectCwd}${task.branch ? ` on the branch ${task.branch}` : ""}. Make every change in this folder. Do not edit, commit in or switch branches in ${projectCwd}: paths under it in the task below mean the same files under this folder.`,
+    prompt,
     "",
-    task.prompt,
+    "The previous attempt did not pass verification. Continue from the existing work and fix the findings below before finishing. Check them against the source and the original task; do not bypass checks or broaden the task to make it pass.",
+    "",
+    "Previous verification feedback:",
+    task.retryFeedback,
   ].join("\n");
 }
 
@@ -339,7 +355,9 @@ export class HostTasks {
     if (to === "todo" && task.status === "queued") {
       // Only a task nothing has run for can be pulled back.
       if (task.sessionId || task.startedAt || hasUnmergedBranch(task))
-        throw new Error("This task already started, so it cannot go back to To do.");
+        throw new Error(
+          "This task already started, so it cannot go back to To do.",
+        );
       return this.write({ ...task, status: "todo", updatedAt: now });
     }
     if (to === "done" && task.status === "todo") {
@@ -351,6 +369,7 @@ export class HostTasks {
       return this.write({
         ...task,
         status: "done",
+        retryFeedback: undefined,
         completedAt: now,
         updatedAt: now,
       });
@@ -374,9 +393,22 @@ export class HostTasks {
         mergedAt,
         ...rest
       } = task;
-      if (!task.merged) return this.write({ ...rest, status: to, updatedAt: now });
-      const { branch, worktreeCwd, baseBranch, baseCommit, merged, ...fresh } =
-        rest;
+      if (!task.merged)
+        return this.write({
+          ...rest,
+          retryFeedback: this.retryFeedback(task),
+          status: to,
+          updatedAt: now,
+        });
+      const {
+        branch,
+        worktreeCwd,
+        baseBranch,
+        baseCommit,
+        merged,
+        retryFeedback,
+        ...fresh
+      } = rest;
       return this.write({ ...fresh, status: to, updatedAt: now });
     }
     if (to === "blocked") {
@@ -510,6 +542,36 @@ export class HostTasks {
     });
   }
 
+  /** Capture failed checks before a retry clears the verification record. */
+  private retryFeedback(task: HostTask): string | undefined {
+    const { command, review } = task.verification ?? {};
+    const failedCommand =
+      command && (command.timedOut || command.exitCode !== 0);
+    if (review?.verdict !== "fail" && !failedCommand) return task.retryFeedback;
+    const parts = [task.error ?? "Previous verification failed."];
+    if (failedCommand) {
+      parts.push(`Check command: ${task.verifyCommand ?? ""}`, command.output);
+    }
+    if (review?.verdict === "fail") {
+      parts.push(`Reviewer finding: ${review.note}`);
+      try {
+        const blocks = this.store.session(review.sessionId).session.blocks;
+        const lastUser = blocks.findLastIndex((block) => block.role === "user");
+        const replies = blocks
+          .slice(lastUser + 1)
+          .filter((block) => block.role === "assistant" && block.text.trim());
+        const verdictReply = replies.findLast(
+          (block) => parseReviewVerdict(block.text).note !== NO_VERDICT,
+        );
+        const details = verdictReply?.text ?? replies.at(-1)?.text;
+        if (details) parts.push(details);
+      } catch {
+        // An unavailable review session must not prevent retrying its finding.
+      }
+    }
+    return parts.join("\n\n").slice(0, RETRY_FEEDBACK_LIMIT);
+  }
+
   /** Gives the task its working copy: the worktree it already has, a new one
    * on a new branch, or none when it runs in the project folder. */
   private async workingCopy(task: HostTask): Promise<HostTask> {
@@ -569,7 +631,8 @@ export class HostTasks {
       runId: started.runId,
       startedAt: now,
     };
-    if (started.error !== undefined) return this.block(next, started.error, now);
+    if (started.error !== undefined)
+      return this.block(next, started.error, now);
     return this.write({ ...next, status: "running", updatedAt: now });
   }
 
@@ -661,7 +724,8 @@ export class HostTasks {
       if (task.review === false) {
         const diffStat = await this.diffStat(task);
         const latest = current();
-        if (latest) await this.enterReview({ ...latest, verification, diffStat });
+        if (latest)
+          await this.enterReview({ ...latest, verification, diffStat });
         return;
       }
       const latest = current();
@@ -752,7 +816,11 @@ export class HostTasks {
       review: { ...review, sessionId },
     };
     if (review.verdict === "fail") {
-      this.block({ ...task, verification }, `Review failed: ${review.note}`, now);
+      this.block(
+        { ...task, verification },
+        `Review failed: ${review.note}`,
+        now,
+      );
       return;
     }
     const diffStat = await this.diffStat(task);
@@ -771,15 +839,17 @@ export class HostTasks {
       status: "review",
       needsInput: undefined,
       reviewer: undefined,
+      retryFeedback: undefined,
       completedAt: now,
       updatedAt: now,
     };
-    if (!task.autoMerge || !hasUnmergedBranch(task)) return this.write(reviewing);
+    if (!task.autoMerge || !hasUnmergedBranch(task))
+      return this.write(reviewing);
     const blocker = autoMergeBlocker(task);
     if (blocker) return this.write({ ...reviewing, mergeError: blocker });
     try {
       return await this.deliver(
-        { ...task, completedAt: now, updatedAt: now },
+        { ...task, retryFeedback: undefined, completedAt: now, updatedAt: now },
         true,
       );
     } catch (error) {

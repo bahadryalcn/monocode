@@ -389,6 +389,15 @@ pub fn harness_resolve_codex() -> Result<CursorBinary, String> {
         })
 }
 
+#[tauri::command(async)]
+pub fn harness_resolve_gemini() -> Result<CursorBinary, String> {
+    resolve_gui_binary("gemini")
+        .map(|path| CursorBinary {
+            path: path.to_string_lossy().into_owned(),
+        })
+        .ok_or_else(|| "Gemini CLI not found. Install @google/gemini-cli, then retry.".into())
+}
+
 /// Resolve the OpenCode CLI (`opencode`).
 #[tauri::command(async)]
 pub fn harness_resolve_opencode() -> Result<CursorBinary, String> {
@@ -2258,6 +2267,7 @@ fn is_harness_argv_token(part: &str) -> bool {
             | "omp"
             | "fx"
             | "hermes"
+            | "gemini"
             | "agy_acp_server.par"
             | "pi"
             | "worker-server"
@@ -2498,6 +2508,7 @@ fn resolve_harness_binary_default(provider: &str) -> Option<PathBuf> {
         "fx" => resolve_fx(),
         "hermes" => resolve_hermes(),
         "antigravity" => resolve_antigravity(),
+        "gemini" => resolve_gui_binary("gemini"),
         _ => None,
     }
 }
@@ -2539,6 +2550,7 @@ fn resolve_harness_binary_override(provider: &str, binary_path: &str) -> Result<
         "omp" => &["omp"],
         "fx" => &["fx"],
         "hermes" => &["hermes"],
+        "gemini" => &["gemini"],
         "antigravity" if cfg!(windows) => &["agy_acp_server", "agy"],
         "antigravity" => &["agy_acp_server.par"],
         _ => {
