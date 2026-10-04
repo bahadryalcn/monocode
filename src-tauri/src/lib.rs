@@ -10,6 +10,7 @@ mod control;
 pub mod control_cli;
 mod cursor_store;
 mod external_editor;
+mod html_preview;
 mod fs;
 mod git_conflicts;
 mod gitlab;
@@ -76,6 +77,31 @@ fn home_dir() -> String {
     dirs_home()
         .map(|home| fs::path_to_js(std::path::Path::new(&home)))
         .unwrap_or_else(|| "~".into())
+}
+
+#[tauri::command]
+fn path_environment() -> std::collections::HashMap<String, String> {
+    [
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "TEMP",
+        "TMP",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "WINDIR",
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        std::env::var(key).ok().map(|value| {
+            (
+                key.to_string(),
+                fs::path_to_js(std::path::Path::new(&value)),
+            )
+        })
+    })
+    .collect()
 }
 
 pub(crate) struct PasswdIdentity {
@@ -305,6 +331,7 @@ pub fn run() {
             control::app_cli_path,
             default_cwd,
             home_dir,
+            path_environment,
             keep_awake::set_keep_awake,
             notifications::notification_permission,
             notifications::request_notification_permission,
@@ -329,6 +356,7 @@ pub fn run() {
             automations::automation_run_update,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
+            html_preview::open_html_in_chrome,
             fs::resolve_project_location,
             fs::open_path_with_default_app,
             fs::claude_sessions,
@@ -471,6 +499,9 @@ pub fn run() {
             fs::claude_shell_commands,
             fs::write_text_file,
             skills::list_skills,
+            skills::skill_export,
+            skills::skill_delete,
+            skills::skill_import,
             claude_commands::list_claude_commands,
             search::search_project,
             search::cancel_project_search,

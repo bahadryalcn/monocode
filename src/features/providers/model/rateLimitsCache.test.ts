@@ -8,6 +8,7 @@ import { fetchClaudeRateLimits } from "./rateLimitsFetch";
 import {
   clearCachedRateLimits,
   getCachedRateLimits,
+  getAllRateLimits,
   loadFreshRateLimits,
   loadRateLimits,
 } from "./rateLimitsCache";
@@ -31,6 +32,41 @@ function usage(usedPercent: number): ProviderRateLimits {
 
 const rateLimited = () =>
   errorRateLimits("claude", "Claude usage request failed (429)");
+
+it("does not restore a removed account or run its queued refresh after a late response", async () => {
+  let resolve!: (value: ProviderRateLimits) => void;
+  fetchClaude.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const running = loadRateLimits("claude", "account-removed");
+  const queued = loadRateLimits("claude", "account-removed", true);
+  clearCachedRateLimits("claude", "account-removed");
+  resolve(rateLimited());
+  await Promise.all([running, queued]);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(getAllRateLimits()["claude:account-removed"]).toBeUndefined();
+  expect(fetchClaude).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a new request when an invalidated old request completes", async () => {
+  let resolve!: (value: ProviderRateLimits) => void;
+  fetchClaude.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const old = loadRateLimits("claude");
+  clearCachedRateLimits("claude", "default");
+  fetchClaude.mockResolvedValueOnce(usage(12));
+  await loadRateLimits("claude");
+  resolve(usage(99));
+  await old;
+  expect(getCachedRateLimits("claude").session?.usedPercent).toBe(12);
+});
 
 beforeEach(() => {
   vi.useFakeTimers();

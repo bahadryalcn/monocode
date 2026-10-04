@@ -15,6 +15,7 @@ export function remoteSessionState(
     ...host,
     id: shell.id,
     cwd: shell.cwd,
+    busy: snapshot.status === "running",
     worktreeCwd: host.cwd === project.cwd
       ? undefined
       : remotePath(project.environmentId, host.cwd),

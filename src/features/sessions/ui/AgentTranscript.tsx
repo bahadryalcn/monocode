@@ -1016,21 +1016,19 @@ const Turn = memo(function Turn({
         }
       />
     );
-  // The fold reaches across a stack of delegated runs, but those rows
-  // do not collapse with it: they are lifted out and parked under the
-  // work, where they stay put however often it re-folds.
+  // Assistant messages and delegated runs stay visible even when the work
+  // around them folds. A new update must never hide an earlier reply.
   const foldEntries = fold
     ? items.slice(fold.start, fold.end + 1).map((entry, offset) => ({
         entry,
         index: fold.start + offset,
       }))
     : [];
-  const foldSubagents = foldEntries.filter(
-    ({ entry }) => entry.type === "subagents",
-  );
-  const foldWork = foldEntries.filter(
-    ({ entry }) => entry.type !== "subagents",
-  );
+  const staysVisible = ({ entry }: (typeof foldEntries)[number]) =>
+    entry.type === "subagents" ||
+    (entry.type === "block" && isProseBlock(entry.block));
+  const foldVisible = foldEntries.filter(staysVisible);
+  const foldWork = foldEntries.filter((entry) => !staysVisible(entry));
   const foldLineRow = (
     <TurnRow key="work-fold" folded={!showFoldLine}>
       <WorkFoldLine
@@ -1076,14 +1074,6 @@ const Turn = memo(function Turn({
                       offset === foldWork.length - 1
                         ? "zen-fold-tail"
                         : ""
-                    }${
-                      // Prose the trail holds is the agent talking
-                      // while it works; the marker lets it read as
-                      // process, not result.
-                      entry.type === "block" &&
-                      isProseBlock(entry.block)
-                        ? " zen-fold-prose"
-                        : ""
                     }`}
                   >
                     {renderItem(entry, index)}
@@ -1091,11 +1081,7 @@ const Turn = memo(function Turn({
                 ))
               }
             </TurnRow>,
-            // Delegated runs sit under the agent's own work, not
-            // among it: they are a second thing the turn is doing,
-            // and reading them as the first steps of the main trail
-            // is what made them look like its work.
-            ...foldSubagents.map(({ entry, index }) => (
+            ...foldVisible.map(({ entry, index }) => (
               <div
                 key={turnItemKey(entry)}
                 data-transcript-search-item
@@ -2748,7 +2734,7 @@ function PhaseStep({
 
 /**
  * Every delegated run in the turn, one row each. The main transcript cycles —
- * work folds behind a line, prose replaces prose — and a subagent you are
+ * work folds behind a line, messages stay visible — and a subagent you are
  * watching must not move while that happens, so these rows are never part of a
  * fold and hold their place from the moment the agents start.
  *

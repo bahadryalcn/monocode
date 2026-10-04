@@ -38,11 +38,13 @@ function plannerPrompt(
     "",
     `You are in ${lead.name}. Read the other projects at their paths as you need to.`,
     "",
-    `Break the job into 1 to ${MAX_PLAN_TASKS} tasks. Each task is carried out by one agent that works only in its project, on a branch of its own that is merged once the task is approved. The agent sees nothing but its task's prompt, so make every prompt self-contained. When a task needs the merged result of another, list that task's key in its dependsOn; it then starts only after that task is merged. Leave out dependencies that are not needed, so independent tasks can run at the same time.`,
+    `Break the job into 1 to ${MAX_PLAN_TASKS} tasks. Each task is carried out by one agent that works only in its project, on a branch of its own that is merged once the task is approved. The agent sees nothing but its task's prompt, so make every prompt self-contained. Each agent starts in its own copy of its project, so in prompts refer to files by paths relative to the project root, never by the absolute paths above, and do not tell the agent which folder or branch to work in. When a task needs the merged result of another, list that task's key in its dependsOn; it then starts only after that task is merged. Leave out dependencies that are not needed, so independent tasks can run at the same time.`,
     ...(goal.feedback
       ? ["", "The owner's feedback on an earlier plan:", goal.feedback]
       : []),
     "",
+    "Do not use plan mode or ask for approval; write the plan in your reply.",
+    "Keep tasks proportional to the work. Reuse existing project contracts rather than requiring every worker to rediscover the project or read whole manuals. Request focused verification, separate development checks from release gates, and distinguish implemented deliverables from acceptance requiring unavailable devices or credentials. Never assign an absolute working folder or assume the integration branch is named main.",
     'End your reply with a fenced ```json block of exactly this shape, with each "project" copied exactly from the list above:',
     '{"tasks":[{"key":"short-id","project":"<project path from the list>","title":"...","prompt":"self-contained instructions for an agent working only in that project","dependsOn":["other-key"]}]}',
   ].join("\n");
@@ -64,6 +66,13 @@ export class HostGoals {
       "CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, value TEXT NOT NULL);",
     );
     tasks.onTick(() => this.work());
+    tasks.limits.track(() =>
+      this.all().flatMap((goal) =>
+        goal.status === "planning" && goal.plannerSessionId
+          ? [goal.plannerStartedAt ?? goal.createdAt]
+          : [],
+      ),
+    );
   }
 
   /** The task board's tick, which settles planners and goal progress. */
@@ -186,7 +195,10 @@ export class HostGoals {
     const now = this.now();
     for (const goal of this.all()) {
       try {
-        if (goal.status === "planning") this.settlePlanner(goal, now);
+        if (goal.status === "planning" && !goal.plannerSessionId) {
+          // Waiting for daily agent time: planning starts once there is some.
+          if (!this.tasks.limits.reached()) this.plan(goal);
+        } else if (goal.status === "planning") this.settlePlanner(goal, now);
       } catch (error) {
         console.error("Could not settle a goal planner:", errorMessage(error));
       }
@@ -236,6 +248,8 @@ export class HostGoals {
   /** Starts the planner in the lead project's folder. */
   private plan(goal: HostGoal): HostGoal {
     const now = this.now();
+    // With the day's agent time used up the goal waits, still planning.
+    if (this.tasks.limits.reached()) return this.write({ ...goal, updatedAt: now });
     let projects;
     try {
       projects = goal.projectIds.map((projectId) => {
@@ -284,8 +298,10 @@ export class HostGoals {
     if (
       goal.plannerSessionId &&
       sessionRunState(this.store, run, 0, this.now()).state === "running"
-    )
+    ) {
       cancelSessionRun(this.engine, run);
+      this.tasks.limits.record(run.startedAt, this.now());
+    }
   }
 
   /** Follows the planner to its reply and reads the plan from it. */
@@ -304,6 +320,7 @@ export class HostGoals {
       cancelSessionRun(this.engine, run);
       return;
     }
+    this.tasks.limits.record(run.startedAt, now);
     if (outcome.status !== "succeeded") {
       this.blockPlanning(
         goal,
@@ -314,13 +331,20 @@ export class HostGoals {
       );
       return;
     }
-    const reply =
-      this.store
-        .session(goal.plannerSessionId ?? "")
-        .session.blocks.filter(
-          (block) => block.role === "assistant" && block.text.trim(),
-        )
-        .at(-1)?.text ?? "";
+    // The planner's whole last turn: the plan may sit in an earlier message
+    // than its last one, or in a plan block when it answered in plan mode.
+    const blocks = this.store.session(goal.plannerSessionId ?? "").session
+      .blocks;
+    const lastUser = blocks.findLastIndex((block) => block.role === "user");
+    const reply = blocks
+      .slice(lastUser + 1)
+      .filter(
+        (block) =>
+          (block.role === "assistant" || block.role === "plan") &&
+          block.text.trim(),
+      )
+      .map((block) => block.text)
+      .join("\n\n");
     const paths = new Map(
       goal.projectIds.map((projectId) => [
         this.store.project(projectId).cwd,
@@ -377,6 +401,7 @@ export class HostGoals {
         isolate: true,
         ...(command ? { verifyCommand: command } : {}),
         review,
+        ...(goal.autoMerge ? { autoMerge: true } : {}),
         goalId: goal.id,
         ...(dependsOn.length ? { dependsOn } : {}),
       });

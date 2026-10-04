@@ -560,10 +560,9 @@ describe("AgentTranscript collapsed work", () => {
     const stackAt = markup.indexOf("Independently review");
     expect(statusAt).toBeGreaterThan(-1);
     expect(stackAt).toBeGreaterThan(statusAt);
-    // The work around it is collapsed away, and the stack is still on screen:
-    // it is pinned outside the fold's body, not inside it.
+    // Tool details collapse; the stack and every assistant update stay visible.
     expect(markup).not.toContain("hidden-detail-t1");
-    expect(markup).not.toContain("Splitting the review in two.");
+    expect(markup).toContain("Splitting the review in two.");
     // A row-length name is capped, and the whole brief stays on the hover.
     expect(markup).toContain(
       "Independently review the current repository&#x27;s recent…",

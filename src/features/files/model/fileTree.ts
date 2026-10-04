@@ -6,7 +6,7 @@ import {
 import { reportRemoteConnection } from "../../connections/model/remoteHealth";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import { pathSegments } from "./fileName";
-import { joinPath, parentPath } from "../../../shared/lib/paths";
+import { joinPath, parentPath, pathKey } from "../../../shared/lib/paths";
 
 const expandedByProject = new Map<string, Set<string>>();
 const selectedByProject = new Map<string, string | null>();
@@ -19,6 +19,7 @@ const pendingRoots = new Set<string>();
 let refreshAll = false;
 let contentChange = false;
 const dirReads = new Map<string, Promise<FsEntry[]>>();
+const dirEpochs = new Map<string, object>();
 
 const REFRESH_MS = 150;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -32,6 +33,39 @@ export function loadExpanded(cwd: string): Set<string> {
 
 export function saveExpanded(cwd: string, expanded: Set<string>) {
   expandedByProject.set(cwd, new Set(expanded));
+  pruneHiddenDirs(cwd);
+}
+
+function visibleToRoot(root: string): (path: string) => boolean {
+  const rootKey = pathKey(root);
+  const expanded = new Set([...loadExpanded(root)].map(pathKey));
+  return (path) => {
+    if (!dirBelongsToRoot(path, root)) return false;
+    let ancestor = pathKey(path);
+    if (ancestor !== rootKey && !expanded.has(rootKey)) return false;
+    while (ancestor !== rootKey) {
+      if (!expanded.has(ancestor)) return false;
+      const parent = parentPath(ancestor);
+      if (!parent || parent === ancestor) return false;
+      ancestor = pathKey(parent);
+    }
+    return true;
+  };
+}
+
+function pruneHiddenDirs(root: string) {
+  const visible = visibleToRoot(root);
+  const otherViews = [...activeRoots.keys()].filter((other) => other !== root).map(visibleToRoot);
+  for (const path of new Set([...dirs.keys(), ...dirReads.keys(), ...dirEpochs.keys()])) {
+    if (
+      dirBelongsToRoot(path, root) &&
+      !visible(path) && !otherViews.some((isVisible) => isVisible(path))
+    ) {
+      dirs.delete(path);
+      dirReads.delete(path);
+      dirEpochs.delete(path);
+    }
+  }
 }
 
 export function loadSelected(cwd: string): string | null {
@@ -52,17 +86,37 @@ export function listCachedDir(path: string): Promise<FsEntry[]> {
   if (hit) return Promise.resolve(hit);
   const pending = dirReads.get(path);
   if (pending) return pending;
+  return readDir(path);
+}
+
+function readDir(path: string, previous?: FsEntry[]): Promise<FsEntry[]> {
+  const epoch = {};
+  dirEpochs.set(path, epoch);
   const read = listDir(path)
     .then(
-    (entries) => {
-      dirs.set(path, entries);
-      reportRemoteConnection(path, "files");
-      return entries;
-    },
-    (error: unknown) => {
-      reportRemoteConnection(path, "files", error);
-      throw error;
-    },
+      (entries) => {
+        if (dirEpochs.get(path) === epoch) {
+          dirs.set(
+            path,
+            previous && JSON.stringify(previous) === JSON.stringify(entries)
+              ? previous
+              : entries,
+          );
+        }
+      if (dirEpochs.get(path) === epoch) reportRemoteConnection(path, "files");
+        return entries;
+      },
+      (error: unknown) => {
+        if (
+          dirEpochs.get(path) === epoch &&
+          previous &&
+          keepsLastListing(path, error)
+        ) {
+          dirs.set(path, previous);
+        }
+      if (dirEpochs.get(path) === epoch) reportRemoteConnection(path, "files", error);
+        throw error;
+      },
     )
     .finally(() => {
       if (dirReads.get(path) === read) dirReads.delete(path);
@@ -78,15 +132,20 @@ const keepsLastListing = (path: string, error: unknown) =>
 export function refreshDir(path: string): Promise<FsEntry[]> {
   const previous = dirs.get(path);
   dirs.delete(path);
-  return listCachedDir(path).catch((error: unknown) => {
-    if (previous && keepsLastListing(path, error)) dirs.set(path, previous);
-    throw error;
-  });
+  return readDir(path, previous);
 }
 
 export function forgetDir(path: string) {
-  for (const key of [...dirs.keys()]) {
-    if (key === path || key.startsWith(`${path}/`)) dirs.delete(key);
+  for (const key of new Set([
+    ...dirs.keys(),
+    ...dirReads.keys(),
+    ...dirEpochs.keys(),
+  ])) {
+    if (dirBelongsToRoot(key, path)) {
+      dirs.delete(key);
+      dirReads.delete(key);
+      dirEpochs.delete(key);
+    }
   }
 }
 
@@ -98,10 +157,11 @@ export function dirBelongsToRoot(path: string, root: string): boolean {
   return name === base || name.startsWith(`${base}/`);
 }
 
-/** Only current roots are polled; old machine/project caches stay passive. */
+/** Poll only visible cached folders within the requested roots. */
 export async function refreshCachedDirs(
   roots?: readonly string[],
 ): Promise<string[]> {
+  for (const root of activeRoots.keys()) pruneHiddenDirs(root);
   const paths = [...dirs.keys()].filter(
     (path) => !roots || roots.some((root) => dirBelongsToRoot(path, root)),
   );
@@ -111,15 +171,20 @@ export async function refreshCachedDirs(
     Array.from({ length: Math.min(4, paths.length) }, async () => {
       while (cursor < paths.length) {
         const path = paths[cursor++];
+        // A preceding worker may have yielded while this subtree was collapsed.
+        if (!dirs.has(path)) continue;
         const previousEntries = dirs.get(path);
         const previous = JSON.stringify(previousEntries);
+        const read = refreshDir(path);
+        const epoch = dirEpochs.get(path);
         try {
-          const next = await refreshDir(path);
+          const next = await read;
+          if (dirEpochs.get(path) !== epoch) continue;
           if (JSON.stringify(next) !== previous) changed.push(path);
           // An unchanged listing keeps its array identity, so per-directory
           // subscribers (`peekDir` snapshots) see no change.
-          else if (previousEntries) dirs.set(path, previousEntries);
         } catch (error) {
+          if (dirEpochs.get(path) !== epoch) continue;
           if (!keepsLastListing(path, error)) {
             forgetDir(path);
             changed.push(path);
@@ -152,7 +217,20 @@ export function subscribeDirsChanged(
     if (root) {
       const count = (activeRoots.get(root) ?? 1) - 1;
       if (count) activeRoots.set(root, count);
-      else activeRoots.delete(root);
+      else {
+        activeRoots.delete(root);
+        const remainingViews = [...activeRoots.keys()].map(visibleToRoot);
+        for (const path of new Set([...dirs.keys(), ...dirReads.keys(), ...dirEpochs.keys()])) {
+          if (
+            dirBelongsToRoot(path, root) &&
+            !remainingViews.some((isVisible) => isVisible(path))
+          ) {
+            dirs.delete(path);
+            dirReads.delete(path);
+            dirEpochs.delete(path);
+          }
+        }
+      }
     }
   };
 }
@@ -224,7 +302,10 @@ async function runRefresh() {
 }
 
 /** Folder to create into, given the explorer selection. */
-export function createParentOf(cwd: string, selectedPath: string | null): string {
+export function createParentOf(
+  cwd: string,
+  selectedPath: string | null,
+): string {
   if (!selectedPath || selectedPath === cwd) return cwd;
   const parent = parentPath(selectedPath);
   const entry = peekDir(parent)?.find((e) => e.path === selectedPath);

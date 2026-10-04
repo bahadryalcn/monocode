@@ -1,7 +1,8 @@
 import { pathKey } from "../../../shared/lib/paths";
 import type { HarnessId } from "../../sessions/model/session";
 
-const ACCOUNTS_KEY = "monocode.providerAccounts.v1";
+const LEGACY_ACCOUNTS_KEY = "monocode.providerAccounts.v1";
+const ACCOUNTS_KEY = "monocode.providerAccounts.v2";
 const SELECTIONS_KEY = "monocode.providerAccountSelections.v1";
 const CHANGE_EVENT = "monocode-provider-accounts-changed";
 
@@ -52,15 +53,18 @@ type StoredSelections = Record<
 export function providerAccounts(
   provider: ProviderAccountProvider,
 ): ProviderAccount[] {
-  const stored = readRecord<StoredAccounts>(ACCOUNTS_KEY);
-  const seen = new Set<string>([DEFAULT_PROVIDER_ACCOUNT_ID]);
+  const managed = readRecord<StoredAccounts>(ACCOUNTS_KEY);
+  const stored = readRecord<StoredAccounts>(LEGACY_ACCOUNTS_KEY);
+  const authoritative = Array.isArray(managed[provider]);
+  const seen = new Set<string>();
+  if (authoritative) stored[provider] = managed[provider];
   const accounts = Array.isArray(stored[provider]) ? stored[provider] : [];
   let defaultLabel = DEFAULT_PROVIDER_ACCOUNT_LABEL;
   let foundDefault = false;
   const profiles = accounts.flatMap((account) => {
     const id = validAccountId(account?.id) ? account.id : "";
     const label = cleanLabel(account?.label);
-    if (id === DEFAULT_PROVIDER_ACCOUNT_ID) {
+    if (!authoritative && id === DEFAULT_PROVIDER_ACCOUNT_ID) {
       if (label && !foundDefault) {
         defaultLabel = label;
         foundDefault = true;
@@ -71,8 +75,22 @@ export function providerAccounts(
       return [];
     }
     seen.add(id);
-    return [{ id, provider, label }];
+    return [
+      {
+        id,
+        provider,
+        label,
+        ...(authoritative && account.isDefault ? { isDefault: true } : {}),
+      },
+    ];
   });
+  if (authoritative) {
+    const defaultId =
+      profiles.find((account) => account.isDefault)?.id ?? profiles[0]?.id;
+    return profiles.map(({ isDefault: _default, ...account }) =>
+      account.id === defaultId ? { ...account, isDefault: true } : account,
+    );
+  }
   return [
     {
       id: DEFAULT_PROVIDER_ACCOUNT_ID,
@@ -106,12 +124,19 @@ export function saveProviderAccount(account: ProviderAccount): void {
   const label = cleanLabel(account.label);
   if (!label) return;
   const stored = readRecord<StoredAccounts>(ACCOUNTS_KEY);
-  const next = providerAccounts(account.provider).filter(
-    (entry) => entry.id !== account.id,
-  );
+  const accounts = providerAccounts(account.provider);
+  const next = accounts.filter((entry) => entry.id !== account.id);
   stored[account.provider] = serializeProviderAccounts([
     ...next,
-    { id: account.id, provider: account.provider, label },
+    {
+      id: account.id,
+      provider: account.provider,
+      label,
+      ...(next.length === 0 ||
+      accounts.find((entry) => entry.id === account.id)?.isDefault
+        ? { isDefault: true }
+        : {}),
+    },
   ]);
   writeJson(ACCOUNTS_KEY, stored);
   announceChange();
@@ -143,7 +168,7 @@ export function removeProviderAccount(
   provider: ProviderAccountProvider,
   accountId: string,
 ): boolean {
-  if (accountId === DEFAULT_PROVIDER_ACCOUNT_ID || !validAccountId(accountId)) {
+  if (!validAccountId(accountId)) {
     return false;
   }
   const accounts = providerAccounts(provider);
@@ -173,21 +198,42 @@ function serializeProviderAccounts(
   return accounts.flatMap((account) => {
     const label = cleanLabel(account.label);
     if (!label) return [];
-    if (
-      account.id === DEFAULT_PROVIDER_ACCOUNT_ID &&
-      label === DEFAULT_PROVIDER_ACCOUNT_LABEL
-    ) {
-      return [];
-    }
-    return [{ id: account.id, provider: account.provider, label }];
+    return [
+      {
+        id: account.id,
+        provider: account.provider,
+        label,
+        ...(account.isDefault ? { isDefault: true } : {}),
+      },
+    ];
   });
+}
+
+/** Change the fallback for new sessions without moving credentials or existing selections. */
+export function setDefaultProviderAccount(
+  provider: ProviderAccountProvider,
+  accountId: string,
+): void {
+  const accounts = providerAccounts(provider);
+  if (!accounts.some((account) => account.id === accountId))
+    throw new Error("Account no longer exists");
+  const stored = readRecord<StoredAccounts>(ACCOUNTS_KEY);
+  stored[provider] = serializeProviderAccounts(
+    accounts.map(({ isDefault: _default, ...account }) =>
+      account.id === accountId ? { ...account, isDefault: true } : account,
+    ),
+  );
+  writeJson(ACCOUNTS_KEY, stored);
+  announceChange();
 }
 
 export function providerAccountExists(
   provider: ProviderAccountProvider,
   accountId: string | undefined,
 ): boolean {
-  return providerAccounts(provider).some((account) => account.id === accountId);
+  return providerAccounts(provider).some(
+    (account) => account.id === (accountId ?? DEFAULT_PROVIDER_ACCOUNT_ID),
+  );
 }
 
 export function selectedProviderAccountId(
@@ -198,7 +244,8 @@ export function selectedProviderAccountId(
   const id = selections[selectionKey(project)]?.[provider];
   return providerAccounts(provider).some((account) => account.id === id)
     ? id!
-    : DEFAULT_PROVIDER_ACCOUNT_ID;
+    : (providerAccounts(provider).find((account) => account.isDefault)?.id ??
+        DEFAULT_PROVIDER_ACCOUNT_ID);
 }
 
 export function selectProviderAccount(
@@ -221,15 +268,25 @@ export function providerAccountLabel(
   accountId: string | undefined,
 ): string {
   return (
-    providerAccounts(provider).find((account) => account.id === accountId)
-      ?.label ?? "Default account"
+    providerAccounts(provider).find(
+      (account) => account.id === (accountId ?? DEFAULT_PROVIDER_ACCOUNT_ID),
+    )?.label ??
+    (accountId && accountId !== DEFAULT_PROVIDER_ACCOUNT_ID
+      ? "Removed account"
+      : "Default account")
   );
 }
 
 export function subscribeProviderAccounts(listener: () => void): () => void {
   const local = () => listener();
   const storage = (event: StorageEvent) => {
-    if (event.key === ACCOUNTS_KEY || event.key === SELECTIONS_KEY) listener();
+    if (
+      event.key === null ||
+      event.key === ACCOUNTS_KEY ||
+      event.key === LEGACY_ACCOUNTS_KEY ||
+      event.key === SELECTIONS_KEY
+    )
+      listener();
   };
   window.addEventListener(CHANGE_EVENT, local);
   window.addEventListener("storage", storage);
@@ -277,11 +334,7 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 function writeJson(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // A private or full storage area should not block the provider itself.
-  }
+  localStorage.setItem(key, JSON.stringify(value));
 }
 
 function announceChange(): void {

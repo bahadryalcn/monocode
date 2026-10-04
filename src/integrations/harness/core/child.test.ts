@@ -119,29 +119,38 @@ describe("child bridge", () => {
     await vi.runAllTimersAsync();
   });
 
-  it("reconciles an exit that arrives before spawn returns its pid", async () => {
-    installResolvedListeners();
-    const spawned = deferred<number>();
-    mocks.invoke.mockImplementation((command: string) => {
-      if (command === "harness_spawn") return spawned.promise;
-      return Promise.resolve();
-    });
-    const child = await loadChild();
-    const release = await child.acquireHarnessBridge();
-    const onExit = vi.fn();
-    child.watchChild("probe", vi.fn(), onExit);
+  it.each([undefined, "Provider stdout message exceeded the 64 MiB limit"])(
+    "reconciles an early exit with reason=%s",
+    async (reason) => {
+      installResolvedListeners();
+      const spawned = deferred<number>();
+      mocks.invoke.mockImplementation((command: string) => {
+        if (command === "harness_spawn") return spawned.promise;
+        return Promise.resolve();
+      });
+      const child = await loadChild();
+      const release = await child.acquireHarnessBridge();
+      const onExit = vi.fn();
+      child.watchChild("probe", vi.fn(), onExit);
 
-    const spawning = child.spawnChild("probe", "pi", ["--mode", "rpc"], "/repo");
-    mocks.handlers.get("harness-exit")?.({
-      payload: { sessionId: "probe", code: 1, pid: 42 } as never,
-    });
-    expect(onExit).not.toHaveBeenCalled();
+      const spawning = child.spawnChild(
+        "probe",
+        "pi",
+        ["--mode", "rpc"],
+        "/repo",
+      );
+      mocks.handlers.get("harness-exit")?.({
+        payload: { sessionId: "probe", code: 1, pid: 42, reason } as never,
+      });
+      expect(onExit).not.toHaveBeenCalled();
 
-    spawned.resolve(42);
-    await spawning;
-    expect(onExit).toHaveBeenCalledWith(1);
-    release();
-  });
+      spawned.resolve(42);
+      await spawning;
+      if (reason) expect(onExit).toHaveBeenCalledWith(1, reason);
+      else expect(onExit).toHaveBeenCalledWith(1);
+      release();
+    },
+  );
 
   it("passes stored overrides through resolution and command validation", async () => {
     vi.stubGlobal("localStorage", {

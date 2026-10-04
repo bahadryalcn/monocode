@@ -9,7 +9,7 @@ try {
         }
         $env:TAURI_SIGNING_PRIVATE_KEY = $keyPath
     }
-    npx tauri build --ci --bundles nsis --config src-tauri/tauri.fork.conf.json
+    pnpm exec tauri build --ci --bundles nsis --config src-tauri/tauri.fork.conf.json
     if ($LASTEXITCODE -ne 0) { throw "Windows build failed ($LASTEXITCODE)" }
 } finally {
     Pop-Location

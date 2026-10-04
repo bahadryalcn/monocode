@@ -23,13 +23,36 @@ vi.mock("../../../integrations/harness/core/registry", () => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn(), listen: vi.fn() }));
 
-import { checkInstalledHarnessVersions } from "./harnessUpdateActions";
+import {
+  checkInstalledHarnessVersions,
+  getHarnessUpdateSnapshot,
+} from "./harnessUpdateActions";
 
 async function settle() {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
 }
 
 describe("installed harness check", () => {
+  it("exposes a failed availability probe and clears the error on retry", async () => {
+    probe.probeHarnessAvailability.mockRejectedValueOnce(
+      new Error("Probe failed"),
+    );
+    await expect(checkInstalledHarnessVersions()).rejects.toThrow(
+      "Probe failed",
+    );
+    expect(getHarnessUpdateSnapshot()).toMatchObject({
+      checking: false,
+      error: "Probe failed",
+    });
+    const retry = checkInstalledHarnessVersions();
+    expect(getHarnessUpdateSnapshot().error).toBeNull();
+    probe.finishers.shift()!();
+    await retry;
+    expect(getHarnessUpdateSnapshot()).toMatchObject({
+      checking: false,
+      error: null,
+    });
+  });
   afterEach(() => {
     probe.finishers.length = 0;
     probe.probeHarnessAvailability.mockClear();

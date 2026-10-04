@@ -8,3 +8,15 @@ export async function removeProviderAccountCredentials(
 ): Promise<void> {
   await invoke("provider_account_remove", { provider, accountId });
 }
+
+/** Clear a re-login without deleting the existing profile's settings or history. */
+export async function signOutProviderAccountCredentials(
+  provider: ProviderAccountProvider,
+  accountId: string,
+): Promise<void> {
+  await invoke("provider_account_remove", {
+    provider,
+    accountId,
+    credentialsOnly: true,
+  });
+}

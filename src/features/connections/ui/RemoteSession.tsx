@@ -15,6 +15,7 @@ import type {
 import { uploadRemoteAttachments } from "../model/remoteAttachments";
 import { temporaryWorktreeBranchName } from "../../source-control/model/worktrees";
 import type { AgentModel } from "../../sessions/model/models";
+import { isModelEnabled } from "../../sessions/model/models";
 import { remoteSessionPollDelay } from "../model/remotePollingPolicy";
 import {
   ModelSourceContext,
@@ -25,7 +26,10 @@ import type { Worktree } from "../../source-control/model/worktrees";
 import { useProjectBranchesState } from "../../source-control/hooks/useProjectBranches";
 import { registerRemoteSessionActions } from "../model/remoteSessionActions";
 import { HOST_UPDATE_NOTICE, SESSION_SHELL } from "../model/remoteCapabilities";
-import { parseShellCommand } from "../../sessions/model/shellRun";
+import {
+  parseShellCommand,
+  SHELL_FOLLOW_UP_PROMPT,
+} from "../../sessions/model/shellRun";
 import { loadResumeAtReset } from "../../settings/model/settings";
 import {
   clearPendingRemoteCommand,
@@ -49,6 +53,7 @@ import {
   sendAfterReconnect,
 } from "../model/remoteConnection";
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
+import { sameQueuedModelTarget } from "../../sessions/model/messageQueue";
 import {
   nextRemoteQueuedMessage,
   queueSessionFields,
@@ -373,7 +378,7 @@ function ConnectedRemoteSession({
     pending.sessionId === activeSessionId &&
     !hasHostBlock(pending.commandId);
   const busy =
-    !!hostSession?.busy ||
+    (!!hostSession && snapshot?.status === "running") ||
     unseenActive ||
     (startingActive && !starting?.draft) ||
     pendingSendActive;
@@ -463,7 +468,7 @@ function ConnectedRemoteSession({
         if (next) onSnapshot?.(shell.id, next);
         // A `!command` still running on the host changes the transcript too.
         active =
-          !!next?.session.busy ||
+          next?.status === "running" ||
           !!next?.session.blocks.some((block) => block.shell?.running);
       } catch (reason) {
         if (stale()) return;
@@ -488,7 +493,7 @@ function ConnectedRemoteSession({
         timer = setTimeout(
           () => void poll(),
           remoteSessionPollDelay(
-            !!snapshotRef.current?.session.busy,
+            snapshotRef.current?.status === "running",
             visible,
             true,
             failed,
@@ -561,7 +566,7 @@ function ConnectedRemoteSession({
     const harness = providers.includes(draft.harness)
       ? draft.harness
       : providers[0];
-    const models = catalog.models[harness] ?? [];
+    const models = (catalog.models[harness] ?? []).filter((model) => isModelEnabled(model.id));
     const model =
       findRemoteModel(models, draft.model) ??
       (harness === draft.harness ? undefined : models[0]) ??
@@ -808,6 +813,7 @@ function ConnectedRemoteSession({
   useEffect(() => {
     if (!changes || !saved || !hostSession) return;
     const same = (a: Configuration, b: Configuration) =>
+      a.harness === b.harness &&
       a.model === b.model &&
       a.mode === b.mode &&
       sameModelSettings(a.settings, b.settings);
@@ -824,6 +830,7 @@ function ConnectedRemoteSession({
       type: "configure",
       commandId: crypto.randomUUID(),
       sessionId: hostSession.id,
+      ...(descriptor?.capabilities.includes("sessions.harnessSwitch") ? { harness: changes.harness } : {}),
       model: changes.model,
       modelSettings: changes.settings,
       runtimeMode: changes.mode,
@@ -1081,21 +1088,34 @@ function ConnectedRemoteSession({
     else setStarting({ ...turn, failed: true });
   };
 
-  const dispatchShell = (id: string, command: string) =>
-    remoteRequest<CommandReceipt>(
+  // `!commands` this window sent; the agent carries on once each one finishes.
+  const shellFollowUps = useRef(new Set<string>());
+  const dispatchShell = (id: string, command: string) => {
+    const commandId = crypto.randomUUID();
+    return remoteRequest<CommandReceipt>(
       machine.id,
       "commands.dispatch",
       {
         type: "shell",
-        commandId: crypto.randomUUID(),
+        commandId,
         sessionId: id,
         line: command,
       },
       false,
       true,
     ).then(() => {
+      shellFollowUps.current.add(commandId);
       if (alive.current) setRefresh((value) => value + 1);
     });
+  };
+  useEffect(() => {
+    for (const id of [...shellFollowUps.current]) {
+      const block = hostSession?.blocks.find((entry) => entry.id === id);
+      if (!block?.shell || block.shell.running) continue;
+      shellFollowUps.current.delete(id);
+      submit(SHELL_FOLLOW_UP_PROMPT);
+    }
+  }, [hostSession]);
 
   /** Runs a `!command` on the host. It is not a turn: nothing is queued or
    * retried, and a refused one stays in the composer. */
@@ -1177,6 +1197,11 @@ function ConnectedRemoteSession({
         text,
         attachments,
         intent: options?.intent,
+        modelTarget: {
+          harness: configuration.harness,
+          model: configuration.model,
+          modelSettings: { ...configuration.settings },
+        },
       });
       return true;
     }
@@ -1230,6 +1255,34 @@ function ConnectedRemoteSession({
   // reachable. A held queue loses nothing: it simply waits for both.
   useEffect(() => {
     if (!nextQueued) return;
+    const target = nextQueued.modelTarget;
+    if (
+      target &&
+      saved &&
+      !sameQueuedModelTarget(target, {
+        harness: saved.harness,
+        model: saved.model,
+        modelSettings: saved.settings,
+      })
+    ) {
+      if (
+        !providers.includes(target.harness as RemoteProvider) ||
+        (target.harness !== saved.harness &&
+          !descriptor?.capabilities.includes("sessions.harnessSwitch"))
+      ) {
+        setError(
+          "The queued message's provider is unavailable on this machine.",
+        );
+        return;
+      }
+      setChanges({
+        harness: target.harness as RemoteProvider,
+        model: target.model,
+        settings: { ...target.modelSettings },
+        mode: saved.mode,
+      });
+      return;
+    }
     const timer = setTimeout(() => {
       const accepted = submitRef.current(
         nextQueued.text,
@@ -1242,7 +1295,15 @@ function ConnectedRemoteSession({
       else setDrainRetry((value) => value + 1);
     }, 0);
     return () => clearTimeout(timer);
-  }, [nextQueued?.id, drainRetry]);
+  }, [
+    nextQueued,
+    drainRetry,
+    saved?.harness,
+    saved?.model,
+    saved?.settings,
+    providers,
+    descriptor?.capabilities,
+  ]);
 
   // After a restart or a reconnect: a run this app saw working that the host
   // now reports as lost is continued once, when the setting says so.
@@ -1303,7 +1364,7 @@ function ConnectedRemoteSession({
           .find((m) => m.id === id),
       available: (harness) =>
         providers.includes(harness as RemoteProvider) &&
-        (!hostSession || hostSession.harness === harness),
+        (!hostSession || descriptor?.capabilities.includes("sessions.harnessSwitch") === true || hostSession.harness === harness),
       probed: () => !!descriptor,
       // The host re-probes when a provider CLI changes or its catalog ages,
       // so each picker opening asks again.
@@ -1602,7 +1663,7 @@ function ConnectedRemoteSession({
           ? `${machine.name} needs you to sign in first. Use “Sign in and reconnect” above.`
           : `Can’t reach ${machine.name}. Send reconnects first.`
         : undefined,
-    allowedModelHarnesses: hostSession
+    allowedModelHarnesses: hostSession && !descriptor?.capabilities.includes("sessions.harnessSwitch")
       ? [hostSession.harness]
       : providers.length
         ? providers
@@ -1629,7 +1690,10 @@ function ConnectedRemoteSession({
       updateConfiguration((current) => ({ ...current, settings })),
     onRuntimeModeChange: (_, mode) =>
       updateConfiguration((current) => ({ ...current, mode })),
-    onOpenFile: (path) => onOpenFile(hostFilePath(path)),
+    onOpenFile: (path, navigation, options) => {
+      if (navigation || options) onOpenFile(hostFilePath(path), navigation, options);
+      else onOpenFile(hostFilePath(path));
+    },
     onOpenDiff: (path) => onOpenDiff(path ? hostFilePath(path) : undefined),
     // This computer's features do not apply to a host session.
     onCwdChange: noop,
@@ -1694,6 +1758,14 @@ function ConnectedRemoteSession({
     <ModelSourceContext.Provider value={modelSource}>
       <div className="relative flex h-full min-h-0 flex-col">
         <RemoteConnectionBanner cwd={project.key} stale={!!hostSession} />
+        {online && hostSession && snapshot?.status === "running" ? (
+          <div
+            role="status"
+            className="shrink-0 border-b border-accent/20 bg-accent/5 px-4 py-2 text-xs text-content/80"
+          >
+            Working on {machine.name}.
+          </div>
+        ) : null}
         <RemoteOutboxNotice
           project={project.key}
           environment={machine.environmentId}

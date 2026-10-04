@@ -17,6 +17,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import type { OpenFileFn } from "../../search/model/search";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -127,10 +128,9 @@ import { RemoteSession } from "../../connections/ui/RemoteSession";
 import { useSession } from "../model/sessionsStore";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import type { HostSession } from "../../connections/model/protocol";
-import {
-  ADOPTED_CONFLICT_MESSAGE,
-  ADOPTED_RUNNING_REASON,
-} from "../../connections/model/adoptedSessions";
+import { ADOPTED_RUNNING_REASON } from "../../connections/model/adoptedSessions";
+import { AdoptedSessionNotice } from "../../connections/ui/AdoptedSessionNotice";
+import type { RefreshAdoptedSession } from "../../connections/model/useAdoptedSessions";
 
 export type SessionPaneProps = {
   session: Session;
@@ -151,6 +151,7 @@ export type SessionPaneProps = {
   onBranchChange: (sessionId: string) => void;
   onWorktreeChange?: (sessionId: string, tree: Worktree) => Promise<void>;
   onRemoteSnapshot?: (shellId: string, snapshot?: HostSession) => void;
+  onRefreshAdoptedSession?: RefreshAdoptedSession;
   onWorkspaceModeChange: (
     sessionId: string,
     mode: WorkspaceMode,
@@ -216,7 +217,7 @@ export type SessionPaneProps = {
     reply: UserQuestionReply,
   ) => void;
   onQuestionInteraction?: (sessionId: string, requestId: number) => void;
-  onOpenFile: (path: string) => void;
+  onOpenFile: OpenFileFn;
   onOpenDiff: (
     path?: string,
     session?: { sessionId: string; cwd: string },
@@ -333,6 +334,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onCwdChange,
   onBranchChange,
   onWorktreeChange,
+  onRefreshAdoptedSession,
   onWorkspaceModeChange,
   onWorktreeBaseChange,
   onManageWorktrees,
@@ -1086,14 +1088,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
         </div>
       ) : null}
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-        {session.adoptedSyncConflict ? (
-          <div
-            role="alert"
-            className="shrink-0 border-b border-amber-400/20 bg-amber-400/5 px-4 py-2 text-xs text-content/80"
-          >
-            {ADOPTED_CONFLICT_MESSAGE}
-          </div>
-        ) : null}
+        <AdoptedSessionNotice
+          session={session}
+          onRefresh={onRefreshAdoptedSession}
+        />
         <div
           ref={transcriptScope}
           className="@container relative min-h-0 flex-1"

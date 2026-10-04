@@ -252,7 +252,7 @@ import {
   templateSkill,
   templateTriggerAt,
 } from "../model/promptTemplates";
-import { SessionDirsPicker, sessionDirCandidates } from "./SessionDirsPicker";
+import { SessionDirsPicker } from "./SessionDirsPicker";
 import { IS_MAC } from "../../../platform/tauri/platform";
 
 type Props = {
@@ -956,8 +956,7 @@ export const Composer = memo(function Composer({
     !remote &&
     !compact &&
     sessionDirsHarness &&
-    isLocalProject(cwd ?? executionCwd) &&
-    sessionDirCandidates(cwd ?? executionCwd).length > 0;
+    isLocalProject(cwd ?? executionCwd);
   const attachmentsSupported =
     (!remote || !!remoteFeatures?.attachments) &&
     harnessSupportsAttachments(harness);
@@ -3104,6 +3103,12 @@ export const Composer = memo(function Composer({
                   <SessionDirsPicker
                     sessionId={sessionId}
                     project={cwd ?? executionCwd}
+                    workingDirectory={executionCwd}
+                    recents={recents}
+                    onProjectChange={
+                      hideProjectPicker || hideTopBar ? undefined : onCwdChange
+                    }
+                    enabled={enabled}
                     onClose={() => ref.current?.focus()}
                   />
                 ) : null}

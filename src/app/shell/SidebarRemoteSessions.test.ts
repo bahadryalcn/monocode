@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
 import { rememberRemoteProject } from "../../features/connections/model/remoteProjects";
+import { refreshRemoteProjectSessions } from "../../features/connections/model/connections";
+import { resetRemoteHealth } from "../../features/connections/model/remoteHealth";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../../features/source-control/hooks/useProjectDiffStats", () => ({
@@ -32,6 +34,8 @@ const machine = {
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
+  resetRemoteHealth();
+  refreshRemoteProjectSessions();
   vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === "remote_machines") return [machine];

@@ -53,6 +53,9 @@ export type HostGoalInput = {
   verifyDefaults: GoalVerifyDefaults;
   /** Wait for the owner to approve the plan before any task is created. */
   approvePlan: boolean;
+  /** Merge every task the goal creates once its checks pass, without waiting
+   * for approval. Absent counts as false. */
+  autoMerge?: boolean;
 };
 
 /** One task of a plan, as the planner wrote it. */
@@ -140,7 +143,10 @@ export function parseHostGoal(input: unknown): HostGoalInput {
   const limit = v.maxRunMinutes ?? 0;
   if (!Number.isInteger(limit) || Number(limit) < 0 || Number(limit) > 10_080)
     throw new Error("Invalid goal run limit");
-  if (v.approvePlan !== undefined && typeof v.approvePlan !== "boolean")
+  if (
+    (v.approvePlan !== undefined && typeof v.approvePlan !== "boolean") ||
+    (v.autoMerge !== undefined && typeof v.autoMerge !== "boolean")
+  )
     throw new Error("Invalid goal options");
   const verify = v.verifyDefaults ?? {};
   if (typeof verify !== "object" || Array.isArray(verify))
@@ -183,6 +189,7 @@ export function parseHostGoal(input: unknown): HostGoalInput {
       review: review !== false,
     },
     approvePlan: v.approvePlan === true,
+    ...(v.autoMerge === true ? { autoMerge: true } : {}),
   };
 }
 
@@ -190,7 +197,7 @@ const PLAN_KEY = /^[A-Za-z0-9_.-]{1,64}$/;
 
 /** The text of the last fenced code block marked `json`, or of the last
  * unmarked one when none is marked. */
-function lastJsonBlock(text: string): string | undefined {
+export function lastJsonBlock(text: string): string | undefined {
   const marked: string[] = [];
   const unmarked: string[] = [];
   for (const match of text.matchAll(/```([^\n`]*)\r?\n([\s\S]*?)```/g)) {

@@ -8,12 +8,50 @@ import {
   projectName,
   rebasePath,
   setHomeDir,
+  setPathEnvironment,
   slash,
   resolveWorkspaceFileReference,
   resolveWorkspacePath,
 } from "./paths";
 
 describe("workspace file references", () => {
+  it("resolves directory variables from the actual Windows environment", () => {
+    setPathEnvironment({
+      LOCALAPPDATA: "D:/User Data/Local",
+      "PROGRAMFILES(X86)": "C:/Program Files (x86)",
+    });
+    try {
+      expect(
+        resolveWorkspaceFileReference(
+          "%localappdata%\\MonoCode\\monocode.exe",
+          "G:/repo",
+        )?.path,
+      ).toBe("D:/User Data/Local/MonoCode/monocode.exe");
+      expect(
+        resolveWorkspaceFileReference("%ProgramFiles(x86)%\\MonoCode", "G:/repo")?.path,
+      ).toBe("C:/Program Files (x86)/MonoCode");
+      expect(
+        resolveWorkspaceFileReference(
+          "%LOCALAPPDATA%\\MonoCode",
+          "remote://mac/Users/dev/repo",
+        ),
+      ).toBeUndefined();
+      expect(
+        resolveWorkspaceFileReference("%UNKNOWN%\\file.md", "G:/repo"),
+      ).toBeUndefined();
+    } finally {
+      setPathEnvironment({});
+    }
+  });
+
+  it("normalizes extended Windows drive paths", () => {
+    expect(
+      resolveWorkspaceFileReference(
+        "\\\\?\\G:\\My Project\\özet.md:7",
+        "G:/repo",
+      ),
+    ).toEqual({ path: "G:/My Project/özet.md", navigation: { line: 7 } });
+  });
   it.each([
     ["main.ts:12", "/repo", "/repo/main.ts", { line: 12 }],
     ["main.ts:12:3", "/repo", "/repo/main.ts", { line: 12, column: 3 }],
@@ -103,10 +141,12 @@ describe("workspace file references", () => {
     expect(resolveWorkspacePath("~/notes.md", cwd)).toBe(
       "remote://env/home/dev/notes.md",
     );
-    expect(resolveWorkspacePath("remote://env/home/dev/repo/src/app.ts", cwd)).toBe(
-      "remote://env/home/dev/repo/src/app.ts",
-    );
-    expect(resolveWorkspacePath("remote://other/repo/app.ts", cwd)).toBeUndefined();
+    expect(
+      resolveWorkspacePath("remote://env/home/dev/repo/src/app.ts", cwd),
+    ).toBe("remote://env/home/dev/repo/src/app.ts");
+    expect(
+      resolveWorkspacePath("remote://other/repo/app.ts", cwd),
+    ).toBeUndefined();
   });
 
   it.each([
@@ -133,9 +173,7 @@ describe("workspace file references", () => {
         "/Users/dev/project",
       ),
     ).toBe("/Users/dev/.codex/skills/zuse/SKILL.md");
-    expect(resolveWorkspacePath("~", "/Users/dev/project")).toBe(
-      "/Users/dev",
-    );
+    expect(resolveWorkspacePath("~", "/Users/dev/project")).toBe("/Users/dev");
     expect(
       resolveWorkspacePath("~/skills/SKILL.md", "C:/Users/dev/project"),
     ).toBe("C:/Users/dev/skills/SKILL.md");
@@ -145,9 +183,9 @@ describe("workspace file references", () => {
     // A cwd like "C:/users/dev/project" (lowercase "users") is just as valid
     // a Windows home shape as "C:/Users/dev/project" - the OS itself is not
     // case-sensitive here, so cwd-based inference should not be either.
-    expect(
-      resolveWorkspacePath("~/notes.md", "c:/users/dev/project"),
-    ).toBe("c:/users/dev/notes.md");
+    expect(resolveWorkspacePath("~/notes.md", "c:/users/dev/project")).toBe(
+      "c:/users/dev/notes.md",
+    );
   });
 
   it("leaves a ~/ reference unresolved when cwd has no recognisable home directory", () => {
@@ -167,9 +205,9 @@ describe("workspace file references", () => {
       ).toBe("/opt/ci-runner-home/.codex/skills/zuse/SKILL.md");
       // Wins even when cwd itself would resolve to a different home - it is
       // the real OS home directory, not a guess.
-      expect(
-        resolveWorkspacePath("~/notes.md", "/Users/dev/project"),
-      ).toBe("/opt/ci-runner-home/notes.md");
+      expect(resolveWorkspacePath("~/notes.md", "/Users/dev/project")).toBe(
+        "/opt/ci-runner-home/notes.md",
+      );
     } finally {
       setHomeDir(undefined);
     }

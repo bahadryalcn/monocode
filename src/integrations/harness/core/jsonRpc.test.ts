@@ -44,6 +44,61 @@ describe("JsonRpcClient", () => {
     await expect(client.request("initialize")).rejects.toThrow("pipe closed");
   });
 
+  it("delivers a provider response without waiting for the IPC write acknowledgement", async () => {
+    let client!: JsonRpcClient;
+    transport.onWrite = (_sessionId, line) => {
+      client.pushLine(
+        JSON.stringify({ id: JSON.parse(line).id, result: { ok: true } }),
+      );
+      return new Promise<void>(() => undefined);
+    };
+    vi.useFakeTimers();
+    try {
+      client = new JsonRpcClient("mac-ipc", {});
+      await expect(client.request("turn/start")).resolves.toEqual({ ok: true });
+      await vi.advanceTimersByTimeAsync(16_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds unanswered requests after a successful write", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new JsonRpcClient(
+        "no-response",
+        {},
+        { label: "codex", defaultRequestTimeoutMs: 100 },
+      );
+      const outcome = client
+        .request("initialize")
+        .catch((error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(101);
+      expect(await outcome).toContain("codex initialize response timed out");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("identifies a blocked server reply without including its content", async () => {
+    vi.useFakeTimers();
+    try {
+      transport.onWrite = () => new Promise<void>(() => undefined);
+      const client = new JsonRpcClient("reply", {}, { label: "codex" });
+      client.pushLine(JSON.stringify({ id: 3, method: "currentTime/read" }));
+      const outcome = client
+        .respond(3, { privateValue: "secret" })
+        .catch((error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(await outcome).toContain(
+        "reply to currentTime/read write timed out",
+      );
+      expect(await outcome).not.toContain("secret");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds a blocked write instead of outliving the request deadline", async () => {
     vi.useFakeTimers();
     try {
@@ -74,6 +129,7 @@ describe("JsonRpcClient", () => {
       // At 5s the request's own deadline fires while the write stays blocked;
       // the outer promise only settles once the write bound returns it at 15s.
       await vi.advanceTimersByTimeAsync(6_000);
+      await expect(settled).resolves.toContain("initialize response timed out");
       await vi.advanceTimersByTimeAsync(15_000);
       await expect(settled).resolves.toMatch(/timed out/);
       expect(unhandled).toEqual([]);

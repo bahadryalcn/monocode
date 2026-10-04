@@ -88,6 +88,7 @@ export function useIdleSessionDetach({
       (session) =>
         !visibleIds.has(session.id) &&
         !session.busy &&
+        !session.continuingElsewhere &&
         !openingSessionIds.current.has(session.id) &&
         !(keepUnseen && unseenFinishedRef.current.has(session.id)),
     );
@@ -107,6 +108,7 @@ export function useIdleSessionDetach({
         (session) =>
           visibleIds.has(session.id) ||
           session.busy ||
+          session.continuingElsewhere ||
           openingSessionIds.current.has(session.id) ||
           (keepUnseen && unseenFinishedRef.current.has(session.id)) ||
           skipForgetSessionIds.current.has(session.id),

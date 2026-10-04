@@ -325,3 +325,35 @@ describe("missing machines notice", () => {
     );
   });
 });
+
+describe("merging automatically in the task draft", () => {
+  it("sends autoMerge only when asked for and the task has its own branch", () => {
+    const draft = {
+      ...newTaskDraft("G:/app", "claude", "claude:test"),
+      title: "T",
+    };
+    expect(draft.autoMerge).toBe(false);
+    expect(hostTaskFromDraft(draft, "id", "project-1").autoMerge).toBeUndefined();
+    expect(
+      hostTaskFromDraft({ ...draft, autoMerge: true }, "id", "project-1"),
+    ).toMatchObject({ isolate: true, autoMerge: true });
+    expect(
+      hostTaskFromDraft(
+        { ...draft, autoMerge: true, isolate: false },
+        "id",
+        "project-1",
+      ).autoMerge,
+    ).toBeUndefined();
+  });
+
+  it("starts an edit from the task's own setting", () => {
+    const task = boardTaskFromHost(mac, "remote://env-mac/app", {
+      ...stored,
+      autoMerge: true,
+    });
+    expect(draftFromTask(task).autoMerge).toBe(true);
+    expect(draftFromTask({ ...task, autoMerge: undefined }).autoMerge).toBe(
+      false,
+    );
+  });
+});

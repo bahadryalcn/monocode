@@ -1276,6 +1276,8 @@ const TreeNode = memo(function TreeNode({
 
   useEffect(() => {
     if (!entry.isDir || !open || cached) return;
+    setLoaded(null);
+    setLoadError(null);
     let cancelled = false;
     void listCachedDir(entry.path)
       .then((entries) => {

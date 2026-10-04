@@ -116,7 +116,9 @@ export function liveSessionInfos(
     if (session.inboxAsk || session.orchestrationLeadId) continue;
     if (!hasSentTurn(session)) continue;
     const needsInput = sessionNeedsInput(session);
-    const busy = !session.worktreeRemoved && !!session.busy;
+    const busy =
+      !session.worktreeRemoved &&
+      (!!session.busy || !!session.continuingElsewhere);
     infos.push({
       id: session.id,
       cwd: session.cwd,

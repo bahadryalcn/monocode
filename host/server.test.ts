@@ -116,6 +116,23 @@ async function setup(providers: RemoteProvider[] = ["codex"]) {
 }
 
 describe("remote host API", () => {
+  it("returns metadata for chat folder paths, including the workspace root", async () => {
+    const s = await setup();
+    const root = s.project.cwd.replace(/\\/g, "/");
+    mkdirSync(join(s.directory, "assets"));
+    writeFileSync(join(s.directory, "guide.md"), "guide");
+    const response = await s.call("workspace.run", {
+      command: "stat_files",
+      args: { paths: [root, `${root}/assets`, `${root}/guide.md`, `${root}/missing`] },
+    });
+    expect(response.value.result).toEqual([
+      { path: root, mtimeMs: null, isDir: true },
+      { path: `${root}/assets`, mtimeMs: null, isDir: true },
+      { path: `${root}/guide.md`, mtimeMs: expect.any(Number), isDir: false },
+      { path: `${root}/missing`, mtimeMs: null, isDir: false },
+    ]);
+  });
+
   it("rejects a credential revoked while its request body is arriving", async () => {
     const s = await setup();
     const authenticated = vi.spyOn(s.store, "authenticated");
@@ -964,5 +981,36 @@ describe("remote host API", () => {
       (await s.call("goals.delete", { goalId: "launch" })).value.result,
     ).toEqual({ deleted: true });
     expect((await s.call("goals.list")).value.result).toEqual([]);
+  });
+});
+
+describe("host settings commands", () => {
+  it("answers host.settings.get and save, advertised as a capability", async () => {
+    const s = await setup();
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toContain("host.settings");
+    expect((await s.call("host.settings.get")).value.result).toEqual({
+      maxRunningTasks: 2,
+      dailyAgentMinutes: 0,
+      usedMinutes: 0,
+      limitReached: false,
+    });
+    const saved = await s.call("host.settings.save", {
+      settings: { maxRunningTasks: 4, dailyAgentMinutes: 240 },
+    });
+    expect(saved.value.result).toMatchObject({
+      maxRunningTasks: 4,
+      dailyAgentMinutes: 240,
+      limitReached: false,
+    });
+    expect((await s.call("host.settings.get")).value.result).toMatchObject({
+      maxRunningTasks: 4,
+      dailyAgentMinutes: 240,
+    });
+    expect(
+      (await s.call("host.settings.save", { settings: { maxRunningTasks: 9 } }))
+        .value.error,
+    ).toBe("Invalid concurrent task limit");
   });
 });

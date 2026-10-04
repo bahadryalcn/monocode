@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const version = process.argv[2];
 if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
-  console.error("usage: npm run set-version -- 0.1.1");
+  console.error("usage: pnpm run set-version 0.1.1");
   process.exit(1);
 }
 
@@ -13,12 +13,12 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 function replaceFirst(path, pattern, replacement) {
   const text = readFileSync(path, "utf8");
-  const next = text.replace(pattern, replacement);
-  if (next === text) {
+  if (!pattern.test(text)) {
     console.error(`failed to update ${path}`);
     process.exit(1);
   }
-  writeFileSync(path, next);
+  const next = text.replace(pattern, replacement);
+  if (next !== text) writeFileSync(path, next);
 }
 
 replaceFirst(
@@ -32,12 +32,12 @@ replaceFirst(
 // top-level object repeats the same name/version pair.
 replaceFirst(
   join(root, "package-lock.json"),
-  /^(\{\n\s*"name": "monocode-desktop",\n\s*"version": ")[^"]+(")/,
+  /^(\{\r?\n\s*"name": "monocode-desktop",\r?\n\s*"version": ")[^"]+(")/,
   `$1${version}$2`,
 );
 replaceFirst(
   join(root, "package-lock.json"),
-  /("packages": \{\n\s*"": \{\n\s*"name": "monocode-desktop",\n\s*"version": ")[^"]+(")/,
+  /("packages": \{\r?\n\s*"": \{\r?\n\s*"name": "monocode-desktop",\r?\n\s*"version": ")[^"]+(")/,
   `$1${version}$2`,
 );
 replaceFirst(
@@ -52,7 +52,7 @@ replaceFirst(
 );
 replaceFirst(
   join(root, "Cargo.lock"),
-  /(name = "monocode"\nversion = ")[^"]+(")/,
+  /(name = "monocode"\r?\nversion = ")[^"]+(")/,
   `$1${version}$2`,
 );
 

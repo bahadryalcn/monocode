@@ -1,6 +1,19 @@
-import { closeSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { DiscoveredSkill } from "../src/platform/tauri/fs";
 
 /**
@@ -237,4 +250,249 @@ function claudePluginRoots(
     }
   }
   return roots.sort((a, b) => (a.scope === "project" ? 0 : 1) - (b.scope === "project" ? 0 : 1));
+}
+
+// ---- Copying a skill between machines -------------------------------------
+// `skill_export` / `skill_import`: same names, arguments and results as the
+// desktop's Tauri commands (src-tauri skills.rs).
+
+const MAX_TRANSFER_FILES = 200;
+const MAX_TRANSFER_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_TRANSFER_TOTAL_BYTES = 8 * 1024 * 1024;
+const MAX_TRANSFER_PATH_LEN = 240;
+const MAX_TRANSFER_DEPTH = 16;
+const WINDOWS_DEVICE_NAMES = new Set([
+  "CON", "PRN", "AUX", "NUL",
+  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+  "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+]);
+
+export type SkillFile = { path: string; data: string };
+export type SkillBundle = { name: string; files: SkillFile[] };
+
+const tooLargeFile = (path: string) =>
+  `${path} is larger than 2 MiB, which is the most one file can be when copying a skill.`;
+const TOO_LARGE_TOTAL = "This skill is more than 8 MiB in total, which is the most that can be copied.";
+const TOO_MANY_FILES = `This skill has more than ${MAX_TRANSFER_FILES} files, which is the most that can be copied.`;
+
+/** A relative, `/`-separated path that stays inside the skill folder on every
+ * platform (the same rules as the desktop). */
+function validateTransferPath(path: string): void {
+  const bad = (why: string): never => {
+    throw new Error(`Cannot copy file "${path}": ${why}.`);
+  };
+  if (!path || path.length > MAX_TRANSFER_PATH_LEN) bad("its path is empty or too long");
+  if (path.startsWith("/")) bad("its path is not relative");
+  for (const segment of path.split("/")) {
+    if (!segment || segment === "." || segment === "..") bad('its path has an empty, "." or ".." part');
+    if (Buffer.byteLength(segment) > 255) bad("a name in its path is too long");
+    if (/[\u0000-\u001f\u007f-\u009f\\:*?"<>|]/.test(segment)) bad("its name has a character that is not allowed");
+    if (segment.endsWith(".") || segment.endsWith(" ")) bad("a name in its path ends with a dot or space");
+    if (WINDOWS_DEVICE_NAMES.has(segment.split(".")[0].toUpperCase())) bad("its name is reserved on Windows");
+  }
+}
+
+const canonical = (path: string): string | undefined => {
+  try {
+    const real = realpathSync.native(path).replace(/\\/g, "/");
+    return process.platform === "win32" ? real.replace(/^\/\/\?\//, "").toLowerCase() : real;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Only the exact listed folder may be deleted; never follow a skill link. */
+export function deleteHostSkill(
+  path: unknown,
+  project: string | null,
+  home = homedir(),
+): void {
+  if (
+    typeof path !== "string" ||
+    !path ||
+    path.length > 4096 ||
+    path.includes("\0")
+  )
+    throw new Error("Invalid skill path");
+  const normalize = (value: string) => {
+    const normalized = resolve(value).replace(/\\/g, "/");
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  const listed = listHostSkills(project, home).find(
+    (skill) => normalize(skill.path) === normalize(path),
+  );
+  if (!listed)
+    throw new Error(
+      "That skill is not one of the skills found on this machine.",
+    );
+  if (
+    listed.name.includes(":") ||
+    /\/(?:\.system|plugins)\//i.test(listed.path.replace(/\\/g, "/"))
+  )
+    throw new Error(
+      "System and plugin skills are managed by their provider and cannot be deleted here.",
+    );
+  const dir = dirname(listed.path);
+  const root = dirname(dir);
+  const folderName =
+    process.platform === "win32" ? basename(dir).toLowerCase() : basename(dir);
+  // A linked skills root can also redirect deletion into another provider's files.
+  for (let ancestor = dir; ; ancestor = dirname(ancestor)) {
+    if (lstatSync(ancestor).isSymbolicLink())
+      throw new Error("Linked skill folders cannot be deleted here.");
+    if (dirname(ancestor) === ancestor) break;
+  }
+  if (
+    lstatSync(dir).isSymbolicLink() ||
+    lstatSync(listed.path).isSymbolicLink() ||
+    canonical(dir) !== canonical(root) + "/" + folderName
+  )
+    throw new Error("Linked skill folders cannot be deleted here.");
+  rmSync(dir, { recursive: true });
+}
+
+/** Every regular file of one listed skill's folder. Only folders that
+ * `listHostSkills` itself returns for this project can be read. */
+export function exportHostSkill(
+  path: unknown,
+  project: string | null,
+  home = homedir(),
+): SkillBundle {
+  if (typeof path !== "string" || !path || path.length > 4096 || path.includes("\0"))
+    throw new Error("Invalid skill path");
+  const wanted = canonical(path);
+  const listed =
+    wanted !== undefined
+      ? listHostSkills(project, home).find((skill) => canonical(skill.path) === wanted)
+      : undefined;
+  if (!listed) throw new Error("That skill is not one of the skills found on this machine.");
+  if (!validName(listed.name))
+    throw new Error(`${listed.name} cannot be copied: plugin skills are managed by their plugin.`);
+  // Resolve first so a skill folder that is itself a link is read in place.
+  const dir = dirname(realpathSync.native(path));
+  const files: SkillFile[] = [];
+  let total = 0;
+  const walk = (folder: string, rel: string, depth: number) => {
+    if (depth > MAX_TRANSFER_DEPTH)
+      throw new Error(`This skill has folders nested deeper than ${MAX_TRANSFER_DEPTH} levels.`);
+    for (const name of readdirSync(folder).sort()) {
+      if (name === ".DS_Store") continue;
+      const full = join(folder, name);
+      const info = lstatSync(full);
+      // Links could lead out of the skill folder; they are not copied.
+      if (info.isSymbolicLink()) continue;
+      const relPath = rel ? `${rel}/${name}` : name;
+      if (info.isDirectory()) walk(full, relPath, depth + 1);
+      else if (info.isFile()) {
+        validateTransferPath(relPath);
+        if (files.length >= MAX_TRANSFER_FILES) throw new Error(TOO_MANY_FILES);
+        if (info.size > MAX_TRANSFER_FILE_BYTES) throw new Error(tooLargeFile(relPath));
+        const bytes = readFileSync(full);
+        if (bytes.length > MAX_TRANSFER_FILE_BYTES) throw new Error(tooLargeFile(relPath));
+        total += bytes.length;
+        if (total > MAX_TRANSFER_TOTAL_BYTES) throw new Error(TOO_LARGE_TOTAL);
+        files.push({ path: relPath, data: bytes.toString("base64") });
+      }
+    }
+  };
+  walk(dir, "", 0);
+  return { name: listed.name, files };
+}
+
+const exists = (path: string) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Writes a skill to `<home>/.agents/skills/<name>` and returns its SKILL.md
+ * path. Fails with a `SKILL_EXISTS:` message when it is already there, unless
+ * `overwrite`. File modes are not preserved: scripts arrive non-executable. */
+export function importHostSkill(input: unknown, home = homedir()): string {
+  const { name, files, overwrite } = (
+    input && typeof input === "object" ? input : {}
+  ) as { name?: unknown; files?: unknown; overwrite?: unknown };
+  if (typeof name !== "string" || !validName(name))
+    throw new Error(
+      "Use a lowercase name with letters, numbers, and single hyphens (at most 64 characters).",
+    );
+  if (!Array.isArray(files)) throw new Error("A skill needs a list of files.");
+  if (files.length > MAX_TRANSFER_FILES) throw new Error(TOO_MANY_FILES);
+  const decoded: { path: string; bytes: Buffer }[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  for (const file of files as Partial<SkillFile>[]) {
+    if (!file || typeof file.path !== "string" || typeof file.data !== "string")
+      throw new Error("Each file needs a path and data.");
+    validateTransferPath(file.path);
+    if (seen.has(file.path.toLowerCase())) throw new Error(`The file "${file.path}" appears twice.`);
+    seen.add(file.path.toLowerCase());
+    if (file.data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(file.data))
+      throw new Error(`The file "${file.path}" is not valid data.`);
+    const bytes = Buffer.from(file.data, "base64");
+    if (bytes.length > MAX_TRANSFER_FILE_BYTES) throw new Error(tooLargeFile(file.path));
+    total += bytes.length;
+    if (total > MAX_TRANSFER_TOTAL_BYTES) throw new Error(TOO_LARGE_TOTAL);
+    decoded.push({ path: file.path, bytes });
+  }
+  const main = ["SKILL.md", "skill.md"].find((candidate) =>
+    decoded.some((file) => file.path === candidate),
+  );
+  if (!main) throw new Error("A skill needs a SKILL.md file at its top level.");
+
+  const root = join(home, ".agents/skills");
+  mkdirSync(root, { recursive: true });
+  const dest = join(root, name);
+  const replacing = exists(dest);
+  if (replacing && overwrite !== true)
+    throw new Error(`SKILL_EXISTS: A skill named ${name} already exists.`);
+
+  // Dot-prefixed siblings are never listed as skills.
+  const tag = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const staging = join(root, `.${name}.import-${tag}`);
+  try {
+    mkdirSync(staging);
+    for (const file of decoded) {
+      const target = join(staging, ...file.path.split("/"));
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, file.bytes);
+    }
+  } catch (reason) {
+    rmSync(staging, { recursive: true, force: true });
+    throw reason;
+  }
+
+  if (replacing) {
+    const old = join(root, `.${name}.old-${tag}`);
+    try {
+      renameSync(dest, old);
+    } catch (reason) {
+      rmSync(staging, { recursive: true, force: true });
+      throw reason;
+    }
+    try {
+      renameSync(staging, dest);
+    } catch (reason) {
+      try {
+        renameSync(old, dest);
+      } catch {
+        /* nothing more to restore */
+      }
+      rmSync(staging, { recursive: true, force: true });
+      throw reason;
+    }
+    rmSync(old, { recursive: true, force: true });
+  } else {
+    try {
+      renameSync(staging, dest);
+    } catch (reason) {
+      rmSync(staging, { recursive: true, force: true });
+      if (exists(dest)) throw new Error(`SKILL_EXISTS: A skill named ${name} already exists.`);
+      throw reason;
+    }
+  }
+  return join(dest, main).replace(/\\/g, "/");
 }

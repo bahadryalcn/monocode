@@ -217,6 +217,7 @@ const EFFORT_LABELS: Record<string, string> = {
 };
 
 let inflight: Promise<void> | null = null;
+const probeRetryAt = new Map<string, number>();
 
 export function refreshClaudeCatalog(): Promise<void> {
   if (inflight) return inflight;
@@ -236,9 +237,19 @@ export function refreshClaudeCatalog(): Promise<void> {
 export async function discoverClaudeModels(
   workingDirectory?: string,
 ): Promise<AgentModel[]> {
-  const listed = await discoverViaListModels(workingDirectory).catch(
+  const { path } = await resolveClaudeBinary();
+  if ((probeRetryAt.get(path) ?? 0) > Date.now())
+    return discoverViaVersion(workingDirectory);
+  const listed = await discoverViaListModels(workingDirectory, path).catch(
     (error: unknown) => {
       console.debug("[monocode] claude list_models catalog failed", error);
+      // A hung CLI probe should not cost another 15 seconds for every project.
+      // Authentication errors remain immediately retryable after signing in.
+      if (error instanceof Error && /timed out/.test(error.message)) {
+        if (probeRetryAt.size >= 32)
+          probeRetryAt.delete(probeRetryAt.keys().next().value!);
+        probeRetryAt.set(path, Date.now() + 5 * 60_000);
+      }
       return [];
     },
   );
@@ -248,8 +259,9 @@ export async function discoverClaudeModels(
 
 async function discoverViaListModels(
   workingDirectory?: string,
+  binaryPath?: string,
 ): Promise<AgentModel[]> {
-  const { path } = await resolveClaudeBinary();
+  const path = binaryPath ?? (await resolveClaudeBinary()).path;
   const cwd = workingDirectory ?? (await homeDir());
   const sessionId = crypto.randomUUID();
   const probeId = `${PROBE_ID}-${sessionId}`;
@@ -303,15 +315,22 @@ async function discoverViaListModels(
       undefined,
       "claude",
     );
-    await writeChild(
-      probeId,
-      JSON.stringify(
-        buildControlRequest(INIT_REQUEST_ID, { subtype: "initialize" }),
-      ),
+    pending.catch(() => undefined);
+    return await withTimeout(
+      DISCOVERY_TIMEOUT_MS,
+      (async () => {
+        await writeChild(
+          probeId,
+          JSON.stringify(
+            buildControlRequest(INIT_REQUEST_ID, { subtype: "initialize" }),
+          ),
+        );
+        return pending;
+      })(),
+      () => {
+        void stop();
+      },
     );
-    return await withTimeout(DISCOVERY_TIMEOUT_MS, pending, () => {
-      void stop();
-    });
   } finally {
     await stop();
   }

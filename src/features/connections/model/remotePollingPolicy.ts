@@ -15,7 +15,7 @@ export function remoteSessionPollDelay(
         : 10_000
       : active
         ? 750
-        : 3_000;
+        : 1_500;
   return failures
     ? Math.max(normal, Math.min(30_000, 750 * 2 ** Math.min(failures, 6)))
     : normal;

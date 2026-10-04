@@ -62,27 +62,198 @@ function setup(harness: "codex" | "claude" = "codex") {
 }
 
 describe("headless session ownership", () => {
-  it.each(["send", "compact"] as const)("clears the old draft when a normal %s starts", async (type) => {
-    const { engine, store, turns, provider, id } = setup();
-    provider.compact = (input) => provider.send({ ...input, text: "/compact" });
-    engine.command({ type: "draft", commandId: "draft", sessionId: id, text: "Later" });
-    engine.command({ type, commandId: "next", sessionId: id, text: "New work" });
-    expect(store.session(id).session.blocks.some((block) => block.draft)).toBe(false);
+  it("keeps a turn's output over a desktop copy saved before it ended", async () => {
+    const { engine, store, turns, id } = setup("claude");
+    engine.command({ type: "send", commandId: "send", sessionId: id, text: "Review it" });
     await vi.waitFor(() => expect(turns).toHaveLength(1));
+    // The desktop mirrors the session while the turn is still running.
+    const midTurn = structuredClone(store.session(id));
+    midTurn.updatedAt = Date.now();
+    midTurn.status = "idle";
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    turns[0].input.onEvent({ type: "message.delta", text: "VERDICT: PASS" });
+    turns[0].input.onEvent({ type: "message.completed" });
+    turns[0].finish();
+    await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
+
+    engine.refreshFromDesktop(midTurn);
+    const reply = (blocks: { role: string; text: string }[]) =>
+      blocks.find((block) => block.role === "assistant")?.text;
+    expect(reply(store.session(id).session.blocks)).toBe("VERDICT: PASS");
+
+    // A turn the desktop ran later still wins.
+    const later = structuredClone(store.session(id));
+    later.updatedAt = Date.now() + 1000;
+    later.session.blocks = later.session.blocks.filter(
+      (block) => block.role === "user",
+    );
+    engine.refreshFromDesktop(later);
+    expect(reply(store.session(id).session.blocks)).toBeUndefined();
+  });
+
+  it("switches a historic chat between providers with context on the next send", async () => {
+    const { engine, store, turns, id } = setup("claude");
+    const value = store.session(id);
+    store.save(
+      {
+        ...value,
+        revision: value.revision + 1,
+        session: {
+          ...value.session,
+          providerSessionId: "old-claude",
+          blocks: [
+            { id: "earlier", role: "user", text: "Repair the model picker" },
+            {
+              id: "reply",
+              role: "assistant",
+              text: "Found the unfiltered host catalog",
+            },
+          ],
+        },
+      },
+      { type: "session.test" },
+    );
+    const change = {
+      type: "configure",
+      commandId: "switch",
+      sessionId: id,
+      harness: "codex",
+      model: "codex:test",
+      modelSettings: {},
+      runtimeMode: "supervised",
+    };
+    engine.command(change);
+    expect(store.session(id).session).toMatchObject({
+      harness: "codex",
+      pendingSwitch: { from: "claude" },
+    });
+    expect(store.session(id).session.providerSessionId).toBeUndefined();
+    expect(turns).toHaveLength(0);
+    engine.command({
+      type: "send",
+      commandId: "next",
+      sessionId: id,
+      text: "Continue the fix",
+    });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(turns[0].input.text).toContain("Repair the model picker");
+    expect(turns[0].input.text).toContain("Continue the fix");
+    expect(store.session(id).session.blocks).toContainEqual(
+      expect.objectContaining({
+        role: "handoff",
+        handoff: expect.objectContaining({
+          from: "claude",
+          to: "codex",
+          pending: false,
+        }),
+      }),
+    );
+    expect(store.session(id).session.pendingSwitch).toBeUndefined();
     turns[0].finish();
   });
 
+  it("restores the original provider conversation when a switch is reverted before sending", () => {
+    const { engine, store, provider, id } = setup("claude");
+    const value = store.session(id);
+    store.save(
+      {
+        ...value,
+        revision: value.revision + 1,
+        session: {
+          ...value.session,
+          providerSessionId: "original",
+          blocks: [{ id: "earlier", role: "user", text: "Work" }],
+        },
+      },
+      { type: "session.test" },
+    );
+    const change = {
+      type: "configure",
+      sessionId: id,
+      modelSettings: {},
+      runtimeMode: "supervised",
+    };
+    engine.command({
+      ...change,
+      commandId: "switch",
+      harness: "codex",
+      model: "codex:test",
+    });
+    engine.command({
+      ...change,
+      commandId: "revert",
+      harness: "claude",
+      model: "claude:test",
+    });
+    expect(store.session(id).session).toMatchObject({
+      harness: "claude",
+      providerSessionId: "original",
+    });
+    expect(store.session(id).session.pendingSwitch).toBeUndefined();
+    expect(provider.bind).toHaveBeenCalledWith(id, "original", value.session.cwd);
+    expect(() =>
+      parseCommand({
+        ...change,
+        commandId: "bad",
+        harness: "invalid",
+        model: "bad",
+      }),
+    ).toThrow("Invalid provider");
+  });
+  it.each(["send", "compact"] as const)(
+    "clears the old draft when a normal %s starts",
+    async (type) => {
+      const { engine, store, turns, provider, id } = setup();
+      provider.compact = (input) =>
+        provider.send({ ...input, text: "/compact" });
+      engine.command({
+        type: "draft",
+        commandId: "draft",
+        sessionId: id,
+        text: "Later",
+      });
+      engine.command({
+        type,
+        commandId: "next",
+        sessionId: id,
+        text: "New work",
+      });
+      expect(
+        store.session(id).session.blocks.some((block) => block.draft),
+      ).toBe(false);
+      await vi.waitFor(() => expect(turns).toHaveLength(1));
+      turns[0].finish();
+    },
+  );
+
   it("contains a persistence failure while requesting approval", async () => {
     const { engine, store, turns, provider, id } = setup();
-    engine.command({ type: "send", commandId: "approval-failure", sessionId: id, text: "Work" });
+    engine.command({
+      type: "send",
+      commandId: "approval-failure",
+      sessionId: id,
+      text: "Work",
+    });
     await vi.waitFor(() => expect(turns).toHaveLength(1));
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(store, "save").mockImplementationOnce(() => { throw new Error("disk full"); });
+    vi.spyOn(store, "save").mockImplementationOnce(() => {
+      throw new Error("disk full");
+    });
     try {
-      expect(() => turns[0].input.onEvent({ type: "approval.requested", requestId: 1, title: "Run?" })).not.toThrow();
+      expect(() =>
+        turns[0].input.onEvent({
+          type: "approval.requested",
+          requestId: 1,
+          title: "Run?",
+        }),
+      ).not.toThrow();
       await vi.waitFor(() => expect(provider.stop).toHaveBeenCalled());
-      await vi.waitFor(() => expect(store.session(id).status).toBe("interrupted"));
-    } finally { log.mockRestore(); }
+      await vi.waitFor(() =>
+        expect(store.session(id).status).toBe("interrupted"),
+      );
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it("stores a remote draft with an uploaded file, then sends it in plan mode", async () => {
@@ -163,12 +334,28 @@ describe("headless session ownership", () => {
       name: "shot.png",
       data: image.toString("base64"),
     });
-    expect(readAttachmentChunk(store, { sessionId: id, id: fileId, offset: 0 })).toEqual({
-      offset: image.length, size: image.length, data: image.toString("base64"),
+    expect(
+      readAttachmentChunk(store, { sessionId: id, id: fileId, offset: 0 }),
+    ).toEqual({
+      offset: image.length,
+      size: image.length,
+      data: image.toString("base64"),
     });
-    const other = engine.command({ type: "create", commandId: "other-session", projectId: store.session(id).projectId,
-      harness: "claude", model: "claude:test", runtimeMode: "supervised" });
-    expect(() => readAttachmentChunk(store, { sessionId: other.sessionId, id: fileId, offset: 0 })).toThrow();
+    const other = engine.command({
+      type: "create",
+      commandId: "other-session",
+      projectId: store.session(id).projectId,
+      harness: "claude",
+      model: "claude:test",
+      runtimeMode: "supervised",
+    });
+    expect(() =>
+      readAttachmentChunk(store, {
+        sessionId: other.sessionId,
+        id: fileId,
+        offset: 0,
+      }),
+    ).toThrow();
     turns[0].finish();
   });
 
@@ -362,10 +549,9 @@ describe("headless session ownership", () => {
 
     const legacySummary = { ...store.summaries(project.id)[0] };
     delete legacySummary.providerSessionId;
-    store.db.prepare("UPDATE sessions SET summary=? WHERE id=?").run(
-      JSON.stringify(legacySummary),
-      id,
-    );
+    store.db
+      .prepare("UPDATE sessions SET summary=? WHERE id=?")
+      .run(JSON.stringify(legacySummary), id);
     expect(store.summaries(project.id)[0].providerSessionId).toBe(
       "harness-session",
     );
@@ -381,10 +567,9 @@ describe("headless session ownership", () => {
     const { directory, store, project, id } = setup();
     const legacy = { ...store.session(id) };
     delete legacy.createdAt;
-    store.db.prepare("UPDATE sessions SET snapshot=? WHERE id=?").run(
-      JSON.stringify(legacy),
-      id,
-    );
+    store.db
+      .prepare("UPDATE sessions SET snapshot=? WHERE id=?")
+      .run(JSON.stringify(legacy), id);
 
     const reopened = new HostStore(join(directory, "host.db"));
     cleanups.push(() => reopened.close());
@@ -867,22 +1052,38 @@ describe("headless session ownership", () => {
 
   it("catches a client up from a stale copy even after the host trimmed its event log", async () => {
     const { engine, store, turns, id } = setup();
-    engine.command({ type: "send", commandId: "work", sessionId: id, text: "Work" });
+    engine.command({
+      type: "send",
+      commandId: "work",
+      sessionId: id,
+      text: "Work",
+    });
     await vi.waitFor(() => expect(turns).toHaveLength(1));
     const stale = store.session(id);
     // The app went away here; the turn keeps producing output meanwhile.
     for (let step = 0; step < 3; step++) {
-      turns[0].input.onEvent({ type: "approval.requested", requestId: step + 1, title: `Run ${step}?` });
+      turns[0].input.onEvent({
+        type: "approval.requested",
+        requestId: step + 1,
+        title: `Run ${step}?`,
+      });
     }
-    turns[0].input.onEvent({ type: "message.delta", text: "finished the work" });
+    turns[0].input.onEvent({
+      type: "message.delta",
+      text: "finished the work",
+    });
     turns[0].finish();
     await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
     const current = store.session(id);
     expect(current.revision).toBeGreaterThan(stale.revision + 1);
 
     // The retained events no longer reach back to the client's revision.
-    store.db.prepare("DELETE FROM events WHERE session_id=? AND revision<=?").run(id, stale.revision + 1);
-    expect(store.events(id, stale.revision).snapshot?.revision).toBe(current.revision);
+    store.db
+      .prepare("DELETE FROM events WHERE session_id=? AND revision<=?")
+      .run(id, stale.revision + 1);
+    expect(store.events(id, stale.revision).snapshot?.revision).toBe(
+      current.revision,
+    );
 
     // The app does not read events: its sync is by block revision, so the
     // stale copy still becomes the host's state, in order and without repeats.
@@ -950,11 +1151,32 @@ describe("headless session ownership", () => {
     turns[0].finish();
     await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
 
-    engine.command({ type: "usageLimit", commandId: "cancel", sessionId: id, action: "disarm" });
-    expect(store.session(id).session.usageLimit).toEqual({ resetsAt: 5_000, resumeAtReset: false });
-    engine.command({ type: "usageLimit", commandId: "arm", sessionId: id, action: "arm" });
-    expect(store.session(id).session.usageLimit).toEqual({ resetsAt: 5_000, resumeAtReset: true });
-    engine.command({ type: "usageLimit", commandId: "dismiss", sessionId: id, action: "dismiss" });
+    engine.command({
+      type: "usageLimit",
+      commandId: "cancel",
+      sessionId: id,
+      action: "disarm",
+    });
+    expect(store.session(id).session.usageLimit).toEqual({
+      resetsAt: 5_000,
+      resumeAtReset: false,
+    });
+    engine.command({
+      type: "usageLimit",
+      commandId: "arm",
+      sessionId: id,
+      action: "arm",
+    });
+    expect(store.session(id).session.usageLimit).toEqual({
+      resetsAt: 5_000,
+      resumeAtReset: true,
+    });
+    engine.command({
+      type: "usageLimit",
+      commandId: "dismiss",
+      sessionId: id,
+      action: "dismiss",
+    });
     expect(store.session(id).session.usageLimit).toBeUndefined();
   });
 

@@ -5,6 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { SettingsView } from "./SettingsView";
+import {
+  setHarnessModels,
+  resetHarnessModelOverlays,
+} from "../../sessions/model/models";
+import { providerSessionDefaults } from "../../sessions/model/providerSessionDefaults";
 import { rememberNotificationProjects } from "../../notifications/model/notificationProjects";
 import {
   SETTINGS_INDEX,
@@ -14,19 +19,19 @@ import {
 import {
   providerAccounts,
   saveProviderAccount,
+  selectedProviderAccountId,
 } from "../../providers/model/providerAccounts";
 import {
   clearCachedRateLimits,
   setCachedRateLimits,
 } from "../../providers/model/rateLimitsCache";
-import {
-  HARNESSES,
-  HARNESS_TITLE,
-} from "../../sessions/model/session";
+import { HARNESSES, HARNESS_TITLE } from "../../sessions/model/session";
 
 const platform = vi.hoisted(() => ({ isWindows: false }));
 vi.mock("../../../platform/tauri/platform", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../platform/tauri/platform")>()),
+  ...(await importOriginal<
+    typeof import("../../../platform/tauri/platform")
+  >()),
   get IS_WIN() {
     return platform.isWindows;
   },
@@ -177,7 +182,9 @@ describe("settings pages", () => {
     expect(
       sleepGroup.querySelector('[data-setting-id="keep-awake-screen"]'),
     ).not.toBeNull();
-    expect(sleepGroup.querySelector('[data-setting-id="file-tabs"]')).toBeNull();
+    expect(
+      sleepGroup.querySelector('[data-setting-id="file-tabs"]'),
+    ).toBeNull();
   });
 
   it("mentions the Windows Modern Standby limit only on Windows", async () => {
@@ -440,6 +447,64 @@ describe("settings pages", () => {
     expect(providerAccounts("codex")).toHaveLength(1);
   });
 
+  it("sets another account as default and removes the shared CLI profile", async () => {
+    saveProviderAccount({
+      id: "account-work",
+      provider: "codex",
+      label: "Work",
+    });
+    await render("providers");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Use Work by default"]')!
+        .click(),
+    );
+    expect(selectedProviderAccountId("codex", "/new-project")).toBe(
+      "account-work",
+    );
+    const remove = container.querySelectorAll<HTMLButtonElement>(
+      '[aria-label="Remove Default account"]',
+    );
+    await act(async () => remove[1]!.click());
+    expect(invoke).toHaveBeenCalledWith("provider_account_remove", {
+      provider: "codex",
+      accountId: "default",
+    });
+    expect(providerAccounts("codex").map((entry) => entry.id)).toEqual([
+      "account-work",
+    ]);
+    expect(selectedProviderAccountId("codex", "/new-project")).toBe(
+      "account-work",
+    );
+  });
+
+  it("locks account actions during confirmation and recovers from dialog errors", async () => {
+    vi.mocked(ask).mockClear();
+    let reject!: (error: Error) => void;
+    vi.mocked(ask).mockImplementationOnce(
+      () =>
+        new Promise<boolean>((_, fail) => {
+          reject = fail;
+        }),
+    );
+    await render("providers");
+    const remove = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Remove Default account"]',
+    )!;
+    await act(async () => {
+      remove.click();
+      remove.click();
+    });
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(remove.disabled).toBe(true);
+    await act(async () => reject(new Error("Dialog unavailable")));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Dialog unavailable",
+    );
+    expect(remove.disabled).toBe(false);
+    expect(providerAccounts("claude")).toHaveLength(1);
+  });
+
   it("validates and stores Codex and OpenCode binary overrides", async () => {
     let failAutoCodex = false;
     vi.mocked(invoke).mockImplementation(async (command, args) => {
@@ -486,7 +551,9 @@ describe("settings pages", () => {
     const save = async (provider: "Codex" | "OpenCode", path: string) => {
       const id = `${provider.toLowerCase()}-binary-path`;
       if (!document.querySelector(`#${id}`)) {
-        if (!document.querySelector(`[aria-label="Edit ${provider} CLI path"]`)) {
+        if (
+          !document.querySelector(`[aria-label="Edit ${provider} CLI path"]`)
+        ) {
           await act(async () =>
             container
               .querySelector<HTMLButtonElement>(
@@ -548,11 +615,13 @@ describe("settings pages", () => {
       ).codex,
     ).toBe("/opt/codex/bin/codex");
     await act(async () =>
-      Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-        (button) => button.textContent === "Cancel",
-      )!.click(),
+      Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent === "Cancel")!
+        .click(),
     );
-    expect(document.querySelector('[aria-label="Retry Codex configured path"]')).not.toBeNull();
+    expect(
+      document.querySelector('[aria-label="Retry Codex configured path"]'),
+    ).not.toBeNull();
 
     failAutoCodex = true;
     await save("Codex", "");
@@ -817,7 +886,9 @@ describe("settings pages", () => {
   it("shows path details for every Agent CLI", async () => {
     await render("providers");
     expect(
-      vi.mocked(invoke).mock.calls.some(([command]) => command === "harness_exec"),
+      vi
+        .mocked(invoke)
+        .mock.calls.some(([command]) => command === "harness_exec"),
     ).toBe(false);
     for (const harness of HARNESSES) {
       expect(
@@ -851,10 +922,14 @@ describe("settings pages", () => {
       return undefined;
     });
     await render("providers");
-    const group = container.querySelector('[data-setting-id="harness-updates"]')!;
+    const group = container.querySelector(
+      '[data-setting-id="harness-updates"]',
+    )!;
     expect(group.textContent).toContain("Not checked yet");
     expect(
-      vi.mocked(invoke).mock.calls.some(([command]) => command === "harness_exec"),
+      vi
+        .mocked(invoke)
+        .mock.calls.some(([command]) => command === "harness_exec"),
     ).toBe(false);
 
     const checkButton = Array.from(group.querySelectorAll("button")).find(
@@ -923,7 +998,8 @@ describe("settings pages", () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "harness_resolve_codex") return { path: "/auto/codex" };
       if (command === "harness_exec") return "codex-cli 0.156.1";
-      if (command === "reveal_path") throw new Error("File manager unavailable");
+      if (command === "reveal_path")
+        throw new Error("File manager unavailable");
       return undefined;
     });
     await render("providers");
@@ -1205,6 +1281,60 @@ describe("settings search", () => {
 });
 
 describe("providers scope inheritance", () => {
+  it("saves default effort and permissions through the provider controls", async () => {
+    setHarnessModels("codex", [
+      {
+        id: "codex:test",
+        harness: "codex",
+        name: "Test",
+        settings: [
+          {
+            id: "effort",
+            label: "Effort",
+            kind: "select",
+            value: "medium",
+            options: [
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+            ],
+          },
+        ],
+      },
+    ]);
+    try {
+      await render("providers");
+      const pick = async (label: string, optionLabel: string) => {
+        const trigger = container.querySelector<HTMLButtonElement>(
+          `[aria-label^="${label}"]`,
+        )!;
+        expect(trigger).toBeTruthy();
+        await act(async () => trigger.click());
+        const option = Array.from(
+          document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+        ).find((node) => node.textContent?.trim() === optionLabel)!;
+        expect(option).toBeTruthy();
+        await act(async () => option.click());
+      };
+      await pick("Codex default effort", "High");
+      await pick("Codex default permissions", "Full access");
+      expect(providerSessionDefaults("codex")).toEqual({
+        effort: "high",
+        runtimeMode: "full-access",
+      });
+      await selectScope("repo");
+      await pick("Codex default permissions", "Supervised");
+      expect(providerSessionDefaults("codex", "/repo")).toEqual({
+        effort: "high",
+        runtimeMode: "supervised",
+      });
+      await pick("Codex default permissions", "Global (Full access)");
+      expect(providerSessionDefaults("codex", "/repo").runtimeMode).toBe(
+        "full-access",
+      );
+    } finally {
+      await act(async () => resetHarnessModelOverlays());
+    }
+  });
   async function selectScope(label: string) {
     const trigger = container.querySelector<HTMLButtonElement>(
       '[aria-label^="Provider defaults scope"]',

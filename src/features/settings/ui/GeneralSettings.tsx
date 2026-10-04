@@ -52,6 +52,13 @@ import {
   saveNotificationEvent,
 } from "../../notifications/model/notificationEvents";
 import {
+  DAILY_SUMMARY_TIMES,
+  loadDailySummaryEnabled,
+  loadDailySummaryTime,
+  saveDailySummaryEnabled,
+  saveDailySummaryTime,
+} from "../../notifications/model/dailySummarySettings";
+import {
   installPendingUpdate,
   isUpdaterEnabled,
   readAppVersion,
@@ -73,6 +80,8 @@ export function GeneralPage({
   const [notificationEvents, setNotificationEvents] = useState(
     loadNotificationEvents,
   );
+  const [summaryEnabled, setSummaryEnabled] = useState(loadDailySummaryEnabled);
+  const [summaryTime, setSummaryTime] = useState(loadDailySummaryTime);
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermission>(cachedNotificationPermission);
   const [notesEnabled, setNotesEnabled] = useState(loadNotesEnabled);
@@ -232,6 +241,36 @@ export function GeneralPage({
               </Row>
             ))
           : null}
+        {notificationsEnabled ? (
+          <Row
+            id="daily-summary"
+            label="Daily summary"
+            description="Once a day, one notification with what background tasks and goals did on every machine. Click it to open the summary."
+          >
+            {summaryEnabled ? (
+              <Select
+                label="Daily summary time"
+                value={summaryTime}
+                options={DAILY_SUMMARY_TIMES.map((time) => ({
+                  value: time,
+                  label: time,
+                }))}
+                onChange={(time) => {
+                  saveDailySummaryTime(time);
+                  setSummaryTime(time);
+                }}
+              />
+            ) : null}
+            <Toggle
+              label="Daily summary"
+              on={summaryEnabled}
+              onChange={(on) => {
+                saveDailySummaryEnabled(on);
+                setSummaryEnabled(on);
+              }}
+            />
+          </Row>
+        ) : null}
       </Group>
 
       <Group

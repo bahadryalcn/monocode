@@ -49,7 +49,7 @@ export function startRailPoller<T>(options: {
     const delay = list
       ? list.some((session) => session.status === "running")
         ? 4_000
-        : 10_000
+        : 5_000
       : withBackoffJitter(remoteBackoffDelay(failures + 1), options.random);
     const timer = setTimeout(() => {
       timers.delete(timer);

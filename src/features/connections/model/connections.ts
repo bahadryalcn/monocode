@@ -668,20 +668,26 @@ export function useRemoteRailSessions(
       return;
     }
     // The cached list may be old: nothing in it counts as running until the host says so.
-    const lists = new Map<string, HostSessionSummary[]>(
+    const lists = new Map<
+      string,
+      { list: HostSessionSummary[]; fresh: boolean }
+    >(
       targets.map(({ project }) => [
         project,
-        cachedSessions(project).map((session) => ({
-          ...session,
-          status: "idle" as const,
-          needsInput: false,
-        })),
+        {
+          list: cachedSessions(project).map((session) => ({
+            ...session,
+            status: "idle" as const,
+            needsInput: false,
+          })),
+          fresh: false,
+        },
       ]),
     );
     let shown = "";
     const publish = () => {
-      const next = [...lists].flatMap(([project, list]) =>
-        list.map((session) => ({ project, session })),
+      const next = [...lists].flatMap(([project, { list, fresh }]) =>
+        list.map((session) => ({ project, session, fresh })),
       );
       const serialized = JSON.stringify(next);
       if (serialized === shown) return;
@@ -696,7 +702,7 @@ export function useRemoteRailSessions(
       load: ({ machine, remote }) =>
         sharedSessionLists.load(machine.id, remote.projectId),
       onResult: ({ project }, next) => {
-        lists.set(project, next);
+        lists.set(project, { list: next, fresh: true });
         const stored = JSON.stringify(next);
         try {
           if (localStorage.getItem(historyKey(project)) !== stored) {

@@ -26,6 +26,9 @@ export type ShellResult = {
 export const SHELL_TIMEOUT_MS = 120_000;
 export const SHELL_OUTPUT_LIMIT = 30_000;
 export const SHELL_COMMAND_LIMIT = 10_000;
+/** Sent once a `!command` finishes, so the agent carries on from its output. */
+export const SHELL_FOLLOW_UP_PROMPT =
+  "I ran the command above. Continue based on its result.";
 
 /** The command in a `!command` composer entry, or undefined for a prompt. */
 export function parseShellCommand(text: string): string | undefined {

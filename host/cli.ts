@@ -26,6 +26,7 @@ import { createHostServer } from "./server";
 import { HostAutomations } from "./automations";
 import { HostTasks } from "./tasks";
 import { HostGoals } from "./goals";
+import { HostStewards } from "./stewards";
 import {
   REMOTE_PROVIDERS,
   type RemoteProvider,
@@ -222,7 +223,7 @@ Connect another computer using an SSH forward to the loopback port.`);
     throw new Error("Unknown command; run with --help");
   }
   const releaseOwner = await acquireHostOwner(directory);
-  const backend = new HostChildBackend();
+  const backend = new HostChildBackend({}, store.attachmentDir);
   let cleanup = () => {
     rmSync(statePath, { force: true });
     store.close();
@@ -245,44 +246,55 @@ Connect another computer using an SSH forward to the loopback port.`);
     const tasks = new HostTasks(store, engine);
     // Goals run on the task board's timer.
     const goals = new HostGoals(store, engine, tasks);
+    const stewards = new HostStewards(store, engine, tasks);
     const secret = randomBytes(32).toString("base64url");
     let stopping = false;
     let stop: () => Promise<void>;
     // A separate local administrative credential cannot be used as a paired
     // client credential, and is never sent to the desktop.
-    const server = createHostServer(engine, available, (request, response) => {
-      if (
-        request.method !== "POST" ||
-        request.headers.origin ||
-        request.headers.authorization !== `Bearer ${secret}`
-      ) {
-        response.writeHead(403).end();
-        return;
-      }
-      let body = "";
-      request.on("data", (chunk) => {
-        body += String(chunk);
-        if (body.length > 128) request.destroy();
-      });
-      request.on("end", () => {
-        try {
-          const action = JSON.parse(body).action;
-          if (action !== "status" && action !== "stop") {
-            response.writeHead(400).end();
-            return;
-          }
-          response.end("{}");
-          if (action === "stop") void stop();
-        } catch {
-          response.writeHead(400).end();
+    const server = createHostServer(
+      engine,
+      available,
+      (request, response) => {
+        if (
+          request.method !== "POST" ||
+          request.headers.origin ||
+          request.headers.authorization !== `Bearer ${secret}`
+        ) {
+          response.writeHead(403).end();
+          return;
         }
-      });
-    }, automations, tasks, undefined, goals);
+        let body = "";
+        request.on("data", (chunk) => {
+          body += String(chunk);
+          if (body.length > 128) request.destroy();
+        });
+        request.on("end", () => {
+          try {
+            const action = JSON.parse(body).action;
+            if (action !== "status" && action !== "stop") {
+              response.writeHead(400).end();
+              return;
+            }
+            response.end("{}");
+            if (action === "stop") void stop();
+          } catch {
+            response.writeHead(400).end();
+          }
+        });
+      },
+      automations,
+      tasks,
+      undefined,
+      goals,
+      stewards,
+    );
     stop = async () => {
       if (stopping) return;
       stopping = true;
       automations.stop();
       tasks.stop();
+      stewards.stop();
       server.close();
       server.closeAllConnections();
       await engine.close();
@@ -296,6 +308,7 @@ Connect another computer using an SSH forward to the loopback port.`);
     });
     automations.start();
     tasks.start();
+    stewards.start();
     writeFileSync(
       statePath,
       JSON.stringify({ pid: process.pid, port, secret }),

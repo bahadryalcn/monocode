@@ -150,6 +150,7 @@ describe("Composer question focus", () => {
     onSubmit: (text: string, attachments: Attachment[]) => void = () => {},
     sessionId?: string,
     harness: "claude" | "codex" = "claude",
+    cwd?: string,
   ) {
     await act(async () =>
       root.render(
@@ -161,6 +162,7 @@ describe("Composer question focus", () => {
           model: "claude-sonnet",
           runtimeMode: "supervised",
           executionCwd: "/repo",
+          cwd,
           initialDraft,
           sessionId,
           onDraftChange: sessionId
@@ -181,6 +183,25 @@ describe("Composer question focus", () => {
       ),
     );
   }
+
+  it("shows the working folder picker without additional projects", async () => {
+    localStorage.clear();
+    await renderComposer(
+      undefined, vi.fn(), false, 0, undefined, undefined, vi.fn(),
+      "folder-default", "codex", "/repo",
+    );
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Folders for this session"]',
+    );
+    expect(trigger?.textContent).toBe("repo");
+    await act(async () => trigger!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Working folder",
+    );
+    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain(
+      "Change project…",
+    );
+  });
 
   it.each([
     ["/btw", ""],

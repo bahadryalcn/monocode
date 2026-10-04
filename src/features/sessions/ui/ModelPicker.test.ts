@@ -64,8 +64,11 @@ vi.mock("../../../shared/ui/Popover", () => ({
 }));
 
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
+import { ModelSourceContext } from "./modelSource";
 import {
   resetHarnessModelOverlays,
+  resetDisabledModels,
+  saveModelEnabled,
   saveRecentModelChoice,
   setHarnessModels,
 } from "../model/models";
@@ -76,6 +79,7 @@ let root: Root;
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
+  resetDisabledModels();
   resetHarnessModelOverlays();
   container = document.createElement("div");
   document.body.append(container);
@@ -128,6 +132,71 @@ function inputText(input: HTMLInputElement, value: string) {
 }
 
 describe("model picker", () => {
+  it("filters a host catalog and reacts when model settings change", () => {
+    const models = [
+      { id: "claude:opus-4-6", name: "Opus", harness: "claude" as const },
+      { id: "claude:sonnet-5", name: "Sonnet", harness: "claude" as const },
+    ];
+    const source = {
+      modelsFor: () => models,
+      resolve: () => models[0],
+      find: (id: string) => models.find((model) => model.id === id),
+      available: () => true,
+      probed: () => true,
+      refresh: () => {},
+    };
+    saveModelEnabled("claude:opus-4.6", false);
+    act(() =>
+      root.render(
+        createElement(
+          ModelSourceContext.Provider,
+          { value: source },
+          createElement(ModelPicker, {
+            harness: "claude",
+            model: models[0].id,
+            values: {},
+            hideSettings: true,
+            onChange: vi.fn(),
+            onSettingsChange: vi.fn(),
+          }),
+        ),
+      ),
+    );
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!
+        .click(),
+    );
+    expect(
+      [...container.querySelectorAll('[role="option"]')].map(
+        (item) => item.textContent,
+      ),
+    ).toEqual(["Sonnet"]);
+    act(() => saveModelEnabled("claude:opus-4.6", true));
+    expect(container.querySelectorAll('[role="option"]')).toHaveLength(2);
+  });
+
+  it("excludes disabled and disallowed models from the recent menu", () => {
+    saveRecentModelChoice("claude", "claude:opus-5");
+    saveRecentModelChoice("cursor", "cursor:composer-2.5");
+    saveModelEnabled("claude:opus-5", false);
+    act(() =>
+      root.render(
+        createElement(ModelPicker, {
+          harness: "grok",
+          model: "grok:grok-4.6",
+          values: {},
+          allowedHarnesses: ["grok", "claude"],
+          onChange: vi.fn(),
+          onSettingsChange: vi.fn(),
+        }),
+      ),
+    );
+    contextMenu(container.querySelector('button[aria-haspopup="menu"]')!);
+    const items = container.querySelectorAll('[role="menuitemradio"]');
+    expect(items).toHaveLength(1);
+    expect(items[0].textContent).toContain("Grok 4.6");
+  });
   it("shows the model name and effort in the combined picker", () => {
     const onChange = vi.fn();
     const onSettingsChange = vi.fn();

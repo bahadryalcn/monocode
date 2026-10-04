@@ -1,5 +1,5 @@
 import { pathKey } from "../../../shared/lib/paths";
-import type { HarnessId } from "./session";
+import type { HarnessId, RuntimeMode } from "./session";
 
 /**
  * Per-project overrides for the Providers settings: which provider new
@@ -11,15 +11,49 @@ import type { HarnessId } from "./session";
 const KEY = "monocode.projectProviderSettings.v1";
 
 /** Fired on `window` when any project's provider settings change. */
-export const PROJECT_PROVIDERS_CHANGE_EVENT = "monocode:project-providers-change";
+export const PROJECT_PROVIDERS_CHANGE_EVENT =
+  "monocode:project-providers-change";
 
 export type ProjectProviderSettings = {
   defaultHarness?: HarnessId;
   defaultModel?: string;
   models?: Partial<Record<HarnessId, string>>;
+  defaults?: Partial<Record<HarnessId, ProviderSessionDefaults>>;
   /** Providers this project keeps out of the picker and out of new sessions. */
   hidden?: HarnessId[];
 };
+
+export type ProviderSessionDefaults = {
+  effort?: string;
+  runtimeMode?: RuntimeMode;
+};
+
+export function normalizeProviderDefaults(
+  value: ProviderSessionDefaults,
+): ProviderSessionDefaults {
+  const next: ProviderSessionDefaults = {};
+  if (typeof value.effort === "string" && value.effort)
+    next.effort = value.effort;
+  if (
+    ["supervised", "auto-accept-edits", "auto", "full-access"].includes(
+      value.runtimeMode ?? "",
+    )
+  ) {
+    next.runtimeMode = value.runtimeMode;
+  }
+  return next;
+}
+
+export function setProjectSessionDefaults(
+  project: string,
+  harness: HarnessId,
+  defaults: ProviderSessionDefaults,
+): void {
+  update(project, (current) => ({
+    ...current,
+    defaults: { ...current.defaults, [harness]: defaults },
+  }));
+}
 
 type Stored = Record<string, ProjectProviderSettings>;
 
@@ -69,7 +103,8 @@ export function setProjectDefaultModel(
   }));
 }
 
-export function setProjectProviderHidden(  project: string,
+export function setProjectProviderHidden(
+  project: string,
   harness: HarnessId,
   hidden: boolean,
 ): void {
@@ -136,6 +171,7 @@ function empty(value: ProjectProviderSettings): boolean {
     value.defaultHarness == null &&
     value.defaultModel == null &&
     Object.keys(value.models ?? {}).length === 0 &&
+    Object.keys(value.defaults ?? {}).length === 0 &&
     (value.hidden ?? []).length === 0
   );
 }
@@ -174,6 +210,15 @@ function parse(raw: string | null): Stored {
 
 function normalize(value: ProjectProviderSettings): ProjectProviderSettings {
   const next: ProjectProviderSettings = {};
+  if (value.defaults && typeof value.defaults === "object") {
+    const defaults: ProjectProviderSettings["defaults"] = {};
+    for (const [harness, entry] of Object.entries(value.defaults)) {
+      if (!entry || typeof entry !== "object") continue;
+      const clean = normalizeProviderDefaults(entry);
+      if (Object.keys(clean).length) defaults[harness as HarnessId] = clean;
+    }
+    if (Object.keys(defaults).length) next.defaults = defaults;
+  }
   if (typeof value.defaultHarness === "string") {
     next.defaultHarness = value.defaultHarness;
   }

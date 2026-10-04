@@ -6881,6 +6881,7 @@ const MAX_STAT_FILES: usize = 64;
 pub struct FileMtime {
     path: String,
     mtime_ms: Option<u64>,
+    is_dir: bool,
 }
 
 fn file_mtime_ms(meta: &std::fs::Metadata) -> Option<u64> {
@@ -6900,11 +6901,16 @@ pub fn stat_files(paths: Vec<String>) -> Result<Vec<FileMtime>, String> {
         .into_iter()
         .map(|path| {
             let expanded = expand_home(&path);
-            let mtime_ms = std::fs::metadata(&expanded)
-                .ok()
+            let meta = std::fs::metadata(&expanded).ok();
+            let is_dir = meta.as_ref().is_some_and(|meta| meta.is_dir());
+            let mtime_ms = meta
                 .filter(|meta| meta.is_file())
                 .and_then(|meta| file_mtime_ms(&meta));
-            FileMtime { path, mtime_ms }
+            FileMtime {
+                path,
+                mtime_ms,
+                is_dir,
+            }
         })
         .collect())
 }
@@ -7769,12 +7775,20 @@ mod tests {
         let path_string = path.to_string_lossy().into_owned();
         let missing = dir.0.join("gone.md").to_string_lossy().into_owned();
 
-        let stats = stat_files(vec![path_string.clone(), missing.clone()]).unwrap();
-        assert_eq!(stats.len(), 2);
+        let stats = stat_files(vec![
+            path_string.clone(),
+            missing.clone(),
+            dir.0.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        assert_eq!(stats.len(), 3);
         assert_eq!(stats[0].path, path_string);
         assert!(stats[0].mtime_ms.is_some());
         assert_eq!(stats[1].path, missing);
         assert!(stats[1].mtime_ms.is_none());
+        assert!(!stats[0].is_dir);
+        assert!(!stats[1].is_dir);
+        assert!(stats[2].is_dir);
     }
 
     #[test]

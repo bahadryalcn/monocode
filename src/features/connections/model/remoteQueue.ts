@@ -31,6 +31,7 @@ export type RemoteQueue = {
 export const EMPTY_REMOTE_QUEUE: RemoteQueue = { messages: [] };
 
 export type RemoteQueueDraft = {
+  modelTarget?: QueuedMessage["modelTarget"];
   id: string;
   text: string;
   attachments: Attachment[];

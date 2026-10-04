@@ -7,6 +7,13 @@ import {
   stopStreaming,
 } from "../src/integrations/harness/core/apply";
 import { resolveModel } from "../src/features/sessions/model/models";
+import {
+  appendReadyHandoff,
+  buildDeterministicHandoff,
+  consumeHandoff,
+  pendingHandoff,
+  planComposerSwitch,
+} from "../src/features/sessions/model/handoff";
 import { isVisionImage } from "../src/features/sessions/model/attachments";
 import type {
   HarnessEvent,
@@ -121,12 +128,17 @@ export function parseCommand(input: unknown): HostCommand {
   }
   const sessionId = text(v.sessionId, "session ID");
   if (v.type === "configure") {
+    if (v.harness !== undefined && !isRemoteProvider(v.harness))
+      throw new Error("Invalid provider");
     if (!RUNTIME_MODES.includes(v.runtimeMode as never))
       throw new Error("Invalid permission mode");
     return {
       type: "configure",
       commandId,
       sessionId,
+      ...(v.harness !== undefined
+        ? { harness: v.harness as RemoteProvider }
+        : {}),
       model: text(v.model, "model", 200),
       modelSettings: modelSettings(v.modelSettings),
       runtimeMode: v.runtimeMode as Session["runtimeMode"],
@@ -315,11 +327,7 @@ export class HostEngine {
     // Only sessions that need rewriting are parsed; the rest are bound from
     // mirror columns and their snapshot loads on first access.
     for (const state of store.startupStates()) {
-      if (
-        state.hasDesktop &&
-        !state.shellRunning &&
-        !state.running
-      ) {
+      if (state.hasDesktop && !state.shellRunning && !state.running) {
         if (state.providerSessionId && state.harness)
           this.provider(state.harness).bind(
             state.id,
@@ -332,9 +340,12 @@ export class HostEngine {
       // Sessions started here before they were shared with this machine's
       // desktop app become shared too, so the app on this machine lists them.
       if (!value.desktop)
-        value = this.save({ ...value, desktop: { updatedAt: 0 } }, {
-          type: "desktopShared",
-        });
+        value = this.save(
+          { ...value, desktop: { updatedAt: 0 } },
+          {
+            type: "desktopShared",
+          },
+        );
       // A `!command` cannot outlive the host process that started it.
       if (value.session.blocks.some((block) => block.shell?.running))
         value = this.save(
@@ -464,11 +475,17 @@ export class HostEngine {
     if (!current.desktop || current.status === "running") return undefined;
     if (snapshot.updatedAt <= current.desktop.updatedAt) return undefined;
     const { session } = snapshot;
+    // A copy the desktop saved before this host's latest change, e.g. while
+    // the host was still running the turn, holds nothing newer; replacing the
+    // transcript with it would drop the turn's output.
+    const stale = snapshot.updatedAt <= current.updatedAt;
     const same =
-      session.title === current.session.title &&
-      session.providerSessionId === current.session.providerSessionId &&
-      session.model === current.session.model &&
-      JSON.stringify(session.blocks) === JSON.stringify(current.session.blocks);
+      stale ||
+      (session.title === current.session.title &&
+        session.providerSessionId === current.session.providerSessionId &&
+        session.model === current.session.model &&
+        JSON.stringify(session.blocks) ===
+          JSON.stringify(current.session.blocks));
     const saved = this.save(
       {
         ...current,
@@ -499,7 +516,6 @@ export class HostEngine {
       );
     return saved;
   }
-
 
   updateSession(id: string, patch: Parameters<HostStore["updateSession"]>[1]) {
     this.flush(id);
@@ -641,15 +657,45 @@ export class HostEngine {
             throw new Error(
               "Wait for the current turn before changing settings",
             );
+          const harness = command.harness ?? value.session.harness;
+          this.provider(harness);
+          const plan = planComposerSwitch(value.session, harness);
+          const changedHarness = value.session.harness !== harness;
           value = {
             ...value,
             session: {
               ...value.session,
+              harness,
               model: command.model,
               modelSettings: command.modelSettings,
               runtimeMode: command.runtimeMode,
+              ...(changedHarness
+                ? {
+                    providerSessionId: undefined,
+                    providerAccountId: undefined,
+                    context: undefined,
+                    usageLimit: undefined,
+                  }
+                : {}),
+              ...(plan.kind === "arm" ? { pendingSwitch: plan.pending } : {}),
+              ...(plan.kind === "empty" ? { pendingSwitch: undefined } : {}),
+              ...(plan.kind === "revert"
+                ? {
+                    pendingSwitch: undefined,
+                    providerSessionId: plan.restoreProviderSessionId,
+                    providerAccountId: plan.restoreProviderAccountId,
+                  }
+                : {}),
             },
           };
+          if (plan.kind === "revert" && plan.restoreProviderSessionId) {
+            effect = (saved) =>
+              this.provider(saved.session.harness).bind(
+                saved.session.id,
+                plan.restoreProviderSessionId!,
+                saved.session.cwd,
+              );
+          }
         } else if (command.type === "draft") {
           if (
             value.status === "running" ||
@@ -773,6 +819,31 @@ export class HostEngine {
                 resolveAttachments(this.store, command.attachments ?? []))
               : [];
           // Read before the turn's own block lands after them.
+          let handoffText: string | undefined;
+          let handoffFrom: RemoteProvider | undefined;
+          if (command.type === "send" && value.session.pendingSwitch) {
+            const from = value.session.pendingSwitch.from;
+            const brief = buildDeterministicHandoff(
+              value.session,
+              command.text,
+            );
+            value = {
+              ...value,
+              session: appendReadyHandoff(
+                { ...value.session, pendingSwitch: undefined },
+                from,
+                value.session.harness,
+                brief,
+              ),
+            };
+          }
+          if (command.type === "send") {
+            const handoff = pendingHandoff(value.session);
+            handoffText = handoff?.text;
+            handoffFrom = handoff?.from as RemoteProvider | undefined;
+            if (handoffText)
+              value = { ...value, session: consumeHandoff(value.session) };
+          }
           const shellRuns =
             command.type === "send"
               ? pendingShellRuns(value.session.blocks)
@@ -849,10 +920,16 @@ export class HostEngine {
               saved,
               command.type === "compact"
                 ? null
-                : withShellContext(shellRuns, command.text),
+                : withShellContext(
+                    shellRuns,
+                    handoffText
+                      ? `<previous_agent_context>\n${handoffText}\n</previous_agent_context>\n\n${command.text}`
+                      : command.text,
+                  ),
               command.type === "send" ? command.intent : undefined,
               attachments,
               command.resumeAtReset,
+              handoffText ? handoffFrom : undefined,
             );
             if (firstTurn && command.type === "send") {
               this.generateFirstTurnNames(
@@ -963,7 +1040,9 @@ export class HostEngine {
         if (live) live.value = saved;
       })
       // The conversation may have been deleted while the command ran.
-      .catch((error) => console.debug("[monocode] remote shell command", error));
+      .catch((error) =>
+        console.debug("[monocode] remote shell command", error),
+      );
   }
 
   private generateFirstTurnNames(
@@ -1009,8 +1088,13 @@ export class HostEngine {
           const currentBeforeRename = this.store.session(id);
           if (currentBeforeRename.autoWorktreeBranch !== temporary) return;
           const project = this.store.project(value.projectId);
-          await renameHostWorktreeBranch(project.cwd, cwd, temporary, branch,
-            () => this.store.session(id).autoWorktreeBranch === temporary);
+          await renameHostWorktreeBranch(
+            project.cwd,
+            cwd,
+            temporary,
+            branch,
+            () => this.store.session(id).autoWorktreeBranch === temporary,
+          );
           this.flush(id);
           const current = this.store.session(id);
           const saved = this.save(
@@ -1036,6 +1120,7 @@ export class HostEngine {
     intent?: "default" | "plan" | "build",
     attachments: Session["blocks"][number]["attachments"] = [],
     resumeAtReset?: boolean,
+    resetConversationFrom?: RemoteProvider,
   ): void {
     const { session, runId } = value;
     const provider = this.provider(session.harness);
@@ -1053,6 +1138,15 @@ export class HostEngine {
         let error: string | undefined;
         try {
           if (!this.closing && !active.cancelled) {
+            // A provider may still have the binding from an earlier stint in
+            // this chat. A handoff starts a new conversation with its recap.
+            if (resetConversationFrom) {
+              if (resetConversationFrom !== session.harness)
+                await this.provider(resetConversationFrom).stop(session.id);
+              await provider.stop(session.id);
+            }
+            if (this.closing || active.cancelled)
+              throw new Error("Turn cancelled");
             const input: HarnessSessionInput = {
               sessionId: session.id,
               cwd: session.cwd,
@@ -1101,8 +1195,8 @@ export class HostEngine {
             : active.persistenceFailed
               ? "Session storage failed during this turn. Inspect its work before continuing."
               : active.cancelled
-              ? "Stopped by you."
-              : error;
+                ? "Stopped by you."
+                : error;
           this.save(
             this.settled(
               latest,

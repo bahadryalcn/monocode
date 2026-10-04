@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { configureGeneratedImageStorage } from "./generatedImages";
 import {
   runtimeProviderBinaryPath,
   type ConfigurableBinaryProvider,
@@ -21,6 +22,11 @@ export function configureChildBackend(next: ChildBackend): void {
   if (bridge || users)
     throw new Error("Configure the child backend before starting the bridge");
   backend = next;
+  configureGeneratedImageStorage({
+    save: (input) => next.invoke("harness_save_generated_image", input),
+    delete: (paths) =>
+      next.invoke("harness_delete_generated_images", { paths }),
+  });
 }
 
 export function hasHeadlessChildBackend(): boolean {
@@ -78,12 +84,17 @@ function listen<T>(
 type LinePayload = { sessionId: string; line: string };
 type LinesPayload = { sessionId: string; lines: string[] };
 type SseBatchPayload = { sessionId: string; data: string[] };
-type ExitPayload = { sessionId: string; code: number | null; pid?: number };
+type ExitPayload = {
+  sessionId: string;
+  code: number | null;
+  pid?: number;
+  reason?: string;
+};
 type SsePayload = { sessionId: string; data: string };
 type SseEndPayload = { sessionId: string; error?: string | null };
 
 type LineHandler = (line: string) => void;
-type ExitHandler = (code: number | null) => void;
+type ExitHandler = (code: number | null, reason?: string) => void;
 type SseHandler = (data: string) => void;
 type SseEndHandler = (error?: string) => void;
 
@@ -103,7 +114,7 @@ const ownedSse = new Set<string>();
 const livePid = new Map<string, number>();
 const pendingExit = new Map<
   string,
-  Array<{ code: number | null; pid: number }>
+  Array<{ code: number | null; pid: number; reason?: string }>
 >();
 
 /** True when this exit belongs to the child we currently have spawned. */
@@ -217,18 +228,19 @@ function ensureBridge() {
     ),
     register(
       listen<ExitPayload>("harness-exit", (event) => {
-        const { sessionId, code, pid } = event.payload;
+        const { sessionId, code, pid, reason } = event.payload;
         const handler = exitHandlers.get(sessionId);
         if (!handler || pid == null || pid <= 0) return;
         const currentPid = livePid.get(sessionId);
         if (isCurrentChildExit(currentPid, pid)) {
           livePid.delete(sessionId);
-          handler(code);
+          if (reason) handler(code, reason);
+          else handler(code);
           return;
         }
         if (currentPid != null) return;
         const exits = pendingExit.get(sessionId) ?? [];
-        exits.push({ code, pid });
+        exits.push({ code, pid, reason });
         if (exits.length > 8) exits.splice(0, exits.length - 8);
         pendingExit.set(sessionId, exits);
       }),
@@ -393,7 +405,9 @@ export async function spawnChild(
   const exited = exits?.find((event) => event.pid === pid);
   if (!exited) return;
   livePid.delete(sessionId);
-  exitHandlers.get(sessionId)?.(exited.code);
+  const handler = exitHandlers.get(sessionId);
+  if (exited.reason) handler?.(exited.code, exited.reason);
+  else handler?.(exited.code);
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {
@@ -513,9 +527,7 @@ export function resolveHermesBinary(
   return resolveHarnessBinary("hermes", binaryPath);
 }
 
-export function resolveAntigravityBinary(
-  binaryPath?: string | null,
-): Promise<{
+export function resolveAntigravityBinary(binaryPath?: string | null): Promise<{
   path: string;
   args: string[];
   /** Absent means ACP: older hosts never reported it. */
@@ -571,7 +583,9 @@ export function inspectHarnessBinary(
       return {
         path: resolved.path,
         version:
-          resolved.transport === "stream-json" ? "agy CLI (stream-json)" : "ACP server",
+          resolved.transport === "stream-json"
+            ? "agy CLI (stream-json)"
+            : "ACP server",
       };
     }
     try {

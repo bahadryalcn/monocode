@@ -1,12 +1,17 @@
 import { IS_WIN } from "../../platform/tauri/platform";
 
 function windowsPath(path: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\") || path.startsWith("//");
+  return (
+    /^[A-Za-z]:[\\/]/.test(path) ||
+    path.startsWith("\\\\") ||
+    path.startsWith("//")
+  );
 }
 
 export function slash(path: string): string {
   return windowsPath(path) || (IS_WIN && !path.startsWith("/"))
-    ? path.replace(/\\/g, "/") : path;
+    ? path.replace(/\\/g, "/")
+    : path;
 }
 
 function trimSlash(path: string): string {
@@ -97,6 +102,17 @@ export function joinPath(parent: string, relative: string): string {
  * project's own cwd happens to sit under a recognisable home.
  */
 let cachedHomeDir: string | undefined;
+let pathEnvironment: Record<string, string> = {};
+
+/** Only directory variables explicitly supplied by the owning machine. */
+export function setPathEnvironment(values: Record<string, string>): void {
+  pathEnvironment = Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [
+      key.toUpperCase(),
+      slash(value),
+    ]),
+  );
+}
 
 /**
  * Record the OS's actual home directory so `~/` references resolve exactly,
@@ -117,7 +133,9 @@ export function setHomeDir(path: string | undefined): void {
  */
 function homeDirFromCwd(cwd: string): string | undefined {
   const remoteRoot = /^remote:\/\/[^/]+\//.exec(cwd)?.[0];
-  const trimmed = trimSlash(remoteRoot ? `/${cwd.slice(remoteRoot.length)}` : cwd);
+  const trimmed = trimSlash(
+    remoteRoot ? `/${cwd.slice(remoteRoot.length)}` : cwd,
+  );
   if (trimmed === "~") return undefined;
   const parts = trimmed.split("/").filter(Boolean);
   if (parts.length >= 2 && (parts[0] === "Users" || parts[0] === "home")) {
@@ -147,7 +165,8 @@ export function resolveWorkspacePath(
 export function resolveWorkspaceFileReference(
   href: string,
   cwd?: string,
-): { path: string; navigation?: { line: number; column?: number } } | undefined {
+):
+  { path: string; navigation?: { line: number; column?: number } } | undefined {
   return parseWorkspaceFileReference(href, cwd, true);
 }
 
@@ -158,6 +177,16 @@ function parseWorkspaceFileReference(
 ) {
   let value = href.trim();
   if (!value) return undefined;
+
+  // Windows extended drive paths are local paths, not network URLs.
+  value = value.replace(/^\\\\\?\\([A-Za-z]:\\)/, "$1");
+  const variable = /^%([A-Za-z_][A-Za-z0-9_]*(?:\(x86\))?)%(?=[\\/]|$)/i.exec(value);
+  if (variable) {
+    if (cwd?.startsWith("remote://")) return undefined;
+    const directory = pathEnvironment[variable[1].toUpperCase()];
+    if (!directory) return undefined;
+    value = directory + value.slice(variable[0].length).replace(/\\/g, "/");
+  }
 
   // Strip heading anchors before decoding, keeping encoded '#' in filenames.
   if (decodeUrl) {
@@ -200,7 +229,7 @@ function parseWorkspaceFileReference(
   if (value === "~" || value.startsWith("~/")) {
     const home = remoteRoot
       ? homeDirFromCwd(cwd!)
-      : cachedHomeDir ?? (cwd ? homeDirFromCwd(cwd) : undefined);
+      : (cachedHomeDir ?? (cwd ? homeDirFromCwd(cwd) : undefined));
     // Without a recognisable home, joining "~/..." onto cwd like an ordinary
     // relative path would silently produce a nonsense location instead of
     // the file the reference actually means.
@@ -212,7 +241,13 @@ function parseWorkspaceFileReference(
   // A bare filename's :line[:column] suffix must be removed before this check.
   if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^[A-Za-z]:\//.test(value))
     return undefined;
-  if (!value || value === "." || value.startsWith("#") || value.startsWith("?") || value.includes("://")) {
+  if (
+    !value ||
+    value === "." ||
+    value.startsWith("#") ||
+    value.startsWith("?") ||
+    value.includes("://")
+  ) {
     return undefined;
   }
   if (!looksLikeFilePath(value)) return undefined;
@@ -225,7 +260,9 @@ function parseWorkspaceFileReference(
     return {
       path: remoteRoot
         ? `${remoteRoot}${value.replace(/^\/+/, "")}`
-        : /^\/[A-Za-z]:\//.test(value) ? value.slice(1) : value,
+        : /^\/[A-Za-z]:\//.test(value)
+          ? value.slice(1)
+          : value,
       navigation,
     };
   }
@@ -240,8 +277,10 @@ export function isExtensionlessFileName(value: string): boolean {
 export function looksLikeFilePath(value: string): boolean {
   if (value.startsWith("/") || /^[A-Za-z]:\//.test(value)) return true;
   if (value.includes("/")) return true;
-  return isExtensionlessFileName(value) ||
-    /\.[A-Za-z][A-Za-z0-9+]{0,11}$/.test(value);
+  return (
+    isExtensionlessFileName(value) ||
+    /\.[A-Za-z][A-Za-z0-9+]{0,11}$/.test(value)
+  );
 }
 
 export function prettyParent(path: string): string {

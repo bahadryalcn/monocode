@@ -14,9 +14,11 @@ import {
   firstEnabledHarness,
   preferredModelId,
   preferredModelSettings,
+  modelEffortSetting,
   resolveModel,
 } from "./models";
 import { loadProjectProviderSettings } from "./projectProviders";
+import { providerSessionDefaults } from "./providerSessionDefaults";
 
 export type HarnessId =
   | "claude"
@@ -246,6 +248,9 @@ export type AgentRunMeta = {
 export type AttachmentKind = "image" | "audio" | "file";
 
 export type GeneratedImageMeta = {
+  /** Desktop preview only; persistence retains metadata, not image bytes. */
+  data?: string;
+  loadPreview?: () => Promise<string>;
   path: string;
   name: string;
   mimeType: string;
@@ -274,6 +279,8 @@ export type Attachment = {
 };
 
 export type QueuedMessage = {
+  /** Enqueue-time selection; absent only on queues saved by older versions. */
+  modelTarget?: ModelTarget;
   id: string;
   text: string;
   attachments: Attachment[];
@@ -445,6 +452,8 @@ export type Session = {
   blocks: Block[];
   /** True while a harness turn is in flight. */
   busy?: boolean;
+  /** Selection of the running turn, separate from the composer's next choice. In-memory only. */
+  runningModelTarget?: ModelTarget;
   /**
    * What the live turn is waiting on after the agent yielded with work still
    * running in the background. In-memory only.
@@ -634,14 +643,26 @@ export function newSession(
   modelSettings?: Record<string, string>,
 ): Session {
   const resolved = resolveModel(harness, model ?? preferredModelId(harness));
+  const defaults = providerSessionDefaults(harness, cwd);
+  const effort = modelEffortSetting(resolved);
+  const settings = preferredModelSettings(resolved, modelSettings);
+  if (
+    !modelSettings &&
+    effort &&
+    defaults.effort &&
+    effort.options.some((option) => option.value === defaults.effort)
+  ) {
+    settings[effort.id] = defaults.effort;
+  }
   return {
     id: crypto.randomUUID(),
     harness,
     model: resolved.id,
-    modelSettings: preferredModelSettings(resolved, modelSettings),
+    modelSettings: settings,
     // An explicit mode is kept as given (a restored or forked session); only a
     // session started with no mode picks its harness's default.
-    runtimeMode: runtimeMode ?? runtimeModeForNewSession(harness),
+    runtimeMode:
+      runtimeMode ?? runtimeModeForNewSession(harness, defaults.runtimeMode),
     title: HARNESS_LABEL[harness],
     cwd,
     blocks: [],
@@ -651,14 +672,17 @@ export function newSession(
 /** New conversation using the Providers defaults. */
 export function newDefaultSession(
   cwd = "~",
-  runtimeMode: RuntimeMode = DEFAULT_RUNTIME_MODE,
+  runtimeMode?: RuntimeMode,
 ): Session {
   const choice = defaultSessionChoice(cwd);
   return newSession(
     choice.harness,
     cwd,
     choice.model,
-    runtimeModeForNewSession(choice.harness, runtimeMode),
+    runtimeModeForNewSession(
+      choice.harness,
+      providerSessionDefaults(choice.harness, cwd).runtimeMode ?? runtimeMode,
+    ),
   );
 }
 
@@ -699,13 +723,28 @@ export function newSessionForProject(
   const { harness, model } = projectSessionChoice(seed, cwd);
   const carriesSeed =
     model != null && model === seed?.model && harness === seed?.harness;
-  return newSession(
+  const defaults = providerSessionDefaults(harness, cwd);
+  const session = newSession(
     harness,
     cwd,
     model,
-    runtimeModeForNewSession(harness, seed?.runtimeMode),
+    runtimeModeForNewSession(
+      harness,
+      defaults.runtimeMode ?? seed?.runtimeMode,
+    ),
     carriesSeed ? seed?.modelSettings : undefined,
   );
+  const effort = modelEffortSetting(resolveModel(harness, session.model));
+  if (
+    defaults.effort &&
+    effort?.options.some((option) => option.value === defaults.effort)
+  ) {
+    session.modelSettings = {
+      ...session.modelSettings,
+      [effort.id]: defaults.effort,
+    };
+  }
+  return session;
 }
 
 /**
@@ -721,15 +760,30 @@ export function retargetSessionToProject(
   const resolved = resolveModel(harness, model ?? preferredModelId(harness));
   const carriesSeed =
     model != null && model === session.model && harness === session.harness;
+  const settings = preferredModelSettings(
+    resolved,
+    carriesSeed ? session.modelSettings : undefined,
+  );
+  const defaults = providerSessionDefaults(harness, cwd);
+  const effort = modelEffortSetting(resolved);
+  const blank = session.blocks.length === 0 && !session.providerSessionId;
+  if (
+    blank &&
+    effort &&
+    effort.options.some((option) => option.value === defaults.effort)
+  ) {
+    settings[effort.id] = defaults.effort!;
+  }
   return {
     ...session,
     cwd,
     harness,
     model: resolved.id,
-    modelSettings: preferredModelSettings(
-      resolved,
-      carriesSeed ? session.modelSettings : undefined,
-    ),
+    modelSettings: settings,
+    runtimeMode:
+      blank && defaults.runtimeMode
+        ? runtimeModeForNewSession(harness, defaults.runtimeMode)
+        : session.runtimeMode,
     title: HARNESS_LABEL[harness],
     ...(harness === session.harness
       ? {}

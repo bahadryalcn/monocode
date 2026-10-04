@@ -9,12 +9,22 @@ import { join } from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import {
+  saveHostGeneratedImage,
+  deleteHostGeneratedImages,
+} from "./generated-images";
 import type { ChildBackend } from "../src/integrations/harness/core/child";
 import {
   isRemoteProvider,
   type RemoteProvider,
 } from "../src/features/connections/model/protocol";
 import { providerLaunch, resolveProvider } from "./process";
+import {
+  ProviderLines,
+  PROVIDER_STDOUT_LINE_BYTES,
+  PROVIDER_STDERR_LINE_BYTES,
+} from "./provider-lines";
 
 const exec = promisify(execFile);
 const ALLOWED_EXEC_ARGS = new Set([
@@ -48,6 +58,11 @@ export class HostChildBackend implements ChildBackend {
 
   constructor(
     private readonly binaries: Partial<Record<RemoteProvider, string>> = {},
+    private readonly artifactDirectory = join(
+      homedir(),
+      ".monocode-host",
+      "attachments",
+    ),
   ) {
     this.events.setMaxListeners(0);
   }
@@ -88,6 +103,17 @@ export class HostChildBackend implements ChildBackend {
       } as T;
     }
     switch (command) {
+      case "harness_save_generated_image":
+        return (await saveHostGeneratedImage(this.artifactDirectory, {
+          data: String(args.data),
+          name: String(args.name),
+        })) as T;
+      case "harness_delete_generated_images":
+        await deleteHostGeneratedImages(
+          this.artifactDirectory,
+          args.paths as string[],
+        );
+        return undefined as T;
       case "harness_exec": {
         const provider = args.binaryProvider;
         if (!isRemoteProvider(provider))
@@ -173,10 +199,15 @@ export class HostChildBackend implements ChildBackend {
         if (!child || child.stdin.destroyed)
           throw new Error("Provider process is not running");
         await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(
-            () => reject(new Error("Provider stdin write timed out")),
-            15_000,
-          );
+          const timer = setTimeout(() => {
+            reject(
+              new Error(
+                `Provider stdin write timed out (session ${id}, pid ${child.pid}, ${Buffer.byteLength(String(args.line))} bytes)`,
+              ),
+            );
+            // Retire only this generation; a replacement must never be killed.
+            if (this.children.get(id) === child) void this.kill(id);
+          }, 12_000);
           child.stdin.write(`${String(args.line)}\n`, (error) => {
             clearTimeout(timer);
             if (error) reject(error);
@@ -295,11 +326,22 @@ export class HostChildBackend implements ChildBackend {
     child.stdin.on("error", () => {
       /* write callbacks report failures */
     });
-    this.lines(child, id, "stdout");
-    this.lines(child, id, "stderr");
+    let exitReason: string | undefined;
+    const overflow = (reason: string) => {
+      if (exitReason) return;
+      exitReason = reason;
+      void this.kill(id);
+    };
+    this.lines(child, id, "stdout", overflow);
+    this.lines(child, id, "stderr", overflow);
     child.on("close", (code) => {
       if (this.children.get(id) === child) this.children.delete(id);
-      this.emit("harness-exit", { sessionId: id, code, pid: child.pid });
+      this.emit("harness-exit", {
+        sessionId: id,
+        code,
+        pid: child.pid,
+        ...(exitReason ? { reason: exitReason } : {}),
+      });
     });
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
@@ -312,30 +354,23 @@ export class HostChildBackend implements ChildBackend {
     child: ChildProcessWithoutNullStreams,
     id: string,
     stream: "stdout" | "stderr",
+    onOverflow: (reason: string) => void,
   ): void {
-    let buffer = "";
+    const maxBytes =
+      stream === "stdout"
+        ? PROVIDER_STDOUT_LINE_BYTES
+        : PROVIDER_STDERR_LINE_BYTES;
+    const lines = new ProviderLines(
+      maxBytes,
+      (line) => this.emit(`harness-${stream}`, { sessionId: id, line }),
+      () =>
+        onOverflow(
+          `Provider ${stream} message exceeded the ${maxBytes / 1024 / 1024} MiB limit; MonoCode host stopped the process.`,
+        ),
+    );
     child[stream].setEncoding("utf8");
-    child[stream].on("data", (data: string) => {
-      buffer += data;
-      let index: number;
-      while ((index = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, index).replace(/\r$/, "");
-        buffer = buffer.slice(index + 1);
-        if (line.length > 8 * 1024 * 1024) {
-          void this.kill(id);
-          return;
-        }
-        this.emit(`harness-${stream}`, { sessionId: id, line });
-      }
-      if (buffer.length > 8 * 1024 * 1024) {
-        buffer = "";
-        void this.kill(id);
-      }
-    });
-    child[stream].on("end", () => {
-      if (buffer)
-        this.emit(`harness-${stream}`, { sessionId: id, line: buffer });
-    });
+    child[stream].on("data", (data: string) => lines.push(data));
+    child[stream].on("end", () => lines.end());
   }
 
   private signal(

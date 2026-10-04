@@ -948,6 +948,17 @@ pub fn harness_spawn(
     prepare_child(&mut cmd, &command);
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
 
+    // Legacy/default-profile children still need an account owner for removal.
+    let account = account.or_else(|| {
+        binary_provider
+            .as_deref()
+            .filter(|provider| matches!(*provider, "claude" | "codex"))
+            .map(|provider| HarnessAccount {
+                provider: provider.into(),
+                id: DEFAULT_PROVIDER_ACCOUNT_ID.into(),
+            })
+    });
+
     crate::control::configure_child(&app, &session_id, &mut cmd);
 
     let mut child =
@@ -1108,7 +1119,46 @@ pub fn provider_account_remove(
     host: State<'_, HarnessHost>,
     provider: String,
     account_id: String,
+    credentials_only: Option<bool>,
 ) -> Result<(), String> {
+    if account_id == DEFAULT_PROVIDER_ACCOUNT_ID || credentials_only == Some(true) {
+        if !matches!(provider.as_str(), "claude" | "codex") {
+            return Err("Unsupported provider account".into());
+        }
+        let binary = resolve_mcp_binary(&provider, host.runtime_binary_path(&provider).as_deref())?;
+        host.kill_account(&provider, &account_id);
+        let args: Vec<String> = if provider == "claude" {
+            vec!["auth".into(), "logout".into()]
+        } else {
+            vec!["logout".into()]
+        };
+        // Let the CLI clear its own credential store, including OS keychains.
+        // Never delete a shared CLI home: it also contains settings and history.
+        let command = binary.to_string_lossy();
+        let mut cmd = Command::new(command.as_ref());
+        cmd.args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        prepare_child(&mut cmd, &command);
+        apply_provider_account(
+            &app,
+            &mut cmd,
+            Some(&HarnessAccount {
+                provider: provider.clone(),
+                id: account_id.clone(),
+            }),
+        )?;
+        if let Some(home) = crate::dirs_home() {
+            cmd.current_dir(home);
+        }
+        let output = exec_command_output(cmd, &command, Duration::from_secs(30))?;
+        return if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!("Could not sign out of the {provider} CLI profile"))
+        };
+    }
     let dir = provider_account_path(&app, &provider, &account_id)?;
     host.kill_account(&provider, &account_id);
 
@@ -1185,16 +1235,53 @@ pub async fn harness_write(
     let live = host
         .get(&session_id)
         .ok_or_else(|| "Harness process is not running".to_string())?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let pid = live.pid;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        write_child_with_deadline(live, line, Duration::from_secs(12))
+    })
+    .await
+    .map_err(|e| format!("Harness write task failed: {e}"))?;
+    if result.is_err() {
+        // An old writer must not remove a replacement generation.
+        host.remove_if_pid(&session_id, pid);
+    }
+    result
+}
+
+fn write_child_with_deadline(
+    live: Arc<LiveChild>,
+    line: String,
+    timeout: Duration,
+) -> Result<(), String> {
+    let pid = live.pid;
+    let bytes = line.len();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
         let mut stdin = live.stdin.lock().unwrap_or_else(|e| e.into_inner());
-        stdin
+        let result = stdin
             .write_all(line.as_bytes())
             .and_then(|_| stdin.write_all(b"\n"))
             .and_then(|_| stdin.flush())
-            .map_err(|e| format!("Failed to write to harness: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Harness write task failed: {e}"))?
+            .map_err(|e| format!("Failed to write to harness (pid {pid}, {bytes} bytes): {e}"));
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(result) => {
+            if result.is_err() {
+                terminate(pid);
+            }
+            result
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Closing the JS promise does not cancel a blocked pipe write. Kill
+            // this exact process group to release its stdin mutex and writer.
+            terminate(pid);
+            Err(format!("Harness stdin write timed out after {} ms (pid {pid}, {bytes} bytes); process stopped", timeout.as_millis()))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(format!("Harness writer exited (pid {pid})"))
+        }
+    }
 }
 
 /// `async` dispatch keeps kill executable while a sibling `harness_write` is
@@ -1686,6 +1773,14 @@ pub(crate) fn exec_output(
         }
     }
 
+    exec_command_output(cmd, command, timeout)
+}
+
+fn exec_command_output(
+    mut cmd: Command,
+    command: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
     let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
@@ -1800,7 +1895,11 @@ fn run_shell_command_sync(
     }
     Ok(ShellCommandOutput {
         output: text,
-        exit_code: if timed_out { None } else { output.status.code() },
+        exit_code: if timed_out {
+            None
+        } else {
+            output.status.code()
+        },
         timed_out,
     })
 }
@@ -3605,6 +3704,33 @@ mod tests {
         assert!(writer.is_finished(), "blocked write survived the kill");
         let _ = writer.join();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn write_deadline_stops_a_child_that_does_not_read_stdin() {
+        let (live, mut child) = live_child();
+        let retained = Arc::clone(&live);
+        let started = Instant::now();
+        let error = write_child_with_deadline(
+            live,
+            "x".repeat(2 * 1024 * 1024),
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(error.contains("stdin write timed out"));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        let _ = child.wait();
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            if retained.stdin.try_lock().is_ok() {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "timed out writer retained the stdin mutex"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

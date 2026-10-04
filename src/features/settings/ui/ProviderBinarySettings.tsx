@@ -78,11 +78,14 @@ export function ProviderBinaryControl({
     HarnessBinaryInspection & { overridden: boolean }
   >();
   const [working, setWorking] = useState(false);
+  const inspectionBusy = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [revealError, setRevealError] = useState<string | null>(null);
 
   const inspect = useCallback(
     async (binaryPath?: string | null) => {
+      if (inspectionBusy.current) return null;
+      inspectionBusy.current = true;
       setWorking(true);
       setInspection(undefined);
       setError(null);
@@ -100,6 +103,7 @@ export function ProviderBinaryControl({
         setError(message);
         return null;
       } finally {
+        inspectionBusy.current = false;
         setWorking(false);
       }
     },
@@ -289,7 +293,7 @@ export function ProviderBinaryControl({
                   </SecondaryButton>
                 ) : null}
                 <SecondaryButton type="submit" disabled={working}>
-                  Save path
+                  {working ? "Checking path…" : "Save path"}
                 </SecondaryButton>
               </div>
             </form>

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::dirs_home;
 use crate::fs::expand_home;
@@ -566,6 +566,367 @@ fn slug_name(raw: &str) -> String {
     out
 }
 
+// ---- Copying a skill between machines -------------------------------------
+// `skill_export` / `skill_import` have the same names, arguments and results as
+// the host's workspace commands (host/skills.ts), so one UI call works on
+// either machine.
+
+const MAX_TRANSFER_FILES: usize = 200;
+const MAX_TRANSFER_FILE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_TRANSFER_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+const MAX_TRANSFER_PATH_LEN: usize = 240;
+const MAX_TRANSFER_DEPTH: usize = 16;
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SkillFile {
+    /// Relative, `/`-separated.
+    pub path: String,
+    /// Base64 of the file's bytes.
+    pub data: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SkillBundle {
+    pub name: String,
+    pub files: Vec<SkillFile>,
+}
+
+/// Every regular file of one listed skill's folder. Only folders that
+/// `list_skills` itself returns for this project can be read.
+#[tauri::command(async)]
+pub fn skill_export(path: String, cwd: String) -> Result<SkillBundle, String> {
+    let project = (!cwd.trim().is_empty()).then(|| expand_home(&cwd));
+    let home = dirs_home().map(PathBuf::from);
+    skill_export_from(&path, project.as_deref(), home.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn skill_delete(path: String, cwd: String) -> Result<(), String> {
+    let project = (!cwd.trim().is_empty()).then(|| expand_home(&cwd));
+    let home = dirs_home().map(PathBuf::from);
+    skill_delete_from(&path, project.as_deref(), home.as_deref())
+}
+
+pub(crate) fn skill_delete_from(
+    path: &str,
+    project: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<(), String> {
+    let requested = expand_home(path);
+    let listed = list_skills_from(project, home, None)
+        .into_iter()
+        .find(|skill| {
+            normalize_path_for_compare(&skill.path)
+                == normalize_path_for_compare(&requested.to_string_lossy())
+        })
+        .ok_or_else(|| "That skill is not one of the skills found on this machine.".to_string())?;
+    let file = Path::new(&listed.path);
+    if listed.name.contains(':')
+        || file.components().any(|part| {
+            let name = part.as_os_str().to_string_lossy();
+            name.eq_ignore_ascii_case(".system") || name.eq_ignore_ascii_case("plugins")
+        })
+    {
+        return Err(
+            "System and plugin skills are managed by their provider and cannot be deleted here."
+                .into(),
+        );
+    }
+    let dir = file.parent().ok_or("Could not find the skill folder.")?;
+    let root = dir.parent().ok_or("Could not find the skills root.")?;
+    let inspect = |path| {
+        std::fs::symlink_metadata(path).map_err(|e| format!("Could not inspect the skill: {e}"))
+    };
+    for ancestor in dir.ancestors() {
+        if inspect(ancestor)?.file_type().is_symlink() {
+            return Err("Linked skill folders cannot be deleted here.".into());
+        }
+    }
+    let real_root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let real_dir = std::fs::canonicalize(dir).map_err(|e| e.to_string())?;
+    if inspect(dir)?.file_type().is_symlink()
+        || inspect(file)?.file_type().is_symlink()
+        || real_dir != real_root.join(dir.file_name().ok_or("Invalid skill folder.")?)
+    {
+        return Err("Linked skill folders cannot be deleted here.".into());
+    }
+    std::fs::remove_dir_all(dir).map_err(|e| format!("Could not delete the skill: {e}"))
+}
+
+/// Writes a skill to `~/.agents/skills/<name>` and returns its SKILL.md path.
+/// Fails with a `SKILL_EXISTS:` message when it is already there, unless
+/// `overwrite`. Any `cwd` argument is only used to route the call.
+#[tauri::command(async)]
+pub fn skill_import(
+    name: String,
+    files: Vec<SkillFile>,
+    overwrite: Option<bool>,
+) -> Result<String, String> {
+    let home = dirs_home()
+        .map(PathBuf::from)
+        .ok_or_else(|| "Could not find the home folder.".to_string())?;
+    skill_import_into(&home, &name, &files, overwrite == Some(true))
+}
+
+fn same_file_for_compare(a: &Path, b: &Path) -> bool {
+    let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) else {
+        return false;
+    };
+    normalize_path_for_compare(&a.to_string_lossy())
+        == normalize_path_for_compare(&b.to_string_lossy())
+}
+
+pub(crate) fn skill_export_from(
+    path: &str,
+    project: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<SkillBundle, String> {
+    let requested = expand_home(path);
+    let listed = list_skills_from(project, home, None)
+        .into_iter()
+        .find(|skill| same_file_for_compare(Path::new(&skill.path), &requested))
+        .ok_or_else(|| "That skill is not one of the skills found on this machine.".to_string())?;
+    if !is_valid_skill_name(&listed.name) {
+        return Err(format!(
+            "{} cannot be copied: plugin skills are managed by their plugin.",
+            listed.name
+        ));
+    }
+    // Resolve first so a skill folder that is itself a link is read in place.
+    let dir = std::fs::canonicalize(&requested)
+        .map_err(|e| format!("Could not read the skill: {e}"))?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Could not find the skill folder.".to_string())?;
+    let mut files = Vec::new();
+    let mut total = 0usize;
+    collect_skill_files(&dir, "", 0, &mut files, &mut total)?;
+    Ok(SkillBundle {
+        name: listed.name,
+        files,
+    })
+}
+
+fn collect_skill_files(
+    dir: &Path,
+    rel: &str,
+    depth: usize,
+    out: &mut Vec<SkillFile>,
+    total: &mut usize,
+) -> Result<(), String> {
+    use base64::Engine as _;
+    if depth > MAX_TRANSFER_DEPTH {
+        return Err(format!(
+            "This skill has folders nested deeper than {MAX_TRANSFER_DEPTH} levels."
+        ));
+    }
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Could not read the skill folder: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Could not read the skill folder: {e}"))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            return Err(format!(
+                "A file name in this skill is not valid text: {}",
+                file_name.to_string_lossy()
+            ));
+        };
+        if name == ".DS_Store" {
+            continue;
+        }
+        let full = entry.path();
+        let meta =
+            std::fs::symlink_metadata(&full).map_err(|e| format!("Could not read {name}: {e}"))?;
+        // Links could lead out of the skill folder; they are not copied.
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let rel_path = if rel.is_empty() {
+            name.to_string()
+        } else {
+            format!("{rel}/{name}")
+        };
+        if meta.is_dir() {
+            collect_skill_files(&full, &rel_path, depth + 1, out, total)?;
+        } else if meta.is_file() {
+            validate_transfer_path(&rel_path)?;
+            if out.len() >= MAX_TRANSFER_FILES {
+                return Err(format!(
+                    "This skill has more than {MAX_TRANSFER_FILES} files, which is the most that can be copied."
+                ));
+            }
+            if meta.len() > MAX_TRANSFER_FILE_BYTES as u64 {
+                return Err(too_large_file(&rel_path));
+            }
+            let bytes =
+                std::fs::read(&full).map_err(|e| format!("Could not read {rel_path}: {e}"))?;
+            if bytes.len() > MAX_TRANSFER_FILE_BYTES {
+                return Err(too_large_file(&rel_path));
+            }
+            *total += bytes.len();
+            if *total > MAX_TRANSFER_TOTAL_BYTES {
+                return Err(too_large_total());
+            }
+            out.push(SkillFile {
+                path: rel_path,
+                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn too_large_file(path: &str) -> String {
+    format!("{path} is larger than 2 MiB, which is the most one file can be when copying a skill.")
+}
+
+fn too_large_total() -> String {
+    "This skill is more than 8 MiB in total, which is the most that can be copied.".to_string()
+}
+
+const WINDOWS_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// A relative, `/`-separated path that stays inside the skill folder on every
+/// platform (the same rules as host/skills.ts).
+fn validate_transfer_path(path: &str) -> Result<(), String> {
+    let bad = |why: &str| Err(format!("Cannot copy file \"{path}\": {why}."));
+    if path.is_empty() || path.len() > MAX_TRANSFER_PATH_LEN {
+        return bad("its path is empty or too long");
+    }
+    if path.starts_with('/') {
+        return bad("its path is not relative");
+    }
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return bad("its path has an empty, \".\" or \"..\" part");
+        }
+        if segment.len() > 255 {
+            return bad("a name in its path is too long");
+        }
+        if segment
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+        {
+            return bad("its name has a character that is not allowed");
+        }
+        if segment.ends_with('.') || segment.ends_with(' ') {
+            return bad("a name in its path ends with a dot or space");
+        }
+        let stem = segment.split('.').next().unwrap_or("").to_ascii_uppercase();
+        if WINDOWS_DEVICE_NAMES.contains(&stem.as_str()) {
+            return bad("its name is reserved on Windows");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn skill_import_into(
+    home: &Path,
+    name: &str,
+    files: &[SkillFile],
+    overwrite: bool,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    if !is_valid_skill_name(name) {
+        return Err(
+            "Use a lowercase name with letters, numbers, and single hyphens (at most 64 characters)."
+                .to_string(),
+        );
+    }
+    if files.len() > MAX_TRANSFER_FILES {
+        return Err(format!(
+            "This skill has more than {MAX_TRANSFER_FILES} files, which is the most that can be copied."
+        ));
+    }
+    let mut decoded: Vec<(&str, Vec<u8>)> = Vec::with_capacity(files.len());
+    let mut seen = HashSet::new();
+    let mut total = 0usize;
+    for file in files {
+        validate_transfer_path(&file.path)?;
+        if !seen.insert(file.path.to_lowercase()) {
+            return Err(format!("The file \"{}\" appears twice.", file.path));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&file.data)
+            .map_err(|_| format!("The file \"{}\" is not valid data.", file.path))?;
+        if bytes.len() > MAX_TRANSFER_FILE_BYTES {
+            return Err(too_large_file(&file.path));
+        }
+        total += bytes.len();
+        if total > MAX_TRANSFER_TOTAL_BYTES {
+            return Err(too_large_total());
+        }
+        decoded.push((&file.path, bytes));
+    }
+    let main = ["SKILL.md", "skill.md"]
+        .into_iter()
+        .find(|candidate| decoded.iter().any(|(path, _)| path == candidate))
+        .ok_or_else(|| "A skill needs a SKILL.md file at its top level.".to_string())?;
+
+    let root = home.join(".agents/skills");
+    std::fs::create_dir_all(&root)
+        .map_err(|e| format!("Could not create {}: {e}", root.display()))?;
+    let dest = root.join(name);
+    let exists = std::fs::symlink_metadata(&dest).is_ok();
+    if exists && !overwrite {
+        return Err(format!(
+            "SKILL_EXISTS: A skill named {name} already exists."
+        ));
+    }
+
+    // Dot-prefixed siblings are never listed as skills.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tag = format!("{}-{stamp}", std::process::id());
+    let staging = root.join(format!(".{name}.import-{tag}"));
+    let write_all = || -> Result<(), String> {
+        std::fs::create_dir(&staging)
+            .map_err(|e| format!("Could not create {}: {e}", staging.display()))?;
+        for (path, bytes) in &decoded {
+            let target = staging.join(path);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Could not create a folder for {path}: {e}"))?;
+            }
+            std::fs::write(&target, bytes).map_err(|e| format!("Could not write {path}: {e}"))?;
+        }
+        Ok(())
+    };
+    if let Err(error) = write_all() {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+
+    if exists {
+        let old = root.join(format!(".{name}.old-{tag}"));
+        if let Err(e) = std::fs::rename(&dest, &old) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(format!("Could not replace the existing skill: {e}"));
+        }
+        if let Err(e) = std::fs::rename(&staging, &dest) {
+            let _ = std::fs::rename(&old, &dest);
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(format!("Could not replace the existing skill: {e}"));
+        }
+        let _ = std::fs::remove_dir_all(&old);
+    } else if let Err(e) = std::fs::rename(&staging, &dest) {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(if std::fs::symlink_metadata(&dest).is_ok() {
+            format!("SKILL_EXISTS: A skill named {name} already exists.")
+        } else {
+            format!("Could not save the skill: {e}")
+        });
+    }
+    Ok(crate::fs::path_to_js(&dest.join(main)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -605,6 +966,87 @@ mod tests {
         let dir = root.join(folder);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("SKILL.md"), body).unwrap();
+    }
+
+    #[test]
+    fn delete_skill_removes_supporting_files_and_preserves_other_skills() {
+        let project = tmp("delete-project");
+        let home = tmp("delete-home");
+        let root = project.0.join(".agents/skills");
+        write_skill(&root, "tool", "# tool");
+        write_skill(&root, "keep", "# keep");
+        write_skill(&home.0.join(".agents/skills"), "tool", "# fallback");
+        std::fs::create_dir_all(root.join("tool/scripts")).unwrap();
+        std::fs::write(root.join("tool/scripts/run.sh"), "support").unwrap();
+        skill_delete_from(
+            &root.join("tool/SKILL.md").to_string_lossy(),
+            Some(&project.0),
+            Some(&home.0),
+        )
+        .unwrap();
+        assert!(!root.join("tool").exists());
+        assert!(root.join("keep/SKILL.md").exists());
+        assert_eq!(
+            list_skills_from(Some(&project.0), Some(&home.0), None)
+                .iter()
+                .find(|skill| skill.name == "tool")
+                .unwrap()
+                .scope,
+            "user"
+        );
+    }
+
+    #[test]
+    fn delete_skill_rejects_unlisted_and_provider_managed_paths() {
+        let home = tmp("delete-protected");
+        let root = home.0.join(".codex/skills/.system");
+        write_skill(&root, "tool", "# system");
+        std::fs::write(home.0.join("SKILL.md"), "# unrelated").unwrap();
+        assert!(skill_delete_from(
+            &home.0.join("SKILL.md").to_string_lossy(),
+            None,
+            Some(&home.0)
+        )
+        .is_err());
+        assert!(skill_delete_from(
+            &root.join("tool/SKILL.md").to_string_lossy(),
+            None,
+            Some(&home.0)
+        )
+        .unwrap_err()
+        .contains("managed by their provider"));
+        assert!(root.join("tool/SKILL.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_skill_refuses_linked_folders_and_documents() {
+        let home = tmp("delete-links");
+        let outside = tmp("delete-target");
+        let root = home.0.join(".agents/skills");
+        std::fs::create_dir_all(&root).unwrap();
+        write_skill(&outside.0, "tool", "# target");
+        std::os::unix::fs::symlink(outside.0.join("tool"), root.join("tool")).unwrap();
+        assert!(skill_delete_from(
+            &root.join("tool/SKILL.md").to_string_lossy(),
+            None,
+            Some(&home.0)
+        )
+        .unwrap_err()
+        .contains("Linked"));
+        std::fs::create_dir(root.join("document-link")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.0.join("tool/SKILL.md"),
+            root.join("document-link/SKILL.md"),
+        )
+        .unwrap();
+        assert!(skill_delete_from(
+            &root.join("document-link/SKILL.md").to_string_lossy(),
+            None,
+            Some(&home.0)
+        )
+        .is_err());
+        assert!(outside.0.join("tool/SKILL.md").exists());
     }
 
     fn write_plugin_setting(root: &Path, file: &str, plugin_id: &str, enabled: bool) {
@@ -978,7 +1420,11 @@ mod tests {
     fn without_a_project_only_this_computers_own_skills_are_listed() {
         let project = tmp("no-project-skills-project");
         let home = tmp("no-project-skills-home");
-        write_skill(&project.0.join(".agents/skills"), "in-project", "# in project");
+        write_skill(
+            &project.0.join(".agents/skills"),
+            "in-project",
+            "# in project",
+        );
         write_skill(&home.0.join(".agents/skills"), "personal", "# personal");
         let skills = list_skills_from(None, Some(&home.0), None);
         let names: Vec<_> = skills.iter().map(|skill| skill.name.as_str()).collect();
@@ -1170,5 +1616,285 @@ description: Make images
             (imagegen.source.as_str(), imagegen.scope.as_str()),
             ("codex", "user")
         );
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    }
+
+    fn file(path: &str, bytes: &[u8]) -> SkillFile {
+        SkillFile {
+            path: path.to_string(),
+            data: b64(bytes),
+        }
+    }
+
+    fn skill_md_in(home: &Path, folder: &str) -> String {
+        crate::fs::path_to_js(&home.join(".agents/skills").join(folder).join("SKILL.md"))
+    }
+
+    #[test]
+    fn export_returns_every_file_with_relative_paths() {
+        let project = tmp("exp-proj");
+        let home = tmp("exp-home");
+        let root = home.0.join(".agents/skills");
+        write_skill(&root, "tool", "---\nname: tool\n---\nbody");
+        std::fs::create_dir_all(root.join("tool/scripts/deep")).unwrap();
+        std::fs::write(root.join("tool/scripts/run.sh"), b"echo hi").unwrap();
+        std::fs::write(root.join("tool/scripts/deep/data.bin"), [0u8, 255, 7]).unwrap();
+        std::fs::write(root.join("tool/.DS_Store"), b"junk").unwrap();
+
+        let bundle = skill_export_from(
+            &skill_md_in(&home.0, "tool"),
+            Some(&project.0),
+            Some(&home.0),
+        )
+        .unwrap();
+        assert_eq!(bundle.name, "tool");
+        let paths: Vec<_> = bundle.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["SKILL.md", "scripts/deep/data.bin", "scripts/run.sh"]
+        );
+        let data = bundle
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("data.bin"))
+            .unwrap();
+        assert_eq!(data.data, b64(&[0u8, 255, 7]));
+    }
+
+    #[test]
+    fn export_refuses_paths_that_are_not_listed_skills() {
+        let project = tmp("exp-ref-proj");
+        let home = tmp("exp-ref-home");
+        std::fs::write(home.0.join("secret.md"), "x").unwrap();
+        let stray = project.0.join("notes");
+        write_skill(&stray, "idea", "# idea");
+        for path in [
+            crate::fs::path_to_js(&home.0.join("secret.md")),
+            crate::fs::path_to_js(&stray.join("idea/SKILL.md")),
+        ] {
+            let error = skill_export_from(&path, Some(&project.0), Some(&home.0)).unwrap_err();
+            assert!(error.contains("not one of the skills"), "{error}");
+        }
+    }
+
+    #[test]
+    fn export_without_a_project_covers_personal_skills_only() {
+        let project = tmp("exp-nop-proj");
+        let home = tmp("exp-nop-home");
+        write_skill(&home.0.join(".agents/skills"), "mine", "# mine");
+        write_skill(&project.0.join(".agents/skills"), "theirs", "# theirs");
+        let mine = skill_md_in(&home.0, "mine");
+        assert_eq!(
+            skill_export_from(&mine, None, Some(&home.0)).unwrap().name,
+            "mine"
+        );
+        let theirs = skill_md_in(&project.0, "theirs");
+        let error = skill_export_from(&theirs, None, Some(&home.0)).unwrap_err();
+        assert!(error.contains("not one of the skills"), "{error}");
+        assert!(skill_export_from(&theirs, Some(&project.0), Some(&home.0)).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_does_not_follow_links_out_of_the_skill_folder() {
+        let project = tmp("exp-link-proj");
+        let home = tmp("exp-link-home");
+        let outside = tmp("exp-link-outside");
+        std::fs::write(outside.0.join("secret.txt"), "secret").unwrap();
+        let root = home.0.join(".agents/skills");
+        write_skill(&root, "linked", "# linked");
+        std::os::unix::fs::symlink(outside.0.join("secret.txt"), root.join("linked/leak.txt"))
+            .unwrap();
+        std::os::unix::fs::symlink(&outside.0, root.join("linked/dir")).unwrap();
+        let bundle = skill_export_from(
+            &skill_md_in(&home.0, "linked"),
+            Some(&project.0),
+            Some(&home.0),
+        )
+        .unwrap();
+        let paths: Vec<_> = bundle.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["SKILL.md"]);
+    }
+
+    #[test]
+    fn export_enforces_count_and_size_limits() {
+        let project = tmp("exp-lim-proj");
+        let home = tmp("exp-lim-home");
+        let root = home.0.join(".agents/skills");
+        let export = |folder: &str| {
+            skill_export_from(
+                &skill_md_in(&home.0, folder),
+                Some(&project.0),
+                Some(&home.0),
+            )
+        };
+
+        write_skill(&root, "many", "# many");
+        for i in 0..200 {
+            std::fs::write(root.join(format!("many/f{i:03}.txt")), "x").unwrap();
+        }
+        assert!(export("many").unwrap_err().contains("more than 200 files"));
+
+        write_skill(&root, "big", "# big");
+        std::fs::write(root.join("big/blob.bin"), vec![1u8; 2 * 1024 * 1024 + 1]).unwrap();
+        assert!(export("big").unwrap_err().contains("larger than 2 MiB"));
+
+        write_skill(&root, "huge", "# huge");
+        for i in 0..5 {
+            std::fs::write(
+                root.join(format!("huge/p{i}.bin")),
+                vec![1u8; 2 * 1024 * 1024],
+            )
+            .unwrap();
+        }
+        assert!(export("huge").unwrap_err().contains("8 MiB in total"));
+    }
+
+    #[test]
+    fn import_writes_under_the_personal_agents_folder_and_round_trips() {
+        let project = tmp("imp-proj");
+        let source = tmp("imp-src");
+        let target = tmp("imp-dst");
+        let root = source.0.join(".agents/skills");
+        write_skill(&root, "tool", "---\nname: tool\n---\nbody");
+        std::fs::create_dir_all(root.join("tool/refs")).unwrap();
+        let blob: Vec<u8> = (0..=255u8).collect();
+        std::fs::write(root.join("tool/refs/blob.bin"), &blob).unwrap();
+        let bundle = skill_export_from(
+            &skill_md_in(&source.0, "tool"),
+            Some(&project.0),
+            Some(&source.0),
+        )
+        .unwrap();
+
+        let written = skill_import_into(&target.0, &bundle.name, &bundle.files, false).unwrap();
+        assert_eq!(written, skill_md_in(&target.0, "tool"));
+        let dest = target.0.join(".agents/skills/tool");
+        assert_eq!(std::fs::read(dest.join("refs/blob.bin")).unwrap(), blob);
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "---\nname: tool\n---\nbody"
+        );
+        let listed = list_skills_from(None, Some(&target.0), None);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, written);
+    }
+
+    #[test]
+    fn import_rejects_bad_names_paths_and_missing_skill_md() {
+        let home = tmp("imp-bad");
+        let ok = file("SKILL.md", b"# x");
+        let import =
+            |name: &str, files: &[SkillFile]| skill_import_into(&home.0, name, files, false);
+        for name in ["", "Bad", "a--b", "-a", "a/b", "..", &"a".repeat(65)] {
+            assert!(import(name, &[ok.clone()]).is_err(), "name {name:?}");
+        }
+        for path in [
+            "../evil.md",
+            "a/../../evil.md",
+            "/abs.md",
+            "C:/abs.md",
+            "C:evil.md",
+            "a//b.md",
+            "./a.md",
+            "a\\b.md",
+            "nul\0.md",
+            "",
+            "a/",
+            "CON.txt",
+        ] {
+            let result = import("tool", &[ok.clone(), file(path, b"x")]);
+            assert!(result.is_err(), "path {path:?}");
+        }
+        assert!(import("tool", &[file("docs/SKILL.md", b"x")])
+            .unwrap_err()
+            .contains("top level"));
+        let dup = import(
+            "tool",
+            &[ok.clone(), file("a.md", b"1"), file("A.md", b"2")],
+        );
+        assert!(dup.is_err());
+        let invalid = SkillFile {
+            path: "SKILL.md".into(),
+            data: "***".into(),
+        };
+        assert!(import("tool", &[invalid]).is_err());
+        assert!(!home.0.join(".agents/skills/tool").exists());
+        assert!(!home.0.join("evil.md").exists());
+    }
+
+    #[test]
+    fn import_enforces_limits_on_decoded_bytes() {
+        let home = tmp("imp-lim");
+        let ok = file("SKILL.md", b"# x");
+        let mut many = vec![ok.clone()];
+        many.extend((0..200).map(|i| file(&format!("f{i}.txt"), b"x")));
+        assert!(skill_import_into(&home.0, "tool", &many, false)
+            .unwrap_err()
+            .contains("more than 200 files"));
+        let big = file("blob.bin", &vec![1u8; 2 * 1024 * 1024 + 1]);
+        assert!(skill_import_into(&home.0, "tool", &[ok.clone(), big], false)
+            .unwrap_err()
+            .contains("2 MiB"));
+        let mut all = vec![ok];
+        all.extend((0..5).map(|i| file(&format!("p{i}.bin"), &vec![1u8; 2 * 1024 * 1024])));
+        assert!(skill_import_into(&home.0, "tool", &all, false)
+            .unwrap_err()
+            .contains("8 MiB in total"));
+    }
+
+    #[test]
+    fn import_refuses_an_existing_skill_unless_overwriting_and_swaps_cleanly() {
+        let home = tmp("imp-over");
+        let first = [file("SKILL.md", b"# one"), file("old.txt", b"old")];
+        skill_import_into(&home.0, "tool", &first, false).unwrap();
+
+        let second = [file("SKILL.md", b"# two"), file("new.txt", b"new")];
+        let error = skill_import_into(&home.0, "tool", &second, false).unwrap_err();
+        assert!(error.starts_with("SKILL_EXISTS:"), "{error}");
+        let dest = home.0.join(".agents/skills/tool");
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "# one"
+        );
+
+        skill_import_into(&home.0, "tool", &second, true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "# two"
+        );
+        assert!(dest.join("new.txt").exists());
+        assert!(!dest.join("old.txt").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(home.0.join(".agents/skills"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers, ["tool"]);
+    }
+
+    #[test]
+    fn a_failed_import_leaves_the_existing_skill_untouched() {
+        let home = tmp("imp-fail");
+        skill_import_into(&home.0, "tool", &[file("SKILL.md", b"# one")], false).unwrap();
+        // A file and a folder with the same name cannot both be written.
+        let broken = [
+            file("SKILL.md", b"# two"),
+            file("a", b"file"),
+            file("a/b.txt", b"nested"),
+        ];
+        assert!(skill_import_into(&home.0, "tool", &broken, true).is_err());
+        let dest = home.0.join(".agents/skills/tool");
+        assert_eq!(
+            std::fs::read_to_string(dest.join("SKILL.md")).unwrap(),
+            "# one"
+        );
+        let entries = std::fs::read_dir(home.0.join(".agents/skills"))
+            .unwrap()
+            .count();
+        assert_eq!(entries, 1);
     }
 }

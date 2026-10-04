@@ -44,7 +44,8 @@ const extra: ProjectFile = {
 };
 
 vi.mock("../../../platform/tauri/fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../platform/tauri/fs")>();
+  const actual =
+    await importOriginal<typeof import("../../../platform/tauri/fs")>();
   return {
     ...actual,
     listProjectFiles: vi.fn(async () => files),
@@ -88,14 +89,18 @@ describe("resolveOpenablePath", () => {
   });
 
   it("matches a relative project path", async () => {
-    const resolved = await resolveOpenablePath(cwd, "apps/desktop/src/main.tsx");
+    const resolved = await resolveOpenablePath(
+      cwd,
+      "apps/desktop/src/main.tsx",
+    );
     expect(resolved).toBe(files[2].path);
   });
 
   it("still opens a direct file when the optional project index is unavailable", async () => {
     list.mockRejectedValue(new Error("Project scan unavailable"));
-    await expect(resolveOpenablePath(cwd, "apps/desktop/src/main.tsx"))
-      .resolves.toBe(files[2].path);
+    await expect(
+      resolveOpenablePath(cwd, "apps/desktop/src/main.tsx"),
+    ).resolves.toBe(files[2].path);
   });
 
   it("finds a generated file the index leaves out in an ignored folder", async () => {
@@ -116,7 +121,8 @@ describe("resolveOpenablePath", () => {
         ];
       if (path === `${cwd}/.artifacts`)
         return [entry(`${cwd}/.artifacts/reports`, true, false)];
-      if (path === `${cwd}/.artifacts/reports`) return [entry(pdf, false, false)];
+      if (path === `${cwd}/.artifacts/reports`)
+        return [entry(pdf, false, false)];
       throw new Error(`unexpected listing of ${path}`);
     });
     await expect(resolveOpenablePath(cwd, "summary.pdf")).resolves.toBe(pdf);
@@ -143,7 +149,9 @@ describe("resolveOpenablePath", () => {
         return [entry(png, false, false)];
       throw new Error(`unexpected listing of ${path}`);
     });
-    await expect(resolveOpenablePath(remote, `${remote}/ui.png`)).resolves.toBe(png);
+    await expect(resolveOpenablePath(remote, `${remote}/ui.png`)).resolves.toBe(
+      png,
+    );
     // The session's folder need not be the project root the path sits under.
     await expect(
       resolveOpenablePath(`${remote}/Screenshots`, `${remote}/ui.png`),
@@ -159,7 +167,9 @@ describe("resolveOpenablePath", () => {
     await loadProjectFiles(cwd);
     list.mockResolvedValue([...files, created]);
     stat.mockResolvedValue([{ path: `${cwd}/new.ts`, mtimeMs: null }]);
-    await expect(resolveOpenablePath(cwd, "new.ts")).resolves.toBe(created.path);
+    await expect(resolveOpenablePath(cwd, "new.ts")).resolves.toBe(
+      created.path,
+    );
   });
 
   it("keeps an unindexed path that exists", async () => {
@@ -169,6 +179,20 @@ describe("resolveOpenablePath", () => {
       ignored,
     );
     expect(dir).not.toHaveBeenCalled();
+  });
+
+  it("keeps an existing absolute path ahead of a matching indexed basename", async () => {
+    const path = "/outside/My Project/App.tsx";
+    stat.mockResolvedValue([{ path, mtimeMs: 5 }]);
+    await expect(resolveOpenablePath(cwd, path)).resolves.toBe(path);
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("keeps an existing directory instead of resolving a same-named file", async () => {
+    const path = `${cwd}/App.tsx`;
+    stat.mockResolvedValue([{ path, mtimeMs: null, isDir: true }]);
+    await expect(resolveOpenablePath(cwd, path)).resolves.toBe(path);
+    expect(list).not.toHaveBeenCalled();
   });
 
   it("preserves an exact path even when it is absent from the project index", async () => {
@@ -313,7 +337,11 @@ describe("rankProjectFiles", () => {
   }
 
   it("returns the same ordered list as a full sort, for several limits", () => {
-    const recents = [synthetic[5].path, synthetic[300].path, synthetic[17].path];
+    const recents = [
+      synthetic[5].path,
+      synthetic[300].path,
+      synthetic[17].path,
+    ];
     for (const query of ["ts", "main", "src/app", "idx", "zzz"]) {
       for (const limit of [1, 7, 80, 1000]) {
         expect(rankProjectFiles(synthetic, query, recents, limit)).toEqual(

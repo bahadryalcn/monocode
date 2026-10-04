@@ -107,7 +107,10 @@ function setup(verifyTimeoutMs?: number) {
     clock.now += 1;
     const started = turns.length + 1;
     await tasks.tick();
-    await vi.waitFor(() => expect(turns).toHaveLength(started));
+    // Creating a real Git worktree can outlast Vitest's 1s polling budget on Windows.
+    await vi.waitFor(() => expect(turns).toHaveLength(started), {
+      timeout: process.platform === "win32" ? 10_000 : 1_000,
+    });
     return task(saved.id);
   };
   /** A minute later: settles what finished and lets its checks run. */
@@ -629,6 +632,12 @@ describe("a task on its own branch", () => {
     expect(started.branch).toMatch(/^mc\/[a-z0-9]{8}$/);
     expect(started.worktreeCwd).not.toBe(repo.cwd);
     expect(turns[0].input.cwd).toBe(started.worktreeCwd);
+    // The agent is told to stay out of the project folder.
+    const prompt = turns[0].input.text;
+    expect(prompt).toContain(`You are working in ${started.worktreeCwd}`);
+    expect(prompt).toContain(`Do not edit, commit in or switch branches in ${repo.cwd}`);
+    expect(prompt).toContain(`on the branch ${started.branch}`);
+    expect(prompt.endsWith(started.prompt)).toBe(true);
     expect(store.session(started.sessionId!).session.cwd).toBe(
       started.worktreeCwd,
     );
@@ -976,6 +985,26 @@ describe("task verification", () => {
     });
   });
 
+  it("reads a verdict followed by another short message", async () => {
+    const { reviewing, task, turns, settled, advance } = setup();
+    const verifying = await reviewing();
+    const turn = turns.at(-1)!;
+    turn.input.onEvent({
+      type: "message.delta",
+      text: "Looked at it.\nVERDICT: FAIL - The report skips Friday.",
+    });
+    turn.input.onEvent({ type: "message.completed" });
+    turn.input.onEvent({ type: "message.delta", text: "Done." });
+    turn.input.onEvent({ type: "message.completed" });
+    turn.finish();
+    await settled(verifying.reviewer!.sessionId!);
+    await advance();
+    expect(task()).toMatchObject({
+      status: "blocked",
+      error: "Review failed: The report skips Friday.",
+    });
+  });
+
   it("blocks a task whose reviewer gave no verdict", async () => {
     const { reviewing, task, finish } = setup();
     const verifying = await reviewing();
@@ -1016,5 +1045,268 @@ describe("task verification", () => {
     await settled(verifying.reviewer!.sessionId!);
     await advance();
     expect(task().status).toBe("blocked");
+  });
+});
+
+describe("merging without waiting for approval", () => {
+  const PASSING_CHECK = 'node -e "process.exit(0)"';
+
+  it(
+    "merges a task once its check command passes",
+    async () => {
+      const { review, addRepo, task } = setup();
+      const repo = addRepo("repo");
+      const merged = await review(
+        { projectId: repo.id, autoMerge: true, verifyCommand: PASSING_CHECK },
+        { "report.md": "# Report\n" },
+      );
+      expect(merged).toMatchObject({
+        status: "done",
+        merged: true,
+        autoMerged: true,
+        mergedAt: expect.any(Number),
+      });
+      expect(task().mergeError).toBeUndefined();
+      expect(readFileSync(join(repo.cwd, "report.md"), "utf8")).toBe("# Report\n");
+      expect(git(repo.cwd, "branch", "--list", "mc/*")).toBe("");
+      expect(git(repo.cwd, "rev-list", "--parents", "-1", "HEAD").split(" "))
+        .toHaveLength(3);
+    },
+    SHELL_TEST_MS,
+  );
+
+  it("merges a task once the reviewer passes it", async () => {
+    const { reviewing, finish, task, addRepo } = setup();
+    const repo = addRepo("repo");
+    const verifying = await reviewing({ projectId: repo.id, autoMerge: true });
+    await finish(
+      verifying.reviewer!.sessionId!,
+      "Looks right.\n\nVERDICT: PASS",
+    );
+    expect(task()).toMatchObject({ status: "done", autoMerged: true });
+  });
+
+  it("leaves a task the reviewer fails blocked, unmerged", async () => {
+    const { reviewing, finish, task, addRepo } = setup();
+    const repo = addRepo("repo");
+    const verifying = await reviewing({ projectId: repo.id, autoMerge: true });
+    await finish(verifying.reviewer!.sessionId!, "VERDICT: FAIL - missing");
+    expect(task().status).toBe("blocked");
+    expect(task().autoMerged).toBeUndefined();
+  });
+
+  it("keeps a task with no checks in review and says why", async () => {
+    const { tasks, review, task, addRepo } = setup();
+    const repo = addRepo("repo");
+    const reviewed = await review(
+      { projectId: repo.id, autoMerge: true },
+      { "report.md": "# Report\n" },
+    );
+    expect(reviewed.status).toBe("review");
+    expect(reviewed.mergeError).toBe(
+      "Not merged automatically: no checks configured",
+    );
+    expect(existsSync(join(repo.cwd, "report.md"))).toBe(false);
+    // The owner can still approve it.
+    await tasks.move("main", "done");
+    expect(task()).toMatchObject({ status: "done", merged: true });
+    expect(task().autoMerged).toBeUndefined();
+    expect(task().mergeError).toBeUndefined();
+  });
+
+  it(
+    "keeps a task in review with the error when the checkout is dirty",
+    async () => {
+      const { review, addRepo, task } = setup();
+      const repo = addRepo("repo");
+      writeFileSync(join(repo.cwd, "file.txt"), "edited by the owner\n");
+      const reviewed = await review(
+        { projectId: repo.id, autoMerge: true, verifyCommand: PASSING_CHECK },
+        { "report.md": "# Report\n" },
+      );
+      expect(reviewed.status).toBe("review");
+      expect(task().mergeError).toContain("uncommitted changes");
+      expect(task().autoMerged).toBeUndefined();
+      expect(readFileSync(join(repo.cwd, "file.txt"), "utf8")).toBe(
+        "edited by the owner\n",
+      );
+    },
+    SHELL_TEST_MS,
+  );
+
+  it(
+    "keeps a task in review with the error when the merge conflicts",
+    async () => {
+      const { run, finish, addRepo, task } = setup();
+      const repo = addRepo("repo");
+      const started = await run({
+        projectId: repo.id,
+        autoMerge: true,
+        verifyCommand: PASSING_CHECK,
+      });
+      writeFileSync(join(started.worktreeCwd!, "file.txt"), "from the agent\n");
+      writeFileSync(join(repo.cwd, "file.txt"), "from the owner\n");
+      git(repo.cwd, "commit", "-q", "-am", "owner");
+      const head = git(repo.cwd, "rev-parse", "HEAD");
+      await finish(started.sessionId!);
+      expect(task().status).toBe("review");
+      expect(task().mergeError).toContain("conflicts with main in file.txt");
+      expect(git(repo.cwd, "rev-parse", "HEAD")).toBe(head);
+      expect(git(repo.cwd, "status", "--porcelain")).toBe("");
+    },
+    SHELL_TEST_MS,
+  );
+
+  it(
+    "never merges a task that ran in the project folder",
+    async () => {
+      const { review } = setup();
+      const reviewed = await review({
+        autoMerge: true,
+        verifyCommand: PASSING_CHECK,
+      });
+      expect(reviewed).toMatchObject({ status: "review" });
+      expect(reviewed.autoMerged).toBeUndefined();
+      expect(reviewed.mergeError).toBeUndefined();
+    },
+    SHELL_TEST_MS,
+  );
+
+  it("saves autoMerge, drops it when an edit turns it off, and rejects other values", () => {
+    const { tasks, input } = setup();
+    expect(tasks.save(input({ autoMerge: true }))).toMatchObject({
+      autoMerge: true,
+    });
+    expect(tasks.save(input({ autoMerge: false })).autoMerge).toBeUndefined();
+    expect(tasks.save(input({ id: "other" })).autoMerge).toBeUndefined();
+    expect(() => tasks.save(input({ id: "bad", autoMerge: "yes" }))).toThrow(
+      "Invalid task options",
+    );
+  });
+});
+
+describe("host work limits", () => {
+  it("defaults to two tasks at once and no daily limit", () => {
+    const { tasks } = setup();
+    expect(tasks.limits.settings()).toEqual({
+      maxRunningTasks: MAX_RUNNING_TASKS,
+      dailyAgentMinutes: 0,
+    });
+    expect(tasks.limits.state()).toMatchObject({
+      usedMinutes: 0,
+      limitReached: false,
+    });
+  });
+
+  it("validates settings and keeps fields that were not sent", () => {
+    const { tasks } = setup();
+    for (const bad of [
+      { maxRunningTasks: 0 },
+      { maxRunningTasks: 9 },
+      { maxRunningTasks: 1.5 },
+      { maxRunningTasks: "2" },
+      { dailyAgentMinutes: -1 },
+      { dailyAgentMinutes: 1441 },
+      { dailyAgentMinutes: 2.5 },
+    ])
+      expect(() => tasks.limits.save(bad)).toThrow();
+    expect(() => tasks.limits.save(null)).toThrow("Invalid settings");
+    expect(tasks.limits.save({ maxRunningTasks: 8 })).toEqual({
+      maxRunningTasks: 8,
+      dailyAgentMinutes: 0,
+    });
+    expect(tasks.limits.save({ dailyAgentMinutes: 1440 })).toEqual({
+      maxRunningTasks: 8,
+      dailyAgentMinutes: 1440,
+    });
+  });
+
+  it("uses the saved cap on how many tasks run at once", async () => {
+    const { tasks, input, task, turns, clock, addProject } = setup();
+    for (const id of ["a", "b", "c"]) {
+      tasks.save(input({ id, projectId: addProject(id).id }));
+      clock.now += 1;
+    }
+    tasks.limits.save({ maxRunningTasks: 1 });
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(["a", "b", "c"].map((id) => task(id).status)).toEqual([
+      "running",
+      "queued",
+      "queued",
+    ]);
+    tasks.limits.save({ maxRunningTasks: 3 });
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(3));
+    expect(["a", "b", "c"].map((id) => task(id).status)).toEqual([
+      "running",
+      "running",
+      "running",
+    ]);
+  });
+
+  it("starts nothing new once the day is used up, lets running work finish, and resumes tomorrow", async () => {
+    const { tasks, input, run, task, turns, settled, clock, advance, addProject } =
+      setup();
+    tasks.limits.save({ dailyAgentMinutes: 5 });
+    const first = await run({ id: "a", projectId: addProject("a").id });
+    tasks.save(input({ id: "b", projectId: addProject("b").id }));
+    clock.now += 1;
+
+    // The run still going counts as it goes.
+    clock.now += 5 * MINUTE;
+    await tasks.tick();
+    expect(tasks.limits.state()).toMatchObject({ limitReached: true });
+    expect(tasks.limits.usedMinutes()).toBeCloseTo(5, 1);
+    expect(task("a").status).toBe("running");
+    expect(task("b").status).toBe("queued");
+    expect(turns).toHaveLength(1);
+
+    // Finishing is allowed; the next task still waits.
+    turns[0].finish();
+    await settled(first.sessionId!);
+    await advance();
+    expect(task("a").status).toBe("review");
+    expect(task("b").status).toBe("queued");
+    expect(tasks.limits.usedMinutes()).toBeCloseTo(6, 1);
+    expect(turns).toHaveLength(1);
+
+    // A new local day starts a fresh total.
+    clock.now += 24 * 60 * MINUTE;
+    expect(tasks.limits.state()).toMatchObject({
+      limitReached: false,
+      usedMinutes: 0,
+    });
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    expect(task("b").status).toBe("running");
+  });
+
+  it("keeps the total and the settings across a host restart", async () => {
+    const { tasks, store, engine, run, turns, settled, clock, advance } = setup();
+    tasks.limits.save({ maxRunningTasks: 3, dailyAgentMinutes: 120 });
+    const started = await run();
+    clock.now += 10 * MINUTE;
+    turns[0].finish();
+    await settled(started.sessionId!);
+    await advance();
+    const used = tasks.limits.usedMinutes();
+    expect(used).toBeCloseTo(11, 1);
+
+    const restarted = new HostTasks(store, engine, () => clock.now);
+    expect(restarted.limits.settings()).toEqual({
+      maxRunningTasks: 3,
+      dailyAgentMinutes: 120,
+    });
+    expect(restarted.limits.usedMinutes()).toBeCloseTo(used, 5);
+  });
+
+  it("counts the reviewer time too", async () => {
+    const { tasks, reviewing, finish, clock } = setup();
+    const verifying = await reviewing();
+    clock.now += 4 * MINUTE;
+    await finish(verifying.reviewer!.sessionId!, "VERDICT: PASS");
+    // The run took a minute, and the reviewer the minutes after it.
+    expect(tasks.limits.usedMinutes()).toBeGreaterThan(4);
   });
 });

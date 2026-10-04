@@ -29,6 +29,7 @@ export type HarnessUpdateSnapshot = {
   /** Null until this window has checked. */
   checks: HarnessVersionCheck[] | null;
   checking: boolean;
+  error?: string | null;
   runs: Partial<Record<HarnessId, HarnessUpdateRun>>;
 };
 
@@ -81,7 +82,7 @@ export function checkInstalledHarnessVersions(options?: {
       .then(() => checkInstalledHarnessVersions(options));
   }
   inflightCheck ??= (async () => {
-    setSnapshot({ checking: true });
+    setSnapshot({ checking: true, error: null });
     try {
       await probeHarnessAvailability(options);
       const checks = await checkHarnessVersions({
@@ -93,6 +94,11 @@ export function checkInstalledHarnessVersions(options?: {
       });
       setSnapshot({ checks });
       return checks;
+    } catch (error) {
+      setSnapshot({
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     } finally {
       inflightCheck = null;
       setSnapshot({ checking: false });

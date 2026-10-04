@@ -336,7 +336,7 @@ export function modelsFor(harness: HarnessId): AgentModel[] {
   const enabled =
     disabled.size === 0
       ? catalog
-      : catalog.filter((model) => !disabled.has(model.id));
+      : catalog.filter((model) => isModelEnabled(model.id));
   return (enabledByHarness[harness] = enabled.length > 0 ? enabled : catalog);
 }
 
@@ -358,13 +358,28 @@ function disabledModels(): Set<string> {
   return (disabledCache = new Set(ids));
 }
 
+function modelPreferenceKey(value: string): string {
+  return value.startsWith("claude:")
+    ? value.replace(/^claude:claude-/, "claude:").replace(/\./g, "-")
+    : value;
+}
+
 export function isModelEnabled(id: string): boolean {
-  return !disabledModels().has(id);
+  const disabled = disabledModels();
+  if (disabled.has(id)) return false;
+  // Historic and host Claude catalogs use both dotted and CLI-style versions.
+  return !id.startsWith("claude:") || ![...disabled].some(
+    (value) => modelPreferenceKey(value) === modelPreferenceKey(id),
+  );
 }
 
 export function saveModelEnabled(id: string, enabled: boolean) {
   const next = new Set(disabledModels());
-  if (enabled) next.delete(id);
+  if (enabled) {
+    for (const saved of next) {
+      if (modelPreferenceKey(saved) === modelPreferenceKey(id)) next.delete(saved);
+    }
+  }
   else next.add(id);
   try {
     localStorage.setItem(DISABLED_MODELS_KEY, JSON.stringify([...next]));

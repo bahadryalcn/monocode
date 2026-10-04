@@ -18,6 +18,26 @@ function message(patch: Partial<QueuedMessage> = {}): QueuedMessage {
 }
 
 describe("persistableQueue", () => {
+  it("restores each row's original model and effort without sharing settings", () => {
+    const modelTarget = {
+      harness: "codex" as const,
+      model: "gpt-5",
+      modelSettings: { effort: "high" },
+    };
+    const saved = persistableQueue([message({ modelTarget })]);
+    modelTarget.modelSettings.effort = "low";
+    const restored = restoreQueuedMessages(saved);
+    expect(restored[0].modelTarget?.modelSettings).toEqual({ effort: "high" });
+    expect(
+      restoreQueuedMessages([
+        {
+          ...message(),
+          modelTarget: { ...modelTarget, modelSettings: { effort: 123 } },
+        },
+      ]),
+    ).toEqual([]);
+    expect(restoreQueuedMessages([message()])).toEqual([message()]);
+  });
   it("keeps nothing for an empty queue", () => {
     expect(persistableQueue(undefined)).toBeNull();
     expect(persistableQueue([])).toBeNull();

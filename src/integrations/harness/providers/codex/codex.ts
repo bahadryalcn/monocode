@@ -5,7 +5,10 @@ import {
   parseCodexRateLimits,
 } from "../../../../features/providers/model/rateLimits";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
-import { questionPromptTitle, type UserQuestionReply } from "../../../../features/sessions/model/userQuestion";
+import {
+  questionPromptTitle,
+  type UserQuestionReply,
+} from "../../../../features/sessions/model/userQuestion";
 import {
   killChild,
   resolveCodexBinary,
@@ -32,7 +35,10 @@ import {
   type CodexApprovalKind,
 } from "./codexProtocol";
 import { JsonRpcClient, type JsonRpcId } from "../../core/jsonRpc";
-import { deleteGeneratedImages, saveGeneratedImage } from "../../../../platform/tauri/fs";
+import {
+  deleteHarnessGeneratedImages as deleteGeneratedImages,
+  saveHarnessGeneratedImage as saveGeneratedImage,
+} from "../../core/generatedImages";
 import { codexQuestions, codexQuestionResponse } from "./codexQuestions";
 import { codexMcpConfirmation } from "./codexElicitation";
 import { snapshotRemainder } from "../../core/streamText";
@@ -112,10 +118,7 @@ type Live = {
   skills: Map<string, string>;
 };
 
-function trackNotificationQueue(
-  live: Live,
-  queued: Promise<void>,
-): void {
+function trackNotificationQueue(live: Live, queued: Promise<void>): void {
   live.notificationQueue = queued;
   void queued.then(() => {
     if (live.notificationQueue === queued) live.notificationQueue = null;
@@ -164,6 +167,7 @@ export async function sendCodexTurn(input: SendTurnInput): Promise<void> {
         await runTurn(live, input);
       } catch (error) {
         if (live.cancelled) return;
+        await stopCodexSession(input.sessionId);
         throw error;
       }
     });
@@ -410,7 +414,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   if (
     existing &&
     existing.cwd === input.cwd &&
-    sameProviderAccountId(existing.providerAccountId, input.providerAccountId) &&
+    sameProviderAccountId(
+      existing.providerAccountId,
+      input.providerAccountId,
+    ) &&
     existing.controlsAgents === controlsAgents
   ) {
     existing.onEvent = input.onEvent;
@@ -422,7 +429,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     // control, so its local CLI socket matches the current policy.
     if (
       existing.cwd !== input.cwd ||
-      !sameProviderAccountId(existing.providerAccountId, input.providerAccountId)
+      !sameProviderAccountId(
+        existing.providerAccountId,
+        input.providerAccountId,
+      )
     ) {
       resumeByThread.delete(input.sessionId);
     }
@@ -465,12 +475,18 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
               }
               return handleNotification(live, method, params);
             });
-          trackNotificationQueue(live, queued.catch(() => undefined));
+          trackNotificationQueue(
+            live,
+            queued.catch(() => undefined),
+          );
           return;
         }
         const result = handleNotification(live, method, params);
         if (!result) return;
-        trackNotificationQueue(live, result.catch(() => undefined));
+        trackNotificationQueue(
+          live,
+          result.catch(() => undefined),
+        );
       },
       onRequest: (id, method, params) => {
         const live = liveRef.current;
@@ -487,6 +503,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           if (live?.muteUpdates || (live && live.turnDone !== turn)) return;
           const failure =
             error instanceof Error ? error : new Error(String(error));
+          rpc.close(failure);
           if (live?.turnFailed) {
             live.turnFailed(failure);
           } else {
@@ -498,20 +515,24 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         });
       },
     },
-    { includeJsonrpc: false, label: "codex" },
+    { includeJsonrpc: false, label: "codex", defaultRequestTimeoutMs: 60_000 },
   );
 
   watchChild(
     input.sessionId,
     (line) => rpc.pushLine(line),
-    (code) => {
-      rpc.close(new Error("Codex app-server exited"));
+    (code, reason) => {
+      const error = new Error(
+        reason ??
+          `Codex app-server exited${code == null ? "" : ` (exit code ${code})`}`,
+      );
+      rpc.close(error);
       liveByThread.delete(input.sessionId);
       const live = liveRef.current;
       if (!live?.muteUpdates) {
         (live?.onEvent ?? input.onEvent)({ type: "session.ended", code });
       }
-      live?.turnFailed?.(new Error("Codex app-server exited"));
+      live?.turnFailed?.(error);
       if (live) {
         clearServerRequests(live);
         live.turnDone = null;
@@ -569,6 +590,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
               additionalDirs: additionalDirsFor(input.sessionId),
             }),
           },
+          120_000,
         );
         threadId = opened.thread?.id ?? resume.threadId;
         didResume = true;
@@ -618,12 +640,12 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       turnDone: null,
       turnFailed: null,
       turnEndPending: false,
-       emittedAssistantByItem: new Map(),
-       emittedReasoningByItem: new Map(),
-       emittedGeneratedImages: new Set(),
-       turnGeneration: 0,
-       notificationQueue: null,
-       subagentThreads: new Map(),
+      emittedAssistantByItem: new Map(),
+      emittedReasoningByItem: new Map(),
+      emittedGeneratedImages: new Set(),
+      turnGeneration: 0,
+      notificationQueue: null,
+      subagentThreads: new Map(),
       pendingSubagent: new Map(),
       openAgentRows: new Map(),
       rateLimits: new Map(),
@@ -699,6 +721,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     live.turnDone = resolve;
     live.turnFailed = reject;
   });
+  turnPromise.catch(() => undefined);
   settlePendingTurn(live);
 
   try {
@@ -737,6 +760,7 @@ async function runCompaction(live: Live): Promise<void> {
     live.turnDone = resolve;
     live.turnFailed = reject;
   });
+  turnPromise.catch(() => undefined);
   settlePendingTurn(live);
 
   try {

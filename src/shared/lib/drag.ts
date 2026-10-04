@@ -18,18 +18,24 @@ export function emitExplorerFilePointerDrag(
 
 let dropHint: HTMLDivElement | null = null;
 
+function setDragCursor(cursor: string) {
+  document.body.style.cursor = cursor;
+  document.body.style.setProperty("--workspace-drag-cursor", cursor || "auto");
+}
+
 /** Shared pointer feedback; the badge never intercepts hit testing. */
 export function setDropFeedback(
   action: "move" | "window" | "blocked",
   pointer: { clientX: number; clientY: number },
   label?: string,
 ) {
-  document.body.style.cursor =
+  setDragCursor(
     action === "blocked"
       ? "not-allowed"
       : action === "window"
         ? "alias"
-        : "move";
+        : "move",
+  );
   if (!dropHint) {
     dropHint = document.createElement("div");
     dropHint.className = "pointer-drop-hint";
@@ -49,10 +55,11 @@ export function setDropFeedback(
 }
 
 export function setGrabbing(on: boolean) {
-  document.body.style.cursor = on ? "grabbing" : "";
+  setDragCursor(on ? "grabbing" : "");
   if (on) document.documentElement.classList.add("is-grabbing");
   else document.documentElement.classList.remove("is-grabbing");
   if (!on) {
+    document.body.style.removeProperty("--workspace-drag-cursor");
     dropHint?.remove();
     dropHint = null;
   }

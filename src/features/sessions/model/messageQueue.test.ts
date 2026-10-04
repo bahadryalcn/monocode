@@ -7,6 +7,7 @@ import {
   moveQueuedMessage,
   queuedHead,
   queuedMessageForSubmit,
+  queuedModelTarget,
   reorderQueuedMessages,
   reorderSessionQueue,
   resolveFollowUpRoute,
@@ -26,6 +27,48 @@ function chat(patch: Partial<Session> = {}): Session {
     ...patch,
   };
 }
+
+it("snapshots model settings and retains them through reordering", () => {
+  const session = chat({ model: "chosen", modelSettings: { effort: "high" } });
+  const modelTarget = queuedModelTarget(session);
+  session.modelSettings.effort = "low";
+  const queue = [queued("a"), { ...queued("b"), modelTarget }];
+  const changed = chat({
+    model: "later",
+    modelSettings: { effort: "low" },
+    queuedMessages: reorderQueuedMessages(queue, ["b", "a"]),
+  });
+  expect(queuedMessageForSubmit(changed, "b", "dispatch")?.modelTarget).toEqual(
+    {
+      harness: session.harness,
+      model: "chosen",
+      modelSettings: { effort: "high" },
+    },
+  );
+  expect(queuedMessageForSubmit(changed, "b", "steer")?.modelTarget).toEqual(modelTarget);
+  expect(queuedMessageForSubmit({ ...changed, busy: true }, "b", "steer")).toBeUndefined();
+});
+
+it("checks Steer against the running selection even after the composer changes", () => {
+  const modelTarget = queuedModelTarget(
+    chat({ model: "running", modelSettings: { effort: "high" } }),
+  );
+  const session = chat({
+    busy: true,
+    model: "later",
+    modelSettings: { effort: "low" },
+    runningModelTarget: modelTarget,
+    queuedMessages: [
+      { ...queued("a"), modelTarget },
+      {
+        ...queued("b"),
+        modelTarget: { ...modelTarget, modelSettings: { effort: "low" } },
+      },
+    ],
+  });
+  expect(queuedMessageForSubmit(session, "a", "steer")?.id).toBe("a");
+  expect(queuedMessageForSubmit(session, "b", "steer")).toBeUndefined();
+});
 
 describe("queuedHead", () => {
   it("returns the first queued follow-up", () => {
@@ -188,11 +231,15 @@ describe("resolveFollowUpRoute", () => {
     expect(
       resolveFollowUpRoute({ ...base, intent: "plan", requested: "steer" }),
     ).toBe("queue");
+    expect(resolveFollowUpRoute({ ...base, intent: "orchestrate" })).toBe(
+      "queue",
+    );
     expect(
-      resolveFollowUpRoute({ ...base, intent: "orchestrate" }),
-    ).toBe("queue");
-    expect(
-      resolveFollowUpRoute({ ...base, operatorCommand: true, requested: "steer" }),
+      resolveFollowUpRoute({
+        ...base,
+        operatorCommand: true,
+        requested: "steer",
+      }),
     ).toBe("queue");
   });
 

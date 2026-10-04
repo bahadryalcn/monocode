@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sent: string[] = [];
 let onLine: ((line: string) => void) | undefined;
+let onExit: ((code: number | null, reason?: string) => void) | undefined;
 const writeChild = vi.fn(async (_id: string, line: string) => {
   sent.push(line);
 });
@@ -19,8 +20,9 @@ vi.mock("../../core/child", () => ({
   spawnChild: async () => undefined,
   killChild: async () => undefined,
   unwatchChild: () => undefined,
-  watchChild: (_id: string, line: (l: string) => void) => {
+  watchChild: (_id: string, line: (l: string) => void, exit: typeof onExit) => {
     onLine = line;
+    onExit = exit;
   },
   writeChild,
 }));
@@ -43,7 +45,11 @@ const {
   __codexTestReset,
 } = await import("./codex");
 import type { HarnessEvent } from "../../core/types";
-import { newSession, type RuntimeMode, type TurnIntent } from "../../../../features/sessions/model/session";
+import {
+  newSession,
+  type RuntimeMode,
+  type TurnIntent,
+} from "../../../../features/sessions/model/session";
 import { applyHarnessEvent } from "../../core/apply";
 
 function parse() {
@@ -137,6 +143,45 @@ async function startTurn(
 }
 
 describe("codex live turn sequence", () => {
+  it("fails an unanswered startup instead of holding the session queue forever", async () => {
+    vi.useFakeTimers();
+    try {
+      const turn = sendCodexTurn({
+        sessionId: "unanswered",
+        cwd: "/repo",
+        model: "codex:test",
+        runtimeMode: "supervised",
+        text: "hello",
+        attachments: [],
+        onEvent: () => undefined,
+      });
+      const outcome = turn.catch((error: Error) => error.message);
+      await vi.advanceTimersByTimeAsync(60_001);
+      expect(await outcome).toContain("initialize response timed out");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not apply the startup deadline to an accepted long running turn", async () => {
+    const { turn } = await startTurn("long-running");
+    vi.useFakeTimers();
+    try {
+      let settled = false;
+      void turn.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(settled).toBe(false);
+      notify("turn/completed", {
+        threadId: "thr_1",
+        turn: { id: "turn_1", status: "completed" },
+      });
+      await turn;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   beforeEach(() => {
     sent.length = 0;
     onLine = undefined;
@@ -162,6 +207,23 @@ describe("codex live turn sequence", () => {
     await turn;
   });
 
+  it.each([
+    [
+      "Provider stdout message exceeded the 64 MiB limit; MonoCode host stopped the process.",
+    ],
+    [undefined],
+  ])(
+    "reports the process exit reason during an active turn: %s",
+    async (reason) => {
+      const { turn } = await startTurn("codex-exit-reason");
+      const failed = expect(turn).rejects.toThrow(
+        reason ?? "Codex app-server exited (exit code 1)",
+      );
+      onExit!(1, reason);
+      await failed;
+    },
+  );
+
   it("reopens a thread when app access changes its network policy", async () => {
     const first = await startTurn("codex-live", { runtimeMode: "auto" });
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
@@ -173,10 +235,12 @@ describe("codex live turn sequence", () => {
       controlsAgents: true,
       expectResume: true,
     });
-    expect(parse().find((message) => message.method === "thread/resume")?.params)
-      .toMatchObject({ sandboxPolicy: { networkAccess: true } });
-    expect(parse().find((message) => message.method === "turn/start")?.params)
-      .toMatchObject({ sandboxPolicy: { networkAccess: true } });
+    expect(
+      parse().find((message) => message.method === "thread/resume")?.params,
+    ).toMatchObject({ sandboxPolicy: { networkAccess: true } });
+    expect(
+      parse().find((message) => message.method === "turn/start")?.params,
+    ).toMatchObject({ sandboxPolicy: { networkAccess: true } });
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     await appTurn.turn;
 
@@ -185,12 +249,16 @@ describe("codex live turn sequence", () => {
       runtimeMode: "auto",
       expectResume: true,
     });
-    expect(parse().find((message) => message.method === "thread/resume")?.params)
-      .toMatchObject({ sandboxPolicy: { type: "workspaceWrite" } });
     expect(
-      (parse().find((message) => message.method === "thread/resume")?.params as {
-        sandboxPolicy: Record<string, unknown>;
-      }).sandboxPolicy,
+      parse().find((message) => message.method === "thread/resume")?.params,
+    ).toMatchObject({ sandboxPolicy: { type: "workspaceWrite" } });
+    expect(
+      (
+        parse().find((message) => message.method === "thread/resume")
+          ?.params as {
+          sandboxPolicy: Record<string, unknown>;
+        }
+      ).sandboxPolicy,
     ).not.toHaveProperty("networkAccess");
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     await ordinaryTurn.turn;
@@ -253,19 +321,26 @@ describe("codex live turn sequence", () => {
     notify("item/completed", {
       item: { id: "image_1", type: "imageGeneration", result: "aW1hZ2U=" },
     });
-    notify("item/agentMessage/delta", { itemId: "after_image", delta: "after image" });
+    notify("item/agentMessage/delta", {
+      itemId: "after_image",
+      delta: "after image",
+    });
     notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
     await Promise.resolve();
 
     expect(
       events.some(
-        (event) => event.type === "message.delta" && event.text === "after image",
+        (event) =>
+          event.type === "message.delta" && event.text === "after image",
       ),
     ).toBe(false);
     release?.();
     await turn;
     await Promise.resolve();
-    notify("item/agentMessage/delta", { itemId: "post_turn", delta: "post turn" });
+    notify("item/agentMessage/delta", {
+      itemId: "post_turn",
+      delta: "post turn",
+    });
 
     expect(
       events.some(
@@ -297,7 +372,8 @@ describe("codex live turn sequence", () => {
       "interrupt",
     );
     reply(
-      parse().find((message) => message.method === "turn/interrupt")!.id as number,
+      parse().find((message) => message.method === "turn/interrupt")!
+        .id as number,
       {},
     );
     await cancelling;
@@ -338,10 +414,13 @@ describe("codex live turn sequence", () => {
 
     expect(
       events.some(
-        (event) => event.type === "message.delta" && event.text === "after image",
+        (event) =>
+          event.type === "message.delta" && event.text === "after image",
       ),
     ).toBe(false);
-    expect(events.some((event) => event.type === "image.generated")).toBe(false);
+    expect(events.some((event) => event.type === "image.generated")).toBe(
+      false,
+    );
     expect(deleteGeneratedImages).toHaveBeenCalledWith([
       "/app-data/generated-images/image.png",
     ]);
@@ -387,6 +466,33 @@ describe("codex live turn sequence", () => {
     expect(session.blocks).toMatchObject([
       { role: "assistant", text: commentary, streaming: false },
       { role: "assistant", text: answer, streaming: false },
+    ]);
+  });
+
+  it("keeps streamed Codex updates separate when completion snapshots are omitted", async () => {
+    const { events, turn } = await startTurn("codex-live");
+    for (const [id, text] of [
+      ["commentary_1", "Inspecting the session."],
+      ["commentary_2", "Found the cause."],
+      ["answer", "Fixed and verified."],
+    ]) {
+      notify("item/agentMessage/delta", { itemId: id, delta: text });
+      notify("item/completed", { item: { id, type: "agentMessage" } });
+    }
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+    const session = events.reduce(
+      applyHarnessEvent,
+      newSession("codex", "/repo"),
+    );
+    expect(
+      session.blocks
+        .filter((block) => block.role === "assistant")
+        .map((block) => block.text),
+    ).toEqual([
+      "Inspecting the session.",
+      "Found the cause.",
+      "Fixed and verified.",
     ]);
   });
 

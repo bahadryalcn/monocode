@@ -29,6 +29,19 @@ function edit(id: string, path = "src/App.tsx", status = "in_progress"): Block {
 }
 
 describe("liveAgentsFromSessions", () => {
+  it("shows loaded remote turns and adopted turns with a conflicting local copy", () => {
+    const remote = chat("remote://env/repo", { id: "remote", busy: true });
+    const adopted = chat("/repo", {
+      id: "adopted",
+      continuingElsewhere: true,
+      adoptedSyncConflict: true,
+    });
+    const agents = liveAgentsFromSessions([remote, adopted], new Set(["adopted"]));
+    expect(agents.map((agent) => agent.id)).toEqual(["remote", "adopted"]);
+    expect(agents[1]).toMatchObject({ activity: "Working on host", done: false });
+    expect(liveAgentsFromSessions([{ ...adopted, continuingElsewhere: undefined }])).toEqual([]);
+  });
+
   it("keeps internal workers in their lead's agent panel", () => {
     const lead = chat("/repo", { id: "lead", busy: true });
     const worker = chat("/repo", { id: "worker", busy: true, orchestrationLeadId: "lead" });

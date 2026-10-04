@@ -17,8 +17,8 @@ import {
   reportQuitPoll,
 } from "./app/model/appLifecycle";
 import { hydrateComposerDrafts } from "./features/sessions/data/composerDraftStore";
-import { homeDir } from "./platform/tauri/fs";
-import { setHomeDir } from "./shared/lib/paths";
+import { homeDir, pathEnvironment } from "./platform/tauri/fs";
+import { setHomeDir, setPathEnvironment } from "./shared/lib/paths";
 import { consumeInstalledUpdate } from "./app/model/updateNotice";
 import { initializeProviderBinaryPaths } from "./features/providers/model/providerBinaryPaths";
 // Lets file commands reach a connected machine for `remote://` paths.
@@ -37,9 +37,10 @@ initSounds();
 // Prime the real home directory before the first render so every `~/` file
 // reference resolves consistently. The IPC call is local and failures remain
 // best-effort, falling back to inference from a session's cwd.
-const homeDirPrimed = homeDir()
-  .then(setHomeDir)
-  .catch(() => {});
+const homeDirPrimed = Promise.allSettled([
+  homeDir().then(setHomeDir),
+  pathEnvironment().then(setPathEnvironment),
+]);
 const providerBinaryPathsPrimed = initializeProviderBinaryPaths().catch(
   () => undefined,
 );

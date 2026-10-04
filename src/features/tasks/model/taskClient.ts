@@ -62,6 +62,8 @@ export type TaskDraft = {
   /** Empty for no check. */
   verifyCommand: string;
   review: boolean;
+  /** Merge the branch once every check passes, without waiting for approval. */
+  autoMerge: boolean;
 };
 
 /** Machines whose host keeps a task board, this computer's included. */
@@ -141,6 +143,7 @@ export function newTaskDraft(
     isolate: true,
     verifyCommand: "",
     review: true,
+    autoMerge: false,
   };
 }
 
@@ -159,6 +162,7 @@ export function draftFromTask(task: BoardTask): TaskDraft {
     isolate: task.isolate !== false,
     verifyCommand: task.verifyCommand ?? "",
     review: task.review !== false,
+    autoMerge: task.autoMerge === true,
   };
 }
 
@@ -213,6 +217,7 @@ export function hostTaskFromDraft(
       ? { verifyCommand: draft.verifyCommand.trim() }
       : {}),
     review: draft.review,
+    ...(draft.autoMerge && draft.isolate ? { autoMerge: true } : {}),
   };
 }
 

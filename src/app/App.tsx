@@ -512,6 +512,7 @@ import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
   queuedMessageForSubmit,
+  queuedModelTarget,
   reorderSessionQueue,
   resolveFollowUpRoute,
   sentQueuedMessage,
@@ -533,6 +534,7 @@ import {
   finishShellBlock,
   parseShellCommand,
   pendingShellRuns,
+  SHELL_FOLLOW_UP_PROMPT,
   shellBlock,
   withShellContext,
   type ShellResult,
@@ -590,6 +592,8 @@ import {
   isLeadWindow,
   useBackgroundNotifications,
 } from "../features/notifications/hooks/useBackgroundNotifications";
+import { useDailySummary } from "../features/notifications/hooks/useDailySummary";
+import { requestSummaryPanel } from "../features/tasks/model/dailySummaryClient";
 import { useAttentionNotifications } from "../features/notifications/hooks/useAttentionNotifications";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
 import {
@@ -694,11 +698,13 @@ import {
   remoteLiveSessionInfos,
   unopenedRemoteSessions,
 } from "../features/connections/model/remoteRailSessions";
+import { useRemoteUnseenFinished } from "../features/connections/model/useRemoteUnseenFinished";
 import {
   buildRemotePlan,
   remoteSessionActions,
 } from "../features/connections/model/remoteSessionActions";
 import { remoteSessionState } from "../features/connections/model/remoteSessionState";
+import { takePendingSessionWrites } from "./model/pendingSessionWrites";
 import {
   parseRemotePath,
   rememberRemoteProject,
@@ -711,7 +717,10 @@ import { BackgroundSessionDialog } from "../features/tasks/ui/BackgroundSessionD
 import { sessionHasBackgroundWork } from "../features/sessions/model/backgroundStop";
 import { reconnectRemoteMachine } from "../features/connections/model/remoteReconnect";
 import { startAppSync } from "../features/sync/model/useSync";
-import { useAdoptedSessions } from "../features/connections/model/useAdoptedSessions";
+import {
+  useAdoptedSessions,
+  type RefreshAdoptedSession,
+} from "../features/connections/model/useAdoptedSessions";
 import {
   isTextOnlyChange,
   resetSessionsStore,
@@ -1341,7 +1350,23 @@ function Workspace({
   /** Project whose listing failed, so the error cannot leak to another one. */
   const [historyErrorCwd, setHistoryErrorCwd] = useState<string | null>(null);
 
-  const localHostReachable = useAdoptedSessions(sessionsRef, setSessions);
+  const loadRunningOnHostRef = useRef<(ids: string[]) => void>(undefined);
+  const refreshAdoptedSessionRef = useRef<RefreshAdoptedSession>(undefined);
+  const localHostReachable = useAdoptedSessions(
+    sessionsRef,
+    setSessions,
+    loadRunningOnHostRef,
+    refreshAdoptedSessionRef,
+  );
+  const onRefreshAdoptedSession = useCallback<RefreshAdoptedSession>(
+    (sessionId) => {
+      const refresh = refreshAdoptedSessionRef.current;
+      if (!refresh)
+        return Promise.reject(new Error("Host unavailable. Try again."));
+      return refresh(sessionId);
+    },
+    [],
+  );
   const desktopLiveHandlers = useRef<DesktopLiveHandlers>({
     stop: () => undefined,
     approve: () => undefined,
@@ -1901,7 +1926,7 @@ function Workspace({
   const nextBusySessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
-      if (session.busy) {
+      if (session.busy || session.continuingElsewhere) {
         ids.add(session.id);
         if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
       }
@@ -2025,6 +2050,7 @@ function Workspace({
   useInputNotifications(sessions, activeSessionId);
   useAttentionNotifications(sessions, activeSessionId);
   useBackgroundNotifications(automationsViewOpen && taskBoardShown);
+  useDailySummary();
 
   // Cache the OS decision so a turn ending later can skip a denied banner.
   useEffect(() => {
@@ -2055,23 +2081,33 @@ function Workspace({
         .join("\n"),
     [sessions],
   );
-  const unopenedRemote = useMemo(() => {
+  const loadedRemoteHostIds = useMemo(() => {
     const loadedHostIds = new Set<string>();
     for (const shellId of loadedRemoteShellIds.split("\n")) {
       const hostId = shellId && remoteSessionFor(shellId);
       if (hostId) loadedHostIds.add(hostId);
     }
-    return unopenedRemoteSessions(listedRemoteSessions, loadedHostIds);
-  }, [listedRemoteSessions, loadedRemoteShellIds]);
+    return loadedHostIds;
+  }, [loadedRemoteShellIds]);
+  const unopenedRemote = useMemo(
+    () => unopenedRemoteSessions(listedRemoteSessions, loadedRemoteHostIds),
+    [listedRemoteSessions, loadedRemoteHostIds],
+  );
   const unopenedRemoteRef = useRef(unopenedRemote);
   unopenedRemoteRef.current = unopenedRemote;
+  const [remoteUnseenFinishedIds, dismissRemoteFinished] =
+    useRemoteUnseenFinished(
+      listedRemoteSessions,
+      loadedRemoteHostIds,
+      activeSessionId ? remoteSessionFor(activeSessionId) : undefined,
+    );
 
   const nextLiveAgents = useMemo(
     () =>
       liveAgentsEnabled
         ? [
             ...liveAgentsFromSessions(sessions, unseenFinishedIds),
-            ...remoteLiveAgents(unopenedRemote),
+            ...remoteLiveAgents(unopenedRemote, remoteUnseenFinishedIds),
           ].filter((agent) => !isProjectLockedIn(lockSnapshot, agent.cwd))
         : [],
     [
@@ -2080,6 +2116,7 @@ function Workspace({
       sessions,
       unseenFinishedIds,
       unopenedRemote,
+      remoteUnseenFinishedIds,
     ],
   );
   const liveAgentsRef = useRef(nextLiveAgents);
@@ -2315,7 +2352,10 @@ function Workspace({
       if (newUserTurn && lastUserId) {
         lastPersistedUserBlock.current.set(session.id, lastUserId);
       }
-      if ((newlyBound || newUserTurn) && shouldPersistSession(session)) {
+      if (
+        (!session.busy || newlyBound || newUserTurn) &&
+        shouldPersistSession(session)
+      ) {
         persistSession(session);
       }
       if (
@@ -2337,8 +2377,10 @@ function Workspace({
     if (pendingPersist.current.size === 0) return;
 
     const timer = window.setTimeout(() => {
-      const dirty = [...pendingPersist.current.values()];
-      pendingPersist.current.clear();
+      const dirty = takePendingSessionWrites(
+        pendingPersist.current,
+        sessionsRef.current,
+      );
       void Promise.all(
         dirty.map(async (session) => {
           if (
@@ -2362,12 +2404,10 @@ function Workspace({
     return () => window.clearTimeout(timer);
   }, [persistSession, sessions]);
 
-  // A running turn is normally written once it settles. With a host on this
-  // machine, other computers watch this session through it, so keep the
-  // stored copy following the live one.
+  // Keep running transcripts durable even without a host. The shell skips
+  // text-only frames, so its delayed snapshots cannot protect live replies.
   useEffect(() => {
     const timer = window.setInterval(() => {
-      if (!localHostReachable.current) return;
       for (const session of sessionsRef.current) {
         if (
           !session.busy ||
@@ -4789,6 +4829,53 @@ function Workspace({
     [loadStoredSession, refreshHistory, sidebarCwd],
   );
 
+  /** Loads sessions this machine's host runs for another computer, so the
+   * Working card shows them without a tab; they unload once seen after done. */
+  const loadRunningOnHost = useCallback(
+    (sessionIds: string[]) => {
+      for (const sessionId of sessionIds) {
+        if (
+          openingSessionIds.current.has(sessionId) ||
+          removingSessionIds.current.has(sessionId)
+        )
+          continue;
+        void loadStoredSession(sessionId).then((restored) => {
+          if (
+            !restored ||
+            restored.inboxAsk ||
+            removingSessionIds.current.has(sessionId) ||
+            sessionsRef.current.some((session) => session.id === sessionId)
+          )
+            return;
+          loadedSessionCache.current.delete(sessionId);
+          if (
+            !restored.worktreeRemoved &&
+            restored.providerSessionId &&
+            isLiveHarness(restored.harness)
+          ) {
+            bindHarnessSession(
+              restored.harness,
+              restored.id,
+              restored.providerSessionId,
+              sessionWorkCwd(restored),
+              restored.providerAccountId,
+              restored.blocks,
+            );
+          }
+          lastPersisted.current.set(restored.id, persistFingerprint(restored));
+          const next = [
+            ...sessionsRef.current,
+            { ...restored, busy: false, continuingElsewhere: true },
+          ];
+          sessionsRef.current = next;
+          setSessions(next);
+        });
+      }
+    },
+    [loadStoredSession],
+  );
+  loadRunningOnHostRef.current = loadRunningOnHost;
+
   const onPopOutSession = useCallback(
     async (
       sessionId: string,
@@ -7111,6 +7198,8 @@ function Workspace({
             resolved.id,
             modelSettings,
           );
+          if (s.busy && !s.runningModelTarget)
+            next.runningModelTarget = queuedModelTarget(s);
           if (plan.kind === "arm") {
             return { ...next, pendingSwitch: plan.pending };
           }
@@ -7140,7 +7229,17 @@ function Workspace({
     (sessionId: string, modelSettings: Record<string, string>) => {
       saveLastModelSettings(modelSettings);
       setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, modelSettings } : s)),
+        prev.map((s) =>
+          s.id === sessionId
+            ? {
+                ...s,
+                modelSettings,
+                runningModelTarget: s.busy
+                  ? (s.runningModelTarget ?? queuedModelTarget(s))
+                  : undefined,
+              }
+            : s,
+        ),
       );
     },
     [],
@@ -7282,9 +7381,9 @@ function Workspace({
           exitCode: null,
           timedOut: false,
         }))
-        .then((result) =>
-          setSessions((prev) =>
-            prev.map((entry) =>
+        .then((result) => {
+          const finish = (entries: Session[]) =>
+            entries.map((entry) =>
               entry.id === sessionId
                 ? {
                     ...entry,
@@ -7295,9 +7394,15 @@ function Workspace({
                     ),
                   }
                 : entry,
-            ),
-          ),
-        );
+            );
+          // The follow-up reads sessionsRef, so it must hold the output now.
+          sessionsRef.current = finish(sessionsRef.current);
+          setSessions(finish);
+          // Hand the result to the agent so it carries on without another message.
+          if (sessionsRef.current.some((entry) => entry.id === sessionId)) {
+            void submitSessionRef.current(sessionId, SHELL_FOLLOW_UP_PROMPT);
+          }
+        });
       return true;
     },
     [],
@@ -7407,6 +7512,21 @@ function Workspace({
       let current = options?.buildTarget
         ? withPlanBuildTarget(draftCleared, options.buildTarget)
         : draftCleared;
+      const queuedMessage = options?.queuedMessageId
+        ? queuedMessageForSubmit(
+            current,
+            options.queuedMessageId,
+            options.followUpBehavior === "steer" ? "steer" : "dispatch",
+          )
+        : undefined;
+      if (options?.queuedMessageId && !queuedMessage) return false;
+      const submitTarget = queuedMessage?.modelTarget ?? options?.buildTarget;
+      if (queuedMessage?.modelTarget) {
+        current =
+          current.busy && options?.followUpBehavior === "steer"
+            ? { ...current, ...queuedMessage.modelTarget }
+            : withPlanBuildTarget(current, queuedMessage.modelTarget);
+      }
       const editedResend = options?.resendEdited
         ? createEditedResendAttempt(current, options.onResendRejected)
         : undefined;
@@ -7574,6 +7694,9 @@ function Workspace({
                         noteCard,
                         handoffCard,
                         intent,
+                        modelTarget: queuedModelTarget(
+                          options?.buildTarget ?? storedCurrent,
+                        ),
                       },
                     ],
                     queueStatus:
@@ -7792,12 +7915,13 @@ function Workspace({
                   ),
                 }
               : s;
-            const selected = options?.buildTarget
-              ? withPlanBuildTarget(draftRemoved, options.buildTarget)
+            const selected = submitTarget
+              ? withPlanBuildTarget(draftRemoved, submitTarget)
               : draftRemoved;
             const titled = isFirstTurn ? titleSeed : selected.title;
             let next: Session = {
               ...selected,
+              runningModelTarget: queuedModelTarget(current),
               providerAccountId,
               usageLimit: undefined,
               worktreePreparing: createDraftWorktree
@@ -9077,7 +9201,21 @@ function Workspace({
       const message = session
         ? queuedMessageForSubmit(session, messageId, "steer")
         : undefined;
-      if (!session || !message) return;
+      if (!session) return;
+      if (!message) {
+        if (
+          session.queuedMessages?.some(
+            (entry) => entry.id === messageId && entry.modelTarget && !entry.attachments.some((file) => file.missing),
+          )
+        ) {
+          enqueueHarnessEvent(sessionId, {
+            type: "status",
+            text: "This queued message uses a different model or effort. Resume the queue to send it as a new turn with its saved settings.",
+          });
+          flushHarnessEvents();
+        }
+        return;
+      }
       if (message.intent === "orchestrate" && session.busy) {
         enqueueHarnessEvent(sessionId, {
           type: "status",
@@ -11009,10 +11147,12 @@ function Workspace({
       const remote = unopenedRemoteRef.current.find(
         ({ session }) => session.id === sessionId,
       );
-      if (remote) onSelectRemoteSession(remote.project, sessionId);
-      else onOpenApprovalSession(sessionId);
+      if (remote) {
+        dismissRemoteFinished(sessionId);
+        onSelectRemoteSession(remote.project, sessionId);
+      } else onOpenApprovalSession(sessionId);
     },
-    [onOpenApprovalSession, onSelectRemoteSession],
+    [dismissRemoteFinished, onOpenApprovalSession, onSelectRemoteSession],
   );
 
   // Sessions for the rail's "Last sessions". Kept referentially stable so the
@@ -12137,7 +12277,12 @@ function Workspace({
             ? actions.current.onOpenTasks
             : sessionId === BACKGROUND_NOTIFICATION_TARGETS.automations
               ? actions.current.onOpenAutomations
-              : null;
+              : sessionId === BACKGROUND_NOTIFICATION_TARGETS.summary
+                ? () => {
+                    requestSummaryPanel();
+                    actions.current.onOpenTasks();
+                  }
+                : null;
         if (background) {
           // Background work is not held by a window: the one that announced
           // it answers the click.
@@ -12274,6 +12419,7 @@ function Workspace({
     onBranchChange,
     onWorktreeChange: onComposerWorktreeChange,
     onRemoteSnapshot,
+    onRefreshAdoptedSession,
     onWorkspaceModeChange,
     onWorktreeBaseChange,
     onManageWorktrees,
