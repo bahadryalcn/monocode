@@ -39,6 +39,7 @@ import type { HostProvider } from "./providers";
 import { HostStore } from "./store";
 import { parseRemoteAttachments, resolveAttachments } from "./attachments";
 import { runHostShell } from "./shell";
+import { prepareHostSkillPrompt } from "./prompt-skills";
 import {
   SHELL_COMMAND_LIMIT,
   finishShellBlock,
@@ -1175,10 +1176,15 @@ export class HostEngine {
               onEvent: (event) => this.event(session.id, runId!, event),
             };
             if (prompt === null) await provider.compact!(input);
-            else
+            else {
+              const preparedPrompt = /(^|\s)[/$][A-Za-z0-9][A-Za-z0-9_.:-]*(?=\s|$)/.test(prompt) &&
+                  !(session.harness === "codex" && /^\s*\/goal(?:\s|$)/.test(prompt))
+                ? await prepareHostSkillPrompt(prompt, session.cwd)
+                : prompt;
+              if (this.closing || active.cancelled) throw new Error("Turn cancelled");
               await provider.send({
                 ...input,
-                text: prompt,
+                text: preparedPrompt,
                 // Async so a 20 MB image does not stall every other RPC.
                 attachments:
                   attachments &&
@@ -1197,6 +1203,7 @@ export class HostEngine {
                     ),
                   )),
               });
+            }
           }
         } catch (reason) {
           error = reason instanceof Error ? reason.message : String(reason);

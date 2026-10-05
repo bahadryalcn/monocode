@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ImportCandidate } from "../../../platform/tauri/sessionImport";
 import { SessionImportDialog } from "./SessionImportDialog";
+import type { SessionImportContext } from "../import/importModel";
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({
@@ -51,12 +52,13 @@ const candidates = [
 let root: Root;
 let container: HTMLDivElement;
 
-async function render() {
+async function render(initialContext?: SessionImportContext) {
   await act(async () => {
     root.render(
       createElement(SessionImportDialog, {
         onClose: vi.fn(),
         onImported: vi.fn(),
+        initialContext,
       }),
     );
   });
@@ -119,6 +121,34 @@ afterEach(async () => {
 });
 
 describe("SessionImportDialog", () => {
+  it("opens /resume import scoped to its provider and folder", async () => {
+    const scoped = candidate({
+      provider: "codex",
+      providerSessionId: "scoped-thread",
+      cwd: "G:/Projects/app",
+      firstPrompt: "Continue this project",
+    });
+    invoke.mockImplementation(async (command: string) => {
+      if (command === "import_discover")
+        return {
+          candidates: [...candidates, scoped],
+          filesScanned: 4,
+          filesSkipped: 0,
+          elapsedMs: 5,
+        };
+      if (command === "session_import_keys") return [];
+      return undefined;
+    });
+    await render({ cwd: "G:/Projects/app", provider: "codex" });
+    expect(text()).toContain("Continue this project");
+    expect(text()).not.toContain("Fix the login bug");
+    expect(text()).not.toContain("Explain the schema");
+    expect(text()).toContain("1 conversation in 1 folder will be imported");
+    const provider = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Codex",
+    );
+    expect(provider?.getAttribute("aria-pressed")).toBe("true");
+  });
   it("lists conversations by folder, hiding automation runs by default", async () => {
     await render();
     expect(text()).toContain("Fix the login bug");
@@ -128,9 +158,9 @@ describe("SessionImportDialog", () => {
     expect(text()).toContain("2 conversations in 2 folders");
     expect(text()).toContain("2 conversations in 2 folders will be imported");
 
-    const toggle = [...document.querySelectorAll("label")].find((label) =>
-      label.textContent?.includes("Show automation runs"),
-    )?.querySelector("input") as HTMLInputElement;
+    const toggle = [...document.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Show automation runs"))
+      ?.querySelector("input") as HTMLInputElement;
     await act(async () => toggle.click());
     expect(text()).toContain("Run the nightly job");
     expect(text()).toContain("automation");
@@ -164,7 +194,14 @@ describe("SessionImportDialog", () => {
     expect(text()).toContain("2 conversations imported");
     const imported = invoke.mock.calls
       .filter(([command]) => command === "session_import")
-      .map(([, args]) => args.session as { id: string; cwd: string; providerSessionId?: string });
+      .map(
+        ([, args]) =>
+          args.session as {
+            id: string;
+            cwd: string;
+            providerSessionId?: string;
+          },
+      );
     expect(imported.map((s) => s.id).sort()).toEqual([
       "imp-claude-conv-a",
       "imp-codex-thread-b",
@@ -172,8 +209,12 @@ describe("SessionImportDialog", () => {
     // The conversation whose folder is gone is filed under the placeholder
     // and carries no resume binding.
     const missing = imported.find((s) => s.id === "imp-codex-thread-b");
-    expect(missing?.cwd).toBe("C:/app/imported-history/Missing folder - old-thing");
+    expect(missing?.cwd).toBe(
+      "C:/app/imported-history/Missing folder - old-thing",
+    );
     expect(missing?.providerSessionId).toBeUndefined();
-    expect(imported.find((s) => s.id === "imp-claude-conv-a")?.providerSessionId).toBe("conv-a");
+    expect(
+      imported.find((s) => s.id === "imp-claude-conv-a")?.providerSessionId,
+    ).toBe("conv-a");
   });
 });

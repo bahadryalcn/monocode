@@ -52,6 +52,8 @@ export type TaskReviewNote = {
   /** Supporting prose preserved from legacy reviews without structured findings. */
   details?: string;
   kind: "finding" | "suggestion";
+  /** Explicit reviewer classification; absent means a repairable deliverable. */
+  category?: "code" | "external";
   /** The reviewer that last reported it, when its session is available. */
   sessionId?: string;
   sessionIds?: string[];
@@ -111,6 +113,24 @@ export type HostTask = HostTaskInput & {
   repairAttempts?: number;
   /** The finding that triggered the latest automatic correction. */
   repairNote?: string;
+  repairStop?: {
+    reason: "external" | "no_progress" | "limit";
+    message: string;
+  };
+  /** Bounded, durable outcomes; worker summaries are claims, not acceptance evidence. */
+  attemptHistory?: {
+    attempt: number;
+    at: number;
+    workerSessionId?: string;
+    reviewerSessionId: string;
+    workerSummary: string;
+    verdict: "pass" | "fail";
+    reviewOnly?: boolean;
+    note: string;
+    findings: string[];
+  }[];
+  /** An owner-requested recheck must never launch another worker implicitly. */
+  reviewOnly?: boolean;
   /** Durable review findings; absent on hosts predating task notes. */
   reviewNotes?: TaskReviewNote[];
   /** The branch an isolated task works on, and the worktree it is checked

@@ -1153,7 +1153,7 @@ describe("task verification", () => {
     for (let attempt = 1; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
       await finish(
         task().reviewer!.sessionId!,
-        "VERDICT: FAIL - Friday is missing.",
+        `VERDICT: FAIL - Missing item ${attempt}.`,
       );
       expect(task()).toMatchObject({
         status: "running",
@@ -1178,6 +1178,109 @@ describe("task verification", () => {
     await tasks.move("main", "queued");
     expect(task().repairAttempts).toBeUndefined();
     expect(task().retryFeedback).toContain("Friday is still missing.");
+  });
+
+  it("stops unchanged findings after a correction and records both worker outcomes", async () => {
+    const { reviewing, task, finish, tasks, store, engine, clock } = setup();
+    await reviewing({ goalId: "goal" });
+    await finish(
+      task().reviewer!.sessionId!,
+      "VERDICT: FAIL - Friday is missing.",
+    );
+    await finish(
+      task().sessionId!,
+      "Changed the parser. Focused check passed; device acceptance unavailable.",
+    );
+    await finish(
+      task().reviewer!.sessionId!,
+      "VERDICT: FAIL - Friday is missing.",
+    );
+    expect(task()).toMatchObject({
+      status: "blocked",
+      repairAttempts: 1,
+      repairStop: { reason: "no_progress" },
+    });
+    expect(task().attemptHistory).toHaveLength(2);
+    expect(task().attemptHistory!.at(-1)!.workerSummary).toContain(
+      "Changed the parser",
+    );
+    expect(
+      new HostTasks(store, engine, () => clock.now).get("main")!.attemptHistory,
+    ).toHaveLength(2);
+    await tasks.move("main", "queued");
+    expect(task().repairStop).toBeUndefined();
+  });
+
+  it("does not retry external-only acceptance or release dependent work, but starts independent work", async () => {
+    const { reviewing, task, finish, tasks, input } = setup();
+    await reviewing({ goalId: "goal", autoMerge: true });
+    tasks.save(input({ id: "dependent", dependsOn: ["main"] }));
+    tasks.save(input({ id: "independent" }));
+    await finish(
+      task().reviewer!.sessionId!,
+      '```json\n{"reviewNotes":[{"finding":"TalkBack acceptance missing.","category":"external","suggestion":"Provide an Android device with TalkBack; exercise reset, search and favorites and record results."}]}\n```\nVERDICT: FAIL - Device acceptance missing.',
+    );
+    expect(task()).toMatchObject({
+      status: "blocked",
+      repairStop: { reason: "external" },
+    });
+    expect(task().repairAttempts).toBeUndefined();
+    expect(task("dependent").status).toBe("queued");
+    expect(task("independent").status).toBe("running");
+  });
+
+  it("still repairs code defects when the review also requires external acceptance", async () => {
+    const { reviewing, task, finish } = setup();
+    await reviewing({ goalId: "goal" });
+    await finish(
+      task().reviewer!.sessionId!,
+      '```json\n{"reviewNotes":[{"finding":"Reset is broken."},{"finding":"TalkBack acceptance missing.","category":"external","suggestion":"Test on Android."}]}\n```\nVERDICT: FAIL - Reset is broken.',
+    );
+    expect(task()).toMatchObject({ status: "running", repairAttempts: 1 });
+    expect(task().repairStop).toBeUndefined();
+    const fixedId = task().reviewNotes!.find((note) => note.finding === "Reset is broken.")!.id;
+    await finish(task().sessionId!, "Fixed reset and checked its behavior.");
+    await finish(task().reviewer!.sessionId!, '```json\n' + JSON.stringify({
+      reviewNotes: [{ finding: "TalkBack acceptance missing.", category: "external", suggestion: "Test on Android." }],
+      resolvedNoteIds: [fixedId],
+    }) + '\n```\nVERDICT: FAIL - TalkBack acceptance missing.');
+    expect(task()).toMatchObject({ status: "blocked", repairStop: { reason: "external" } });
+    expect(task().reviewNotes!.find((note) => note.id === fixedId)!.resolvedAt).toBeDefined();
+  });
+
+  it("rechecks a failed review without another worker, even when the review still fails", async () => {
+    const { reviewing, task, finish, tasks, turns } = setup();
+    await reviewing();
+    await finish(
+      task().reviewer!.sessionId!,
+      "VERDICT: FAIL - Friday is missing.",
+    );
+    const worker = task().sessionId;
+    const before = turns.length;
+    tasks.recheckReview("main");
+    await tasks.idle();
+    expect(task().sessionId).toBe(worker);
+    expect(turns).toHaveLength(before + 1);
+    expect(turns.at(-1)!.input.text).toContain("You are reviewing");
+    await finish(
+      task().reviewer!.sessionId!,
+      "VERDICT: FAIL - Friday is missing.",
+    );
+    expect(task().status).toBe("blocked");
+    expect(turns).toHaveLength(before + 1);
+    tasks.recheckReview("main");
+    await tasks.idle();
+    await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+    expect(task().status).toBe("review");
+    expect(task().reviewOnly).toBeUndefined();
+  });
+
+  it("refuses review recheck of unfinished or owner-stopped work", async () => {
+    const { tasks, run } = setup();
+    await run();
+    expect(() => tasks.recheckReview("main")).toThrow("Only a blocked task");
+    await tasks.move("main", "blocked");
+    expect(() => tasks.recheckReview("main")).toThrow("Only a blocked task");
   });
 
   it.each(["missing verdict", "runtime failure", "owner stop"])(

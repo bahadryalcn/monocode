@@ -35,6 +35,9 @@ vi.mock("../../source-control/hooks/useProjectBranches", () => ({
 }));
 
 import { Composer, ComposerAction } from "./Composer";
+import { setRemoteCommandRunner } from "../../../platform/tauri/fs";
+import { invalidateSkills } from "../../skills/model/skills";
+import { invalidateProjectFiles } from "../../files/model/fileIndex";
 import { reportSessionCommands } from "../../../integrations/harness/core/reportedCommands";
 import {
   clearMcpSettingsCache,
@@ -152,6 +155,7 @@ describe("Composer question focus", () => {
     sessionId?: string,
     harness: "claude" | "codex" = "claude",
     cwd?: string,
+    remoteSession = false,
   ) {
     await act(async () =>
       root.render(
@@ -162,7 +166,8 @@ describe("Composer question focus", () => {
           harness,
           model: "claude-sonnet",
           runtimeMode: "supervised",
-          executionCwd: "/repo",
+          executionCwd: remoteSession ? cwd! : "/repo",
+          remoteSession,
           cwd,
           initialDraft,
           sessionId,
@@ -852,6 +857,139 @@ describe("Composer question focus", () => {
     expect(textarea.value).toBe("/goal ");
   });
 
+  it("loads and selects $, @ and / suggestions from a remote workspace", async () => {
+    invalidateSkills();
+    invalidateProjectFiles();
+    const cwd = "remote://composer-host/work/repo";
+    const runner = vi.fn(async (command: string) => {
+      if (command === "list_skills")
+        return [
+          {
+            name: "remote-review",
+            description: "Host review",
+            path: `${cwd}/.agents/skills/remote-review/SKILL.md`,
+            scope: "project",
+            source: "agents",
+          },
+        ];
+      if (command === "list_project_files")
+        return [
+          {
+            name: "server.ts",
+            relative: "src/server.ts",
+            path: `${cwd}/src/server.ts`,
+          },
+        ];
+      return [];
+    });
+    setRemoteCommandRunner(runner);
+    const onSubmit = vi.fn(() => true);
+    await renderComposer(
+      undefined,
+      vi.fn(),
+      false,
+      0,
+      "$remote",
+      undefined,
+      onSubmit,
+      "remote-suggestions",
+      "codex",
+      cwd,
+      true,
+    );
+    const textarea = container.querySelector("textarea")!;
+    const type = async (value: string) =>
+      act(async () => {
+        textarea.value = value;
+        textarea.setSelectionRange(value.length, value.length);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    await type("$remote");
+    const option = (label: string) =>
+      Array.from(
+        container.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+      ).find((button) => button.textContent?.includes(label));
+    expect(option("$remote-review")).toBeDefined();
+    await act(async () => option("$remote-review")!.click());
+    expect(textarea.value).toBe("$remote-review ");
+    await type("@server");
+    expect(option("server.ts")).toBeDefined();
+    await act(async () =>
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Tab",
+          bubbles: true,
+          cancelable: true,
+        }),
+      ),
+    );
+    expect(textarea.value).toBe("@src/server.ts ");
+    await type("/goal");
+    expect(option("/goal")).toBeDefined();
+    expect(
+      runner.mock.calls.filter(([command]) => command === "list_skills"),
+    ).toHaveLength(1);
+    expect(
+      runner.mock.calls.filter(([command]) => command === "list_project_files"),
+    ).toHaveLength(1);
+    expect(
+      runner.mock.calls.some(([command]) => command === "list_claude_commands"),
+    ).toBe(false);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    setRemoteCommandRunner(async () => {
+      throw new Error("No remote test host");
+    });
+  });
+
+  it("offers host custom slash commands in a remote Claude session", async () => {
+    const cwd = "remote://claude-composer/work/repo";
+    const runner = vi.fn(async (command: string) =>
+      command === "list_claude_commands"
+        ? [
+            {
+              name: "team:review",
+              description: "Host command",
+              argumentHint: "[file]",
+              scope: "project",
+            },
+          ]
+        : [],
+    );
+    setRemoteCommandRunner(runner);
+    await renderComposer(
+      undefined,
+      vi.fn(),
+      false,
+      0,
+      "/team",
+      undefined,
+      vi.fn(),
+      "remote-claude-commands",
+      "claude",
+      cwd,
+      true,
+    );
+    const textarea = container.querySelector("textarea")!;
+    await act(async () =>
+      textarea.dispatchEvent(new Event("input", { bubbles: true })),
+    );
+    const command = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((button) => button.textContent?.includes("/team:review"));
+    expect(command).toBeDefined();
+    await act(async () => command!.click());
+    expect(textarea.value).toBe("/team:review ");
+    expect(
+      runner.mock.calls.filter(([name]) => name === "list_claude_commands"),
+    ).toHaveLength(1);
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    setRemoteCommandRunner(async () => {
+      throw new Error("No remote test host");
+    });
+  });
+
   it("picks a Codex skill with $ and highlights it in the chat input", async () => {
     reportSessionCommands("codex-skill-menu", [
       {
@@ -1102,7 +1240,10 @@ describe("Composer question focus", () => {
   async function renderWithResume(
     harness: "claude" | "codex",
     onResumeProviderSession?: () => void,
+    remoteSession = false,
+    initialDraft = "/resume",
   ) {
+    const onSubmit = vi.fn(() => true);
     await act(async () =>
       root.render(
         createElement(Composer, {
@@ -1110,15 +1251,16 @@ describe("Composer question focus", () => {
           harness,
           model: harness === "claude" ? "claude-sonnet" : "gpt-5",
           runtimeMode: "supervised",
-          executionCwd: "/repo",
-          initialDraft: "/resume",
+          executionCwd: remoteSession ? "remote://resume-host/repo" : "/repo",
+          remoteSession,
+          initialDraft,
           hideProjectPicker: true,
           hideBranchPicker: true,
           onFocus: vi.fn(),
           onCwdChange: vi.fn(),
           onModelChange: vi.fn(),
           onRuntimeModeChange: vi.fn(),
-          onSubmit: vi.fn(() => true),
+          onSubmit,
           ...(onResumeProviderSession ? { onResumeProviderSession } : {}),
         }),
       ),
@@ -1130,7 +1272,7 @@ describe("Composer question focus", () => {
     const option = Array.from(
       container.querySelectorAll<HTMLButtonElement>('[role="option"]'),
     ).find((button) => button.textContent?.includes("/resume"));
-    return { option, textarea };
+    return { option, textarea, onSubmit };
   }
 
   it("offers /resume for Claude and opens the picker without leaving text behind", async () => {
@@ -1146,15 +1288,84 @@ describe("Composer question focus", () => {
     expect(textarea.value).toBe("");
   });
 
-  it("hides /resume for a harness whose stored conversations cannot be read", async () => {
-    const { option } = await renderWithResume("codex", vi.fn());
-    expect(option).toBeUndefined();
+  it("offers /resume for Codex and opens import without starting a model turn", async () => {
+    const onResume = vi.fn();
+    const { option, textarea, onSubmit } = await renderWithResume(
+      "codex",
+      onResume,
+    );
+    expect(option).toBeDefined();
+    await act(async () => option!.click());
+    expect(onResume).toHaveBeenCalledOnce();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("");
+  });
+
+  it.each(["claude", "codex"] as const)(
+    "imports a typed / resume from Send for %s",
+    async (harness) => {
+      const onResume = vi.fn();
+      const { textarea, onSubmit } = await renderWithResume(
+        harness,
+        onResume,
+        false,
+        "/ resume",
+      );
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+          .click(),
+      );
+      expect(onResume).toHaveBeenCalledOnce();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(textarea.value).toBe("");
+    },
+  );
+
+  it("keeps a remote /resume draft and explains why terminal import is unavailable", async () => {
+    const onResume = vi.fn();
+    const { textarea, onSubmit } = await renderWithResume(
+      "codex",
+      onResume,
+      true,
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Send"]')!
+        .click(),
+    );
+    expect(onResume).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("/resume");
+    expect(container.textContent).toContain(
+      "Importing terminal conversations from a remote machine is not available yet",
+    );
   });
 
   it("hides /resume when the picker is not wired up", async () => {
     const { option } = await renderWithResume("claude");
     expect(option).toBeUndefined();
   });
+
+  it.each(["claude", "codex"] as const)(
+    "opens terminal history with Enter on /resume for %s",
+    async (harness) => {
+      const onResume = vi.fn();
+      const { textarea, onSubmit } = await renderWithResume(harness, onResume);
+      await act(async () =>
+        textarea.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Enter",
+            bubbles: true,
+            cancelable: true,
+          }),
+        ),
+      );
+      expect(onResume).toHaveBeenCalledOnce();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(textarea.value).toBe("");
+    },
+  );
 
   it("offers Operator above Orchestrator and sends the /operator command", async () => {
     const onSubmit = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);

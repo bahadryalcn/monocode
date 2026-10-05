@@ -6,6 +6,32 @@ their existing explicit Retry behavior. Each correction uses a fresh worker sess
 in the existing task worktree, with the original prompt and bounded verification
 feedback. The original checks and reviewer run again before delivery.
 
+A required review note may explicitly specify `category: "external"` plus an
+actionable suggestion naming missing device/access and the check required. If all
+current required findings are external, correction stops immediately, without
+claiming acceptance or releasing dependencies. Mixed reviews still repair code.
+Legacy prose is never guessed to be external. Identical required findings after a
+correction stop further automatic retries as unchanged; moved source line numbers
+do not count as a new finding. Existing location-only duplicates are coalesced with
+their review links and conservative open/unread state retained.
+In the same JSON block reviewers may provide `resolvedNoteIds` for earlier required
+findings they actually verified fixed, even when another issue keeps the verdict
+at FAIL. Merely omitting an old finding does not resolve it; a recurring finding
+reopens it. This keeps obsolete defects from hiding the current acceptance blocker.
+
+The detail panel records up to 20 review outcomes, each with worker-reported summary,
+review verdict and worker/reviewer links. Old tasks cannot reconstruct missing run
+history; their latest review remains available. Stop reasons distinguish external
+verification, unchanged findings and exhausted attempts. Marking a note fixed does
+not remove these verification requirements.
+
+Hosts advertising `tasks.review-recheck` support `tasks.review.recheck`. The owner
+can use **Recheck review** on blocked work with an existing failed review: checks
+and the reviewer run against existing work, without launching a worker. A failed
+recheck stays blocked; PASS uses the normal delivery/merge gates. Retry remains the
+explicit action for a new worker correction after supplying access or changing the
+approach. Independent queued tasks continue; dependent tasks wait for delivery.
+
 Correction counts are stored with the task and survive host restarts. The board
 shows the attempt number and the latest finding. After three corrections, another
 failure leaves the task blocked with its verification details; an explicit Retry

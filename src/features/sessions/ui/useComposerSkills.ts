@@ -11,6 +11,7 @@ import {
   type SkillCatalogContext,
 } from "../../skills/model/skills";
 import type { HarnessId } from "../model/session";
+import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 
 export type ComposerSkillContextToken = {
   key: string;
@@ -61,8 +62,12 @@ export function useComposerSkills(input: {
   );
   const contextKey = skillCatalogKey(context);
   const fallback = useMemo<Skill[]>(
-    () => (hasNativeCommands(input.harness) ? [] : mergeCatalog([])),
-    [input.harness],
+    () =>
+      input.executionCwd.startsWith(REMOTE_PATH_PREFIX) ||
+      hasNativeCommands(input.harness)
+        ? []
+        : mergeCatalog([]),
+    [input.harness, input.executionCwd],
   );
   const currentToken = useRef<ComposerSkillContextToken | null>(null);
   currentToken.current = nextComposerSkillContextToken(
@@ -116,8 +121,12 @@ export function useComposerSkills(input: {
 
   useEffect(() => {
     if (!input.pickerOpen) return;
-    void refresh(pickerSkillLoadOptions(input.harness)).catch(() => undefined);
-  }, [input.harness, input.pickerOpen, refresh]);
+    void refresh(
+      context.cwd.startsWith(REMOTE_PATH_PREFIX)
+        ? undefined
+        : pickerSkillLoadOptions(input.harness),
+    ).catch(() => undefined);
+  }, [context.cwd, input.harness, input.pickerOpen, refresh]);
 
   return {
     contextKey,

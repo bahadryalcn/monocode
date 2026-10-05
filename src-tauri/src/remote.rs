@@ -613,6 +613,7 @@ fn supported_remote_method(method: &str) -> bool {
             | "tasks.move"
             | "tasks.notes.read"
             | "tasks.notes.resolve"
+            | "tasks.review.recheck"
             | "tasks.delete"
             | "goals.list"
             | "goals.create"
@@ -930,6 +931,7 @@ mod tests {
     fn review_note_commands_are_supported_without_allowing_arbitrary_note_methods() {
         assert!(supported_remote_method("tasks.notes.read"));
         assert!(supported_remote_method("tasks.notes.resolve"));
+        assert!(supported_remote_method("tasks.review.recheck"));
         assert!(!supported_remote_method("tasks.notes.delete"));
     }
 

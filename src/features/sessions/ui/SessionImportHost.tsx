@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { OPEN_SESSION_IMPORT_EVENT } from "../import/importModel";
+import {
+  OPEN_SESSION_IMPORT_EVENT,
+  type SessionImportContext,
+} from "../import/importModel";
 import { SessionImportDialog } from "./SessionImportDialog";
 
 /**
@@ -8,13 +11,25 @@ import { SessionImportDialog } from "./SessionImportDialog";
  */
 export function SessionImportHost({ onImported }: { onImported: () => void }) {
   const [open, setOpen] = useState(false);
+  const [context, setContext] = useState<SessionImportContext | undefined>();
   useEffect(() => {
-    const show = () => setOpen(true);
+    const show = (event: Event) => {
+      const detail = (event as CustomEvent<SessionImportContext>).detail;
+      setContext(
+        detail?.cwd &&
+          (detail.provider === "claude" || detail.provider === "codex")
+          ? detail
+          : undefined,
+      );
+      setOpen(true);
+    };
     window.addEventListener(OPEN_SESSION_IMPORT_EVENT, show);
     return () => window.removeEventListener(OPEN_SESSION_IMPORT_EVENT, show);
   }, []);
   return open ? (
     <SessionImportDialog
+      key={context ? `${context.provider}:${context.cwd}` : "all"}
+      initialContext={context}
       onClose={() => setOpen(false)}
       onImported={onImported}
     />

@@ -297,6 +297,26 @@ describe("loadProjectFiles", () => {
 });
 
 describe("rankProjectFiles", () => {
+  it("isolates remote machines and shares concurrent refreshes without losing indexes on local navigation", async () => {
+    invalidateProjectFiles();
+    list.mockReset();
+    const first = "remote://first/work/repo";
+    const second = "remote://second/work/repo";
+    const pending = deferred<ProjectFile[]>();
+    list.mockReturnValueOnce(pending.promise).mockResolvedValue(files);
+    const a = loadProjectFiles(first);
+    const b = loadProjectFiles(first, true);
+    expect(list).toHaveBeenCalledTimes(1);
+    pending.resolve(files);
+    await Promise.all([a, b, loadProjectFiles(second), loadProjectFiles(cwd)]);
+    expect(peekProjectFiles(first)).toEqual(files);
+    expect(peekProjectFiles(second)).toEqual(files);
+    await loadProjectFiles(first);
+    expect(list).toHaveBeenCalledTimes(3);
+    invalidateProjectFiles(first);
+    expect(peekProjectFiles(first)).toBeNull();
+    expect(peekProjectFiles(second)).toEqual(files);
+  });
   function oldRank(
     all: ProjectFile[],
     query: string,

@@ -91,6 +91,50 @@ beforeEach(() => {
 });
 
 describe("provider-aware skill catalog", () => {
+  it("discovers remote skills on their machine even for native-command harnesses and shares in-flight loads", async () => {
+    const pending = deferred<DiscoveredSkill[]>();
+    mocks.listSkills.mockReturnValue(pending.promise);
+    const context = {
+      harness: "omp" as const,
+      cwd: "remote://host/work/repo",
+      sessionId: "one",
+    };
+    const first = loadSkills(context);
+    const second = loadSkills({ ...context, sessionId: "two" });
+    expect(mocks.discoverOmpCommands).not.toHaveBeenCalled();
+    expect(mocks.listSkills).toHaveBeenCalledExactlyOnceWith(context.cwd);
+    pending.resolve([
+      {
+        name: "review",
+        description: "Remote",
+        path: "remote://host/home/skills/review/SKILL.md",
+        scope: "user",
+        source: "agents",
+      },
+    ]);
+    expect(await first).toEqual(await second);
+    expect((await loadSkills(context)).map((item) => item.name)).toEqual([
+      "review",
+    ]);
+    expect(mocks.listSkills).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(30_001);
+    await loadSkills(context);
+    expect(mocks.listSkills).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries failed remote discovery without caching an empty catalog permanently", async () => {
+    const context = {
+      harness: "codex" as const,
+      cwd: "remote://offline/work/repo",
+    };
+    mocks.listSkills.mockRejectedValueOnce(new Error("offline"));
+    expect(await loadSkills(context)).toEqual([]);
+    await loadSkills(context);
+    expect(mocks.listSkills).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5_001);
+    await loadSkills(context);
+    expect(mocks.listSkills).toHaveBeenCalledTimes(2);
+  });
   it("injects a Codex $skill from another provider and reads edits on the next turn", async () => {
     mocks.listSkills.mockResolvedValue([
       {

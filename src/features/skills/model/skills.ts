@@ -18,6 +18,7 @@ import { getHarness } from "../../../integrations/harness/core/registry";
 import type { NativeCommand } from "../../../integrations/harness/core/nativeCommands";
 import { isCliCommandText } from "./cliCommands";
 import { dollarTokenAt } from "./slashCommands";
+import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import {
   CREATE_SKILL_BODY,
   CREATE_SKILL_DESCRIPTION,
@@ -153,7 +154,9 @@ type CatalogEntry = {
 const catalogEntries = new Map<string, CatalogEntry>();
 
 export function skillCatalogKey(context: SkillCatalogContext): string {
-  const sessionScoped = !!getHarness(context.harness)?.commands?.subscribe;
+  const sessionScoped =
+    !context.cwd.startsWith(REMOTE_PATH_PREFIX) &&
+    !!getHarness(context.harness)?.commands?.subscribe;
   return `${context.harness}\0${normalizeProjectPath(context.cwd)}${sessionScoped && context.sessionId ? `\0${context.sessionId}` : ""}`;
 }
 
@@ -177,6 +180,7 @@ export function subscribeSkills(
   context: SkillCatalogContext,
   onSkills: (skills: Skill[]) => void,
 ): () => void {
+  if (context.cwd.startsWith(REMOTE_PATH_PREFIX)) return () => undefined;
   return (
     getHarness(context.harness)?.commands?.subscribe?.(context, (commands) => {
       const key = skillCatalogKey(context);
@@ -253,17 +257,21 @@ export function loadSkills(
   if (entry.inFlight?.generation === entry.generation) {
     return entry.inFlight.promise;
   }
-  if (!hasNativeCommands(normalized.harness) && entry.skills) {
+  const remote = normalized.cwd.startsWith(REMOTE_PATH_PREFIX);
+  if (!remote && !hasNativeCommands(normalized.harness) && entry.skills) {
     return Promise.resolve(entry.skills);
   }
   if (
-    hasNativeCommands(normalized.harness) &&
+    (remote || hasNativeCommands(normalized.harness)) &&
     entry.skills &&
     now - entry.loadedAt < NATIVE_SKILL_TTL_MS
   ) {
     return Promise.resolve(entry.skills);
   }
-  if (hasNativeCommands(normalized.harness) && now < entry.retryAt) {
+  if (
+    (remote || hasNativeCommands(normalized.harness)) &&
+    now < entry.retryAt
+  ) {
     return Promise.resolve(entry.skills ?? []);
   }
   return startCatalogLoad(key, entry, normalized);
@@ -295,7 +303,10 @@ function startCatalogLoad(
       ) {
         return catalogEntries.get(key)?.skills ?? [];
       }
-      if (hasNativeCommands(context.harness)) {
+      if (
+        context.cwd.startsWith(REMOTE_PATH_PREFIX) ||
+        hasNativeCommands(context.harness)
+      ) {
         entry.retryAt = Date.now() + NATIVE_SKILL_RETRY_MS;
         return entry.skills ?? [];
       }
@@ -318,6 +329,11 @@ function startCatalogLoad(
 }
 
 async function loadCatalog(context: SkillCatalogContext): Promise<Skill[]> {
+  if (context.cwd.startsWith(REMOTE_PATH_PREFIX)) {
+    const disabled = disabledSkillPathSet();
+    const discovered = await listSkills(context.cwd);
+    return discovered.filter((skill) => !disabled.has(skill.path)).map(asSkill);
+  }
   const provider = getHarness(context.harness)?.commands;
   if (provider) {
     const commands = await provider.discover(context);

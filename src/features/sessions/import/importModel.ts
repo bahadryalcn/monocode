@@ -7,6 +7,14 @@ import { isEqualOrInside, pathKey, slash } from "../../../shared/lib/paths";
 /** Opens the import dialog from anywhere (rail menu, Settings). */
 export const OPEN_SESSION_IMPORT_EVENT = "monocode:open-session-import";
 
+export type SessionImportContext = { cwd: string; provider: ImportProvider };
+
+export function requestSessionImport(context: SessionImportContext): void {
+  window.dispatchEvent(
+    new CustomEvent(OPEN_SESSION_IMPORT_EVENT, { detail: context }),
+  );
+}
+
 /** Identity of a provider conversation, as the store records it. */
 export function candidateKey(candidate: ImportCandidate): string {
   return `${candidate.provider}:${candidate.providerSessionId}`;
@@ -47,7 +55,8 @@ export function filterCandidates(
   const needle = filters.text.trim().toLocaleLowerCase();
   return candidates.filter((candidate) => {
     if (!filters.providers.has(candidate.provider)) return false;
-    if (!filters.showAutomation && candidate.kind !== "interactive") return false;
+    if (!filters.showAutomation && candidate.kind !== "interactive")
+      return false;
     if (filters.root && !isEqualOrInside(candidate.cwd, filters.root)) {
       return false;
     }

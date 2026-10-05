@@ -18,7 +18,10 @@ import {
   type LastGoodLists,
   type MachineResult,
 } from "../../automations/model/machineResults";
-import { machineProjects } from "../../automations/model/machineSnapshot";
+import {
+  machineProjects,
+  machineCapabilities,
+} from "../../automations/model/machineSnapshot";
 import type { HarnessId, RuntimeMode } from "../../sessions/model/session";
 import {
   HOST_TASKS,
@@ -32,7 +35,8 @@ import {
 
 export const TASK_MACHINE_ERROR =
   "This project’s machine isn’t connected, or its MonoCode Host needs an update.";
-export const TASK_AGENT_ERROR = "This agent cannot run tasks in the background.";
+export const TASK_AGENT_ERROR =
+  "This agent cannot run tasks in the background.";
 
 /** A host task as this desktop shows it: on its machine, in its project. */
 export type BoardTask = HostTask & {
@@ -42,6 +46,7 @@ export type BoardTask = HostTask & {
   cwd: string;
   /** The machine did not answer; this is what it last reported. */
   stale?: boolean;
+  reviewRecheckSupported?: boolean;
 };
 
 /** What the task form edits. A draft with an ID edits that task. */
@@ -231,7 +236,8 @@ export function tasksInColumn(
   return status === "todo" || status === "queued" || status === "running"
     ? column.sort((a, b) => a.createdAt - b.createdAt)
     : column.sort(
-        (a, b) => (b.completedAt ?? b.updatedAt) - (a.completedAt ?? a.updatedAt),
+        (a, b) =>
+          (b.completedAt ?? b.updatedAt) - (a.completedAt ?? a.updatedAt),
       );
 }
 
@@ -282,11 +288,15 @@ export function listBoardTaskResults(
     lastBoardTasks,
     machines,
     async (machine) => {
-      const [tasks, projects] = await Promise.all([
+      const [tasks, projects, capabilities] = await Promise.all([
         remoteRequest<HostTask[]>(machine.id, "tasks.list"),
         machineProjects(machine),
+        machineCapabilities(machine).catch(() => [] as string[]),
       ]);
-      return boardTasksFromHost(machine, projects, tasks);
+      return boardTasksFromHost(machine, projects, tasks).map((task) => ({
+        ...task,
+        reviewRecheckSupported: capabilities.includes("tasks.review-recheck"),
+      }));
     },
     (task) => ({ ...task, stale: true }),
     down,
@@ -297,7 +307,9 @@ export function listBoardTaskResults(
 export async function listBoardTasks(
   machines: readonly RemoteMachine[],
 ): Promise<BoardTask[]> {
-  return (await listBoardTaskResults(machines)).flatMap((result) => result.data);
+  return (await listBoardTaskResults(machines)).flatMap(
+    (result) => result.data,
+  );
 }
 
 /** Saves the draft on the machine that owns its project. A new task is added
@@ -351,6 +363,17 @@ export async function moveTask(
     true,
   );
   return { ...task, ...moved };
+}
+
+export async function recheckTaskReview(task: BoardTask): Promise<BoardTask> {
+  const updated = await remoteRequest<HostTask>(
+    task.machineId,
+    "tasks.review.recheck",
+    { taskId: task.id },
+    false,
+    true,
+  );
+  return { ...task, ...updated };
 }
 
 export async function readTaskNotes(

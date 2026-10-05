@@ -18,6 +18,7 @@ import {
   groupByFolder,
   isAlreadyImported,
   type FolderGroup,
+  type SessionImportContext,
 } from "../import/importModel";
 import {
   isUsableProjectFolder,
@@ -29,6 +30,7 @@ import {
 import { HarnessIcon } from "./HarnessIcon";
 
 type Props = {
+  initialContext?: SessionImportContext;
   onClose: () => void;
   /** Sessions or projects were added; the app should reload what it shows. */
   onImported: () => void;
@@ -76,13 +78,18 @@ function isHistoryOnly(candidate: ImportCandidate): boolean {
  * grouped by the folder each ran in. Nothing is touched until Import is
  * pressed, and the provider files are only ever read.
  */
-export function SessionImportDialog({ onClose, onImported }: Props) {
+export function SessionImportDialog({
+  onClose,
+  onImported,
+  initialContext,
+}: Props) {
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [providers, setProviders] = useState<ReadonlySet<ImportProvider>>(
-    new Set(["claude", "codex"]),
+    () =>
+      new Set(initialContext ? [initialContext.provider] : ["claude", "codex"]),
   );
   const [text, setText] = useState("");
-  const [onlyRoot, setOnlyRoot] = useState(false);
+  const [onlyRoot, setOnlyRoot] = useState(!!initialContext);
   const [showAutomation, setShowAutomation] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -100,7 +107,16 @@ export function SessionImportDialog({ onClose, onImported }: Props) {
         // Everything a person had a conversation in, not yet imported.
         setSelected(
           new Set(
-            report.candidates
+            filterCandidates(report.candidates, {
+              providers: new Set(
+                initialContext
+                  ? [initialContext.provider]
+                  : ["claude", "codex"],
+              ),
+              root: initialContext?.cwd ?? null,
+              text: "",
+              showAutomation: false,
+            })
               .filter(
                 (candidate) =>
                   candidate.kind === "interactive" &&
@@ -122,13 +138,14 @@ export function SessionImportDialog({ onClose, onImported }: Props) {
       cancelled = true;
       abort.current?.abort();
     };
-  }, []);
+  }, [initialContext]);
 
   const report = load.status === "ready" ? load.report : null;
   const stored = load.status === "ready" ? load.stored : EMPTY;
   const root = useMemo(
-    () => (report ? dominantRoot(report.candidates) : null),
-    [report],
+    () =>
+      initialContext?.cwd ?? (report ? dominantRoot(report.candidates) : null),
+    [report, initialContext?.cwd],
   );
   const visible = useMemo(
     () =>
@@ -404,8 +421,8 @@ export function SessionImportDialog({ onClose, onImported }: Props) {
                   : ""}
                 <span className="block text-[11px] text-content/40">
                   Scanned {report.filesScanned.toLocaleString()} files in{" "}
-                  {report.elapsedMs.toLocaleString()} ms. Conversations hidden by
-                  a filter are not imported.
+                  {report.elapsedMs.toLocaleString()} ms. Conversations hidden
+                  by a filter are not imported.
                 </span>
               </p>
               <button
@@ -421,7 +438,8 @@ export function SessionImportDialog({ onClose, onImported }: Props) {
                 onClick={() => void start()}
                 className="rounded-md bg-selection px-3 py-1.5 text-[12px] font-medium hover:bg-selection-hover disabled:opacity-40"
               >
-                Import {counts.toImport > 0 ? counts.toImport.toLocaleString() : ""}
+                Import{" "}
+                {counts.toImport > 0 ? counts.toImport.toLocaleString() : ""}
               </button>
             </div>
           </>
@@ -524,7 +542,9 @@ function FolderSection({
                     className={checkbox}
                     disabled={imported}
                     checked={imported || selected.has(key)}
-                    onChange={(event) => onToggleKeys([key], event.target.checked)}
+                    onChange={(event) =>
+                      onToggleKeys([key], event.target.checked)
+                    }
                   />
                   <span
                     title={PROVIDER_LABEL[item.provider]}
@@ -602,7 +622,9 @@ function RunningView({
       <p className="text-[11px] text-content/45">
         {progress.imported.toLocaleString()} imported
         {progress.skipped > 0 ? ` · ${progress.skipped} skipped` : ""}
-        {progress.failed.length > 0 ? ` · ${progress.failed.length} failed` : ""}
+        {progress.failed.length > 0
+          ? ` · ${progress.failed.length} failed`
+          : ""}
       </p>
       <div className="flex justify-end">
         <button
@@ -659,12 +681,18 @@ function DoneView({
       {summary.failed.length > 0 ? (
         <details className="rounded-lg border border-red-400/30 bg-red-400/5 px-3 py-2 text-[12px]">
           <summary className="cursor-pointer text-red-400">
-            {plural(summary.failed.length, "conversation")} could not be imported
+            {plural(summary.failed.length, "conversation")} could not be
+            imported
           </summary>
           <ul className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto">
             {summary.failed.map((failure) => (
-              <li key={candidateKey(failure.candidate)} className="text-content/70">
-                <span className="text-content">{failure.candidate.firstPrompt}</span>
+              <li
+                key={candidateKey(failure.candidate)}
+                className="text-content/70"
+              >
+                <span className="text-content">
+                  {failure.candidate.firstPrompt}
+                </span>
                 {" — "}
                 {failure.error}
               </li>

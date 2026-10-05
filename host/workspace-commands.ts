@@ -25,6 +25,7 @@ import {
   type GitActionCommand,
 } from "./git-actions";
 import type { HostStore } from "./store";
+import { listHostClaudeCommands } from "./claude-commands";
 import {
   deleteHostSkill,
   exportHostSkill,
@@ -92,6 +93,7 @@ export const WORKSPACE_COMMANDS = [
   "git_worktrees",
   "search_project",
   "list_skills",
+  "list_claude_commands",
   "skill_export",
   "skill_delete",
   "skill_import",
@@ -223,6 +225,8 @@ export class WorkspaceCommands {
         return this.searchProject(input.options);
       case "list_skills":
         return this.listSkills(input.cwd);
+      case "list_claude_commands":
+        return this.existing(input.cwd, true).then(({ path }) => listHostClaudeCommands(path));
       case "skill_export":
         return this.exportSkill(input.path, input.cwd);
       case "skill_delete":

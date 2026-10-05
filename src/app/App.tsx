@@ -748,6 +748,7 @@ import {
 } from "../features/projects/model/projectNames";
 import { ProjectNameConflictDialog } from "../features/projects/ui/ProjectNameConflictDialog";
 import { SessionImportHost } from "../features/sessions/ui/SessionImportHost";
+import { requestSessionImport } from "../features/sessions/import/importModel";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
 import { inboxAskKey, inboxAskPrompt } from "../features/inbox/model/inboxAsk";
@@ -6701,6 +6702,12 @@ function Workspace({
       (session) => session.id === sessionId,
     );
     if (!source) return;
+    if (isRemoteProjectPath(source.cwd)) return;
+    if (source.harness === "codex") {
+      requestSessionImport({ cwd: sessionWorkCwd(source), provider: "codex" });
+      return;
+    }
+    if (source.harness !== "claude") return;
     setResumePickerFor({
       sessionId,
       // Claude files conversations under the directory it ran in, which for a

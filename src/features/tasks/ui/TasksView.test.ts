@@ -100,6 +100,7 @@ function host(
       return { ...limits, ...args.params.settings };
     if (args.method === "tasks.move")
       return { ...tasks[0], status: args.params.to };
+    if (args.method === "tasks.review.recheck") return { ...tasks[0], status: "verifying" };
     if (args.method === "tasks.notes.read" || args.method === "tasks.notes.resolve") {
       const target = tasks.find((task) => task.id === args.params.taskId)!;
       target.reviewNotes = target.reviewNotes?.map((note) => {
@@ -489,6 +490,57 @@ it("adds a to-do item with a title and description, or adds and starts it", asyn
     prompt: "Do it",
     status: "queued",
   });
+});
+
+it("shows an external stop and attempt outcome, and rechecks review without a worker retry", async () => {
+  const requests = host(
+    [
+      task({
+        status: "blocked",
+        sessionId: "worker-session",
+        repairStop: {
+          reason: "external",
+          message: "Provide an Android device and test TalkBack reset.",
+        },
+        verification: {
+          review: {
+            verdict: "fail",
+            note: "Acceptance missing",
+            sessionId: "review-session",
+          },
+        },
+        attemptHistory: [
+          {
+            attempt: 1,
+            at: 2,
+            workerSessionId: "worker-session",
+            reviewerSessionId: "review-session",
+            workerSummary: "Fixed reset and ran unit checks.",
+            verdict: "fail",
+            note: "Acceptance missing",
+            findings: ["Acceptance missing"],
+          },
+        ],
+      }),
+    ],
+    ["tasks", "tasks.todo", "tasks.review-recheck"],
+  );
+  await render();
+  expect(card("Ship the report").textContent).toContain(
+    "Waiting for external verification",
+  );
+  await act(async () => card("Ship the report").click());
+  const history = panel()!.querySelector('[aria-label="Attempt history"]')!;
+  expect(history.textContent).toContain("Fixed reset and ran unit checks.");
+  expect(history.textContent).toContain("Review: Acceptance missing");
+  expect(history.textContent).toContain("Provide an Android device");
+  await act(async () => button(panel()!, "Recheck review")!.click());
+  expect(
+    requests.filter((request) => request.method === "tasks.review.recheck"),
+  ).toEqual([{ method: "tasks.review.recheck", params: { taskId: "main" } }]);
+  expect(requests.some((request) => request.method === "tasks.move")).toBe(
+    false,
+  );
 });
 
 it("offers to update an older host instead of adding a to-do item", async () => {

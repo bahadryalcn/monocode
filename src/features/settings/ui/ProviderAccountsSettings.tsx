@@ -52,6 +52,7 @@ import {
 } from "../../providers/ui/ProviderAccountUsage";
 
 import { Group } from "./settingsControls";
+import { AntigravityAccountSettings } from "./AntigravityAccountSettings";
 
 export type AccountEditor = {
   provider: ProviderAccountProvider;
@@ -429,6 +430,7 @@ export function ProviderAccountsSettings() {
           );
         })}
       </div>
+      <AntigravityAccountSettings embedded />
       {error ? (
         <p
           className="border-t border-content/5 px-4 py-2.5 text-[11px] leading-4 text-red-400"

@@ -900,7 +900,7 @@ pub fn harness_resolve_antigravity() -> Result<AntigravityBinary, String> {
             if cfg!(windows) {
                 "Antigravity CLI (agy.exe) not found. Install Antigravity, then run `agy` once in a terminal to sign in.".into()
             } else {
-                "Antigravity ACP server (agy_acp_server.par) not found. Install Antigravity and run `agy` once in Terminal.".into()
+                "Antigravity CLI (agy) not found. Install from https://antigravity.google/docs/cli/install/, then run `agy` in Terminal to sign in.".into()
             }
         })
 }
@@ -2552,7 +2552,7 @@ fn resolve_harness_binary_override(provider: &str, binary_path: &str) -> Result<
         "hermes" => &["hermes"],
         "gemini" => &["gemini"],
         "antigravity" if cfg!(windows) => &["agy_acp_server", "agy"],
-        "antigravity" => &["agy_acp_server.par"],
+        "antigravity" => &["agy_acp_server.par", "agy"],
         _ => {
             return Err(format!(
                 "Unsupported configured harness provider: {provider}"
@@ -2953,6 +2953,12 @@ fn resolve_antigravity() -> Option<PathBuf> {
         candidates.push(home.join(".local/share/agy-acp/agy_acp_server.par"));
     }
     if let Some(from_shell) = which_via_login_shell("agy_acp_server.par") {
+        candidates.push(from_shell);
+    }
+    if let Some(home) = dirs_home().map(PathBuf::from) {
+        candidates.push(home.join(".local/bin/agy"));
+    }
+    if let Some(from_shell) = which_via_login_shell("agy") {
         candidates.push(from_shell);
     }
     first_binary(candidates)

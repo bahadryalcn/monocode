@@ -14,13 +14,18 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeLocal }));
 
 import { WORKSPACE_COMMANDS } from "../../../../host/workspace-commands";
 import { GIT_ACTION_COMMANDS } from "../../../../host/git-actions";
-import { HOST_COMMANDS, runMachineCommand, runRemoteCommand } from "./remoteCommands";
+import {
+  HOST_COMMANDS,
+  runMachineCommand,
+  runRemoteCommand,
+} from "./remoteCommands";
 import { parseRemotePath, remotePath } from "./remoteProjects";
 import {
   exportSkill,
   deleteSkill,
   importSkill,
   listDir,
+  listClaudeCommands,
   readBinaryFile,
   readTextFile,
   statFiles,
@@ -30,6 +35,24 @@ import {
 beforeEach(() => {
   remoteRequest.mockReset();
   invokeLocal.mockReset();
+});
+
+it("routes slash-command discovery to the host and preserves command metadata", async () => {
+  const commands = [
+    {
+      name: "gsd:plan",
+      description: "Plan",
+      argumentHint: "[phase]",
+      scope: "project",
+    },
+  ];
+  remoteRequest.mockResolvedValue(commands);
+  expect(await listClaudeCommands("remote://env/work/repo")).toEqual(commands);
+  expect(remoteRequest).toHaveBeenCalledWith("machine", "workspace.run", {
+    command: "list_claude_commands",
+    args: { cwd: "/work/repo" },
+  });
+  expect(invokeLocal).not.toHaveBeenCalled();
 });
 
 it("keeps local writes local when their content mentions a remote path", async () => {
@@ -64,9 +87,7 @@ it("maps path results back and leaves file contents alone", async () => {
   expect(await readTextFile("remote://env/home/me/a.txt")).toBe(
     "remote://not-a-path",
   );
-  remoteRequest.mockResolvedValueOnce([
-    { path: "/home/me/a.txt", mtimeMs: 1 },
-  ]);
+  remoteRequest.mockResolvedValueOnce([{ path: "/home/me/a.txt", mtimeMs: 1 }]);
   expect(await statFiles(["remote://env/home/me/a.txt"])).toEqual([
     { path: "remote://env/home/me/a.txt", mtimeMs: 1 },
   ]);
@@ -102,9 +123,9 @@ it("preserves Windows drive and UNC paths", () => {
   expect(parseRemotePath(remotePath("env", "C:\\work\\repo"))?.hostPath).toBe(
     "C:/work/repo",
   );
-  expect(parseRemotePath(remotePath("env", "\\\\server\\share\\repo"))?.hostPath).toBe(
-    "//server/share/repo",
-  );
+  expect(
+    parseRemotePath(remotePath("env", "\\\\server\\share\\repo"))?.hostPath,
+  ).toBe("//server/share/repo");
 });
 
 it("adds remote paths to Git index entries", async () => {
@@ -112,9 +133,9 @@ it("adds remote paths to Git index entries", async () => {
     branch: "main",
     files: [{ path: "src/app.ts", relative: "src/app.ts", status: "modified" }],
   });
-  const index = await runRemoteCommand("git_diff_index", {
+  const index = (await runRemoteCommand("git_diff_index", {
     cwd: "remote://env/home/me/repo",
-  }) as { files: { path: string }[] };
+  })) as { files: { path: string }[] };
   expect(index.files[0].path).toBe("remote://env/home/me/repo/src/app.ts");
 });
 
@@ -126,9 +147,17 @@ it("maps the conflict entries of an index, and leaves a host without them alone"
     operation: "merge",
   });
   expect(
-    await runRemoteCommand("git_diff_index", { cwd: "remote://env/home/me/repo" }),
+    await runRemoteCommand("git_diff_index", {
+      cwd: "remote://env/home/me/repo",
+    }),
   ).toMatchObject({
-    conflicts: [{ path: "remote://env/home/me/repo/a.txt", relative: "a.txt", kind: "both-modified" }],
+    conflicts: [
+      {
+        path: "remote://env/home/me/repo/a.txt",
+        relative: "a.txt",
+        kind: "both-modified",
+      },
+    ],
     operation: "merge",
   });
   remoteRequest.mockResolvedValueOnce({ branch: "main", files: [] });
@@ -163,12 +192,16 @@ it("reads the three versions of a conflicted file through the host", async () =>
 
 it("routes project search through the host and maps match paths", async () => {
   remoteRequest.mockResolvedValueOnce({
-    matches: [{ path: "/home/me/repo/src/app.ts", relative: "src/app.ts", line: 4 }],
+    matches: [
+      { path: "/home/me/repo/src/app.ts", relative: "src/app.ts", line: 4 },
+    ],
     truncated: false,
   });
-  expect(await runRemoteCommand("search_project", {
-    options: { cwd: "remote://env/home/me/repo", query: "hello" },
-  })).toMatchObject({
+  expect(
+    await runRemoteCommand("search_project", {
+      options: { cwd: "remote://env/home/me/repo", query: "hello" },
+    }),
+  ).toMatchObject({
     matches: [{ path: "remote://env/home/me/repo/src/app.ts", line: 4 }],
   });
   expect(remoteRequest).toHaveBeenCalledWith("machine", "workspace.run", {
@@ -179,7 +212,8 @@ it("routes project search through the host and maps match paths", async () => {
 
 it("forwards exactly the commands the host answers", () => {
   expect([...HOST_COMMANDS].sort()).toEqual([...WORKSPACE_COMMANDS].sort());
-  for (const command of GIT_ACTION_COMMANDS) expect(HOST_COMMANDS.has(command)).toBe(true);
+  for (const command of GIT_ACTION_COMMANDS)
+    expect(HOST_COMMANDS.has(command)).toBe(true);
 });
 
 it("sends git actions with the project translated and files left relative", async () => {
@@ -193,14 +227,21 @@ it("sends git actions with the project translated and files left relative", asyn
     args: { cwd: "/home/me/repo", relative: "src/app.ts" },
   });
   // Conflicts and operation state are repo-relative already.
-  remoteRequest.mockResolvedValueOnce({ operation: "merge", conflicts: ["src/app.ts"] });
+  remoteRequest.mockResolvedValueOnce({
+    operation: "merge",
+    conflicts: ["src/app.ts"],
+  });
   expect(
-    await runRemoteCommand("git_operation_status", { cwd: "remote://env/home/me/repo" }),
+    await runRemoteCommand("git_operation_status", {
+      cwd: "remote://env/home/me/repo",
+    }),
   ).toEqual({ operation: "merge", conflicts: ["src/app.ts"] });
 });
 
 it("reports a host that predates a command as outdated", async () => {
-  remoteRequest.mockRejectedValueOnce("Host rejected request: Unsupported workspace command");
+  remoteRequest.mockRejectedValueOnce(
+    "Host rejected request: Unsupported workspace command",
+  );
   await expect(
     runRemoteCommand("git_tags", { cwd: "remote://env/home/me/repo" }),
   ).rejects.toThrow("Update MonoCode Host");
@@ -233,13 +274,22 @@ it("refuses what the host cannot do and explains outdated hosts", async () => {
 });
 
 it("routes skill export and import to the machine and maps the written path back", async () => {
-  remoteRequest.mockResolvedValueOnce({ name: "tool", files: [{ path: "SKILL.md", data: "eA==" }] });
+  remoteRequest.mockResolvedValueOnce({
+    name: "tool",
+    files: [{ path: "SKILL.md", data: "eA==" }],
+  });
   expect(
-    await exportSkill("remote://env/home/me/.agents/skills/tool/SKILL.md", "remote://env/home/me/repo"),
+    await exportSkill(
+      "remote://env/home/me/.agents/skills/tool/SKILL.md",
+      "remote://env/home/me/repo",
+    ),
   ).toEqual({ name: "tool", files: [{ path: "SKILL.md", data: "eA==" }] });
   expect(remoteRequest).toHaveBeenLastCalledWith("machine", "workspace.run", {
     command: "skill_export",
-    args: { path: "/home/me/.agents/skills/tool/SKILL.md", cwd: "/home/me/repo" },
+    args: {
+      path: "/home/me/.agents/skills/tool/SKILL.md",
+      cwd: "/home/me/repo",
+    },
   });
 
   remoteRequest.mockResolvedValueOnce("/home/me/.agents/skills/tool/SKILL.md");
@@ -249,7 +299,12 @@ it("routes skill export and import to the machine and maps the written path back
   );
   expect(remoteRequest).toHaveBeenLastCalledWith("machine", "workspace.run", {
     command: "skill_import",
-    args: { cwd: "/home/me/repo", name: "tool", files: bundle.files, overwrite: true },
+    args: {
+      cwd: "/home/me/repo",
+      name: "tool",
+      files: bundle.files,
+      overwrite: true,
+    },
   });
 
   // A local target never leaves this computer.
@@ -265,27 +320,47 @@ it("routes skill export and import to the machine and maps the written path back
 });
 
 it("tells the user an older host needs updating to copy skills", async () => {
-  remoteRequest.mockRejectedValueOnce("Host rejected request: Unsupported workspace command");
+  remoteRequest.mockRejectedValueOnce(
+    "Host rejected request: Unsupported workspace command",
+  );
   await expect(
-    importSkill("remote://env/home/me/repo", { name: "tool", files: [] }, false),
+    importSkill(
+      "remote://env/home/me/repo",
+      { name: "tool", files: [] },
+      false,
+    ),
   ).rejects.toThrow("needs updating to copy skills");
 });
 
 it("routes skill deletion by its remote path and preserves the project context", async () => {
   remoteRequest.mockResolvedValueOnce(null);
-  await deleteSkill("remote://env/home/me/.agents/skills/tool/SKILL.md", "remote://env/home/me/repo");
+  await deleteSkill(
+    "remote://env/home/me/.agents/skills/tool/SKILL.md",
+    "remote://env/home/me/repo",
+  );
   expect(remoteRequest).toHaveBeenLastCalledWith("machine", "workspace.run", {
     command: "skill_delete",
-    args: { path: "/home/me/.agents/skills/tool/SKILL.md", cwd: "/home/me/repo" },
+    args: {
+      path: "/home/me/.agents/skills/tool/SKILL.md",
+      cwd: "/home/me/repo",
+    },
   });
   expect(invokeLocal).not.toHaveBeenCalled();
   remoteRequest.mockRejectedValueOnce("Unsupported workspace command");
-  await expect(deleteSkill("remote://env/home/me/.agents/skills/tool/SKILL.md", "")).rejects.toThrow("needs updating to delete skills");
+  await expect(
+    deleteSkill("remote://env/home/me/.agents/skills/tool/SKILL.md", ""),
+  ).rejects.toThrow("needs updating to delete skills");
 });
 
 it("addresses a machine without a project path for skill commands", async () => {
   remoteRequest.mockResolvedValueOnce([
-    { name: "tool", description: "", path: "/home/me/.agents/skills/tool/SKILL.md", scope: "user", source: "agents" },
+    {
+      name: "tool",
+      description: "",
+      path: "/home/me/.agents/skills/tool/SKILL.md",
+      scope: "user",
+      source: "agents",
+    },
   ]);
   expect(await runMachineCommand("env", "list_skills", { cwd: "" })).toEqual([
     {
@@ -303,7 +378,11 @@ it("addresses a machine without a project path for skill commands", async () => 
 
   remoteRequest.mockResolvedValueOnce("/home/me/.agents/skills/tool/SKILL.md");
   expect(
-    await runMachineCommand("env", "skill_import", { name: "tool", files: [], overwrite: false }),
+    await runMachineCommand("env", "skill_import", {
+      name: "tool",
+      files: [],
+      overwrite: false,
+    }),
   ).toBe("remote://env/home/me/.agents/skills/tool/SKILL.md");
 
   // An empty cwd next to a remote skill path is "no project", not another machine.
@@ -315,9 +394,12 @@ it("addresses a machine without a project path for skill commands", async () => 
   });
 
   await expect(
-    runMachineCommand("env", "skill_export", { path: "remote://other/x/SKILL.md", cwd: "" }),
+    runMachineCommand("env", "skill_export", {
+      path: "remote://other/x/SKILL.md",
+      cwd: "",
+    }),
   ).rejects.toThrow("within one machine");
-  await expect(runMachineCommand("env", "list_dir", { path: "remote://env/x" })).rejects.toThrow(
-    "isn’t available",
-  );
+  await expect(
+    runMachineCommand("env", "list_dir", { path: "remote://env/x" }),
+  ).rejects.toThrow("isn’t available");
 });

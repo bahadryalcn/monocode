@@ -57,6 +57,7 @@ Desktop.ini
 
 # Local agent work, machine-specific reports and generated Python caches.
 .scratch/
+.scratch-performance-*
 .claude/
 .superpowers/
 __pycache__/
@@ -67,6 +68,8 @@ docs/fork-research-*.md
 docs/fork-research-*.json
 docs/fork-features-*.md
 docs/performance-todo-*.md
+docs/architecture-performance-todo-*.md
+docs/performance-validation-*.md
 docs/performance-validation-*/
 docs/review-todo-*.md
 docs/review-validation-*/

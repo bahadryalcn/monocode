@@ -6,12 +6,133 @@ import {
   resolveReviewFindings,
   reviewFindings,
   unreadReviewNotes,
+  reviewRepairStop,
+  coalesceReviewNotes,
+  resolveReviewedNotes,
 } from "./taskReviewNotes";
 
 describe("review notes", () => {
   const fail = { verdict: "fail" as const, note: "Friday is missing." };
   const json = (reviewNotes: unknown[]) =>
     `\`\`\`json\n${JSON.stringify({ reviewNotes })}\n\`\`\``;
+
+  it("requires explicit external classification and an action, never classifies legacy prose", () => {
+    const required = reviewFindings(
+      json([
+        {
+          finding: "Device acceptance missing",
+          category: "external",
+          suggestion: "Provide a device and test TalkBack",
+        },
+      ]),
+      fail,
+    );
+    expect(reviewRepairStop(required, undefined)?.reason).toBe("external");
+    expect(
+      reviewRepairStop(
+        reviewFindings(
+          json([
+            { finding: "Device acceptance missing", category: "external" },
+          ]),
+          fail,
+        ),
+        undefined,
+      ),
+    ).toBeUndefined();
+    expect(
+      reviewRepairStop(
+        reviewFindings(
+          "Physical device missing\nVERDICT: FAIL - Missing evidence.",
+          fail,
+        ),
+        undefined,
+      ),
+    ).toBeUndefined();
+    expect(
+      reviewRepairStop(
+        [...required, { finding: "Reset broken", kind: "finding" }],
+        undefined,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("resolves only explicitly verified known findings during FAIL, and reopens contradictory findings", () => {
+    let id = 0;
+    const notes = addReviewNotes([], [{ finding: "Reset broken", kind: "finding" }, { finding: "Device acceptance missing", kind: "finding" }], "r1", 1, () => `note-${++id}`);
+    const reply = '```json\n' + JSON.stringify({ reviewNotes: [{ finding: "Device acceptance missing" }], resolvedNoteIds: [notes[0].id] }) + '\n```';
+    const fixed = resolveReviewedNotes(notes, reply, 2);
+    expect(fixed[0].resolvedAt).toBe(2);
+    expect(fixed[1].resolvedAt).toBeUndefined();
+    expect(resolveReviewedNotes(notes, json([{ finding: "Device acceptance missing" }]), 2)).toEqual(notes);
+    expect(resolveReviewedNotes(notes, '```json\n{"reviewNotes":[],"resolvedNoteIds":["unknown"]}\n```', 2)).toEqual(notes);
+    expect(addReviewNotes(fixed, [{ finding: "Reset broken", kind: "finding" }], "r2", 3, () => "unused")[0].resolvedAt).toBeUndefined();
+  });
+
+  it("recognizes unchanged defects across line movement without conflating different files or fixes", () => {
+    expect(
+      reviewRepairStop(
+        [
+          {
+            finding: "docs/module.md:27-42 — TalkBack acceptance missing.",
+            kind: "finding",
+          },
+        ],
+        ["docs/module.md:31-37 — TalkBack acceptance missing."],
+      )?.reason,
+    ).toBe("no_progress");
+    expect(
+      reviewRepairStop(
+        [{ finding: "docs/other.md:27 — Missing.", kind: "finding" }],
+        ["docs/module.md:27 — Missing."],
+      ),
+    ).toBeUndefined();
+    expect(
+      reviewRepairStop(
+        [{ finding: "Missing reset", kind: "finding" }],
+        ["Missing reset", "Missing favorites"],
+      ),
+    ).toBeUndefined();
+  });
+
+  it("coalesces old location duplicates without losing review history or open state", () => {
+    const one = addReviewNotes(
+      [],
+      [
+        {
+          finding: "docs/module.md:31-37 — Missing acceptance.",
+          kind: "finding",
+        },
+      ],
+      "review1",
+      1,
+      () => "one",
+    )[0];
+    const two = addReviewNotes(
+      [],
+      [
+        {
+          finding: "docs/module.md:27-42 — Missing acceptance.",
+          kind: "finding",
+        },
+      ],
+      "review2",
+      2,
+      () => "two",
+    )[0];
+    const merged = coalesceReviewNotes([
+      { ...one, resolvedAt: 1, readAt: 1 },
+      two,
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      id: "one",
+      sessionIds: ["review1", "review2"],
+      occurrences: 2,
+    });
+    expect(merged[0].readAt).toBeUndefined();
+    expect(merged[0].resolvedAt).toBeUndefined();
+    expect(coalesceReviewNotes(merged)).toEqual(merged);
+  });
 
   it("extracts bounded actionable findings and retains old review evidence", () => {
     expect(

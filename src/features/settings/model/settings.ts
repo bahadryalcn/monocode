@@ -471,10 +471,11 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "update upgrade version outdated latest release claude codex cursor grok opencode pi omp fx",
   },
   {
-    id: "gemini-account",
+    id: "antigravity-account",
     section: "providers",
-    label: "Gemini account",
-    keywords: "google gemini sign in login oauth account authentication",
+    label: "Antigravity CLI account",
+    keywords:
+      "google gemini antigravity agy install migration sign in login oauth account authentication api key",
   },
   {
     id: "provider-accounts",

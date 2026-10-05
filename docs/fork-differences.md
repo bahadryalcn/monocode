@@ -26,7 +26,7 @@ of the fork's source, not a promise that every old release contains every featur
 | Notes and usage | A notes panel beside the conversation, markdown editing, and a combined provider usage overview. Upstream already has notes and provider usage; these are extensions. | [Notes](../src/features/notes), [usage overview](../src/features/usage) |
 | Remote work | Project/group synchronization, reconnect/recovery controls, remote Git actions and status for work continuing on its owning host. Upstream already provides the remote host and session foundations. | [Host](../host), [remote access guide](remote-access.md) |
 | Tasks and goals | A host-backed task board, goal planning, verification/review, steward workflows and guarded auto-merge. | [Task UI/model](../src/features/tasks), [host tasks](../host/tasks.ts) |
-| Gemini CLI | An additional provider adapter with catalog, authentication and session integration. It is included in the source prepared for 0.8.75; it was added after the 0.8.74 packages. | [Gemini adapter](../src/integrations/harness/providers/gemini) |
+| Google CLI providers | Antigravity CLI setup for individual accounts; Gemini CLI remains available for enterprise licenses and API keys, preserving existing sessions. | [Setup and migration](antigravity-cli.md), [Gemini adapter](../src/integrations/harness/providers/gemini), [Antigravity adapter](../src/integrations/harness/providers/antigravity) |
 | Updates and packaging | A separate fork identity/data directory and signed Windows update feed; one frozen source and persistent caches for local Windows/Mac builds and idle-aware installs. | [Fork guide](fork.md), [local updater](local-update.md) |
 
 These entries describe additions and extensions, not sole ownership of all code

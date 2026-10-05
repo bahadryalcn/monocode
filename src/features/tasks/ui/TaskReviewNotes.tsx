@@ -73,6 +73,11 @@ export function TaskReviewNotes({
                   {note.kind === "suggestion" ? (
                     <span className="text-content/45">Optional suggestion</span>
                   ) : null}
+                  {note.category === "external" ? (
+                    <span className="text-amber-400">
+                      External verification
+                    </span>
+                  ) : null}
                   {note.occurrences > 1 ? (
                     <span className="text-content/45">
                       Reported {note.occurrences} times

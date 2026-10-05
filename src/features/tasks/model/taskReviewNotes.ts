@@ -2,7 +2,7 @@ import { NO_VERDICT, type TaskReviewNote } from "./hostTasks";
 
 export type ReviewFinding = Pick<
   TaskReviewNote,
-  "finding" | "suggestion" | "details" | "kind"
+  "finding" | "suggestion" | "details" | "kind" | "category"
 >;
 const FINDING_LIMIT = 2000;
 const SUGGESTION_LIMIT = 1000;
@@ -43,6 +43,13 @@ export function reviewFindings(
                   }
                 : {}),
               kind,
+              // External acceptance requires an explicit next action. Prose alone
+              // never changes scheduling or turns an unperformed check into PASS.
+              ...(note.category === "external" &&
+              typeof note.suggestion === "string" &&
+              note.suggestion.trim()
+                ? { category: "external" as const }
+                : {}),
             },
           ];
         })
@@ -88,8 +95,37 @@ export function reviewFindings(
     : [];
 }
 
-const findingKey = (finding: string) =>
-  finding.trim().replace(/\s+/g, " ").toLowerCase();
+export const findingKey = (finding: string) =>
+  finding
+    .trim()
+    // Line movement in the same file must not manufacture a new defect.
+    .replace(/(\.[a-z\d]+):\d+(?:[-–]\d+)?\b/gi, "$1")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+export function reviewRepairStop(
+  findings: readonly ReviewFinding[],
+  previous: readonly string[] | undefined,
+): { reason: "external" | "no_progress"; message: string } | undefined {
+  const required = findings.filter((note) => note.kind === "finding");
+  if (!required.length) return undefined;
+  if (required.every((note) => note.category === "external"))
+    return {
+      reason: "external",
+      message: `External verification required. ${required.map((note) => note.suggestion).join(" ")}`,
+    };
+  const current = [
+    ...new Set(required.map((note) => findingKey(note.finding))),
+  ].sort();
+  const earlier = [...new Set(previous?.map(findingKey) ?? [])].sort();
+  if (earlier.length && JSON.stringify(current) === JSON.stringify(earlier))
+    return {
+      reason: "no_progress",
+      message:
+        "The same findings remain after correction. Inspect the attempt and review before retrying; another identical run will not unblock dependencies.",
+    };
+  return undefined;
+}
 
 /** Repeated findings retain their identity and read state. A resolved finding
  * returning is reopened and unread; repeating it in the same session is idempotent. */
@@ -124,6 +160,7 @@ export function addReviewNotes(
     notes[at] = {
       ...note,
       ...finding,
+      category: finding.category,
       sessionId,
       sessionIds: [
         ...new Set([
@@ -140,6 +177,53 @@ export function addReviewNotes(
   return notes;
 }
 
+/** Repair legacy duplicates caused only by changed line numbers. Keep the first
+ * identity, all review links, and conservative open/unread state. */
+export function coalesceReviewNotes(
+  previous: readonly TaskReviewNote[],
+): TaskReviewNote[] {
+  const result: TaskReviewNote[] = [];
+  for (const note of previous) {
+    const at = result.findIndex(
+      (other) =>
+        other.kind === note.kind &&
+        findingKey(other.finding) === findingKey(note.finding),
+    );
+    if (at < 0) {
+      result.push(note);
+      continue;
+    }
+    const first = result[at];
+    const sessions = [
+      ...new Set([
+        ...(first.sessionIds ?? (first.sessionId ? [first.sessionId] : [])),
+        ...(note.sessionIds ?? (note.sessionId ? [note.sessionId] : [])),
+      ]),
+    ];
+    const latest = first.updatedAt >= note.updatedAt ? first : note;
+    result[at] = {
+      ...latest,
+      id: first.id,
+      sessionIds: sessions,
+      createdAt: Math.min(first.createdAt, note.createdAt),
+      occurrences: Math.max(
+        sessions.length,
+        first.occurrences,
+        note.occurrences,
+      ),
+      readAt:
+        first.readAt === undefined || note.readAt === undefined
+          ? undefined
+          : Math.max(first.readAt, note.readAt),
+      resolvedAt:
+        first.resolvedAt === undefined || note.resolvedAt === undefined
+          ? undefined
+          : Math.max(first.resolvedAt, note.resolvedAt),
+    };
+  }
+  return result;
+}
+
 export function resolveReviewFindings(
   notes: readonly TaskReviewNote[],
   now: number,
@@ -149,6 +233,25 @@ export function resolveReviewFindings(
       ? { ...note, resolvedAt: now, updatedAt: now }
       : note,
   );
+}
+
+/** A failed review may still verify earlier defects fixed. Only explicit known
+ * IDs from the same structured review are resolved; absent findings prove nothing. */
+export function resolveReviewedNotes(
+  notes: readonly TaskReviewNote[], reply: string, now: number,
+): TaskReviewNote[] {
+  for (const block of [...reply.matchAll(/```json\s*([\s\S]*?)```/gi)].reverse()) {
+    try {
+      const value = JSON.parse(block[1]);
+      if (!Array.isArray(value?.reviewNotes)) continue;
+      if (!Array.isArray(value.resolvedNoteIds)) return [...notes];
+      const ids: unknown[] = value.resolvedNoteIds;
+      if (ids.length > 12 || ids.some((id) => typeof id !== "string" || !notes.some((note) => note.id === id && note.kind === "finding"))) return [...notes];
+      return notes.map((note) => ids.includes(note.id) && note.resolvedAt === undefined
+        ? { ...note, resolvedAt: now, updatedAt: now } : note);
+    } catch { /* Ignore malformed optional review metadata. */ }
+  }
+  return [...notes];
 }
 
 export function unreadReviewNotes(
@@ -167,7 +270,7 @@ export function openReviewNotesPrompt(
     "Open review notes for this task. Fix findings against the original spec; suggestions are optional. A note's status does not replace the task's checks or review.",
     ...open.map(
       (note) =>
-        `[${note.kind}] ${note.finding}${note.suggestion ? `\nSuggested correction: ${note.suggestion}` : ""}${note.details ? `\nReview details: ${note.details}` : ""}`,
+        `[${note.kind}${note.category === "external" ? ": external verification" : ""}] ${note.finding}\nNote id: ${note.id}${note.suggestion ? `\nSuggested correction: ${note.suggestion}` : ""}${note.details ? `\nReview details: ${note.details}` : ""}`,
     ),
   ]
     .join("\n\n")

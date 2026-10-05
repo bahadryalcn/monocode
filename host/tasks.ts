@@ -20,9 +20,12 @@ import {
 import { DEFAULT_MAX_RUNNING_TASKS } from "../src/features/tasks/model/hostSettings";
 import {
   addReviewNotes,
+  coalesceReviewNotes,
   openReviewNotesPrompt,
   resolveReviewFindings,
+  resolveReviewedNotes,
   reviewFindings,
+  reviewRepairStop,
 } from "../src/features/tasks/model/taskReviewNotes";
 import { createHostWorktree } from "./git-worktrees";
 import { HostLimits } from "./limits";
@@ -198,6 +201,8 @@ function reviewPrompt(task: HostTask): string {
     openReviewNotesPrompt(task.reviewNotes),
     'Before the final verdict, include a fenced json block {"reviewNotes":[{"finding":"specific defect, with file/location when known","suggestion":"actionable correction","kind":"finding"}]}. Use one entry per distinct finding. Use kind "suggestion" for optional improvements, which must not cause FAIL. On PASS all earlier open findings must be verified fixed; only optional suggestions may remain. Do not invent notes when there are none.',
     "Reuse the wording of an earlier finding when the same defect remains, so its history is retained rather than creating a duplicate.",
+    'In that same JSON block include "resolvedNoteIds":["earlier-note-id"] only for earlier findings you verified fixed against code and checks. Resolve verified fixes even when another finding keeps this review at FAIL. Never resolve an unavailable acceptance check or a worker claim without verification. Absence from the new findings does not automatically resolve an old note.',
+    'For every required finding add category "code" (locally fixable deliverable) or "external" (only an explicitly required acceptance check needs unavailable device/access/user input), and an actionable suggestion. Use external only after checking that no local implementation or test fix can address that finding. An external finding must name the unavailable resource and the exact next check. Mixed reviews keep code defects as code; never hide missing functionality as external. Both categories still require FAIL until satisfied.',
     "",
     "End your reply with exactly one final line, either",
     "VERDICT: PASS",
@@ -227,6 +232,7 @@ function workerPrompt(task: HostTask, projectCwd: string): string {
     "",
     "Previous verification feedback:",
     task.retryFeedback,
+    "Summarize the changes actually made, checks run with their results, which findings remain, and any unavailable resource plus the concrete next action. If an earlier correction did not address a finding, explain why and choose a different approach. Do not just repeat the previous completion claim or retry an unavailable physical acceptance test.",
   ].join("\n");
 }
 
@@ -328,6 +334,34 @@ export class HostTasks {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
+  /** Re-evaluate existing work and acceptance blockers without a worker rerun. */
+  recheckReview(id: string): HostTask {
+    const task = this.find(id);
+    if (
+      !task ||
+      task.status !== "blocked" ||
+      task.verification?.review?.verdict !== "fail" ||
+      !task.sessionId
+    )
+      throw new Error(
+        "Only a blocked task with a failed review and existing worker can be rechecked.",
+      );
+    const next = this.write({
+      ...task,
+      status: "verifying",
+      reviewOnly: true,
+      repairStop: undefined,
+      error: undefined,
+      needsInput: undefined,
+      reviewer: undefined,
+      verification: undefined,
+      completedAt: undefined,
+      updatedAt: this.now(),
+    });
+    this.verify(next);
+    return next;
+  }
+
   /** Adds a task to the queue, or as a to-do item when asked to, or edits one
    * that is not running or finished. An edit keeps the task's status. */
   save(raw: unknown): HostTask {
@@ -413,6 +447,7 @@ export class HostTasks {
         startedAt,
         completedAt,
         verification,
+        reviewOnly,
         reviewer,
         diffStat,
         mergeError,
@@ -426,6 +461,7 @@ export class HostTasks {
           retryFeedback: this.retryFeedback(task),
           repairAttempts: undefined,
           repairNote: undefined,
+          repairStop: undefined,
           status: to,
           updatedAt: now,
         });
@@ -438,6 +474,8 @@ export class HostTasks {
         retryFeedback,
         repairAttempts,
         repairNote,
+        repairStop,
+        attemptHistory,
         ...fresh
       } = rest;
       return this.write({ ...fresh, status: to, updatedAt: now });
@@ -657,7 +695,12 @@ export class HostTasks {
   /** Backfill the available legacy review once; runtime/missing-verdict
    * failures are not defects. Only trusted correction summaries replace missing sessions. */
   private withReviewNotes(task: HostTask): HostTask {
-    if (task.reviewNotes !== undefined) return task;
+    if (task.reviewNotes !== undefined) {
+      const notes = coalesceReviewNotes(task.reviewNotes);
+      return notes.length === task.reviewNotes.length
+        ? task
+        : this.write({ ...task, reviewNotes: notes });
+    }
     const review = task.verification?.review;
     let notes: HostTask["reviewNotes"] = [];
     if (review) {
@@ -729,11 +772,27 @@ export class HostTasks {
    * Runtime failures, cancellation, missing verdicts and unavailable checks stay stopped. */
   private repairOrBlock(task: HostTask, error: string, now: number): HostTask {
     const attempts = task.repairAttempts ?? 0;
+    if (task.repairStop || task.reviewOnly) return this.block(task, error, now);
     if (
       !(task.goalId || task.source === "goal" || task.source === "steward") ||
       attempts >= MAX_REPAIR_ATTEMPTS
     )
-      return this.block(task, error, now);
+      return this.block(
+        {
+          ...task,
+          ...(attempts >= MAX_REPAIR_ATTEMPTS
+            ? {
+                repairStop: {
+                  reason: "limit" as const,
+                  message:
+                    "Automatic correction limit reached. Inspect the attempt history and remaining findings before retrying.",
+                },
+              }
+            : {}),
+        },
+        error,
+        now,
+      );
     const failed = { ...task, error };
     return this.write({
       ...task,
@@ -1130,19 +1189,70 @@ export class HostTasks {
       ...task.verification,
       review: { ...review, sessionId },
     };
+    const findings =
+      outcome.status === "succeeded"
+        ? reviewFindings(
+            reviewerReply(this.store.session(sessionId).session.blocks),
+            review,
+          )
+        : [];
+    const previous = task.attemptHistory?.at(-1);
+    const repairStop =
+      review.verdict === "fail" && outcome.status === "succeeded"
+        ? reviewRepairStop(
+            findings,
+            (task.repairAttempts ?? 0) > 0 && previous?.verdict === "fail"
+              ? previous.findings
+              : undefined,
+          )
+        : undefined;
+    let workerSummary = "Worker summary unavailable.";
+    if (task.sessionId) {
+      try {
+        const blocks = this.store.session(task.sessionId).session.blocks;
+        workerSummary =
+          blocks
+            .slice(blocks.findLastIndex((block) => block.role === "user") + 1)
+            .findLast(
+              (block) => block.role === "assistant" && block.text.trim(),
+            )
+            ?.text.trim()
+            .slice(-4000) || workerSummary;
+      } catch {
+        /* A removed worker session must not prevent verification. */
+      }
+    }
+    const attemptHistory =
+      outcome.status === "succeeded" && review.note !== NO_VERDICT
+        ? [
+            ...(task.attemptHistory ?? []),
+            {
+              attempt: task.repairAttempts ?? 0,
+              at: now,
+              workerSessionId: task.sessionId,
+              reviewerSessionId: sessionId,
+              workerSummary,
+              verdict: review.verdict,
+              reviewOnly: task.reviewOnly,
+              note: review.note,
+              findings: findings
+                .filter((finding) => finding.kind === "finding")
+                .map((finding) => finding.finding),
+            },
+          ].slice(-20)
+        : task.attemptHistory;
     const reviewed =
       outcome.status === "succeeded"
         ? {
             ...task,
             verification,
+            repairStop,
+            attemptHistory,
             reviewNotes: addReviewNotes(
               review.verdict === "pass"
                 ? resolveReviewFindings(task.reviewNotes ?? [], now)
-                : (task.reviewNotes ?? []),
-              reviewFindings(
-                reviewerReply(this.store.session(sessionId).session.blocks),
-                review,
-              ),
+                : resolveReviewedNotes(task.reviewNotes ?? [], reviewerReply(this.store.session(sessionId).session.blocks), now),
+              findings,
               sessionId,
               now,
               randomUUID,
@@ -1166,6 +1276,8 @@ export class HostTasks {
         ...latest,
         verification,
         reviewNotes: reviewed.reviewNotes,
+        repairStop: undefined,
+        attemptHistory,
         diffStat,
       });
   }
@@ -1181,6 +1293,7 @@ export class HostTasks {
       needsInput: undefined,
       reviewer: undefined,
       retryFeedback: undefined,
+      reviewOnly: undefined,
       completedAt: now,
       updatedAt: now,
     };

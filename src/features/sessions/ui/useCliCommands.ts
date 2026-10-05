@@ -11,24 +11,40 @@ import {
   mergeCliCommands,
   mergeDollarSkills,
   registerCliCommands,
-  usesSlashCommands,
   type DiskCommand,
 } from "../../skills/model/cliCommands";
 import { loadDisabledSkillPaths, type Skill } from "../../skills/model/skills";
 import type { HarnessId } from "../model/session";
+import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 
 const DISK_TTL_MS = 30_000;
 const disk = new Map<string, { at: number; commands: DiskCommand[] }>();
+const pendingDisk = new Map<string, Promise<ClaudeCommandEntry[]>>();
+
+function discoverCommands(cwd: string): Promise<ClaudeCommandEntry[]> {
+  const pending = pendingDisk.get(cwd);
+  if (pending) return pending;
+  const request = listClaudeCommands(cwd)
+    .then((commands) => {
+      disk.set(cwd, { at: Date.now(), commands });
+      return commands;
+    })
+    .finally(() => {
+      if (pendingDisk.get(cwd) === request) pendingDisk.delete(cwd);
+    });
+  pendingDisk.set(cwd, request);
+  return request;
+}
 
 /**
  * Claude Code's own commands and Codex's `$` skills for the composer menus.
- * Disk discovery is local only; a remote session has just what its CLI reports.
+ * Workspace discovery follows the machine that owns the execution directory.
  * The files are read when the composer opens and again when a menu opens after
  * the cache went stale, never on a timer.
  */
 export function useCliCommands(input: {
   harness: HarnessId;
-  /** Empty for remote sessions: their files are not on this machine. */
+  /** Execution directory, including remote:// paths. */
   localCwd: string;
   sessionId?: string;
   menuOpen: boolean;
@@ -41,25 +57,24 @@ export function useCliCommands(input: {
     (listener) => subscribeReportedCommands(sessionId, listener),
     () => getReportedCommands(sessionId),
   );
-  const [found, setFound] = useState<DiskCommand[]>(
-    () => disk.get(localCwd)?.commands ?? [],
+  const [found, setFound] = useState<{ cwd: string; commands: DiskCommand[] }>(
+    () => ({ cwd: localCwd, commands: disk.get(localCwd)?.commands ?? [] }),
   );
 
   useEffect(() => {
-    if (!usesSlashCommands(harness) || !localCwd) {
-      setFound([]);
+    if (harness !== "claude" || !localCwd) {
+      setFound({ cwd: localCwd, commands: [] });
       return;
     }
     const cached = disk.get(localCwd);
-    setFound(cached?.commands ?? []);
+    setFound({ cwd: localCwd, commands: cached?.commands ?? [] });
     if (cached && Date.now() - cached.at < DISK_TTL_MS) return;
     // Opening the composer loads once; opening the menu refreshes a stale list.
     if (!menuOpen && cached) return;
     let live = true;
-    listClaudeCommands(localCwd)
+    discoverCommands(localCwd)
       .then((entries: ClaudeCommandEntry[]) => {
-        disk.set(localCwd, { at: Date.now(), commands: entries });
-        if (live) setFound(entries);
+        if (live) setFound({ cwd: localCwd, commands: entries });
       })
       .catch(() => undefined);
     return () => {
@@ -68,12 +83,21 @@ export function useCliCommands(input: {
   }, [harness, localCwd, menuOpen]);
 
   const slashCommands = useMemo(
-    () => mergeCliCommands({ harness, reported, disk: found, taken }),
-    [harness, reported, found, taken],
+    () =>
+      mergeCliCommands({
+        harness,
+        reported,
+        disk: found.cwd === localCwd ? found.commands : [],
+        taken,
+      }),
+    [harness, reported, found, taken, localCwd],
   );
   useEffect(
-    () => registerCliCommands(harness, slashCommands),
-    [harness, slashCommands],
+    () =>
+      localCwd.startsWith(REMOTE_PATH_PREFIX)
+        ? undefined
+        : registerCliCommands(harness, slashCommands),
+    [harness, slashCommands, localCwd],
   );
   const dollarSkills = useMemo(
     () =>

@@ -56,9 +56,14 @@ const CLI: Record<HarnessId, { name: string; install?: string }> = {
     install:
       "Install from hermes-agent.nousresearch.com, then run hermes model",
   },
-  gemini: { name: "Gemini CLI", install: "npm i -g @google/gemini-cli" },
+  gemini: {
+    name: "Gemini CLI (enterprise / API key)",
+    install:
+      "For individual Google accounts, install Antigravity CLI: https://antigravity.google/docs/cli/install/",
+  },
   antigravity: {
-    name: "Antigravity (agy.exe on Windows, agy_acp_server.par elsewhere)",
+    name: "Antigravity CLI",
+    install: "https://antigravity.google/docs/cli/install/",
   },
 };
 

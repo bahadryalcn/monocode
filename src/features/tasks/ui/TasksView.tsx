@@ -43,6 +43,7 @@ import { SearchableSelect } from "../../../shared/ui/SearchableSelect";
 import { SkillPromptField } from "../../skills/ui/SkillPromptField";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import { TaskReviewNotes } from "./TaskReviewNotes";
+import { TaskAttemptHistory, repairStopLabel } from "./TaskAttemptHistory";
 import { unreadReviewNotes } from "../model/taskReviewNotes";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
@@ -120,6 +121,7 @@ import {
   listBoardTaskResults,
   missingMachinesNotice,
   moveTask,
+  recheckTaskReview,
   readTaskNotes,
   resolveTaskNote,
   newTaskDraft,
@@ -696,6 +698,7 @@ function TasksContent({
   });
   const actionsFor = (task: BoardTask) => ({
     busy: acting === task.id,
+    onRecheckReview: () => void act(task, () => recheckTaskReview(task)),
     onMove: (to: TaskStatus) => onMove(task, to),
     onEdit: () => onEdit(task),
     onDelete: () => onDelete(task),
@@ -1151,9 +1154,10 @@ function TaskCard({
       ) : null}
       {task.repairAttempts ? (
         <p title={task.repairNote} className="mt-1.5 text-[11px] text-amber-400">
-          Automatic correction · attempt {task.repairAttempts}
+          {task.status === "blocked" ? "Automatic corrections used" : "Automatic correction"} · attempt {task.repairAttempts}
         </p>
       ) : null}
+      {repairStopLabel(task) ? <p className="mt-1.5 text-[11px] text-amber-400">{repairStopLabel(task)}</p> : null}
       {task.reviewNotes?.length ? (
         <p data-task-review-notes className={`mt-1.5 text-[11px] ${unread ? "text-amber-400" : "text-content/50"}`}>
           {unread
@@ -1203,6 +1207,7 @@ type TaskActionHandlers = {
   onReadNotes: (noteIds: string[]) => void;
   onResolveNote: (noteId: string, resolved: boolean) => void;
   onOpenReview: (sessionId: string) => void;
+  onRecheckReview: () => void;
 };
 
 /** What the owner can do with a task, as the card and the detail panel both
@@ -1215,6 +1220,7 @@ function TaskActions({
   onDelete,
   onDecline,
   onOpenSession,
+  onRecheckReview,
 }: { task: BoardTask } & TaskActionHandlers) {
   const can = (to: TaskStatus) => canMoveTask(task.status, to);
   return (
@@ -1262,6 +1268,11 @@ function TaskActions({
           ) : (
             <Play className="size-3" />
           )}
+        </CardAction>
+      ) : null}
+      {task.status === "blocked" && task.reviewRecheckSupported && task.verification?.review?.verdict === "fail" && task.sessionId ? (
+        <CardAction label="Recheck review" disabled={busy} onClick={onRecheckReview}>
+          <RefreshCw className="size-3" />
         </CardAction>
       ) : null}
       {can("todo") ? (
@@ -1481,6 +1492,7 @@ function TaskDetail({
           </>
         )}
         <TaskActions task={task} {...actions} />
+        <TaskAttemptHistory task={task} onOpenSession={actions.onOpenReview} />
         {task.reviewNotes ? (
           <TaskReviewNotes notes={task.reviewNotes} busy={actions.busy} stale={task.stale}
             onRead={actions.onReadNotes} onResolve={actions.onResolveNote} onOpenReview={actions.onOpenReview} />

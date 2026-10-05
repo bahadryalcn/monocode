@@ -512,6 +512,7 @@ export function createHostServer(
                 "tasks",
                 "tasks.todo",
                 "tasks.notes",
+                "tasks.review-recheck",
                 "goals",
                 "stewards",
                 "host.settings",
@@ -830,6 +831,9 @@ export function createHostServer(
             break;
           case "tasks.move":
             result = await tasks.move(String(params.taskId ?? ""), params.to);
+            break;
+          case "tasks.review.recheck":
+            result = tasks.recheckReview(String(params.taskId ?? ""));
             break;
           case "tasks.notes.read":
             result = tasks.readNotes(String(params.taskId ?? ""), params.noteIds);

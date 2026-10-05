@@ -118,7 +118,6 @@ import {
   ProviderBinaryControl,
 } from "./ProviderBinarySettings";
 import { ProviderUsageSettings } from "./ProviderUsageSettings";
-import { GeminiAccountSettings } from "./GeminiAccountSettings";
 import { ProviderAccountsSettings } from "./ProviderAccountsSettings";
 
 export function ProvidersPage({
@@ -323,7 +322,6 @@ export function ProvidersPage({
       </Group>
 
       <ProviderAccountsSettings />
-      <GeminiAccountSettings />
 
       <EnabledModelsGroup />
 
@@ -684,7 +682,7 @@ export function ProviderRow({
       label={
         <span className="flex items-center gap-2">
           <HarnessIcon harness={harness} className="size-4 shrink-0" />
-          {HARNESS_TITLE[harness]}
+          {harness === "gemini" ? "Gemini CLI (enterprise / API key)" : HARNESS_TITLE[harness]}
           <ProviderBinaryControl provider={harness} />
           {isDefault ? (
             <span className="rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-content/60">

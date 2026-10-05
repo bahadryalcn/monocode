@@ -8,6 +8,7 @@ import { dirBelongsToRoot, subscribeDirsChanged } from "./fileTree";
 import { scorePath, type FuzzyHit } from "../../../shared/lib/fuzzy";
 import { resolveWorkspacePath, slash } from "../../../shared/lib/paths";
 import { looksLikeProject } from "../../projects/model/recents";
+import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import {
   normalizeEditorPath,
   type FileOpenOptions,
@@ -33,6 +34,16 @@ let refreshing = false;
 let refreshAgain = false;
 const listeners = new Set<Listener>();
 const recentsByCwd = new Map<string, string[]>();
+const remoteIndexes = new Map<
+  string,
+  {
+    files?: ProjectFile[];
+    loadedAt: number;
+    pending?: Promise<ProjectFile[]>;
+  }
+>();
+const REMOTE_INDEX_TTL_MS = 30_000;
+const MAX_REMOTE_INDEXES = 12;
 
 function normCwd(cwd: string): string {
   return slash(cwd).replace(/\/+$/, "") || "/";
@@ -50,10 +61,18 @@ export function subscribeProjectFiles(listener: Listener): () => void {
 }
 
 export function peekProjectFiles(cwd: string): ProjectFile[] | null {
+  if (cwd.startsWith(REMOTE_PATH_PREFIX))
+    return remoteIndexes.get(cwd)?.files ?? null;
   return cache?.cwd === cwd ? cache.files : null;
 }
 
 export function invalidateProjectFiles(cwd?: string) {
+  if (!cwd) remoteIndexes.clear();
+  else if (cwd.startsWith(REMOTE_PATH_PREFIX)) {
+    remoteIndexes.delete(cwd);
+    notifyProjectFilesChanged();
+    return;
+  }
   if (cwd && cache?.cwd !== cwd && inflight?.cwd !== cwd) return;
   if (!cwd || cache?.cwd === cwd) cache = null;
   if (!cwd || inflight?.cwd === cwd) {
@@ -125,6 +144,8 @@ export function loadProjectFiles(
   refresh = false,
 ): Promise<ProjectFile[]> {
   if (!looksLikeProject(cwd)) return Promise.resolve([]);
+  if (cwd.startsWith(REMOTE_PATH_PREFIX))
+    return loadRemoteProjectFiles(cwd, refresh);
   lastCwd = cwd;
   if (!refresh && cache?.cwd === cwd) return Promise.resolve(cache.files);
   if (!refresh && inflight?.cwd === cwd) return inflight.promise;
@@ -142,6 +163,43 @@ export function loadProjectFiles(
     });
   inflight = { cwd, promise };
   return promise;
+}
+
+function loadRemoteProjectFiles(
+  cwd: string,
+  refresh: boolean,
+): Promise<ProjectFile[]> {
+  let entry = remoteIndexes.get(cwd);
+  if (entry?.pending) return entry.pending;
+  if (
+    !refresh &&
+    entry?.files &&
+    Date.now() - entry.loadedAt < REMOTE_INDEX_TTL_MS
+  )
+    return Promise.resolve(entry.files);
+  if (!entry) {
+    entry = { loadedAt: 0 };
+    remoteIndexes.set(cwd, entry);
+    for (const [key, value] of remoteIndexes) {
+      if (remoteIndexes.size <= MAX_REMOTE_INDEXES) break;
+      if (key !== cwd && !value.pending) remoteIndexes.delete(key);
+    }
+  }
+  const current = entry;
+  const pending = listProjectFiles(cwd)
+    .then((files) => {
+      if (remoteIndexes.get(cwd) === current) {
+        current.files = files;
+        current.loadedAt = Date.now();
+        notifyProjectFilesChanged();
+      }
+      return files;
+    })
+    .finally(() => {
+      if (current.pending === pending) current.pending = undefined;
+    });
+  current.pending = pending;
+  return pending;
 }
 
 export type RankedFile = ProjectFile & FuzzyHit;
@@ -361,10 +419,7 @@ export async function resolveFileOpenRequest(
 
 function relativePathHint(href: string, cwd: string, direct: string): string {
   let value = href.trim().replace(/\\/g, "/");
-  value = value.replace(
-    /(?::\d+(?::\d+)?|#L\d+(?:-L\d+)?)$/,
-    "",
-  );
+  value = value.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L\d+)?)$/, "");
   if (value.startsWith("file://")) {
     try {
       value = decodeURIComponent(value.slice("file://".length));
@@ -411,6 +466,10 @@ function pickOpenableFile(
 }
 
 subscribeDirsChanged((_roots, paths) => {
+  for (const [cwd, entry] of remoteIndexes) {
+    if (!paths || paths.some((path) => dirBelongsToRoot(path, cwd)))
+      entry.loadedAt = 0;
+  }
   if (
     !paths ||
     (lastCwd && paths.some((path) => dirBelongsToRoot(path, lastCwd!)))

@@ -957,6 +957,7 @@ describe("remote host API", () => {
   it("routes review note read and resolve updates without completing the task", async () => {
     const s = await setup();
     expect((await s.call("environment.describe")).value.result.capabilities).toContain("tasks.notes");
+    expect((await s.call("environment.describe")).value.result.capabilities).toContain("tasks.review-recheck");
     const saved = (await s.call("tasks.save", { task: {
       id: "notes", title: "Ship the report", prompt: "Write it", projectId: s.project.id,
       harness: "codex", model: "codex:test", runtimeMode: "auto", status: "todo",
@@ -975,6 +976,7 @@ describe("remote host API", () => {
     const reopened = (await s.call("tasks.notes.resolve", { taskId: saved.id, noteId: "seen", resolved: false })).value.result;
     expect(reopened.reviewNotes[0].resolvedAt).toBeUndefined();
     expect((await s.call("tasks.list")).value.result[0].reviewNotes).toEqual(reopened.reviewNotes);
+    expect((await s.call("tasks.review.recheck", { taskId: saved.id })).value.error).toContain("Only a blocked task");
   });
 
   it("answers the goal commands, advertised as a capability", async () => {

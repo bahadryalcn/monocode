@@ -198,7 +198,7 @@ export function slugName(raw: string): string {
 }
 
 /** Skill folders of enabled Claude Code plugins, project ones first. */
-function claudePluginRoots(
+export function claudePluginRoots(
   home: string,
   project: string | null,
 ): { root: string; scope: string; namespace: string }[] {

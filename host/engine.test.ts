@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SendTurnInput } from "../src/integrations/harness/core/types";
@@ -11,7 +11,7 @@ import { applySessionSync } from "../src/features/connections/model/protocol";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
-it("atomically creates a first turn and deduplicates a lost reply", () => {
+it("atomically creates a first turn and deduplicates a lost reply", async () => {
   const { engine, store, project, provider } = setup();
   const command = { type: "create", commandId: "atomic", projectId: project.id,
     harness: "codex", model: "codex:test", runtimeMode: "supervised",
@@ -19,7 +19,7 @@ it("atomically creates a first turn and deduplicates a lost reply", () => {
   const receipt = engine.command(command);
   expect(engine.command(command)).toEqual(receipt);
   expect(store.session(receipt.sessionId).session.blocks.filter((block) => block.role === "user")).toHaveLength(1);
-  expect(provider.send).toHaveBeenCalledTimes(1);
+  await vi.waitFor(() => expect(provider.send).toHaveBeenCalledTimes(1));
   expect(store.sessions(project.id)).toHaveLength(2);
   expect(() => engine.command({ ...command, firstTurn: { ...command.firstTurn, text: "changed" } })).toThrow();
 });
@@ -101,6 +101,16 @@ function setup(harness: "codex" | "claude" = "codex") {
 }
 
 describe("headless session ownership", () => {
+  it("applies host skill instructions while retaining the original user transcript", async () => {
+    const { engine, store, turns, id, directory } = setup("claude");
+    const folder = join(directory, ".agents/skills/remote-review");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "SKILL.md"), "Use the host review checklist");
+    engine.command({ type: "send", commandId: "remote-skill", sessionId: id, text: "/remote-review inspect" });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(turns[0].input.text).toContain("Use the host review checklist");
+    expect(store.session(id).session.blocks.find((block) => block.role === "user")?.text).toBe("/remote-review inspect");
+  });
   it("keeps a turn's output over a desktop copy saved before it ended", async () => {
     const { engine, store, turns, id } = setup("claude");
     engine.command({ type: "send", commandId: "send", sessionId: id, text: "Review it" });

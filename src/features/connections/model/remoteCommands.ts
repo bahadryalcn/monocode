@@ -82,6 +82,7 @@ export const HOST_COMMANDS = new Set([
   "git_worktrees",
   "search_project",
   "list_skills",
+  "list_claude_commands",
   "skill_export",
   "skill_delete",
   "skill_import",

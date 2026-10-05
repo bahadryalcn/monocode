@@ -205,7 +205,7 @@ import {
   supportsBtwHarness,
 } from "../model/btw";
 import { COMPACT_COMMAND, isCompactCommand } from "../model/compact";
-import { RESUME_COMMAND } from "../model/resumeCommand";
+import { RESUME_COMMAND, isResumeCommand } from "../model/resumeCommand";
 import {
   consumeSessionFolderCommand,
   isSessionFolderCommand,
@@ -279,7 +279,7 @@ type Props = {
   hideProjectPicker?: boolean;
   hideBranchPicker?: boolean;
   hideTopBar?: boolean;
-  /** Keeps local file mentions, skills, and app modes off for host sessions. */
+  /** Routes discovery to the host; local-only app modes remain unavailable. */
   remoteSession?: boolean;
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
   /** Why Send cannot reach its destination right now; Send stays usable and tries again. */
@@ -802,8 +802,8 @@ export const Composer = memo(function Composer({
   const [createError, setCreateError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
   const remote = remoteSession;
-  // Local indexes (files, skills) must never read a remote session's path.
-  const localCwd = remote ? "" : executionCwd;
+  // Workspace APIs route remote:// paths to their owning machine.
+  const localCwd = executionCwd;
   const [files, setFiles] = useState<ProjectFile[]>(
     () => peekProjectFiles(localCwd) ?? [],
   );
@@ -840,7 +840,8 @@ export const Composer = memo(function Composer({
   attachmentsRef.current = attachments;
 
   const mentionOpen =
-    !remote && mention !== null && (looksLikeProject(cwd) || notesEnabled);
+    mention !== null &&
+    (looksLikeProject(executionCwd) || (!remote && notesEnabled));
   const tokens = useMemo(() => attachmentTokens(attachments), [attachments]);
   const navigationEmpty =
     draft.length === 0 &&
@@ -854,7 +855,7 @@ export const Composer = memo(function Composer({
     harness,
     executionCwd: localCwd,
     sessionId,
-    pickerOpen: pickerOpen && !remote,
+    pickerOpen,
   });
   const skills = skillCatalog.skills;
   const templateItems = useMemo(
@@ -887,9 +888,9 @@ export const Composer = memo(function Composer({
     harness,
     localCwd,
     sessionId,
-    menuOpen: pickerOpen && !remote,
+    menuOpen: pickerOpen,
     taken: takenNames,
-    files: remote ? [] : skills,
+    files: skills,
   });
   const slashItems = useMemo(
     () => [
@@ -897,7 +898,10 @@ export const Composer = memo(function Composer({
         ? [
             ...(remoteFeatures?.plan ? [PLAN_COMMAND] : []),
             COMPACT_COMMAND,
-            ...(harness === "codex" ? cliCommands.slashCommands : []),
+            ...skills.filter(
+              (skill) => skill.kind === "file" || skill.kind === "native",
+            ),
+            ...cliCommands.slashCommands,
           ]
         : [
             SESSION_FOLDER_COMMAND,
@@ -911,7 +915,8 @@ export const Composer = memo(function Composer({
             // Reading and replaying stored conversations is written against
             // Claude Code's own on-disk format, so the command only exists
             // where it works.
-            ...(harness === "claude" && onResumeProviderSession
+            ...((harness === "claude" || harness === "codex") &&
+            onResumeProviderSession
               ? [RESUME_COMMAND]
               : []),
             ...skills.filter(
@@ -949,10 +954,20 @@ export const Composer = memo(function Composer({
   const skillLimit = hasNativeCommands(harness)
     ? Number.POSITIVE_INFINITY
     : undefined;
-  const rankedSkills = rankSkills(
-    slash?.trigger === "$" ? cliCommands.dollarSkills : slashItems,
-    slash?.query ?? "",
-    slash?.trigger === "$" ? undefined : skillLimit,
+  const rankedSkills = useMemo(
+    () =>
+      rankSkills(
+        slash?.trigger === "$" ? cliCommands.dollarSkills : slashItems,
+        slash?.query ?? "",
+        slash?.trigger === "$" ? undefined : skillLimit,
+      ),
+    [
+      cliCommands.dollarSkills,
+      slash?.trigger,
+      slash?.query,
+      slashItems,
+      skillLimit,
+    ],
   );
   const sessionDirsHarness =
     harness === "claude" || harness === "codex" || harness === "antigravity";
@@ -980,8 +995,11 @@ export const Composer = memo(function Composer({
     if (ref.current) resizeComposer(ref.current);
   }, [modeIndent]);
   const mentionFiles = useMemo(
-    () => (notesEnabled ? [...files, ...notesAsProjectFiles(notes)] : files),
-    [files, notes, notesEnabled],
+    () =>
+      !remote && notesEnabled
+        ? [...files, ...notesAsProjectFiles(notes)]
+        : files,
+    [files, notes, notesEnabled, remote],
   );
   const mentionIndex = useMemo(
     () => buildMentionIndex(mentionFiles),
@@ -998,12 +1016,19 @@ export const Composer = memo(function Composer({
           recentOpenedFiles(executionCwd),
         )
       : [];
-    const noteHits = notesEnabled
-      ? rankNoteFiles(notes, mention?.query ?? "")
-      : [];
+    const noteHits =
+      !remote && notesEnabled ? rankNoteFiles(notes, mention?.query ?? "") : [];
     const seen = new Set(noteHits.map((file) => file.path));
     return [...noteHits, ...fileHits.filter((file) => !seen.has(file.path))];
-  }, [executionCwd, files, mention?.query, mentionOpen, notes, notesEnabled]);
+  }, [
+    executionCwd,
+    files,
+    mention?.query,
+    mentionOpen,
+    notes,
+    notesEnabled,
+    remote,
+  ]);
 
   const syncHasValue = useCallback(
     (text: string, files: Attachment[]) => {
@@ -1265,7 +1290,7 @@ export const Composer = memo(function Composer({
     const cached = peekProjectFiles(localCwd);
     apply(cached ?? []);
     if (!localCwd) return;
-    void loadProjectFiles(localCwd, mentionOpen)
+    void loadProjectFiles(localCwd, mentionOpen && !remote)
       .then(apply)
       .catch(() => undefined);
     const unsub = subscribeProjectFiles(() => {
@@ -1276,10 +1301,10 @@ export const Composer = memo(function Composer({
       cancelled = true;
       unsub();
     };
-  }, [localCwd, mentionOpen]);
+  }, [localCwd, mentionOpen, remote]);
 
   useEffect(() => {
-    if (!mentionOpen || !notesEnabled) return;
+    if (remote || !mentionOpen || !notesEnabled) return;
     let cancelled = false;
     void loadNotes().then((next) => {
       if (!cancelled) setNotes(next);
@@ -1287,7 +1312,7 @@ export const Composer = memo(function Composer({
     return () => {
       cancelled = true;
     };
-  }, [mentionOpen, notesEnabled]);
+  }, [mentionOpen, notesEnabled, remote]);
 
   useEffect(() => {
     setMentionActive(0);
@@ -1516,6 +1541,7 @@ export const Composer = memo(function Composer({
         resizeComposer(el);
         el.setSelectionRange(token.start, token.start);
         setDraft(cleared);
+        onDraftChange?.(cleared);
         syncHasValue(cleared, attachmentsRef.current);
         setSlash(null);
         setCreatingSkill(false);
@@ -1571,9 +1597,10 @@ export const Composer = memo(function Composer({
         setMention(null);
         return;
       }
-      const label = isNoteMentionPath(file.path)
-        ? file.relative
-        : mentionLabel(file, mentionIndexRef.current);
+      const label =
+        remote || isNoteMentionPath(file.path)
+          ? file.relative
+          : mentionLabel(file, mentionIndexRef.current);
       const next = replaceMentionToken(el.value, token, label);
       el.value = next;
       resizeComposer(el);
@@ -1585,7 +1612,7 @@ export const Composer = memo(function Composer({
       setMention(null);
       el.focus();
     },
-    [syncHasValue],
+    [syncHasValue, remote],
   );
 
   useEffect(() => {
@@ -1883,6 +1910,32 @@ export const Composer = memo(function Composer({
     }
     const value = ref.current?.value ?? submittedValue;
     if (disabled || worktreeRemoved || sendHeldReason) return;
+    if (isResumeCommand(value)) {
+      if (
+        remote ||
+        !onResumeProviderSession ||
+        (harness !== "claude" && harness !== "codex")
+      ) {
+        setPasteError(
+          remote
+            ? "Importing terminal conversations from a remote machine is not available yet. Open MonoCode on that machine to import them."
+            : "Terminal conversation import is not available in this composer.",
+        );
+        return;
+      }
+      if (ref.current) {
+        ref.current.value = "";
+        ref.current.style.height = "auto";
+      }
+      setDraft("");
+      onDraftChange?.("");
+      setPlusOpen(false);
+      setSlash(null);
+      setMention(null);
+      syncHasValue("", attachmentsRef.current);
+      onResumeProviderSession();
+      return;
+    }
     if (isMcpCommand(value)) {
       mcpInsertAt.current = 0;
       if (ref.current) {
@@ -2198,6 +2251,7 @@ export const Composer = memo(function Composer({
       e.key === "Enter" &&
       !e.shiftKey &&
       (isCompactCommand(e.currentTarget.value) ||
+        isResumeCommand(e.currentTarget.value) ||
         isMcpCommand(e.currentTarget.value) ||
         isSessionFolderCommand(e.currentTarget.value))
     ) {
