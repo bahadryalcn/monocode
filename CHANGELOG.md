@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.89] - 2026-10-05
+
+### Added
+
+- Show long user messages and JSON as compact cards, with a bounded preview on hover or keyboard focus and a dialog for the full content.
+- Recognize JSON objects, arrays and fenced blocks without requiring a paste event; preserve surrounding instructions and the original message when copying.
+
 ## [0.8.76] - 2026-10-05
 
 ### Fixed

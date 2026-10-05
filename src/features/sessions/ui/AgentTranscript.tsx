@@ -34,6 +34,8 @@ import {
 import { flushSync } from "react-dom";
 import { AttachmentChip } from "./AttachmentChip";
 import { AttachmentTokenText } from "./AttachmentTokenText";
+import { UserTextPreview } from "./UserTextPreview";
+import { userTextParts } from "../model/userTextPreview";
 import { attachmentTokens, findTokens } from "../model/attachmentTokens";
 import { GeneratedImage } from "./GeneratedImage";
 import { MonocodeSparkles } from "./MonocodeSparkles";
@@ -1894,6 +1896,8 @@ function UserMessageBlock({
     ? `${messageLink.beforeText}${messageLink.afterText}`
     : text;
   const chat = layout === "chat";
+  const previewParts = useMemo(() => userTextParts(text), [text]);
+  const compactText = previewParts.some((part) => part.compact);
   // A chip carries its token's label only when the message mentions it, so
   // messages sent before tokens existed look as they always did.
   const referencedTokens = useMemo(() => {
@@ -1953,7 +1957,7 @@ function UserMessageBlock({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [text, roundsSingleLine, expanded, visible]);
+  }, [text, roundsSingleLine, expanded, visible, compactText]);
 
   const toggle = () => {
     if (overflows) setExpanded((value) => !value);
@@ -2007,7 +2011,13 @@ function UserMessageBlock({
               <SecondOpinionCard card={card} />
             </div>
           ) : null}
-          {messageLink ? (
+          {compactText ? (
+            <UserTextPreview
+              parts={previewParts}
+              messageId={block.id}
+              attachments={block.attachments}
+            />
+          ) : messageLink ? (
             <div
               ref={(element) => {
                 textRef.current = element;
@@ -2039,7 +2049,7 @@ function UserMessageBlock({
               />
             </pre>
           ) : null}
-          {overflows ? (
+          {overflows && !compactText ? (
             <button
               type="button"
               aria-expanded={expanded}
