@@ -288,6 +288,12 @@ function AgentTranscriptComponent({
   const stickToBottom = useRef(true);
   const showJumpRef = useRef(false);
   const distanceFromBottom = useRef(0);
+  const scrollGeometry = useRef<{
+    el: HTMLElement;
+    top: number;
+    height: number;
+    viewport: number;
+  } | null>(null);
   const prependHeight = useRef<number | null>(null);
   const wasVisible = useRef(false);
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
@@ -347,19 +353,45 @@ function AgentTranscriptComponent({
     [onJumpToBottomChange],
   );
 
+  const rememberScroll = useCallback((el: HTMLElement) => {
+    scrollGeometry.current = {
+      el,
+      top: el.scrollTop,
+      height: el.scrollHeight,
+      viewport: el.clientHeight,
+    };
+  }, []);
+
   const syncPinned = useCallback(
     (el: HTMLElement) => {
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const previous = scrollGeometry.current;
+      // Content growth and folding also queue scroll events. They must not
+      // cancel following before ResizeObserver gets a chance to pin the end.
+      // A stable layout moving upward also covers scrollbar/touch/keyboard
+      // navigation, including movement inside the near-bottom margin.
+      const scrolledUp =
+        !!previous &&
+        previous.el === el &&
+        previous.height === el.scrollHeight &&
+        previous.viewport === el.clientHeight &&
+        el.scrollTop < previous.top;
       // Scrolling up inside the bottom margin is the reader leaving. Pinning
       // again here would snap each streamed chunk back down under the wheel.
       const leaving =
-        !stickToBottom.current && distance > distanceFromBottom.current;
-      const near = isNearBottom(el) && !leaving;
+        scrolledUp ||
+        (!stickToBottom.current && distance > distanceFromBottom.current);
+      const near = stickToBottom.current
+        ? !scrolledUp
+        : isNearBottom(el) &&
+          !leaving &&
+          (distance <= 0 || (!!previous && el.scrollTop > previous.top));
       stickToBottom.current = near;
       distanceFromBottom.current = distance;
+      rememberScroll(el);
       setShowJump(!near);
     },
-    [setShowJump],
+    [rememberScroll, setShowJump],
   );
 
   const jumpToBottom = useCallback(() => {
@@ -369,7 +401,8 @@ function AgentTranscriptComponent({
     const el = scroller.current;
     syncTranscriptViewport(el);
     pinToBottom(el);
-  }, [setShowJump]);
+    if (el) rememberScroll(el);
+  }, [rememberScroll, setShowJump]);
 
   const setScroller = useCallback(
     (el: HTMLDivElement | null) => {
@@ -418,7 +451,8 @@ function AgentTranscriptComponent({
     const el = scroller.current;
     syncTranscriptViewport(el);
     pinToBottom(el);
-  }, [lastUserId, setShowJump]);
+    if (el) rememberScroll(el);
+  }, [lastUserId, rememberScroll, setShowJump]);
 
   // In the chat layout a sent prompt rises from the upper screen into its
   // anchored spot at the top. On mount this only plays for a session's first
@@ -484,9 +518,11 @@ function AgentTranscriptComponent({
       if (stickToBottom.current) {
         pinToBottom(el);
         distanceFromBottom.current = 0;
+        rememberScroll(el);
         return;
       }
       distanceFromBottom.current = distance;
+      rememberScroll(el);
       setShowJump(!isNearBottom(el));
     };
     const observer = new ResizeObserver(onResize);
@@ -494,7 +530,7 @@ function AgentTranscriptComponent({
     observer.observe(el);
     onResize();
     return () => observer.disconnect();
-  }, [scrollerEl, setShowJump, visible]);
+  }, [rememberScroll, scrollerEl, setShowJump, visible]);
 
   useTurnScrollAnchor(scrollerEl, visible, stickToBottom);
 

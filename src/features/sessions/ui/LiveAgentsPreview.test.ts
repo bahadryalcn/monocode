@@ -51,6 +51,31 @@ afterEach(() => {
 });
 
 describe("LiveAgentsPreview", () => {
+  it("collapses the working list while retaining its count and session selection", () => {
+    const onSelect = vi.fn();
+    render({
+      agents: [agent("a", "/repo/a"), agent("b", "/repo/b")],
+      collapsible: true,
+      onSelect,
+    });
+    const header = container.querySelector<HTMLButtonElement>(
+      "button[aria-expanded]",
+    )!;
+    const card = container.querySelector<HTMLButtonElement>(
+      '[data-live-agent-card="b"]',
+    )!;
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    act(() => header.click());
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    expect(card.closest("[hidden]")).not.toBeNull();
+    expect(header.textContent).toContain("2");
+    expect(onSelect).not.toHaveBeenCalled();
+    act(() => header.click());
+    expect(card.closest("[hidden]")).toBeNull();
+    act(() => card.click());
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith("b");
+  });
+
   it("keeps the incoming activity order and the global four-agent cap", () => {
     render({
       agents: [
@@ -121,9 +146,9 @@ describe("LiveAgentsPreview", () => {
     expect(
       container.querySelector('[data-live-agent-card="background"]'),
     ).not.toBeNull();
-    expect(
-      container.querySelector('[aria-live="polite"]')!.textContent,
-    ).toBe("1 working agent");
+    expect(container.querySelector('[aria-live="polite"]')!.textContent).toBe(
+      "1 working agent",
+    );
   });
 
   it("hides the card when the only live agent is the open session", () => {
@@ -141,7 +166,9 @@ describe("LiveAgentsPreview", () => {
 
   it("keeps an unfocused finished session until it is opened", () => {
     render({
-      agents: [agent("background", "/repo/b", { done: true, activity: "Done" })],
+      agents: [
+        agent("background", "/repo/b", { done: true, activity: "Done" }),
+      ],
       activeSessionId: "open-session",
       groupLabels: {},
       groupColors: {},
@@ -154,7 +181,9 @@ describe("LiveAgentsPreview", () => {
     )!;
     expect(card.textContent).toContain("Done");
     expect(
-      container.querySelector('[data-live-agents-preview]')?.getAttribute("aria-label"),
+      container
+        .querySelector("[data-live-agents-preview]")
+        ?.getAttribute("aria-label"),
     ).toBe("Finished agents");
     expect(container.querySelector('[aria-live="polite"]')?.textContent).toBe(
       "1 finished agent",

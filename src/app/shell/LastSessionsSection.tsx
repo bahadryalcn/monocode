@@ -161,7 +161,7 @@ export function LastSessionsSection({
           type="button"
           aria-expanded={!prefs.collapsed}
           onClick={() => update({ ...prefs, collapsed: !prefs.collapsed })}
-          className={`flex min-w-0 flex-1 items-center gap-1 rounded-md px-1 text-left text-xs text-content/50 hover:text-content ${
+          className={`flex min-w-0 flex-1 items-center gap-1 rounded-md px-1 text-left text-xs font-medium text-content/70 hover:text-content ${
             drag ? "cursor-grab" : ""
           }`}
         >

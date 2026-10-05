@@ -668,6 +668,27 @@ export function ProjectRail({
               shortcut={`${MOD}K`}
               ariaLabel={`Search (${MOD}K)`}
             />
+            <div className="my-1 shrink-0 @max-[140px]/rail:hidden">
+              <LiveAgentsPreview
+                agents={visibleLiveAgents}
+                activeSessionId={activeSessionId}
+                onSelect={onSelectAgent}
+                collapsible
+                groupLabels={groupLabels}
+                groupColors={groupColors}
+                groupCustomColors={groupCustomColors}
+                groupMascots={groupMascots}
+              />
+            </div>
+            <CompactLiveAgents
+              agents={visibleLiveAgents}
+              activeSessionId={activeSessionId}
+              onSelect={onSelectAgent}
+              groupLabels={groupLabels}
+              groupColors={groupColors}
+              groupCustomColors={groupCustomColors}
+              groupMascots={groupMascots}
+            />
             <div className="mt-0.5" />
             <RailAction
               label="Inbox"
@@ -721,26 +742,6 @@ export function ProjectRail({
               <Fragment key={id}>{sectionNodes[id]}</Fragment>
             ))}
           </div>
-          <div className="shrink-0 @max-[140px]/rail:hidden">
-            <LiveAgentsPreview
-              agents={visibleLiveAgents}
-              activeSessionId={activeSessionId}
-              onSelect={onSelectAgent}
-              groupLabels={groupLabels}
-              groupColors={groupColors}
-              groupCustomColors={groupCustomColors}
-              groupMascots={groupMascots}
-            />
-          </div>
-          <CompactLiveAgents
-            agents={visibleLiveAgents}
-            activeSessionId={activeSessionId}
-            onSelect={onSelectAgent}
-            groupLabels={groupLabels}
-            groupColors={groupColors}
-            groupCustomColors={groupCustomColors}
-            groupMascots={groupMascots}
-          />
           <div className="shrink-0 @max-[140px]/rail:hidden">
             <SidebarUpdateFooter
               update={updateNotice}
@@ -924,7 +925,7 @@ function ProjectSectionHeader({
       title="Drag to reorder"
       className={`${RAIL_SECTION_HEADER} ${RAIL_DRAG_HANDLE} rounded-md outline-none focus-visible:bg-content/8 @max-[140px]/rail:justify-center @max-[140px]/rail:px-0`}
     >
-      <span className="min-w-0 flex-1 truncate px-1 text-xs text-content/50 @max-[140px]/rail:hidden">
+      <span className="min-w-0 flex-1 truncate px-1 text-xs font-medium text-content/70 @max-[140px]/rail:hidden">
         {label}
       </span>
       {onAddGroup ? (
@@ -1040,7 +1041,7 @@ function ProjectGroupSection({
     <div
       ref={(el) => sortableGroups.setItemRef(group.id, el)}
       className={`reorder-item rail-reorder-block shrink-0 overflow-hidden rounded-md ${
-        showBody ? "mb-1.5 bg-content/5" : ""
+        showBody ? "mb-1.5 bg-content/3" : ""
       }`}
       data-project-group={group.id}
       role="group"
@@ -1337,8 +1338,8 @@ function ProjectCard({
       data-project-path={item.path}
       className={`reorder-item project-reorder-item group relative flex touch-none items-stretch rounded-md px-2 h-8 @max-[140px]/rail:px-0 ${
         selected
-          ? "bg-selection-strong text-content"
-          : "opacity-65"
+          ? "bg-accent/12 text-content ring-1 ring-inset ring-accent/25"
+          : "text-content/85"
       } cursor-default`}
       onPointerDown={(event) => {
         if (event.button !== 0) return;

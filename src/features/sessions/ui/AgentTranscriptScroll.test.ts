@@ -123,6 +123,92 @@ describe("subagent scrolling", () => {
 });
 
 describe("transcript scrolling", () => {
+  it.each(["growth", "fold then growth"])(
+    "keeps following when %s queues a scroll before the resize observer",
+    (change) => {
+      act(() =>
+        root.render(
+          createElement(AgentTranscript, {
+            blocks: [{ id: "user", role: "user", text: "Keep working" }],
+            busy: true,
+          }),
+        ),
+      );
+      const scroller =
+        container.querySelector<HTMLDivElement>(".agent-transcript")!;
+      let height = 3000;
+      let top = 0;
+      Object.defineProperties(scroller, {
+        scrollHeight: { get: () => height },
+        clientHeight: { get: () => 400 },
+        scrollTop: {
+          get: () => top,
+          set: (value: number) => {
+            top = Math.max(0, Math.min(value, height - 400));
+          },
+        },
+      });
+      const observer = observers.find((item) =>
+        item.targets.includes(scroller),
+      )!;
+      act(() => observer.resize());
+      expect(top).toBe(2600);
+      act(() => scroller.dispatchEvent(new Event("scroll")));
+      if (change === "fold then growth") {
+        height = 1000;
+        top = 600; // The browser clamps the offset when the work folds.
+        act(() => scroller.dispatchEvent(new Event("scroll")));
+        act(() => observer.resize());
+      }
+      height += 800;
+      // Layout can queue scroll before ResizeObserver has pinned the new end.
+      act(() => scroller.dispatchEvent(new Event("scroll")));
+      act(() => observer.resize());
+      expect(top).toBe(height - 400);
+      height += 100;
+      act(() => observer.resize());
+      expect(top).toBe(height - 400);
+    },
+  );
+
+  it("pauses following for an upward scrollbar or keyboard scroll", () => {
+    act(() =>
+      root.render(
+        createElement(AgentTranscript, {
+          blocks: [{ id: "user", role: "user", text: "Keep working" }],
+          busy: true,
+        }),
+      ),
+    );
+    const scroller =
+      container.querySelector<HTMLDivElement>(".agent-transcript")!;
+    let height = 3000;
+    let top = 0;
+    Object.defineProperties(scroller, {
+      scrollHeight: { get: () => height },
+      clientHeight: { get: () => 400 },
+      scrollTop: {
+        get: () => top,
+        set: (value: number) => {
+          top = Math.max(0, Math.min(value, height - 400));
+        },
+      },
+    });
+    const observer = observers.find((item) => item.targets.includes(scroller))!;
+    act(() => observer.resize());
+    top -= 4; // No wheel event: scrollbar, touch or keyboard navigation.
+    act(() => scroller.dispatchEvent(new Event("scroll")));
+    const readingTop = top;
+    height += 800;
+    act(() => observer.resize());
+    expect(top).toBe(readingTop);
+    top = height - 400;
+    act(() => scroller.dispatchEvent(new Event("scroll")));
+    height += 100;
+    act(() => observer.resize());
+    expect(top).toBe(height - 400);
+  });
+
   it("lets a wheel up inside the bottom margin leave a streaming reply", () => {
     const blocks = (text: string): Block[] => [
       { id: "user", role: "user", text: "Explain auth" },
@@ -157,6 +243,14 @@ describe("transcript scrolling", () => {
       top = 596;
       scroller.dispatchEvent(new Event("scroll"));
     });
+    // A queued layout scroll inside the bottom margin must not re-enable
+    // following while the reader is still moving away.
+    height = 1008;
+    act(() => observer.resize());
+    act(() => scroller.dispatchEvent(new Event("scroll")));
+    height = 1012;
+    act(() => observer.resize());
+    expect(top).toBe(596);
     height = 1040;
     act(() =>
       root.render(

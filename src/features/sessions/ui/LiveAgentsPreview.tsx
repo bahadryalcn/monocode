@@ -34,6 +34,7 @@ type Props = {
   activeSessionId?: string;
   onSelect?: (sessionId: string) => void;
   bottomSpacing?: boolean;
+  collapsible?: boolean;
   groupLabels?: Record<string, string>;
   groupColors?: Record<string, number>;
   groupCustomColors?: Record<string, string>;
@@ -45,6 +46,7 @@ export function LiveAgentsPreview({
   activeSessionId,
   onSelect,
   bottomSpacing = false,
+  collapsible = false,
   groupLabels: groupLabelsProp,
   groupColors: groupColorsProp,
   groupCustomColors: groupCustomColorsProp,
@@ -59,6 +61,7 @@ export function LiveAgentsPreview({
   const groupCustomColors = groupCustomColorsProp ?? loadedGroupCustomColors;
   const groupMascots = groupMascotsProp ?? loadedGroupMascots;
   const [expanded, setExpanded] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const lockList = useLockOverscroll<HTMLDivElement>();
   const finishedCount = agents.filter((agent) => agent.done).length;
@@ -67,6 +70,7 @@ export function LiveAgentsPreview({
   const visibleOnRail = shouldShowLiveAgents(agents, activeSessionId);
   const ticking =
     visibleOnRail &&
+    !collapsed &&
     agents.some((agent) => !agent.done && agent.startedAt != null);
 
   useEffect(() => {
@@ -80,11 +84,12 @@ export function LiveAgentsPreview({
   const extra = agents.length - LIVE_AGENT_CAP;
   const visible =
     expanded || extra <= 0 ? agents : agents.slice(0, LIVE_AGENT_CAP);
+  const Header = collapsible ? "button" : "div";
 
   return (
     <section
       aria-label={hasWorkingAgents ? "Working agents" : "Finished agents"}
-      className={`shrink-0 px-2 ${bottomSpacing ? "pb-2" : ""}`}
+      className={`shrink-0 ${collapsible ? "" : "px-2"} ${bottomSpacing ? "pb-2" : ""}`}
       data-live-agents-preview="full"
     >
       <span className="sr-only" aria-live="polite" aria-atomic="true">
@@ -94,8 +99,15 @@ export function LiveAgentsPreview({
             ? `${workingCount} working agent${workingCount === 1 ? "" : "s"}`
             : `${workingCount} working agent${workingCount === 1 ? "" : "s"}, ${finishedCount} finished agent${finishedCount === 1 ? "" : "s"}`}
       </span>
-      <div className="overflow-hidden rounded-lg bg-content/5">
-        <div className="flex items-center gap-2 px-3.5 py-1.5">
+      <div className="overflow-hidden rounded-lg border border-accent/20 bg-accent/5">
+        <Header
+          type={collapsible ? "button" : undefined}
+          aria-expanded={collapsible ? !collapsed : undefined}
+          onClick={
+            collapsible ? () => setCollapsed((value) => !value) : undefined
+          }
+          className={`flex w-full items-center gap-2 px-2.5 py-2 text-left ${collapsible ? "hover:bg-accent/8 focus-visible:outline-2 focus-visible:outline-accent focus-visible:-outline-offset-2" : ""}`}
+        >
           <span
             aria-hidden
             className={`size-1.5 shrink-0 rounded-full ${
@@ -104,48 +116,56 @@ export function LiveAgentsPreview({
                 : "bg-content/35"
             }`}
           />
-          <span className="min-w-0 flex-1 truncate text-xs text-content/50">
+          <span className="min-w-0 flex-1 truncate text-xs font-semibold text-content/90">
             {hasWorkingAgents ? "Working" : "Finished"}
           </span>
-          <span className="text-[11px] tabular-nums text-content/40">
+          <span className="rounded-md bg-accent/12 px-1.5 text-[11px] font-medium tabular-nums text-content/85">
             {agents.length}
           </span>
-        </div>
-        <div
-          ref={expanded ? lockList : undefined}
-          className={`flex flex-col gap-px px-1 ${
-            extra > 0 ? "" : "pb-1"
-          } ${expanded ? "max-h-[45vh] overflow-y-auto overscroll-none" : ""}`}
-        >
-          {visible.map((agent) => (
-            <LiveAgentCard
-              key={agent.id}
-              agent={agent}
-              now={now}
-              selected={agent.id === activeSessionId}
-              onSelect={onSelect}
-              groupLabels={groupLabels}
-              groupColors={groupColors}
-              groupCustomColors={groupCustomColors}
-              groupMascots={groupMascots}
+          {collapsible ? (
+            <ChevronDown
+              className={`size-3.5 shrink-0 text-content/65 transition-transform motion-reduce:transition-none ${collapsed ? "-rotate-90" : ""}`}
+              strokeWidth={1.75}
             />
-          ))}
-        </div>
-        {extra > 0 ? (
-          <button
-            type="button"
-            aria-expanded={expanded}
-            onClick={() => setExpanded((open) => !open)}
-            className="flex w-full items-center justify-center gap-1 px-2 py-1.5 text-[11px] text-content/50 hover:bg-content/8 hover:text-content"
+          ) : null}
+        </Header>
+        <div hidden={collapsed}>
+          <div
+            ref={lockList}
+            className={`flex flex-col gap-px px-1 ${
+              extra > 0 ? "" : "pb-1"
+            } ${collapsible ? "max-h-[min(16rem,25vh)] overflow-y-auto overscroll-none" : expanded ? "max-h-[45vh] overflow-y-auto overscroll-none" : ""}`}
           >
-            {expanded ? (
-              <ChevronUp className="size-3" strokeWidth={1.75} />
-            ) : (
-              <ChevronDown className="size-3" strokeWidth={1.75} />
-            )}
-            {expanded ? "Show less" : `${extra} more`}
-          </button>
-        ) : null}
+            {visible.map((agent) => (
+              <LiveAgentCard
+                key={agent.id}
+                agent={agent}
+                now={now}
+                selected={agent.id === activeSessionId}
+                onSelect={onSelect}
+                groupLabels={groupLabels}
+                groupColors={groupColors}
+                groupCustomColors={groupCustomColors}
+                groupMascots={groupMascots}
+              />
+            ))}
+          </div>
+          {extra > 0 ? (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((open) => !open)}
+              className="flex w-full items-center justify-center gap-1 px-2 py-1.5 text-[11px] text-content/50 hover:bg-content/8 hover:text-content"
+            >
+              {expanded ? (
+                <ChevronUp className="size-3" strokeWidth={1.75} />
+              ) : (
+                <ChevronDown className="size-3" strokeWidth={1.75} />
+              )}
+              {expanded ? "Show less" : `${extra} more`}
+            </button>
+          ) : null}
+        </div>
       </div>
     </section>
   );
@@ -208,7 +228,9 @@ function LiveAgentCard({
       data-live-agent-card={agent.id}
       onClick={() => onSelect?.(agent.id)}
       className={`relative flex w-full flex-col rounded-md px-2 py-1.5 text-left ${
-        selected ? "bg-selection" : "hover:bg-content/8"
+        selected
+          ? "bg-accent/12 ring-1 ring-inset ring-accent/25"
+          : "text-content/90 hover:bg-content/8"
       }`}
     >
       <span className="flex min-w-0 items-center gap-2">
@@ -235,7 +257,7 @@ function LiveAgentCard({
             ? "text-amber-400"
             : agent.done
               ? "text-emerald-400"
-              : "text-content/50"
+              : "text-content/65"
         }`}
       >
         {agent.needsApproval ? (
@@ -247,7 +269,7 @@ function LiveAgentCard({
         )}
         <span className="min-w-0 truncate">{activity}</span>
       </span>
-      <span className="mt-1 flex min-w-0 items-center gap-1.5 pl-4 text-[11px] leading-tight text-content/45">
+      <span className="mt-1 flex min-w-0 items-center gap-1.5 pl-4 text-[11px] leading-tight text-content/65">
         <HarnessIcon harness={agent.harness} className="size-3 shrink-0" />
         {remote ? (
           <Internet

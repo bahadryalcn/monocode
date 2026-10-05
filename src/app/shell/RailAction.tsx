@@ -56,9 +56,9 @@ export function RailAction({
       title={ariaLabel ?? label}
       className={`relative flex w-full items-center gap-2 rounded-md px-2 h-8  text-left @max-[140px]/rail:justify-center @max-[140px]/rail:px-0 ${
         active
-          ? "bg-selection text-content"
-          : "text-content/50 hover:bg-content/10 hover:text-content"
-      } disabled:cursor-default disabled:opacity-40`}
+          ? "bg-accent/12 text-content ring-1 ring-inset ring-accent/25"
+          : "text-content/80 hover:bg-content/8 hover:text-content"
+      } focus-visible:outline-2 focus-visible:outline-accent focus-visible:-outline-offset-2 disabled:cursor-default disabled:opacity-40`}
     >
       {badge != null ? (
         <span
@@ -69,7 +69,7 @@ export function RailAction({
         </span>
       ) : null}
       <Icon
-        className={`size-4 shrink-0 opacity-70 ${badge != null ? "ml-4" : ""}`}
+        className={`size-4 shrink-0 ${active ? "text-accent" : "text-content/65"} ${badge != null ? "ml-4" : ""}`}
         strokeWidth={1.75}
       />
       <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight @max-[140px]/rail:hidden">
@@ -81,7 +81,10 @@ export function RailAction({
           className="size-2 shrink-0 rounded-full bg-accent @max-[140px]/rail:absolute @max-[140px]/rail:right-2 @max-[140px]/rail:top-1.5 @max-[140px]/rail:size-1.5"
         />
       ) : shortcut ? (
-        <span aria-hidden className="shrink-0 text-[11px] text-content/40 @max-[140px]/rail:hidden">
+        <span
+          aria-hidden
+          className="shrink-0 text-[11px] text-content/40 @max-[140px]/rail:hidden"
+        >
           {shortcut}
         </span>
       ) : null}
@@ -113,8 +116,8 @@ export function RailSearch({
       title={ariaLabel ?? label}
       className={`relative flex w-full items-center gap-2 rounded-md border border-content/8 px-1.5 shadow-sm h-8 text-left @max-[140px]/rail:justify-center @max-[140px]/rail:px-0 ${
         active
-          ? "bg-selection text-content"
-          : "text-content/50 hover:bg-content/10 hover:text-content"
+          ? "bg-accent/12 text-content ring-1 ring-inset ring-accent/25"
+          : "bg-content/3 text-content/75 hover:bg-content/8 hover:text-content"
       } disabled:cursor-default disabled:opacity-40`}
     >
       <Icon className="size-4 shrink-0 opacity-70" strokeWidth={1.75} />
@@ -122,7 +125,10 @@ export function RailSearch({
         {label}
       </span>
       {shortcut ? (
-        <span aria-hidden className="shrink-0 text-[11px] text-content/40 @max-[140px]/rail:hidden">
+        <span
+          aria-hidden
+          className="shrink-0 text-[11px] text-content/40 @max-[140px]/rail:hidden"
+        >
           {shortcut}
         </span>
       ) : null}
