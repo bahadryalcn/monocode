@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveProjectLocation } from "../../../platform/tauri/fs";
 import {
   forgetProjectLocation,
+  invalidateProjectLocation,
   rememberProjectLocation,
   synchronizeProjectLocation,
 } from "./projectLocation";
@@ -28,6 +29,7 @@ function mockLocalStorage() {
 }
 
 beforeEach(() => {
+  invalidateProjectLocation();
   mockLocalStorage();
   vi.mocked(resolveProjectLocation).mockReset();
 });
@@ -77,5 +79,31 @@ describe("project location synchronization", () => {
       "/work/repo",
       undefined,
     );
+  });
+});
+
+
+describe("short lived validation cache", () => {
+  it("reuses successful unchanged identity but revalidates after access invalidation", async () => {
+    vi.mocked(resolveProjectLocation).mockResolvedValue({ path: "/work/cache", identity: "unix:5:6" });
+    await synchronizeProjectLocation("/work/cache");
+    await synchronizeProjectLocation("/work/cache");
+    expect(resolveProjectLocation).toHaveBeenCalledTimes(1);
+    invalidateProjectLocation("/work/cache");
+    vi.mocked(resolveProjectLocation).mockResolvedValue(null);
+    expect(await synchronizeProjectLocation("/work/cache")).toBeNull();
+    expect(resolveProjectLocation).toHaveBeenCalledTimes(2);
+  });
+  it("expires successful locations and never caches missing paths", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    try {
+      vi.mocked(resolveProjectLocation).mockResolvedValue({ path: "/work/cache", identity: "unix:5:6" });
+      await synchronizeProjectLocation("/work/cache");
+      now.mockReturnValue(3_001);
+      vi.mocked(resolveProjectLocation).mockResolvedValue(null);
+      await synchronizeProjectLocation("/work/cache");
+      await synchronizeProjectLocation("/work/cache");
+      expect(resolveProjectLocation).toHaveBeenCalledTimes(3);
+    } finally { now.mockRestore(); }
   });
 });

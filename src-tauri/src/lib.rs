@@ -560,6 +560,8 @@ pub fn run() {
             session_import::import_read_codex,
             session_import::import_placeholder_dir,
             session_store::session_upsert,
+            session_store::incremental::session_apply_delta,
+            session_store::incremental::session_get_page,
             session_store::session_import,
             session_store::session_import_keys,
             session_store::session_list_by_project,

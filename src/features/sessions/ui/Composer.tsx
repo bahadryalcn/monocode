@@ -48,6 +48,7 @@ import {
   tokensForIncoming,
 } from "../model/attachmentTokens";
 import { resizeComposer } from "../model/composerResize";
+import { createComposerResizeFrame } from "./composerResizeFrame";
 import {
   isFileReferenceText,
   messageFilesFromClipboard,
@@ -416,11 +417,7 @@ function MessageQueue({
   /** The turn runs on another machine: it cannot be steered, and the queue is this app's. */
   remote?: boolean;
   onDelete?: (messageId: string) => void;
-  onEdit?: (
-    messageId: string,
-    text: string,
-    attachments: Attachment[],
-  ) => void;
+  onEdit?: (messageId: string, text: string, attachments: Attachment[]) => void;
   onEditingChange?: (messageId?: string) => void;
   onReorder?: (messageIds: string[]) => void;
   onSteer?: (messageId: string) => void;
@@ -603,7 +600,8 @@ function MessageQueue({
         })}
         {remote ? (
           <div className="border-t border-stroke py-1 text-[11px] text-content/40">
-            Sent one at a time when the host finishes this turn, while MonoCode is open.
+            Sent one at a time when the host finishes this turn, while MonoCode
+            is open.
           </div>
         ) : null}
       </div>
@@ -715,6 +713,8 @@ export const Composer = memo(function Composer({
   children,
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const [inputResize] = useState(createComposerResizeFrame);
+  useEffect(() => () => inputResize.cancel(), [inputResize]);
   const boxRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
@@ -889,12 +889,16 @@ export const Composer = memo(function Composer({
     sessionId,
     menuOpen: pickerOpen && !remote,
     taken: takenNames,
-    files: skills,
+    files: remote ? [] : skills,
   });
   const slashItems = useMemo(
     () => [
       ...(remote
-        ? [...(remoteFeatures?.plan ? [PLAN_COMMAND] : []), COMPACT_COMMAND]
+        ? [
+            ...(remoteFeatures?.plan ? [PLAN_COMMAND] : []),
+            COMPACT_COMMAND,
+            ...(harness === "codex" ? cliCommands.slashCommands : []),
+          ]
         : [
             SESSION_FOLDER_COMMAND,
             MCP_COMMAND,
@@ -963,11 +967,11 @@ export const Composer = memo(function Composer({
   const skillNames = useMemo(
     () =>
       new Set(
-        slashItems
+        [...slashItems, ...cliCommands.dollarSkills]
           .filter((skill) => skill.kind !== "template")
           .map((skill) => skill.invocation),
       ),
-    [slashItems],
+    [slashItems, cliCommands.dollarSkills],
   );
   const leadingMode = leadingModeCommand(draft, skillNames);
   const modeIndent = leadingMode ? MODE_COMMAND_INDENT : undefined;
@@ -1861,7 +1865,8 @@ export const Composer = memo(function Composer({
     });
   };
   const submit = (value: string, queue = false) => {
-    if (disabled || worktreeRemoved || sendHeldReason || submitLockRef.current) return;
+    if (disabled || worktreeRemoved || sendHeldReason || submitLockRef.current)
+      return;
     submitLockRef.current = true;
     void completeSubmit(value, queue).finally(() => {
       submitLockRef.current = false;
@@ -2035,7 +2040,11 @@ export const Composer = memo(function Composer({
           ? {
               onSendRejected: () => {
                 // Only into an empty composer: never over what was typed since.
-                if (!ref.current || ref.current.value || attachmentsRef.current.length)
+                if (
+                  !ref.current ||
+                  ref.current.value ||
+                  attachmentsRef.current.length
+                )
                   return false;
                 restoreDraft(text, files, resendBorrowedAttachmentIds);
                 setSelectedMcp(resendSelectedMcp);
@@ -2130,7 +2139,11 @@ export const Composer = memo(function Composer({
       e.currentTarget.selectionStart === e.currentTarget.selectionEnd
     ) {
       const el = e.currentTarget;
-      const hit = templateTriggerAt(el.value, el.selectionStart, promptTemplates);
+      const hit = templateTriggerAt(
+        el.value,
+        el.selectionStart,
+        promptTemplates,
+      );
       if (hit) {
         e.preventDefault();
         const edit = insertTemplateBody(
@@ -2778,7 +2791,9 @@ export const Composer = memo(function Composer({
                       : handoffCard
                         ? "Add context, or send to continue…"
                         : (placeholder ??
-                          "Ask, build, / for commands, @ for references, ! to run a command... ")
+                          (harness === "codex"
+                            ? "Ask, build, / for commands, $ for skills, @ for references..."
+                            : "Ask, build, / for commands and skills, @ for references, ! to run a command... "))
               }
               aria-label={inputAriaLabel}
               disabled={disabled}
@@ -2809,7 +2824,7 @@ export const Composer = memo(function Composer({
                   }
                 }
                 if (enterBtwFromPrefix(el)) return;
-                resizeComposer(el);
+                inputResize.schedule(el);
                 draftRevisionRef.current += 1;
                 setDraft(el.value);
                 setSelectedMcp((current) => {
@@ -2880,6 +2895,46 @@ export const Composer = memo(function Composer({
                       </span>
                     </span>
                   </button>
+                  {!remote ? (
+                    <button
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        const el = ref.current;
+                        if (!el) return;
+                        const prefix = harness === "codex" ? "$" : "/";
+                        const lead =
+                          el.value && !/\s$/.test(el.value) ? " " : "";
+                        const start = el.value.length + lead.length;
+                        const next = `${el.value}${lead}${prefix}`;
+                        el.value = next;
+                        el.setSelectionRange(next.length, next.length);
+                        resizeComposer(el);
+                        setDraft(next);
+                        syncHasValue(next, attachmentsRef.current);
+                        setSlash({
+                          start,
+                          end: next.length,
+                          query: "",
+                          ...(prefix === "$" ? { trigger: "$" as const } : {}),
+                        });
+                        setSkillActive(0);
+                        setPlusOpen(false);
+                        el.focus();
+                      }}
+                      className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
+                    >
+                      <CursorMagicSelection className="mt-0.5 size-4 shrink-0 text-content/70" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13px]">Skills</span>
+                        <span className="block text-[11px] leading-4 text-content/45">
+                          {harness === "codex"
+                            ? "Choose a skill or type $name"
+                            : "Choose a skill or type /name"}
+                        </span>
+                      </span>
+                    </button>
+                  ) : null}
                   {!remote || remoteFeatures?.plan ? (
                     <button
                       type="button"

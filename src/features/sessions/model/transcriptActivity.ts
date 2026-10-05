@@ -17,6 +17,15 @@ import { INTERRUPT_MESSAGE } from "./inFlight";
 import type { AgentStep, Block, ToolPreview } from "./session";
 import { allModels } from "./models";
 import { monoCodeWorkSummary } from "./monocodeToolCall";
+import { streamingTextUpdate } from "./stableBlocks";
+const groupedSources = new WeakMap<Block[][], { blocks: Block[]; managed: boolean }>();
+const groupedPositions = new WeakMap<Block[][], Map<string, number>>();
+function rememberGrouping(turns: Block[][], blocks: Block[], managed: boolean): void {
+  groupedSources.set(turns, { blocks, managed });
+  const positions = new Map<string, number>();
+  turns.forEach((turn, index) => turn.forEach(block => positions.set(block.id, positions.has(block.id) ? -1 : index)));
+  groupedPositions.set(turns, positions);
+}
 
 export type ToolCallState = "pending" | "accepted" | "rejected";
 
@@ -379,8 +388,25 @@ export function groupTurnsStable(
   managed: boolean,
   previous: Block[][],
 ): Block[][] {
+  const source = groupedSources.get(previous);
+  if (source?.blocks === blocks && source.managed === managed) return previous;
+  const updateIndex = source ? streamingTextUpdate(source.blocks, blocks) : undefined;
+  if (source?.managed === managed && updateIndex !== undefined) {
+    const oldBlock = source.blocks[updateIndex];
+    const turnIndex = groupedPositions.get(previous)?.get(oldBlock.id);
+    if (turnIndex === undefined) { groupedSources.set(previous, { blocks, managed }); return previous; }
+    if (turnIndex >= 0) {
+    const result = previous.slice();
+    result[turnIndex] = previous[turnIndex].map(block => block === oldBlock ? blocks[updateIndex] : block);
+    groupedSources.set(result, { blocks, managed });
+    const positions = groupedPositions.get(previous)!;
+    // Mapping belongs to the stable grouping topology; text-only updates do not change it.
+    groupedPositions.set(result, positions);
+    return result;
+    }
+  }
   const next = groupTurns(blocks, managed);
-  if (previous.length === 0) return next;
+  if (previous.length === 0) { rememberGrouping(next, blocks, managed); return next; }
   const byStart = new Map<string, Block[]>();
   for (const turn of previous) byStart.set(turn[0].id, turn);
   let unchanged = next.length === previous.length;
@@ -397,7 +423,9 @@ export function groupTurnsStable(
     unchanged = false;
     return turn;
   });
-  return unchanged ? previous : result;
+  const stable = unchanged ? previous : result;
+  rememberGrouping(stable, blocks, managed);
+  return stable;
 }
 
 /**

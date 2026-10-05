@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 mod content_search;
+pub(crate) mod incremental;
 pub use content_search::{ContentSearchOptions, ContentSearchResult};
 
 const MIGRATION_V1: &str = r#"
@@ -201,6 +202,8 @@ pub struct SessionUpsert {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_revision: Option<i64>,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchestration_lead_id: Option<String>,
@@ -240,6 +243,8 @@ pub struct SessionSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRecord {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_revision: Option<i64>,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchestration_lead_id: Option<String>,
@@ -277,6 +282,7 @@ pub fn session_upsert(
     store: State<'_, SessionStore>,
     session: SessionUpsert,
     expected_updated_at: Option<i64>,
+    expected_revision: Option<i64>,
     expect_missing: Option<bool>,
 ) -> Result<Option<SessionSummary>, String> {
     validate_upsert(&session)?;
@@ -291,6 +297,10 @@ pub fn session_upsert(
         expected_updated_at.map(Some)
     };
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    if let Some(expected_revision) = expected_revision {
+        let revision: Option<i64> = conn.query_row("SELECT revision FROM session_block_state WHERE session_id=?1", [&session.id], |r|r.get(0)).optional().map_err(|e|e.to_string())?;
+        if revision != Some(expected_revision) { return Ok(None); }
+    }
     // `None` back means the precondition failed and nothing was written.
     upsert_session_with_git(&conn, &session, git, expected).map_err(|e| e.to_string())
 }
@@ -1301,6 +1311,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::reminders::ensure_table(conn)?;
     crate::automations::ensure_tables(conn)?;
     ensure_orchestration_history(conn)?;
+    incremental::ensure_schema(conn)?;
     Ok(())
 }
 
@@ -1438,6 +1449,22 @@ fn upsert_session_with_git(
     git: crate::fs::GitInfo,
     expected: Option<Option<i64>>,
 ) -> rusqlite::Result<Option<SessionSummary>> {
+    let tx = conn.unchecked_transaction()?;
+    let mut result = upsert_session_core(&tx, session, git, expected)?;
+    if let Some(summary) = result.as_mut() {
+        incremental::checkpoint(&tx, &session.id, &session.blocks)?;
+        summary.transcript_revision = tx.query_row("SELECT revision FROM session_block_state WHERE session_id=?1", [&session.id], |r|r.get(0)).optional()?;
+    }
+    tx.commit()?;
+    Ok(result)
+}
+
+fn upsert_session_core(
+    conn: &Connection,
+    session: &SessionUpsert,
+    git: crate::fs::GitInfo,
+    expected: Option<Option<i64>>,
+) -> rusqlite::Result<Option<SessionSummary>> {
     let now = now_millis();
     let model_settings = serde_json::to_string(&session.model_settings)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -1494,7 +1521,7 @@ fn upsert_session_with_git(
     // `updated_at` once.
     let existing: Option<(i64, i64, bool, i64, i64)> = conn
         .query_row(
-            "SELECT created_at, updated_at, blocks_json = ?2, archived, pinned FROM sessions WHERE id = ?1",
+            "SELECT created_at, updated_at, blocks_json = ?2, archived, pinned FROM session_transcripts WHERE id = ?1",
             params![session.id, blocks_json],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
@@ -1510,7 +1537,7 @@ fn upsert_session_with_git(
         .unwrap_or_else(|| session.created_at.unwrap_or(now));
     let updated_at = match &existing {
         Some((_, prev_updated, true, _, _)) => *prev_updated,
-        Some(_) => now,
+        Some((_, previous, _, _, _)) => now.max(previous + 1),
         None => session.updated_at.unwrap_or(now),
     };
     let archived = existing
@@ -1577,6 +1604,7 @@ fn upsert_session_with_git(
 
     remember_worker_from_blocks(conn, &session.id, &session.blocks)?;
     Ok(Some(SessionSummary {
+        transcript_revision: None,
         id: session.id.clone(),
         orchestration_lead_id: worker_parent(conn, &session.id)?,
         orchestration: orchestration_summary(conn, &session.id)?,
@@ -1656,7 +1684,9 @@ fn search_sessions_sql(include_archived: bool, cwd_scoped: bool) -> String {
     } else {
         sql.push_str(" ORDER BY updated_at DESC, id ASC LIMIT ?3");
     }
-    sql
+    // Preserve the covering-index source for metadata while reading the
+    // authoritative normalized transcript for the bounded content predicate.
+    sql.replace("blocks_json", "COALESCE((SELECT blocks_json FROM session_transcripts transcript WHERE transcript.id=sessions.id), '[]')")
 }
 
 fn search_sessions_with_connection(
@@ -1958,6 +1988,7 @@ fn list_by_project_with_git(
         let pinned: i64 = row.get(11)?;
         let linked_work_item = optional_json(row.get(12)?);
         Ok(SessionSummary {
+            transcript_revision: None,
             id: row.get(0)?,
             orchestration_lead_id: None,
             orchestration: optional_json(row.get(13)?),
@@ -2010,6 +2041,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
         let archived: i64 = row.get(10)?;
         let pinned: i64 = row.get(11)?;
         Ok(SessionSummary {
+            transcript_revision: None,
             id: row.get(0)?,
             orchestration_lead_id: None,
             orchestration: optional_json(row.get(13)?),
@@ -2077,6 +2109,7 @@ fn recent_rows(
         let worktree_removed = row.get::<_, i64>(14)? != 0;
         let branch: Option<String> = row.get(9)?;
         Ok(SessionSummary {
+            transcript_revision: None,
             id: row.get(0)?,
             orchestration_lead_id: None,
             orchestration: None,
@@ -2140,7 +2173,7 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
     let parent = worker_parent(&tx, session_id)?;
     // Ownership is also carried in transcripts for older clients. Release
     // that metadata along with the index so reopening a worker stays detached.
-    let workers = tx.prepare("SELECT id, blocks_json FROM sessions WHERE id IN (SELECT session_id FROM orchestration_workers WHERE lead_id = ?1)")?
+    let workers = tx.prepare("SELECT id, blocks_json FROM session_transcripts WHERE id IN (SELECT session_id FROM orchestration_workers WHERE lead_id = ?1)")?
         .query_map([session_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, raw) in workers {
@@ -2289,19 +2322,28 @@ fn read_session_row(
     conn: &Connection,
     session_id: &str,
 ) -> rusqlite::Result<Option<(SessionRecord, String, String)>> {
+    read_session_row_from(conn, session_id, true)
+}
+
+fn read_session_row_from(
+    conn: &Connection,
+    session_id: &str,
+    include_blocks: bool,
+) -> rusqlite::Result<Option<(SessionRecord, String, String)>> {
     conn.query_row(
         "SELECT id, cwd, harness, model, model_settings, runtime_mode, title,
-                provider_session_id, blocks_json, created_at, updated_at,
+                provider_session_id, CASE WHEN ?2 THEN blocks_json ELSE '[]' END, created_at, updated_at,
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id
-         FROM sessions
+         FROM session_transcripts
          WHERE id = ?1 AND inbox_ask IS NULL",
-        params![session_id],
+        params![session_id,include_blocks],
         |row| {
             let model_settings_raw: String = row.get(4)?;
             let blocks_raw: String = row.get(8)?;
             let record = SessionRecord {
+                transcript_revision: conn.query_row("SELECT revision FROM session_block_state WHERE session_id=?1", [session_id], |r|r.get(0)).optional()?,
                 id: row.get(0)?,
                 orchestration_lead_id: worker_parent(conn, session_id)?,
                 cwd: row.get(1)?,
@@ -4159,10 +4201,11 @@ mod tests {
             .collect();
         assert!(plan
             .iter()
-            .any(|step| step.contains("USING INDEX sessions_cwd_cover_idx")));
+            .any(|step| step.contains("USING COVERING INDEX sessions_cwd_cover_idx")),
+            "metadata must stay in the covering index: {plan:?}");
         for step in &plan {
             if step.contains("sessions") {
-                assert!(step.contains("USING INDEX"), "table access: {step}");
+                assert!(step.contains("USING INDEX") || step.contains("USING COVERING INDEX"), "table access: {step}");
             }
         }
     }

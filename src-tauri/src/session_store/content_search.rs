@@ -522,7 +522,7 @@ fn index_session(store: &SessionStore, id: &str, updated_at: i64) -> Result<bool
     let raw: Option<String> = store
         .lock_conn()?
         .query_row(
-            "SELECT blocks_json FROM sessions WHERE id = ?1 AND updated_at = ?2",
+            "SELECT blocks_json FROM session_transcripts WHERE id = ?1 AND updated_at = ?2",
             params![id, updated_at],
             |row| row.get(0),
         )

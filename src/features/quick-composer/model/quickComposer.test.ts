@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RUNTIME_MODES } from "../../sessions/model/session";
+import { HARNESSES, RUNTIME_MODES } from "../../sessions/model/session";
 import type { AgentModel } from "../../sessions/model/models";
 import {
   filterQuickModels,
@@ -9,6 +9,11 @@ import {
 } from "./quickComposer";
 
 describe("parseQuickLaunch", () => {
+  it.each(HARNESSES)("accepts the registered %s harness", (harness) => {
+    expect(
+      parseQuickLaunch({ prompt: "hi", cwd: "/tmp/project", harness })?.harness,
+    ).toBe(harness);
+  });
   it("accepts a complete launch", () => {
     expect(
       parseQuickLaunch({
@@ -85,7 +90,7 @@ describe("parseQuickLaunch", () => {
     const base = { prompt: "hi", cwd: "/Users/me/code/app", harness: "claude" };
     expect(parseQuickLaunch({ ...base, prompt: "   " })).toBeNull();
     expect(parseQuickLaunch({ ...base, cwd: "" })).toBeNull();
-    expect(parseQuickLaunch({ ...base, harness: "gemini" })).toBeNull();
+    expect(parseQuickLaunch({ ...base, harness: "unknown-harness" })).toBeNull();
     expect(parseQuickLaunch(null)).toBeNull();
   });
 });

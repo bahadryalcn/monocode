@@ -17,6 +17,7 @@ import {
   Wrench,
   X,
 } from "../../../shared/ui/icons";
+import { PerformanceTraceContext } from "./performanceTraceContext";
 import {
   memo,
   startTransition,
@@ -178,6 +179,9 @@ const TURN_PAGE_SIZE = 20;
 type Props = {
   blocks: Block[];
   busy?: boolean;
+  historyLoading?: boolean;
+  historyLoadError?: string;
+  performanceTraceId?: string;
   cwd?: string;
   harness?: HarnessId;
   model?: string;
@@ -223,6 +227,9 @@ type Props = {
 function AgentTranscriptComponent({
   blocks: sourceBlocks,
   busy,
+  historyLoading = false,
+  historyLoadError,
+  performanceTraceId,
   cwd,
   harness,
   model,
@@ -680,11 +687,14 @@ function AgentTranscriptComponent({
   }, [visible, searchQuery, searchCurrent, visibleTurnCount, openWork]);
 
   return (
+    <PerformanceTraceContext.Provider value={performanceTraceId}>
     <div
       ref={setScroller}
       className="agent-transcript h-full overflow-y-auto overscroll-none [overflow-anchor:none] font-mono text-[13px] leading-5"
     >
       <div className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-1 pb-8">
+        {historyLoading ? <div role="status" className="px-4 py-3 font-sans text-xs text-content/60">Loading earlier messages…</div> : null}
+        {historyLoadError ? <div role="alert" className="px-4 py-3 font-sans text-xs text-danger">{historyLoadError}</div> : null}
         {firstVisibleTurn > 0 ? (
           <div className="flex justify-center px-4 py-3">
             <button
@@ -766,6 +776,7 @@ function AgentTranscriptComponent({
         />
       ) : null}
     </div>
+    </PerformanceTraceContext.Provider>
   );
 }
 

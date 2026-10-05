@@ -265,7 +265,7 @@ fn rpc(
     if bytes.len() as u64 > MAX_RESPONSE_BYTES {
         return Err("Host response is too large".into());
     }
-    let value: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid host response")?;
+    let mut value: Value = serde_json::from_slice(&bytes).map_err(|_| "Invalid host response")?;
     if let Some(error) = value.get("error").and_then(Value::as_str) {
         return Err(format!("Host rejected request: {error}"));
     }
@@ -273,8 +273,8 @@ fn rpc(
         return Err(format!("Host returned HTTP {status}"));
     }
     value
-        .get("result")
-        .cloned()
+        .as_object_mut()
+        .and_then(|object| object.remove("result"))
         .ok_or_else(|| "Invalid host response".into())
 }
 
@@ -572,11 +572,13 @@ fn supported_remote_method(method: &str) -> bool {
             | "sessions.update"
             | "sessions.delete"
             | "sessions.sync"
+            | "sessions.page"
             | "sessions.syncChunk"
             | "sessions.adopted"
             | "sessions.desktopLive"
             | "commands.dispatch"
             | "attachments.upload"
+            | "attachments.status"
             | "attachments.read"
             | "devices.revokeSelf"
             | "git.diff"
@@ -609,6 +611,8 @@ fn supported_remote_method(method: &str) -> bool {
             | "tasks.list"
             | "tasks.save"
             | "tasks.move"
+            | "tasks.notes.read"
+            | "tasks.notes.resolve"
             | "tasks.delete"
             | "goals.list"
             | "goals.create"
@@ -921,6 +925,13 @@ pub fn remote_ssh_cancel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_note_commands_are_supported_without_allowing_arbitrary_note_methods() {
+        assert!(supported_remote_method("tasks.notes.read"));
+        assert!(supported_remote_method("tasks.notes.resolve"));
+        assert!(!supported_remote_method("tasks.notes.delete"));
+    }
 
     #[test]
     fn git_actions_outlast_the_hosts_network_limit_and_others_keep_the_default() {

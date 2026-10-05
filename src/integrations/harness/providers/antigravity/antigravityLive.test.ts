@@ -378,9 +378,11 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
     mock.exits.get(liveKey())!(1);
     await turn;
     await vi.waitFor(() =>
-      expect(response()).toEqual({ outcome: { outcome: "cancelled" } }));
+      expect(events).toContainEqual({ type: "approval.resolved", requestId: 100, decision: "deny" }));
+    // The process has exited and its RPC client is closed. The UI approval
+    // settles locally; sending a protocol reply to the dead pipe is impossible.
+    expect(response()).toBeUndefined();
     expect(events).toContainEqual({ type: "session.ended", code: 1 });
-    expect(events).toContainEqual({ type: "approval.resolved", requestId: 100, decision: "deny" });
   });
 
   it("fails a resume timeout instead of stacking a fresh session on top", async () => {
@@ -390,6 +392,11 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
     try {
       const send = provider.send(input);
       const outcome = send.then(() => "resolved").catch((e: Error) => e.message);
+      // Start the resume request before advancing its deadline. Startup is a
+      // promise chain, so advancing from send submission can run the clock
+      // before the session/resume response timer has even been registered.
+      await flush();
+      expect(mock.sent.some((m) => m.method === "session/resume")).toBe(true);
       await vi.advanceTimersByTimeAsync(50_000);
       await expect(outcome).resolves.toMatch(/timed out/);
       expect(mock.sent.some((m) => m.method === "session/load")).toBe(false);

@@ -121,11 +121,11 @@ describe("paced streaming", () => {
     expect(shown()).toBe("Hello wor");
   });
 
-  it("finishes a stream that ends ahead of the reveal at pace, then stops fading", () => {
+  it("reveals a completed stream immediately and stops fading", () => {
     render("", true);
     render(reply, true);
     render(reply, false);
-    expect(shown()).toBe("");
+    expect(shown()).toBe(reply);
 
     act(() => vi.advanceTimersByTime(2_000));
     expect(shown()).toBe(reply);

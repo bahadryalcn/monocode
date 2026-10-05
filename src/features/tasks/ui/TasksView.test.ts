@@ -100,6 +100,15 @@ function host(
       return { ...limits, ...args.params.settings };
     if (args.method === "tasks.move")
       return { ...tasks[0], status: args.params.to };
+    if (args.method === "tasks.notes.read" || args.method === "tasks.notes.resolve") {
+      const target = tasks.find((task) => task.id === args.params.taskId)!;
+      target.reviewNotes = target.reviewNotes?.map((note) => {
+        if (args.method === "tasks.notes.read" && args.params.noteIds.includes(note.id)) return { ...note, readAt: 3 };
+        if (args.method === "tasks.notes.resolve" && args.params.noteId === note.id) return { ...note, resolvedAt: args.params.resolved ? 3 : undefined };
+        return note;
+      });
+      return target;
+    }
     if (args.method === "tasks.delete") {
       tasks.splice(0);
       return { deleted: true };
@@ -109,13 +118,14 @@ function host(
   return requests;
 }
 
-async function render() {
+async function render(onOpenBackgroundSession = vi.fn()) {
   await act(async () =>
     root.render(
       createElement(TasksView, {
         cwd: "/work/project",
         recents: [],
         onClose: vi.fn(),
+        onOpenBackgroundSession,
       }),
     ),
   );
@@ -544,6 +554,35 @@ it("opens a task's details from its card, and closes them with Escape", async ()
       .click(),
   );
   expect(panel()).toBeNull();
+});
+
+it("shows new review notes and saves read/fixed states while opening the source reviewer", async () => {
+  const openReview = vi.fn();
+  const requests = host([task({ status: "blocked", reviewNotes: [{
+    id: "note-1", finding: "Friday is missing.", suggestion: "Include Friday totals.", kind: "finding",
+    sessionId: "review-session", createdAt: 1, updatedAt: 1, occurrences: 1,
+  }] })]);
+  await render(openReview);
+  expect(card("Ship the report").querySelector("[data-task-review-notes]")!.textContent).toContain("1 new review note");
+  expect(container.querySelector("[data-new-review-notes]")!.textContent).toContain("1 new review note");
+  await act(async () => card("Ship the report").click());
+  const notes = panel()!.querySelector('[aria-label="Review notes"]')!;
+  expect(notes.textContent).toContain("Friday is missing.");
+  expect(notes.textContent).toContain("Include Friday totals.");
+  await act(async () => button(notes, "Open review")!.click());
+  expect(openReview).toHaveBeenCalledWith({ machineId: "machine-local", cwd: "/work/project", projectId: "project-1", sessionId: "review-session" });
+  await act(async () => button(notes, "Mark 1 as read")!.click());
+  expect(requests.find((request) => request.method === "tasks.notes.read")!.params).toEqual({ taskId: "main", noteIds: ["note-1"] });
+  expect(container.querySelector("[data-new-review-notes]")).toBeNull();
+  expect(card("Ship the report").querySelector("[data-task-review-notes]")!.textContent).toContain("1 review note");
+  await act(async () => button(notes, "Mark fixed")!.click());
+  expect(notes.textContent).toContain("0 open");
+  expect(card("Ship the report").closest('[data-task-column]')!.getAttribute("data-task-column")).toBe("blocked");
+  await act(async () => button(notes, "Reopen note")!.click());
+  expect(notes.textContent).toContain("1 open");
+  expect(requests.filter((request) => request.method === "tasks.notes.resolve").map((request) => request.params)).toEqual([
+    { taskId: "main", noteId: "note-1", resolved: true }, { taskId: "main", noteId: "note-1", resolved: false },
+  ]);
 });
 
 it("does not open the panel from a card's action buttons", async () => {

@@ -2,6 +2,7 @@ param(
     [string]$Version,
     [switch]$Plan,
     [switch]$InstallOnly,
+    [switch]$BuildOnly,
     [switch]$Release,
     [switch]$ForceBuild,
     [switch]$Status,
@@ -13,6 +14,7 @@ $arguments = @('-B', (Join-Path $PSScriptRoot 'local_update.py'), '--platforms',
 if ($Version) { $arguments += @('--version', $Version) }
 if ($Plan) { $arguments += '--plan' }
 if ($InstallOnly) { $arguments += '--install-only' }
+if ($BuildOnly) { $arguments += '--build-only' }
 if ($Release) { $arguments += '--release' }
 if ($ForceBuild) { $arguments += '--force-build' }
 if ($Status) { $arguments += '--status' }

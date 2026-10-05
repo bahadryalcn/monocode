@@ -45,6 +45,23 @@ export type TaskVerification = {
   review?: { verdict: "pass" | "fail"; note: string; sessionId: string };
 };
 
+export type TaskReviewNote = {
+  id: string;
+  finding: string;
+  suggestion?: string;
+  /** Supporting prose preserved from legacy reviews without structured findings. */
+  details?: string;
+  kind: "finding" | "suggestion";
+  /** The reviewer that last reported it, when its session is available. */
+  sessionId?: string;
+  sessionIds?: string[];
+  createdAt: number;
+  updatedAt: number;
+  occurrences: number;
+  readAt?: number;
+  resolvedAt?: number;
+};
+
 export const TASK_SOURCES = ["manual", "goal", "steward"] as const;
 export type TaskSource = (typeof TASK_SOURCES)[number];
 
@@ -90,6 +107,12 @@ export type HostTask = HostTaskInput & {
   error?: string;
   /** Failed checks carried into the next worker run, including via To do. */
   retryFeedback?: string;
+  /** Automatic correction runs used by a goal/steward task, persisted across restarts. */
+  repairAttempts?: number;
+  /** The finding that triggered the latest automatic correction. */
+  repairNote?: string;
+  /** Durable review findings; absent on hosts predating task notes. */
+  reviewNotes?: TaskReviewNote[];
   /** The branch an isolated task works on, and the worktree it is checked
    * out in. Kept until the task is merged or discarded. */
   branch?: string;

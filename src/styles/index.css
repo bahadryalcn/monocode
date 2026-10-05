@@ -2214,6 +2214,15 @@ html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
 }
 
 /* One light sweep across a composer mode command as it appears. */
+/* Opt-in diagnostic A/B controls. Default appearance and reduced motion remain. */
+:root[data-performance-no-shimmer] .shimmer-text,
+:root[data-performance-no-shimmer] .composer-mode-shimmer {
+  animation: none;
+}
+:root[data-performance-no-blur] .gradient-blur-background-soft,
+:root[data-performance-no-blur] .gradient-blur-background-strong {
+  filter: none;
+}
 .composer-mode-shimmer {
   background-image: linear-gradient(
     100deg,

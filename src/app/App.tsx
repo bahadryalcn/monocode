@@ -427,6 +427,7 @@ import {
   forgetProjectLocation,
   rememberProjectLocation,
   synchronizeProjectLocation,
+  invalidateProjectLocation,
 } from "../features/projects/model/projectLocation";
 import {
   archiveProject,
@@ -620,6 +621,8 @@ import {
   tabVisitForward,
   type TabVisitHistory,
 } from "../features/workspace/model/tabVisitHistory";
+import { prepareLocalTurn } from "./model/localTurnPreparation";
+import { startPerformanceSpan, recordPerformanceEvent, beginSessionPerformanceTrace } from "../shared/lib/performanceTrace";
 import { preparePrompt } from "../features/sessions/model/promptPreparation";
 import {
   consumeOperatorCommand,
@@ -4751,18 +4754,48 @@ function Workspace({
   const loadStoredSession = useCallback(
     (sessionId: string): Promise<Session | null> => {
       const cached = loadedSessionCache.current.get(sessionId);
-      if (cached) {
+      if (cached && !cached.historyLoading) {
         // The cache owns closed sessions only. Transfer this reference into
         // live state instead of retaining a stale duplicate while it changes.
         loadedSessionCache.current.delete(sessionId);
         return Promise.resolve(cached);
       }
 
+      if (cached?.historyLoading) loadedSessionCache.current.delete(sessionId);
       const pending = sessionLoads.current.get(sessionId);
       if (pending) return pending;
 
       const epoch = sessionLoadEpochs.current.get(sessionId) ?? 0;
-      const loading = getSession(sessionId)
+      const loading = getSession(sessionId, {
+        onHydrated: (original, hydrated) => {
+          if (removingSessionIds.current.has(sessionId) ||
+              (sessionLoadEpochs.current.get(sessionId) ?? 0) !== epoch) return;
+          // Repairs may finish after a new turn, edit, queue operation or tab
+          // reload. Never overwrite that state with the older loaded snapshot.
+          const owns = (value: Session) => value.id === sessionId && !value.busy &&
+            value.blocks === original.blocks && value.queuedMessages === original.queuedMessages;
+          if (original.historyLoading && !hydrated.historyLoading && hydrated.providerSessionId &&
+              !hydrated.worktreeRemoved && isLiveHarness(hydrated.harness) &&
+              sessionsRef.current.some(owns)) {
+            bindHarnessSession(hydrated.harness, hydrated.id, hydrated.providerSessionId,
+              sessionWorkCwd(hydrated), hydrated.providerAccountId, hydrated.blocks);
+          }
+          const cached = loadedSessionCache.current.get(sessionId);
+          if (cached && owns(cached)) loadedSessionCache.current.set(sessionId, hydrated);
+          setSessions((previous) => previous.map((value) => owns(value) ? {
+            ...value, blocks: hydrated.blocks,
+            queuedMessages: hydrated.queuedMessages, queueStatus: hydrated.queueStatus,
+            historyLoading: hydrated.historyLoading, historyLoadError: undefined,
+          } : value));
+        },
+        onHydrationFailed: (original) => {
+          if ((sessionLoadEpochs.current.get(sessionId) ?? 0) !== epoch) return;
+          setSessions((previous) => previous.map((value) => value.id === sessionId &&
+            value.blocks === original.blocks && value.historyLoading ? {
+              ...value, historyLoadError: "Earlier messages could not be loaded. Reopen this chat to retry.",
+            } : value));
+        },
+      })
         .then((loaded) => {
           if (
             !loaded ||
@@ -4805,6 +4838,7 @@ function Workspace({
       );
       if (appeared) return appeared;
       if (
+        !restored.historyLoading &&
         !restored.worktreeRemoved &&
         restored.providerSessionId &&
         isLiveHarness(restored.harness)
@@ -7418,6 +7452,7 @@ function Workspace({
       // Preserve composer text while this session is handed to another window.
       // Other sessions remain usable throughout the move.
       if (movingSessionIds.current.has(sessionId)) return false;
+      if (sessionsRef.current.some((session) => session.id === sessionId && session.historyLoading)) return false;
       const remote = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -7831,6 +7866,8 @@ function Workspace({
         });
       }
 
+      const traceId = beginSessionPerformanceTrace(sessionId);
+      recordPerformanceEvent("send-prepare", { phase: 0 }, traceId);
       const gen = (turnGen.current.get(sessionId) ?? 0) + 1;
       turnGen.current.set(sessionId, gen);
       const proposalId =
@@ -8281,7 +8318,13 @@ function Workspace({
           const routed = routePlanEvent(event);
           if (routed) enqueueHarnessEvent(sessionId, routed);
         };
+        let sawProviderEvent = false;
         const routeTurnEvent = (event: HarnessEvent) => {
+          if (!sawProviderEvent) {
+            sawProviderEvent = true;
+            recordPerformanceEvent("provider-first-event", {}, traceId);
+          }
+          recordPerformanceEvent("renderer-receive", {}, traceId);
           if (turnGen.current.get(sessionId) !== gen) return;
           if (editedResend && !editedResend.isAccepted()) {
             pendingEditedEvents.push(event);
@@ -8314,21 +8357,20 @@ function Workspace({
           });
         };
 
-        if (!current.inboxAsk && !orchestrator.forSession(sessionId)) {
-          await beginSessionTurn(sessionId, workCwd).catch(() => undefined);
-        }
-        if (turnGen.current.get(sessionId) !== gen) return;
         let buildSucceeded = false;
         try {
-          const prepared = await prepareAttachments(attachments);
-          const prompt =
-            intent === "build" && approvedPlan
-              ? buildPlanPrompt(approvedPlan.text)
-              : await preparePrompt(harnessText, {
-                  harness: current.harness,
-                  sessionId,
-                  cwd: workCwd,
-                });
+          const preparation = await prepareLocalTurn({
+            traceId,
+            checkpoint: () => !current.inboxAsk && !orchestrator.forSession(sessionId)
+              ? beginSessionTurn(sessionId, workCwd).catch(() => undefined) : Promise.resolve(),
+            attachments: () => prepareAttachments(attachments),
+            prompt: () => intent === "build" && approvedPlan
+              ? Promise.resolve(buildPlanPrompt(approvedPlan.text))
+              : preparePrompt(harnessText, { harness: current.harness, sessionId, cwd: workCwd }),
+            isCurrent: () => turnGen.current.get(sessionId) === gen,
+          });
+          if (!preparation) return;
+          const { attachments: prepared, prompt } = preparation;
           const turnPrompt = proposalDraft
             ? options?.orchestrationRetry?.response
               ? orchestrationRepairPrompt({
@@ -8396,8 +8438,11 @@ function Workspace({
               return;
             }
           }
-          const sendTurn = (text: string, turnAttachments = prepared) =>
-            sendHarnessTurn({
+          const sendTurn = (text: string, turnAttachments = prepared) => {
+            if (turnGen.current.get(sessionId) !== gen) return Promise.resolve();
+            recordPerformanceEvent("dispatch", {}, traceId);
+            const finishDispatch = startPerformanceSpan("dispatch", {}, traceId);
+            return sendHarnessTurn({
               harness: current.harness,
               sessionId,
               cwd: workCwd,
@@ -8416,7 +8461,8 @@ function Workspace({
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
               onEvent: routeTurnEvent,
-            });
+            }).finally(finishDispatch);
+          };
           let sendText = orchestrator.prompt(
             sessionId,
             inboxAskPrompt(
@@ -8561,6 +8607,7 @@ function Workspace({
         }
       })()
         .catch((error: unknown) => {
+          invalidateProjectLocation(current.cwd);
           controlOutcome = {
             status: "failed",
             text: controlText,

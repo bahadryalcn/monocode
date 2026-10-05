@@ -8,6 +8,44 @@ import { HostStore } from "./store";
 import { HostEngine } from "./engine";
 
 const cleanups: Array<() => void> = [];
+
+it("recovers reordered, deleted and updated blocks from the incremental journal", () => {
+  vi.useFakeTimers();
+  try {
+    const path = join(open(), "journal.db");
+    const store = new HostStore(path);
+    const project = store.addProject("/tmp", "Journal");
+    const base = store.save(session("journal", project.id, { session: {
+      ...session("journal", project.id).session,
+      blocks: [{ id: "a", role: "assistant", text: "large prefix" }, { id: "b", role: "assistant", text: "tail" }],
+    } }), {});
+    const next = store.save({ ...base, revision: 2, session: { ...base.session,
+      title: "Changed", blocks: [{ ...base.session.blocks[1]!, text: "new tail" }, base.session.blocks[0]!] } }, {}, { deferred: true });
+    vi.advanceTimersByTime(1_000);
+    store.save({ ...next, revision: 3, session: { ...next.session, blocks: [next.session.blocks[0]!] } }, {}, { deferred: true });
+    vi.advanceTimersByTime(1_000);
+    expect(JSON.parse(String(store.db.prepare("SELECT snapshot FROM sessions WHERE id='journal'").get()!.snapshot)).revision).toBe(1);
+    store.db.close();
+    const reopened = new HostStore(path);
+    cleanups.push(() => reopened.close());
+    expect(reopened.session("journal").session.blocks.map((b) => [b.id, b.text])).toEqual([["b", "new tail"]]);
+    expect(reopened.session("journal").session.title).toBe("Changed");
+    expect(reopened.session("journal").revision).toBe(3);
+  } finally { vi.useRealTimers(); }
+});
+
+it("rolls back a journal and its events when an enclosing transaction fails", () => {
+  const store = new HostStore(join(open(), "rollback.db"));
+  cleanups.push(() => store.close());
+  const project = store.addProject("/tmp", "Rollback");
+  const base = store.save(session("rollback", project.id), {});
+  expect(() => store.transaction(() => {
+    store.save({ ...base, revision: 2 }, { changed: true });
+    throw new Error("rollback");
+  })).toThrow("rollback");
+  expect(store.session("rollback").revision).toBe(1);
+  expect(store.events("rollback", 1).events).toEqual([]);
+});
 afterEach(() => {
   while (cleanups.length) cleanups.pop()!();
 });
@@ -208,7 +246,7 @@ describe("HostStore checkpointed streaming saves", () => {
     return { store, path, project, base };
   }
 
-  it("writes one snapshot per checkpoint while reads see every soft save", () => {
+  it("writes incremental journals per checkpoint while reads see every soft save", () => {
     vi.useFakeTimers();
     try {
       const { store, path, base } = setup();
@@ -226,7 +264,7 @@ describe("HostStore checkpointed streaming saves", () => {
       expect(stored(path, "s").row?.revision).toBe(1);
 
       vi.advanceTimersByTime(1_000);
-      expect(store.snapshotWrites).toBe(writes + 1);
+      expect(store.snapshotWrites).toBe(writes);
       const after = stored(path, "s");
       expect(after.row?.revision).toBe(6);
       expect(after.events).toEqual([1, 2, 3, 4, 5, 6]);

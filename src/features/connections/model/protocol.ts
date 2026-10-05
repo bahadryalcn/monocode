@@ -44,6 +44,8 @@ export type HostWorktree = {
   missing: boolean;
 };
 export type HostSession = {
+  /** Client-only: tail is visible while bounded history pages hydrate. */
+  historyLoading?: boolean;
   session: Session;
   projectId: string;
   revision: number;
@@ -158,6 +160,8 @@ export type HostCommand =
       model: string;
       modelSettings?: Record<string, string>;
       runtimeMode: RuntimeMode;
+      /** Atomic creation plus durable first turn on capable hosts. */
+      firstTurn?: Extract<HostCommand, { type: "send" | "draft" }>;
     }
   | {
       type: "configure";

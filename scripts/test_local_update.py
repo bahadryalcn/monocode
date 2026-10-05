@@ -10,11 +10,42 @@ import time
 import unittest
 from unittest.mock import patch
 
-from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions
+from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, finish_build
 from local_update_lib import backup, count, safe_child, write_json, read_json, alive, digest, windows_binary_digest
-from local_install import wait_idle
+from local_install import wait_idle, stop_windows_host
 
 class LocalUpdateTests(unittest.TestCase):
+    def test_exited_windows_host_does_not_require_a_live_lifecycle_endpoint(self):
+        with patch('local_install.read_json', return_value={'pid': 123, 'port': 3774}), \
+             patch('local_install.alive', return_value=False), patch('local_install.lifecycle') as lifecycle:
+            self.assertEqual(stop_windows_host(), 3774)
+        lifecycle.assert_not_called()
+
+    def test_live_windows_host_requires_shutdown_before_installation(self):
+        with patch('local_install.read_json', return_value={'pid': 123, 'port': 3774}), \
+             patch('local_install.alive', side_effect=[True, False, False]), \
+             patch('local_install.lifecycle', return_value=123) as lifecycle:
+            self.assertEqual(stop_windows_host(), 3774)
+        lifecycle.assert_called_once_with('stop')
+
+    def test_windows_lifecycle_failure_with_live_pid_does_not_allow_a_service_swap(self):
+        with patch('local_install.read_json', return_value={'pid': 123, 'port': 3774}), \
+             patch('local_install.alive', return_value=True), \
+             patch('local_install.lifecycle', side_effect=ConnectionError('unavailable')):
+            with self.assertRaises(ConnectionError):
+                stop_windows_host()
+
+    def test_build_only_does_not_schedule_installation(self):
+        with patch('local_update.queue_install') as install:
+            finish_build(pathlib.Path('verified-package'), build_only=True)
+        install.assert_not_called()
+
+    def test_default_build_preserves_installation_behavior(self):
+        release = pathlib.Path('verified-package')
+        with patch('local_update.queue_install') as install:
+            finish_build(release)
+        install.assert_called_once_with(release)
+
     def test_nsis_bundle_marker_is_the_only_normalized_executable_difference(self):
         with tempfile.TemporaryDirectory() as folder:
             built = pathlib.Path(folder) / 'built.exe'

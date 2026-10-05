@@ -69,6 +69,85 @@ describe("markdown file navigation", () => {
     );
   });
 
+  it("renders output citations as named file links with folder actions", async () => {
+    const directory =
+      "/Users/bahadryalcn/projects/clinic/.artifacts/reports/assessment-pdf";
+    await render(
+      `:codex-file-citation{path="${directory}/prs-tr.pdf" purpose="output"}\n\n` +
+        `:codex-file-citation{path="${directory}/ancestry-tr.pdf" purpose="output"}`,
+    );
+    const links = Array.from(
+      container.querySelectorAll<HTMLAnchorElement>("a"),
+    );
+    expect(links.map((link) => link.textContent)).toEqual([
+      "prs-tr.pdf",
+      "ancestry-tr.pdf",
+    ]);
+    expect(container.textContent).not.toContain("codex-file-citation");
+    expect(
+      container.querySelectorAll('[aria-label="Open containing folder"]'),
+    ).toHaveLength(2);
+    for (const [index, name] of ["prs-tr.pdf", "ancestry-tr.pdf"].entries()) {
+      await act(async () => links[index].click());
+      expect(onOpenFile).toHaveBeenLastCalledWith(
+        `${directory}/${name}`,
+        undefined,
+      );
+    }
+  });
+
+  it("routes inline citations with spaces and Unicode to their remote host", async () => {
+    await render(
+      `Rapor: :codex-file-citation{purpose='output' path='/Users/me/My Project/özet.pdf'} hazır.`,
+      "remote://mac/Users/me/My Project",
+    );
+    expect(container.textContent).toContain("Rapor: özet.pdf");
+    expect(container.textContent).toContain(" hazır.");
+    await act(async () =>
+      container.querySelector<HTMLAnchorElement>("a")!.click(),
+    );
+    expect(onOpenFile).toHaveBeenCalledWith(
+      "remote://mac/Users/me/My Project/özet.pdf",
+      undefined,
+    );
+  });
+
+  it.each([
+    "C:\\temp\\reports\\özet.pdf",
+    "G:\\My Projects\\bahadır\\özet.pdf",
+    "./reports/özet.pdf",
+  ])("opens citations using the file path %s", async (path) => {
+    await render(`:codex-file-citation{path="${path}" purpose="output"}`);
+    expect(container.textContent).not.toContain("codex-file-citation");
+    await act(async () =>
+      container.querySelector<HTMLAnchorElement>("a")!.click(),
+    );
+    expect(onOpenFile).toHaveBeenCalledWith(
+      path.startsWith("./")
+        ? `/repo/${path.slice(2)}`
+        : path.replace(/\\/g, "/"),
+      undefined,
+    );
+  });
+
+  it.each([
+    ':codex-file-citation{path="/repo/report.pdf"',
+    ':codex-file-citation{purpose="output"}',
+    ':codex-file-citation{path="https://example.com/report.pdf" purpose="output"}',
+    ':codex-file-citation{path="//host/share/report.pdf" purpose="output"}',
+    '`:codex-file-citation{path="/repo/report.pdf" purpose="output"}`',
+    '```text\n:codex-file-citation{path="/repo/report.pdf" purpose="output"}\n```',
+  ])(
+    "keeps incomplete, unsafe, and code citations literal: %s",
+    async (text) => {
+      await render(text);
+      expect(
+        container.querySelector('[aria-label="Open containing folder"]'),
+      ).toBeNull();
+      expect(container.textContent).toContain("codex-file-citation");
+    },
+  );
+
   it.each([
     [
       "[Source](/home/dev/repo/src/main.ts:8:2)",
@@ -243,11 +322,17 @@ describe("markdown file navigation", () => {
     "```G:/My Project/Türkçe/özet.md startLine=12\nconst answer = 42;\n```",
   ])("preserves spaces and Unicode in code fence paths: %s", async (text) => {
     await render(text);
-    const link = container.querySelector<HTMLButtonElement>(".markdown-code-path-link")!;
+    const link = container.querySelector<HTMLButtonElement>(
+      ".markdown-code-path-link",
+    )!;
     expect(link.textContent).toBe("G:/My Project/Türkçe/özet.md");
-    expect(container.querySelector('[aria-label="Open containing folder"]')).not.toBeNull();
+    expect(
+      container.querySelector('[aria-label="Open containing folder"]'),
+    ).not.toBeNull();
     await act(async () => link.click());
-    expect(onOpenFile).toHaveBeenCalledWith("G:/My Project/Türkçe/özet.md", { line: 12 });
+    expect(onOpenFile).toHaveBeenCalledWith("G:/My Project/Türkçe/özet.md", {
+      line: 12,
+    });
   });
 
   it("preserves external web links and keeps executable URL schemes blocked", async () => {

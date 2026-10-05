@@ -14,7 +14,7 @@ import {
   usesSlashCommands,
   type DiskCommand,
 } from "../../skills/model/cliCommands";
-import type { Skill } from "../../skills/model/skills";
+import { loadDisabledSkillPaths, type Skill } from "../../skills/model/skills";
 import type { HarnessId } from "../model/session";
 
 const DISK_TTL_MS = 30_000;
@@ -71,9 +71,18 @@ export function useCliCommands(input: {
     () => mergeCliCommands({ harness, reported, disk: found, taken }),
     [harness, reported, found, taken],
   );
-  useEffect(() => registerCliCommands(harness, slashCommands), [harness, slashCommands]);
+  useEffect(
+    () => registerCliCommands(harness, slashCommands),
+    [harness, slashCommands],
+  );
   const dollarSkills = useMemo(
-    () => mergeDollarSkills({ harness, reported, files }),
+    () =>
+      mergeDollarSkills({
+        harness,
+        reported,
+        files,
+        disabledPaths: loadDisabledSkillPaths(),
+      }),
     [harness, reported, files],
   );
   return { slashCommands, dollarSkills };

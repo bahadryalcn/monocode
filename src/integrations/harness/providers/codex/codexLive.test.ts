@@ -89,6 +89,7 @@ async function startTurn(
     beforeThreadReply?: () => Promise<void>;
     onAccepted?: () => void;
     controlsAgents?: boolean;
+    text?: string;
   } = {},
 ) {
   const events: HarnessEvent[] = [];
@@ -109,7 +110,7 @@ async function startTurn(
     runtimeMode: options.runtimeMode ?? "supervised",
     controlsAgents: options.controlsAgents,
     intent: options.intent,
-    text: "summarize the changelog",
+    text: options.text ?? "summarize the changelog",
     attachments: [],
     onAccepted: options.onAccepted,
     onEvent: (event) => events.push(event),
@@ -131,6 +132,37 @@ async function startTurn(
     thread: { id: "thr_1" },
   });
 
+  if (options.text?.startsWith("/goal ")) {
+    await waitFor(
+      () => parse().some((m) => m.method === "thread/goal/set"),
+      "goal set",
+    );
+    reply(parse().find((m) => m.method === "thread/goal/set")!.id as number, {
+      goal: {
+        objective: options.text.slice(6),
+        status: "active",
+        tokensUsed: 0,
+      },
+    });
+  }
+  if (options.text?.startsWith("$")) {
+    await waitFor(
+      () => parse().some((m) => m.method === "skills/list"),
+      "skills/list",
+    );
+    expect(parse().some((m) => m.method === "turn/start")).toBe(false);
+    reply(parse().find((m) => m.method === "skills/list")!.id as number, {
+      data: [
+        {
+          cwd: "/repo",
+          skills: [
+            { name: "review", path: "/skills/review/SKILL.md", enabled: true },
+          ],
+        },
+      ],
+    });
+  }
+
   await waitFor(
     () => parse().some((m) => m.method === "turn/start"),
     "turn/start",
@@ -143,6 +175,119 @@ async function startTurn(
 }
 
 describe("codex live turn sequence", () => {
+  it.each(["status", "pause", "clear"])(
+    "handles /goal %s without starting an agent turn",
+    async (action) => {
+      const { turn } = await startTurn("codex-live");
+      notify("turn/completed", {
+        threadId: "thr_1",
+        turn: { id: "turn_1", status: "completed" },
+      });
+      await turn;
+      const events: HarnessEvent[] = [];
+      const command = sendCodexTurn({
+        sessionId: "codex-live",
+        cwd: "/repo",
+        model: "codex:gpt-5.4",
+        runtimeMode: "supervised",
+        text: `/goal ${action}`,
+        attachments: [],
+        onEvent: (event) => events.push(event),
+      });
+      const method = `thread/goal/${action === "status" ? "get" : action === "pause" ? "set" : "clear"}`;
+      await waitFor(() => parse().some((m) => m.method === method), method);
+      reply(parse().find((m) => m.method === method)!.id as number, {
+        goal: {
+          objective: "Ship",
+          status: action === "pause" ? "paused" : "active",
+          tokensUsed: 10,
+        },
+      });
+      await command;
+      expect(parse().filter((m) => m.method === "turn/start")).toHaveLength(1);
+      expect(events).toContainEqual({ type: "message.completed" });
+      expect(
+        events.some(
+          (event) =>
+            event.type === "message.delta" &&
+            event.text.includes(action === "clear" ? "cleared" : "Ship"),
+        ),
+      ).toBe(true);
+    },
+  );
+  it("sets a persistent goal before starting work and sends the objective as turn text", async () => {
+    const { turn } = await startTurn("codex-live", {
+      text: "/goal keep tests green",
+    });
+    const set = parse().find((m) => m.method === "thread/goal/set")!;
+    expect(set.params).toEqual({
+      threadId: "thr_1",
+      objective: "keep tests green",
+      status: "active",
+    });
+    const start = parse().find((m) => m.method === "turn/start")!;
+    expect((start.params as { input: unknown }).input).toEqual([
+      { type: "text", text: "keep tests green" },
+    ]);
+    notify("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: "turn_1", status: "completed" },
+    });
+    await turn;
+  });
+
+  it("waits for the first skill list and refreshes edited skills on the next turn", async () => {
+    const { turn } = await startTurn("codex-live", {
+      text: "$review inspect this",
+    });
+    const start = parse().find((m) => m.method === "turn/start")!;
+    expect((start.params as { input: unknown[] }).input).toContainEqual({
+      type: "skill",
+      name: "review",
+      path: "/skills/review/SKILL.md",
+    });
+    expect(parse().find((m) => m.method === "skills/list")!.params).toEqual({
+      cwds: ["/repo"],
+      forceReload: true,
+    });
+    notify("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: "turn_1", status: "completed" },
+    });
+    await turn;
+    const next = sendCodexTurn({
+      sessionId: "codex-live",
+      cwd: "/repo",
+      model: "codex:gpt-5.4",
+      runtimeMode: "supervised",
+      text: "$review again",
+      attachments: [],
+      onEvent: () => {},
+    });
+    await waitFor(
+      () => parse().filter((m) => m.method === "skills/list").length === 2,
+      "skills refresh",
+    );
+    reply(parse().filter((m) => m.method === "skills/list")[1]!.id as number, {
+      data: [{ skills: [{ name: "review", path: "/new/review/SKILL.md" }] }],
+    });
+    await waitFor(
+      () => parse().filter((m) => m.method === "turn/start").length === 2,
+      "second turn",
+    );
+    const second = parse().filter((m) => m.method === "turn/start")[1]!;
+    expect((second.params as { input: unknown[] }).input).toContainEqual({
+      type: "skill",
+      name: "review",
+      path: "/new/review/SKILL.md",
+    });
+    reply(second.id as number, { turn: { id: "turn_2" } });
+    notify("turn/completed", {
+      threadId: "thr_1",
+      turn: { id: "turn_2", status: "completed" },
+    });
+    await next;
+  });
   it("fails an unanswered startup instead of holding the session queue forever", async () => {
     vi.useFakeTimers();
     try {

@@ -144,6 +144,27 @@ it("backs off a missing image across unchanged syncs", async () => {
   }
 });
 
+it("preserves the entire snapshot identity on unchanged successful previews", async () => {
+  const read = vi.fn(async () => ({ offset: 5, size: 5, data: btoa("abcde") }));
+  const ready = await withRemoteAttachmentPreviews("identity-machine", snapshot(), undefined, read);
+  const again = await withRemoteAttachmentPreviews("identity-machine", ready, ready, read);
+  expect(again).toBe(ready);
+  expect(again.session.blocks[0]).toBe(ready.session.blocks[0]);
+  expect(read).toHaveBeenCalledTimes(1);
+});
+
+it("keeps unchanged failed previews stable until their retry becomes due", async () => {
+  vi.useFakeTimers();
+  try {
+    const read = vi.fn(async () => { throw new Error("missing"); });
+    const failed = await withRemoteAttachmentPreviews("retry-stable-machine", snapshot(), undefined, read);
+    expect(await withRemoteAttachmentPreviews("retry-stable-machine", failed, failed, read)).toBe(failed);
+    vi.advanceTimersByTime(30_001);
+    await withRemoteAttachmentPreviews("retry-stable-machine", failed, failed, read);
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally { vi.useRealTimers(); }
+});
+
 it("limits concurrent reads and favors recent previews within the byte budget", async () => {
   const value = snapshot();
   const template = value.session.blocks[0].attachments![0];

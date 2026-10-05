@@ -14,9 +14,12 @@ Sürüm zaten doğruysa `-Version` gerekmez. Komut mevcut çalışma ağacını 
 .\scripts\update-local.ps1 -Plan
 .\scripts\update-local.ps1 -InstallOnly
 .\scripts\update-local.ps1 -Status
+.\scripts\update-local.ps1 -BuildOnly
 ```
 
 `-InstallOnly` bu akışın son paketini kullanır; yeni kaynak kopyası oluşturmaz ve derlemez. `-Platforms windows` / `-Platforms mac` tek bilgisayar seçer. Mac üzerinde kendi mevcut checkout'undan yalnız Mac güncellemesi: `sh scripts/update-local.sh`.
+
+`-BuildOnly` iki makinenin uygulama ve host paketlerini derler ve doğrular; kurulum yardımcılarını başlatmaz. `-InstallOnly` ile birlikte kullanılmaz. Mac için aynı seçenek `sh scripts/update-local.sh --build-only` komutudur.
 
 ## Süreyi azaltan davranışlar
 
@@ -36,6 +39,10 @@ Yeni optimizasyon ayarlarının ilk koşusu kendi Cargo önbelleğini doldurabil
 Her bilgisayarda host ve uygulama için iki bağımsız gizli yardımcı vardır. Host kendi veritabanındaki çalışan oturumları; uygulama kendi `in_flight_sessions` tablosunu bekler. Birinin aktif olması diğerini durdurmaz. Veritabanı okunamazsa beklenir; hata sıfır aktif oturum sayılmaz.
 
 Host servisi Windows'ta kendi lifecycle komutuyla durdurulur; `Stop-ScheduledTask` ile node.exe yetim bırakılmaz. Servis scripti ve launcher aynı şablondan yeniden yazılır. Mac'te aynı LaunchAgent'ın runtime yolları değiştirilir. Yeni hostun süreç yolu, sağlık durumu ve SQLite bütünlüğü doğrulanır; başarısız servis geçişinde eski config geri yüklenir.
+
+Windows host'un kayıtlı PID'i zaten sona ermişse kapatma isteği gönderilmez;
+koordinatör boşta DB ve durmuş servis kontrollerinden sonra paketi kurar. PID
+hâlâ çalışıyorsa lifecycle hatası kurulumu durdurur; bağlantı hatası boşta sayılmaz.
 
 Veritabanı yedeklemeleri 15 saniyeyle sınırlıdır ve bağlantılar açık bırakılmaz. Uygulama tur bitişini bekledikten sonra kapanır. Mac bundle imzası/sürümü, Windows installer ve updater imzası dosyalarının checksum'ı, kurulu binary'nin derlenen binary ile eşleşmesi kontrol edilir. Rollback dosyaları paket klasöründe korunur. Mac notarization bu yerel akışta yapılmaz.
 

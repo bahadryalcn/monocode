@@ -34,6 +34,7 @@ export function setSessions(update: SessionsUpdate): void {
 type SessionsUpdate = Session[] | ((previous: Session[]) => Session[]);
 let applying = false;
 const nested: SessionsUpdate[] = [];
+const sessionIndexes = new WeakMap<readonly Session[], Map<string, Session>>();
 
 function apply(update: SessionsUpdate): void {
   const previous = store.getState().sessions;
@@ -54,7 +55,14 @@ export function selectSessionById(
   id: string | undefined,
 ): Session | undefined {
   if (id === undefined) return undefined;
-  return sessions.find((session) => session.id === id);
+  let index = sessionIndexes.get(sessions);
+  if (!index) {
+    index = new Map();
+    // Preserve find's first-match semantics, even for malformed duplicate IDs.
+    for (const session of sessions) if (!index.has(session.id)) index.set(session.id, session);
+    sessionIndexes.set(sessions, index);
+  }
+  return index.get(id);
 }
 
 /**

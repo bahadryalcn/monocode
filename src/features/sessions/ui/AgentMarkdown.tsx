@@ -27,6 +27,8 @@ import {
   type Components,
 } from "streamdown";
 import type { Pluggable, PluggableList } from "unified";
+import { PerformanceTraceContext } from "./performanceTraceContext";
+import { createPerformanceTraceId, isPerformanceTracingEnabled, recordPerformanceEvent, startPerformanceSpan } from "../../../shared/lib/performanceTrace";
 import {
   ExplorerMenu,
   type ExplorerMenuItem,
@@ -700,6 +702,32 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   );
   const remoteMedia = !!allowRemoteMedia;
   const paced = usePacedText(text, !!streaming);
+  const submissionTraceId = useContext(PerformanceTraceContext);
+  const paintTrace = useRef<string | null>(null);
+  const firstPaintRecorded = useRef(false);
+  const receivedText = useRef(text);
+  useEffect(() => {
+    if (!isPerformanceTracingEnabled()) return;
+    if (firstPaintRecorded.current && receivedText.current === text && paintTrace.current !== submissionTraceId) return;
+    receivedText.current = text;
+    if (submissionTraceId && paintTrace.current !== submissionTraceId) firstPaintRecorded.current = false;
+    paintTrace.current = submissionTraceId ?? paintTrace.current ?? createPerformanceTraceId();
+    recordPerformanceEvent("renderer-receive", { items: text.length }, paintTrace.current);
+  }, [text, submissionTraceId]);
+  useEffect(() => {
+    if (!isPerformanceTracingEnabled()) return;
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => {
+        if (!firstPaintRecorded.current) {
+          firstPaintRecorded.current = true;
+          recordPerformanceEvent("first-paint", { items: paced.text.length }, paintTrace.current ?? undefined);
+        }
+        if (!streaming && !paced.revealing) recordPerformanceEvent("last-paint", { items: paced.text.length }, paintTrace.current ?? undefined);
+      });
+    });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+  }, [paced.text, paced.revealing, streaming, submissionTraceId]);
   const fading = useWordFading(!!streaming || paced.revealing);
   // Only the words still fading in, in the last block, carry a span (see
   // DirectionalBlock and useWordFadeWindow), and a word keeps its element until
@@ -712,7 +740,9 @@ export const AgentMarkdown = memo(function AgentMarkdown({
     : MARKDOWN_REHYPE_PLUGINS;
   const lastBlock = useRef(-1);
   const parseBlocks = useCallback((markdown: string) => {
+    const end = startPerformanceSpan("markdown-render", { items: markdown.length });
     const blocks = parseMarkdownIntoBlocks(markdown);
+    end({ blocks: blocks.length });
     lastBlock.current = blocks.length - 1;
     return blocks;
   }, []);

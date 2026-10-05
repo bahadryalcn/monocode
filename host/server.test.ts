@@ -116,6 +116,17 @@ async function setup(providers: RemoteProvider[] = ["codex"]) {
 }
 
 describe("remote host API", () => {
+  it("accepts a command while a revision long-poll is pending", async () => {
+    const s = await setup();
+    const created = s.engine.command({ type: "create", commandId: "longpoll-create", projectId: s.project.id,
+      harness: "codex", model: "codex:test", runtimeMode: "supervised" });
+    const waiting = s.call("sessions.sync", { sessionId: created.sessionId, revision: created.revision, waitMs: 10_000 });
+    const sent = await s.call("commands.dispatch", { type: "send", commandId: "longpoll-send", sessionId: created.sessionId, text: "go" });
+    expect(sent.status).toBe(200);
+    const update = await waiting;
+    expect(update.value.result.kind).toBe("delta");
+    expect(update.value.result.blocks.filter((block: { role: string }) => block.role === "user")).toHaveLength(1);
+  });
   it("returns metadata for chat folder paths, including the workspace root", async () => {
     const s = await setup();
     const root = s.project.cwd.replace(/\\/g, "/");
@@ -941,6 +952,29 @@ describe("remote host API", () => {
       (await s.call("tasks.delete", { taskId: "main" })).value.result,
     ).toEqual({ deleted: true });
     expect((await s.call("tasks.list")).value.result).toEqual([]);
+  });
+
+  it("routes review note read and resolve updates without completing the task", async () => {
+    const s = await setup();
+    expect((await s.call("environment.describe")).value.result.capabilities).toContain("tasks.notes");
+    const saved = (await s.call("tasks.save", { task: {
+      id: "notes", title: "Ship the report", prompt: "Write it", projectId: s.project.id,
+      harness: "codex", model: "codex:test", runtimeMode: "auto", status: "todo",
+    } })).value.result;
+    const reviewNotes = ["seen", "newer"].map((id) => ({
+      id, finding: id, kind: "finding", createdAt: 1, updatedAt: 1, occurrences: 1,
+    }));
+    s.store.db.prepare("UPDATE tasks SET value=? WHERE id=?").run(JSON.stringify({ ...saved, reviewNotes }), saved.id);
+    const read = (await s.call("tasks.notes.read", { taskId: saved.id, noteIds: ["seen"] })).value.result;
+    expect(read.reviewNotes[0].readAt).toEqual(expect.any(Number));
+    expect(read.reviewNotes[1].readAt).toBeUndefined();
+    const fixed = (await s.call("tasks.notes.resolve", { taskId: saved.id, noteId: "seen", resolved: true })).value.result;
+    expect(fixed.status).toBe("todo");
+    expect(fixed.reviewNotes[0].resolvedAt).toEqual(expect.any(Number));
+    expect((await s.call("tasks.notes.resolve", { taskId: saved.id, noteId: "missing", resolved: true })).value.error).toBe("Review note not found.");
+    const reopened = (await s.call("tasks.notes.resolve", { taskId: saved.id, noteId: "seen", resolved: false })).value.result;
+    expect(reopened.reviewNotes[0].resolvedAt).toBeUndefined();
+    expect((await s.call("tasks.list")).value.result[0].reviewNotes).toEqual(reopened.reviewNotes);
   });
 
   it("answers the goal commands, advertised as a capability", async () => {

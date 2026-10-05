@@ -3,9 +3,23 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HostStore } from "./store";
-import { writeAttachmentChunk } from "./attachments";
+import { writeAttachmentChunk, attachmentUploadStatus } from "./attachments";
+import { createHash } from "node:crypto";
 
 const cleanups: Array<() => void> = [];
+
+it("reports a durable offset and prefix hash after a host store reopen", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "remote-resume-test-"));
+  const path = join(directory, "host.db");
+  const store = new HostStore(path);
+  const id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  writeAttachmentChunk(store, { id, offset: 0, size: 6, data: Buffer.from("abc").toString("base64") });
+  store.close();
+  const reopened = new HostStore(path);
+  cleanups.push(() => { reopened.close(); rmSync(directory, { recursive: true, force: true }); });
+  expect(await attachmentUploadStatus(reopened, { id, size: 6 })).toEqual({ offset: 3, hash: createHash("sha256").update("abc").digest("hex") });
+  expect(writeAttachmentChunk(reopened, { id, offset: 3, size: 6, data: Buffer.from("def").toString("base64") })).toEqual({ offset: 6 });
+});
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
 
 it("accepts ordered chunks and an identical retry while rejecting changes", () => {

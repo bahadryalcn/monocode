@@ -494,6 +494,27 @@ describe("goal tasks", () => {
     expect(planned().a.status).toBe("running");
   });
 
+  it.each([false, true])("recovers legacy review failures only for active goals (cancelled: %s)", async (cancelled) => {
+    const { lead, plan, planned, finish, store, goals, goal, tasks } = setup();
+    await plan(planReply([
+      { key: "a", project: lead.cwd },
+      { key: "b", project: lead.cwd, dependsOn: ["a"] },
+    ]), { verifyDefaults: { review: true } });
+    await finish(planned().a.sessionId!);
+    const reviewing = planned().a;
+    // Simulate a persisted failure from a host predating automatic correction.
+    store.db.prepare("UPDATE tasks SET value=? WHERE id=?").run(
+      JSON.stringify({ ...reviewing, goalId: undefined, source: undefined }), reviewing.id,
+    );
+    await finish(reviewing.reviewer!.sessionId!, "VERDICT: FAIL - Friday is missing.");
+    const legacy = { ...tasks.get(reviewing.id)!, goalId: "goal" };
+    if (cancelled) await goals.cancel("goal");
+    store.db.prepare("UPDATE tasks SET value=? WHERE id=?").run(JSON.stringify(legacy), legacy.id);
+    expect(goal().status).toBe(cancelled ? "cancelled" : "running");
+    expect(planned().a.status).toBe(cancelled ? "blocked" : "queued");
+    expect(planned().b.status).toBe(cancelled ? "blocked" : "queued");
+  });
+
   it("is done once every task is done", async () => {
     const { lead, addProject, plan, planned, tasks, finish, goal, advance } =
       setup();

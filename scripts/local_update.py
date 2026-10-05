@@ -161,6 +161,13 @@ def queue_install(release):
     write_json(release / 'install-jobs.json', results)
     print(f'[{sys.platform}] install jobs scheduled; state: {base}', flush=True)
 
+def finish_build(release, build_only=False):
+    if build_only:
+        print(f'[{sys.platform}] build-only package verified: {release}', flush=True)
+    else:
+        queue_install(release)
+
+
 def worker(request):
     if (os.name == 'nt' and platform.machine().lower() not in ('amd64', 'x86_64')) or (os.name != 'nt' and (sys.platform != 'darwin' or platform.machine() != 'arm64')):
         raise RuntimeError('Local updater supports Windows x64 and Apple Silicon Mac only')
@@ -308,7 +315,7 @@ def worker(request):
         write_json(release / 'manifest.json', manifest)
         write_json(cache_file, cache)
         write_json(state / 'latest.json', request)
-    queue_install(release)
+    finish_build(release, request.get('buildOnly', False))
 
 def main():
     if sys.version_info < (3, 12):
@@ -318,6 +325,7 @@ def main():
     parser.add_argument('--version')
     parser.add_argument('--plan', action='store_true')
     parser.add_argument('--install-only', action='store_true')
+    parser.add_argument('--build-only', action='store_true')
     parser.add_argument('--release', action='store_true')
     parser.add_argument('--force-build', action='store_true')
     parser.add_argument('--worker')
@@ -325,7 +333,7 @@ def main():
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--status-worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.install_only and (args.version or args.release or args.force_build):
+    if args.install_only and (args.version or args.release or args.force_build or args.build_only):
         raise ValueError('--install-only reuses the previous version/mode; do not combine it with build options')
     if args.worker:
         worker(read_json(pathlib.Path(args.worker).expanduser()))
@@ -358,7 +366,8 @@ def main():
         print(json.dumps({'platforms': platforms, 'mode': mode, 'build': not args.install_only,
                           'version': args.version or read_json(ROOT / 'package.json')['version'],
                           'steps': (['reuse last manifest'] if args.install_only else ['freeze once', 'parallel cached builds']) +
-                                   ['verify artifacts', 'independent idle host/app install jobs'], 'config': config}, indent=2))
+                                   ['verify artifacts'] + ([] if args.build_only else ['independent idle host/app install jobs']),
+                          'install': not args.build_only, 'config': config}, indent=2))
         return
     state = pathlib.Path(config['stateRoot']).expanduser().resolve()
     if args.snapshot_request and (len(platforms) != 1 or args.version or args.install_only or args.force_build):
@@ -380,7 +389,8 @@ def main():
             if args.force_build:
                 previous['id'] += '-' + str(time.time_ns())
         def update(platform):
-            request = dict(previous, installOnly=args.install_only, forceBuild=args.force_build, stateRoot=config['stateRoot'])
+            request = dict(previous, installOnly=args.install_only, buildOnly=args.build_only,
+                           forceBuild=args.force_build, stateRoot=config['stateRoot'])
             machine = config[platform]
             if platform == 'windows' or sys.platform == 'darwin':
                 request['cargoTarget'] = str((ROOT / machine['cargoTarget']).resolve()) if not machine['cargoTarget'].startswith('~') else machine['cargoTarget']
@@ -410,7 +420,8 @@ def main():
                 platform = futures[future]
                 try:
                     future.result()
-                    print(f'{platform}: package verified; install jobs scheduled', flush=True)
+                    result = 'build complete' if args.build_only else 'install jobs scheduled'
+                    print(f'{platform}: package verified; {result}', flush=True)
                 except Exception as error:
                     failures.append(platform)
                     print(f'{platform}: FAILED ({type(error).__name__}: {error}); inspect logs in {state}', flush=True)

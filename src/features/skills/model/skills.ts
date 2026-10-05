@@ -8,12 +8,16 @@ import {
 } from "../../../platform/tauri/fs";
 import { invalidateProjectFiles } from "../../files/model/fileIndex";
 import { joinPath } from "../../../shared/lib/paths";
-import { isLocalProject, normalizeProjectPath } from "../../projects/model/recents";
+import {
+  isLocalProject,
+  normalizeProjectPath,
+} from "../../projects/model/recents";
 import { isMarkdownBlockquotePosition } from "../../sessions/model/quoteDraft";
 import type { HarnessId } from "../../sessions/model/session";
 import { getHarness } from "../../../integrations/harness/core/registry";
 import type { NativeCommand } from "../../../integrations/harness/core/nativeCommands";
 import { isCliCommandText } from "./cliCommands";
+import { dollarTokenAt } from "./slashCommands";
 import {
   CREATE_SKILL_BODY,
   CREATE_SKILL_DESCRIPTION,
@@ -122,8 +126,7 @@ export const BUILTIN_CREATE_SKILL: BuiltinSkill = {
 };
 
 const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const SKILL_TOKEN_RE =
-  /(^|\s)\/([a-z0-9]+(?:-[a-z0-9]+)*(?::[a-z0-9]+(?:-[a-z0-9]+)*)?)(?=\s|$)/g;
+const SKILL_TOKEN_RE = /(^|\s)[/$]([A-Za-z0-9][A-Za-z0-9_.:-]*)(?=\s|$)/g;
 const NATIVE_SKILL_TTL_MS = 30_000;
 const NATIVE_SKILL_RETRY_MS = 5_000;
 
@@ -365,7 +368,12 @@ export function skillNamesInText(text: string): string[] {
   while ((match = SKILL_TOKEN_RE.exec(text))) {
     const name = match[2];
     const start = match.index + (match[1]?.length ?? 0);
-    if (!name || seen.has(name) || isMarkdownBlockquotePosition(text, start)) {
+    if (
+      !name ||
+      seen.has(name) ||
+      isMarkdownBlockquotePosition(text, start) ||
+      (text[start] === "$" && !dollarTokenAt(text, start + name.length + 1))
+    ) {
       continue;
     }
     seen.add(name);
@@ -408,7 +416,8 @@ export function skillTextParts(
     if (
       !name ||
       !names.has(name) ||
-      isMarkdownBlockquotePosition(text, start)
+      isMarkdownBlockquotePosition(text, start) ||
+      (text[start] === "$" && !dollarTokenAt(text, start + name.length + 1))
     ) {
       continue;
     }
@@ -433,11 +442,13 @@ export function injectSkillPrompt(
     seen.add(skill.name);
     const body = bodies[skill.name]?.trim();
     if (!body) continue;
-    blocks.push(`## /${skill.name}\n\n${body}`);
+    blocks.push(
+      `## /${skill.name}\n\n${skill.kind === "file" ? `Skill file: ${skill.path}\n\n` : ""}${body}`,
+    );
   }
   if (blocks.length === 0) return text;
   return [
-    "The user invoked skill(s) with /name. Follow every instruction in each skill body.",
+    "The user invoked skill(s) with /name or $name. Follow every instruction in each skill body. Resolve relative skill resources against the directory containing its SKILL.md file.",
     "",
     blocks.join("\n\n"),
     "",
@@ -454,7 +465,10 @@ export async function applySkillsToTurn(
   if (hasNativeCommands(context.harness)) return text;
   const names = skillNamesInText(text);
   if (names.length === 0) return text;
-  const catalog = await loadSkills(context);
+  const catalog = await loadSkills(
+    context,
+    context.harness === "codex" ? { refresh: true } : undefined,
+  );
   const picked: Array<FileSkill | BuiltinSkill> = [];
   for (const name of names) {
     const skill = catalog.find((item) => item.name === name);
@@ -489,7 +503,9 @@ export async function readSkillBody(
   try {
     return await readTextFile(skill.path);
   } catch {
-    return `Skill "${skill.name}" could not be read from ${skill.path}.`;
+    throw new Error(
+      `Skill "${skill.name}" could not be read from ${skill.path}.`,
+    );
   }
 }
 

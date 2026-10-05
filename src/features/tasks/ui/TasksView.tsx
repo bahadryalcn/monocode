@@ -42,6 +42,8 @@ import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPick
 import { SearchableSelect } from "../../../shared/ui/SearchableSelect";
 import { SkillPromptField } from "../../skills/ui/SkillPromptField";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
+import { TaskReviewNotes } from "./TaskReviewNotes";
+import { unreadReviewNotes } from "../model/taskReviewNotes";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
@@ -118,6 +120,8 @@ import {
   listBoardTaskResults,
   missingMachinesNotice,
   moveTask,
+  readTaskNotes,
+  resolveTaskNote,
   newTaskDraft,
   saveTask,
   probeTaskMachines,
@@ -355,6 +359,10 @@ function TasksContent({
               task.goalId && goalKey(task.machineId, task.goalId) === goalFilter,
           ),
     [goalFilter, visibleTasks],
+  );
+  const newReviewNotes = tasks.reduce(
+    (count, task) => count + unreadReviewNotes(task.reviewNotes),
+    0,
   );
 
   // A click on the summary notification opens the panel, also when the view
@@ -693,6 +701,11 @@ function TasksContent({
     onDelete: () => onDelete(task),
     onDecline: () => void act(task, () => declineProposal(task)),
     onOpenSession: task.sessionId ? () => void onOpenSession(task) : undefined,
+    onReadNotes: (ids: string[]) =>
+      void act(task, () => readTaskNotes(task, ids)),
+    onResolveNote: (id: string, resolved: boolean) =>
+      void act(task, () => resolveTaskNote(task, id, resolved)),
+    onOpenReview: (sessionId: string) => void onOpenSession({ ...task, sessionId }),
   });
   const selected = selectedKey
     ? visibleTasks.find(
@@ -714,6 +727,11 @@ function TasksContent({
               ? "Looking for machines…"
               : "No connected machine has a task board. Connect one, or update its MonoCode Host."}
         </span>
+        {newReviewNotes > 0 ? (
+          <span data-new-review-notes className="shrink-0 text-[11px] text-amber-400">
+            {newReviewNotes} new review {newReviewNotes === 1 ? "note" : "notes"}
+          </span>
+        ) : null}
         {goals.length > 0 ? (
           <SearchableSelect
             variant="pill"
@@ -1032,6 +1050,7 @@ function TaskCard({
 } & TaskActionHandlers) {
   const model = resolveModel(task.harness, task.model);
   const description = task.prompt.trim();
+  const unread = unreadReviewNotes(task.reviewNotes);
   return (
     // A click anywhere on the card but its buttons opens the detail panel.
     <article
@@ -1130,6 +1149,18 @@ function TaskCard({
           Needs input
         </p>
       ) : null}
+      {task.repairAttempts ? (
+        <p title={task.repairNote} className="mt-1.5 text-[11px] text-amber-400">
+          Automatic correction · attempt {task.repairAttempts}
+        </p>
+      ) : null}
+      {task.reviewNotes?.length ? (
+        <p data-task-review-notes className={`mt-1.5 text-[11px] ${unread ? "text-amber-400" : "text-content/50"}`}>
+          {unread
+            ? `${unread} new review ${unread === 1 ? "note" : "notes"}`
+            : `${task.reviewNotes.length} review ${task.reviewNotes.length === 1 ? "note" : "notes"}`}
+        </p>
+      ) : null}
       {task.status === "blocked" && task.error ? (
         <p className="mt-1.5 line-clamp-4 break-words text-[11px] leading-snug text-rose-400">
           {task.error}
@@ -1169,6 +1200,9 @@ type TaskActionHandlers = {
   onDecline: () => void;
   /** Missing while the task has no session yet. */
   onOpenSession?: () => void;
+  onReadNotes: (noteIds: string[]) => void;
+  onResolveNote: (noteId: string, resolved: boolean) => void;
+  onOpenReview: (sessionId: string) => void;
 };
 
 /** What the owner can do with a task, as the card and the detail panel both
@@ -1447,6 +1481,10 @@ function TaskDetail({
           </>
         )}
         <TaskActions task={task} {...actions} />
+        {task.reviewNotes ? (
+          <TaskReviewNotes notes={task.reviewNotes} busy={actions.busy} stale={task.stale}
+            onRead={actions.onReadNotes} onResolve={actions.onResolveNote} onOpenReview={actions.onOpenReview} />
+        ) : null}
         {goal ? (
           <p className="flex min-w-0 items-center gap-1 text-[12px] text-content/55">
             <Sparkles className="size-3 shrink-0" />
@@ -1503,6 +1541,11 @@ function TaskDetail({
             <DetailRow label="Completed">{formatTime(task.completedAt)}</DetailRow>
           ) : null}
           <DetailRow label="Status">{taskTimeLabel(task, now)}</DetailRow>
+          {task.repairAttempts ? (
+            <DetailRow label="Automatic correction">
+              Attempt {task.repairAttempts} · {task.repairNote}
+            </DetailRow>
+          ) : null}
           {task.verifyCommand ? (
             <DetailRow label="Check command">
               <code className="font-mono text-[11px]">{task.verifyCommand}</code>

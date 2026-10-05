@@ -26,6 +26,7 @@ import {
 } from "./remoteSessionLists";
 import { remoteBackoffDelay } from "./remotePollingPolicy";
 import { startRailPoller } from "./remoteRailPoller";
+import { startPerformanceSpan } from "../../../shared/lib/performanceTrace";
 
 const CHANGE = "monocode:remote-machines";
 export const REMOTE_HISTORY_CHANGE = "monocode:remote-history";
@@ -270,12 +271,20 @@ async function syncRemoteSession(
   machineId: string,
   sessionId: string,
   revision?: number,
+  waitMs = 0,
 ): Promise<SessionSync> {
+  const done = startPerformanceSpan("remote-sync");
+  try {
   const response = await remoteRequest<SessionSyncResponse>(
     machineId,
     "sessions.sync",
-    { sessionId, revision },
+    { sessionId, revision, waitMs },
   );
+  return await assembleSessionSync(machineId, sessionId, response);
+  } finally { done(); }
+}
+
+async function assembleSessionSync(machineId: string, sessionId: string, response: SessionSyncResponse): Promise<SessionSync> {
   if (response.kind !== "chunked") return response;
   const pieces: string[] = [];
   let offset = 0;
@@ -299,9 +308,48 @@ export async function loadRemoteSession(
   machineId: string,
   sessionId: string,
   known?: HostSession,
+  options: { waitMs?: number; onPreviews?: (snapshot: HostSession) => void;
+    pages?: boolean; onHistory?: (snapshot: HostSession) => void; isCurrent?: () => boolean;
+    onHistoryError?: (error: unknown) => void } = {},
 ): Promise<HostSession> {
+  if (known?.historyLoading) return known;
+  if (!known && options.pages && options.onHistory) {
+    type Page = { sync: SessionSyncResponse; before?: number; totalBlocks: number; revision: number };
+    const readPage = async (before?: number, revision?: number) => {
+      const page = await remoteRequest<Page>(machineId, "sessions.page", { sessionId, before, revision });
+      const value = applySessionSync(undefined, await assembleSessionSync(machineId, sessionId, page.sync));
+      return { ...page, value };
+    };
+    const initial = await readPage();
+    const snapshot = { ...initial.value, historyLoading: initial.before !== undefined };
+    if (initial.before !== undefined) {
+      // Start after the caller can commit the ready tail to React.
+      setTimeout(() => { void (async () => {
+        let before = initial.before;
+        let blocks = initial.value.session.blocks;
+        while (before !== undefined && (options.isCurrent?.() ?? true)) {
+          const page = await readPage(before, initial.revision);
+          if (!(options.isCurrent?.() ?? true)) return;
+          if (page.before !== undefined && page.before >= before) throw new Error("History cursor did not advance");
+          blocks = [...page.value.session.blocks, ...blocks];
+          before = page.before;
+        }
+        if (!(options.isCurrent?.() ?? true)) return;
+        const history = { ...initial.value, historyLoading: false, session: { ...initial.value.session, blocks } };
+        options.onHistory!(history);
+        if (options.onPreviews) void withRemoteAttachmentPreviews(machineId, history, undefined,
+          (params) => remoteRequest(machineId, "attachments.read", params)).then(options.onPreviews).catch(() => {});
+      })().catch((error) => options.onHistoryError?.(error)); }, 0);
+    }
+    if (options.onPreviews) setTimeout(() => {
+      if (!(options.isCurrent?.() ?? true)) return;
+      void withRemoteAttachmentPreviews(machineId, snapshot, undefined,
+        (params) => remoteRequest(machineId, "attachments.read", params)).then(options.onPreviews).catch(() => {});
+    }, 0);
+    return snapshot;
+  }
   const sync = (revision?: number) =>
-    syncRemoteSession(machineId, sessionId, revision);
+    syncRemoteSession(machineId, sessionId, revision, revision === undefined ? 0 : options.waitMs);
   const update = await sync(known?.revision);
   let snapshot: HostSession;
   try {
@@ -309,6 +357,14 @@ export async function loadRemoteSession(
   } catch {
     snapshot = applySessionSync(undefined, await sync());
   }
+  if (options.onPreviews) {
+    void withRemoteAttachmentPreviews(machineId, snapshot, known, (params) =>
+      remoteRequest(machineId, "attachments.read", params),
+    ).then(options.onPreviews).catch(() => {});
+    return snapshot;
+  }
+  // Adopted-session and preload consumers receive one complete snapshot and
+  // have no callback through which independently downloaded images can arrive.
   return withRemoteAttachmentPreviews(machineId, snapshot, known, (params) =>
     remoteRequest(machineId, "attachments.read", params),
   );

@@ -10,6 +10,23 @@ import { join, basename, resolve } from "node:path";
 import type { Attachment } from "../src/features/sessions/model/session";
 import type { RemoteAttachment } from "../src/features/connections/model/protocol";
 import type { HostStore } from "./store";
+import { readFile, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+
+export async function attachmentUploadStatus(store: HostStore, input: Record<string, unknown>) {
+  const path = attachmentPath(store, String(input.id ?? ""));
+  if (!Number.isSafeInteger(input.size) || Number(input.size) < 0 || Number(input.size) > MAX_REMOTE_ATTACHMENT_BYTES)
+    throw new Error("Invalid attachment size");
+  try {
+    const size = (await stat(path)).size;
+    if (size > Number(input.size)) throw new Error("Uploaded attachment size mismatch");
+    const bytes = await readFile(path);
+    return { offset: bytes.length, hash: createHash("sha256").update(bytes).digest("hex") };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { offset: 0 };
+    throw error;
+  }
+}
 
 export const MAX_REMOTE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 512 * 1024;

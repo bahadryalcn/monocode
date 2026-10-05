@@ -1067,6 +1067,14 @@ mod tests {
         std::fs::create_dir_all(home.join(".codex")).unwrap();
         std::fs::create_dir_all(home.join(".config/opencode")).unwrap();
         std::fs::create_dir_all(&project).unwrap();
+        // Bound discovery to the fixture repository rather than inheriting
+        // configuration from the machine's temp-directory ancestors.
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::write(
+            root.join(".mcp.json"),
+            r#"{"mcpServers":{"outside-repository":{"command":"npx"}}}"#,
+        )
+        .unwrap();
         std::fs::write(home.join(".claude.json"), r#"{"mcpServers":{"one":{"type":"http","url":"https://example.com","headers":{"Authorization":"secret"}}}}"#).unwrap();
         std::fs::write(
             home.join(".cursor/mcp.json"),

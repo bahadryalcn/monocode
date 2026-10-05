@@ -90,7 +90,9 @@ function antigravityError(error: unknown): Error {
 }
 
 function isTimeout(error: unknown): boolean {
-  return error instanceof Error && error.message.endsWith("timed out");
+  // JSON-RPC deadlines include the operation, duration and session after the
+  // timeout marker. A timed-out resume must never enter the fallback ladder.
+  return error instanceof Error && /\btimed out\b/.test(error.message);
 }
 
 const CLIENT_CAPABILITIES = {

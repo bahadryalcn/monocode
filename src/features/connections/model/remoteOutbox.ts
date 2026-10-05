@@ -33,7 +33,9 @@ function validCommand(value: unknown, followup = false): value is HostCommand {
       RUNTIME_MODES.includes(value.runtimeMode as never) &&
       (value.modelSettings === undefined || strings(value.modelSettings)) &&
       optionalString(value.worktreeCwd) &&
-      optionalString(value.autoWorktreeBranch)
+      optionalString(value.autoWorktreeBranch) &&
+      (value.firstTurn === undefined ||
+        (object(value.firstTurn) && ["send", "draft"].includes(String(value.firstTurn.type)) && validCommand(value.firstTurn, true)))
     );
   }
   if (

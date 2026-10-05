@@ -5,6 +5,7 @@ import {
   Loader,
   X,
 } from "../../../shared/ui/icons";
+import { sessionPerformanceTrace } from "../../../shared/lib/performanceTrace";
 import {
   memo,
   useCallback,
@@ -1167,6 +1168,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
               >
                 <AgentTranscript
                   blocks={session.blocks}
+                  performanceTraceId={sessionPerformanceTrace(session.id)}
+                  historyLoading={session.historyLoading}
+                  historyLoadError={session.historyLoadError}
                   busy={!!session.busy}
                   visible={visible}
                   cwd={workCwd}

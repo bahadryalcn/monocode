@@ -1,7 +1,7 @@
 import type { NativeCommand } from "../../../integrations/harness/core/nativeCommands";
 import type { ReportedCommand } from "../../../integrations/harness/core/reportedCommands";
 import type { HarnessId } from "../../sessions/model/session";
-import type { FileSkill, NativeSkill, Skill } from "./skills";
+import type { NativeSkill, Skill } from "./skills";
 
 /**
  * Commands that belong to Claude Code or Codex itself and run inside the CLI.
@@ -24,10 +24,21 @@ const SLASH_HARNESSES: readonly HarnessId[] = ["claude"];
  * Built-ins that run over Claude Code's stream-json transport: the CLI marks
  * them `supportsNonInteractive` (or they are prompt commands). Terminal-only
  * ones (/clear, /vim, /login, ...) and ones MonoCode has its own UI for
- * (/compact, /model, /mcp) are left out on purpose. Codex has none: its slash
- * commands are handled by its terminal UI, not by the app-server MonoCode uses.
+ * (/compact, /model, /mcp) are left out on purpose. Codex commands here are
+ * implemented through app-server RPC rather than passed to its terminal UI.
  */
 const CURATED: Partial<Record<HarnessId, NativeCommand[]>> = {
+  codex: [
+    {
+      name: "goal",
+      invocation: "goal",
+      description:
+        "Set a persistent Codex goal, show its progress, pause or clear it",
+      inputHint: "[<objective> | status | pause | resume | clear]",
+      source: "codex",
+      origin: "built-in",
+    },
+  ],
   claude: [
     {
       name: "goal",
@@ -36,13 +47,19 @@ const CURATED: Partial<Record<HarnessId, NativeCommand[]>> = {
     },
     {
       name: "init",
-      description: "Initialize a new CLAUDE.md file with codebase documentation",
+      description:
+        "Initialize a new CLAUDE.md file with codebase documentation",
     },
     {
       name: "security-review",
-      description: "Complete a security review of the pending changes on the current branch",
+      description:
+        "Complete a security review of the pending changes on the current branch",
     },
-    { name: "context", description: "Show current context usage", inputHint: "[all]" },
+    {
+      name: "context",
+      description: "Show current context usage",
+      inputHint: "[all]",
+    },
     {
       name: "usage",
       description: "Show session cost and plan usage",
@@ -87,6 +104,11 @@ export function mergeCliCommands(input: {
   taken: ReadonlySet<string>;
 }): NativeSkill[] {
   const { harness, reported, disk, taken } = input;
+  if (harness === "codex") {
+    return (CURATED.codex ?? [])
+      .filter((command) => !taken.has(command.name))
+      .map((command) => ({ ...command, kind: "native" as const }));
+  }
   if (!usesSlashCommands(harness)) return [];
   const out = new Map<string, NativeCommand>();
   const add = (command: NativeCommand) => {
@@ -114,7 +136,8 @@ export function mergeCliCommands(input: {
       description: command.description,
       invocation: command.name,
       source: harness,
-      origin: command.scope === "plugin" ? "plugin" : `${command.scope} command`,
+      origin:
+        command.scope === "plugin" ? "plugin" : `${command.scope} command`,
       ...(command.argumentHint ? { inputHint: command.argumentHint } : {}),
     });
   }
@@ -146,11 +169,18 @@ export function mergeDollarSkills(input: {
   harness: HarnessId;
   reported: readonly ReportedCommand[];
   files: readonly Skill[];
+  disabledPaths?: readonly string[];
 }): Skill[] {
   if (!usesDollarSkills(input.harness)) return [];
   const out = new Map<string, Skill>();
+  const disabled = new Set(input.disabledPaths ?? []);
   for (const item of input.reported) {
-    if (item.kind !== "skill" || out.has(item.name)) continue;
+    if (
+      item.kind !== "skill" ||
+      out.has(item.name) ||
+      (item.path && disabled.has(item.path))
+    )
+      continue;
     out.set(item.name, {
       kind: "native",
       name: item.name,
@@ -161,16 +191,19 @@ export function mergeDollarSkills(input: {
     });
   }
   for (const skill of input.files) {
-    if (skill.kind !== "file" || out.has(skill.name)) continue;
-    if (!isCodexReadable(skill)) continue;
-    out.set(skill.name, skill);
+    if (skill.kind !== "file" && skill.kind !== "builtin") continue;
+    if (skill.kind === "file" && disabled.has(skill.path)) continue;
+    // Preserve the disk path and MonoCode's precedence; prompt preparation
+    // injects these files even when they belong to another provider.
+    const reported = out.get(skill.name);
+    out.set(
+      skill.name,
+      reported?.description && !skill.description
+        ? { ...skill, description: reported.description }
+        : skill,
+    );
   }
   return [...out.values()];
-}
-
-/** Codex reads `.codex/skills` and the shared `.agents/skills`, nothing else. */
-function isCodexReadable(skill: FileSkill): boolean {
-  return skill.source === "codex" || skill.source === "agents";
 }
 
 /**
@@ -192,6 +225,7 @@ export function registerCliCommands(
 }
 
 export function isCliCommandText(text: string, harness: HarnessId): boolean {
+  if (harness === "codex") return /^\s*\/goal(?=\s|$)/.test(text);
   if (!usesSlashCommands(harness)) return false;
   const name = /^\s*\/([^\s/\\]+)(?=\s|$)/.exec(text)?.[1];
   if (!name) return false;

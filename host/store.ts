@@ -11,6 +11,7 @@ import type {
 } from "../src/features/connections/model/protocol";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { sessionNeedsInput } from "../src/features/sessions/model/session";
+import { snapshotWeight } from "../src/features/connections/model/snapshotWeight";
 
 const CACHED_SESSIONS = 32;
 // Retried commands are deduplicated by receipt; a week far outlives any retry.
@@ -39,11 +40,13 @@ export class HostStore {
   // served from memory instead of re-parsing whole transcripts. Callers must
   // treat returned values as immutable.
   private cache = new Map<string, HostSession>();
+  private cacheWeights = new Map<string, number>();
   private receiptWrites = 0;
   // Write-behind state, consulted before the cache and SQLite by every read.
   // Kept apart from the LRU cache so eviction can never drop unwritten data.
   private pending = new Map<string, PendingWrite>();
   private inTransaction = false;
+  private commitEffects: Array<() => void> = [];
   private flushedInTransaction: PendingWrite[] = [];
   /** Snapshot upserts issued so far; lets tests count checkpoints. */
   snapshotWrites = 0;
@@ -56,6 +59,8 @@ export class HostStore {
       CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, cwd TEXT NOT NULL UNIQUE, name TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), snapshot TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_journal (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, revision INTEGER NOT NULL, metadata TEXT NOT NULL, block_ids TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS session_journal_blocks (session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, block_id TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id,block_id));
       CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, receipt TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS events (session_id TEXT NOT NULL REFERENCES sessions(id), revision INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(session_id, revision));
       CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, hash TEXT NOT NULL UNIQUE);
@@ -123,6 +128,7 @@ export class HostStore {
   }
 
   transaction<T>(fn: () => T): T {
+    if (this.inTransaction) return fn();
     this.db.exec("BEGIN IMMEDIATE");
     this.inTransaction = true;
     this.flushedInTransaction = [];
@@ -131,10 +137,16 @@ export class HostStore {
       this.db.exec("COMMIT");
       this.inTransaction = false;
       this.flushedInTransaction = [];
+      const effects = this.commitEffects.splice(0);
+      for (const effect of effects) {
+        try { effect(); } catch (error) { console.error("Committed command dispatch failed:", error); }
+      }
       return value;
     } catch (error) {
       this.inTransaction = false;
       this.cache.clear();
+      this.cacheWeights.clear();
+      this.commitEffects = [];
       // Pending state flushed inside this transaction is rolled back with it.
       for (const entry of this.flushedInTransaction.splice(0))
         this.restore(entry);
@@ -145,6 +157,12 @@ export class HostStore {
       }
       throw error;
     }
+  }
+
+  /** Provider side effects must never escape an uncommitted command batch. */
+  afterCommit(effect: () => void): void {
+    if (this.inTransaction) this.commitEffects.push(effect);
+    else effect();
   }
 
   project(id: string): HostProject {
@@ -171,8 +189,17 @@ export class HostStore {
   private remember(value: HostSession): HostSession {
     this.cache.delete(value.session.id);
     this.cache.set(value.session.id, value);
-    if (this.cache.size > CACHED_SESSIONS)
-      this.cache.delete(this.cache.keys().next().value!);
+    this.cacheWeights.set(value.session.id, snapshotWeight(value));
+    let bytes = [...this.cache.keys()].reduce((sum, id) => sum + (this.cacheWeights.get(id) ?? 0), 0);
+    while (this.cache.size > CACHED_SESSIONS || bytes > 64 * 1024 * 1024) {
+      // One active transcript is already owned by the engine. Keeping its
+      // immutable reference avoids rehydrating a giant journal every token.
+      if (this.cache.size === 1 && value.status === "running") break;
+      const id = this.cache.keys().next().value!;
+      bytes -= this.cacheWeights.get(id) ?? 0;
+      this.cache.delete(id);
+      this.cacheWeights.delete(id);
+    }
     return value;
   }
 
@@ -184,9 +211,26 @@ export class HostStore {
     const row = this.db
       .prepare("SELECT snapshot FROM sessions WHERE id=?")
       .get(id);
-    return row
-      ? this.remember(JSON.parse(String(row.snapshot)) as HostSession)
-      : undefined;
+    if (!row) return undefined;
+    let value = JSON.parse(String(row.snapshot)) as HostSession;
+    const journal = this.db.prepare("SELECT * FROM session_journal WHERE session_id=?").get(id);
+    if (journal && Number(journal.revision) > value.revision) {
+      const blocks = new Map(value.session.blocks.map((block) => [block.id, block]));
+      const revisions = { ...value.blockRevisions };
+      for (const changed of this.db.prepare("SELECT * FROM session_journal_blocks WHERE session_id=?").all(id)) {
+        blocks.set(String(changed.block_id), JSON.parse(String(changed.payload)));
+        revisions[String(changed.block_id)] = Number(changed.revision);
+      }
+      const metadata = JSON.parse(String(journal.metadata)) as HostSession;
+      const ids = JSON.parse(String(journal.block_ids)) as string[];
+      value = { ...metadata, blockRevisions: Object.fromEntries(ids.map((blockId) => [blockId, revisions[blockId] ?? value.revision])),
+        session: { ...metadata.session, blocks: ids.map((blockId) => {
+          const block = blocks.get(blockId);
+          if (!block) throw new Error("Incomplete session journal");
+          return block;
+        }) } };
+    }
+    return this.remember(value);
   }
 
   session(id: string): HostSession {
@@ -336,8 +380,7 @@ export class HostStore {
     return rows
       .map(
         (row) =>
-          this.pending.get(String(row.id))?.value ??
-          (JSON.parse(String(row.snapshot)) as HostSession),
+          this.session(String(row.id)),
       )
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
@@ -384,13 +427,15 @@ export class HostStore {
   /** Writes every session whose latest state is still only in memory. */
   flushAll(): void {
     for (const id of [...this.pending.keys()]) this.flushPending(id);
+    for (const row of this.db.prepare("SELECT session_id FROM session_journal").all())
+      this.write(this.session(String(row.session_id)), []);
   }
 
   private flushPending(id: string): void {
     const entry = this.take(id);
     if (!entry) return;
     try {
-      this.write(entry.value, entry.events);
+      this.writeJournal(entry.value, entry.events);
     } catch (error) {
       this.restore(entry);
       throw error;
@@ -468,10 +513,37 @@ export class HostStore {
       this.db
         .prepare("DELETE FROM events WHERE session_id=? AND revision<?")
         .run(value.session.id, value.revision - 2_000);
+      this.db.prepare("DELETE FROM session_journal WHERE session_id=?").run(value.session.id);
+      this.db.prepare("DELETE FROM session_journal_blocks WHERE session_id=?").run(value.session.id);
     };
     if (this.inTransaction) run();
     else this.transaction(run);
     this.snapshotWrites++;
+  }
+
+  /** Streaming checkpoints serialize changed blocks only. Hard commands still
+   * commit a full compatible checkpoint together with their receipt. */
+  private writeJournal(value: HostSession, rows: { revision: number; event: unknown }[]): void {
+    const id = value.session.id;
+    const previous = this.db.prepare("SELECT revision FROM session_journal WHERE session_id=?").get(id)
+      ?? this.db.prepare("SELECT revision FROM sessions WHERE id=?").get(id);
+    const revision = Number(previous?.revision ?? -1);
+    const { blockRevisions: _revisions, session: { blocks, ...session }, ...rest } = value;
+    const run = () => {
+      const writeBlock = this.db.prepare("INSERT INTO session_journal_blocks VALUES (?, ?, ?, ?) ON CONFLICT(session_id,block_id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload");
+      for (const block of blocks) {
+        const stamp = value.blockRevisions?.[block.id] ?? value.revision;
+        if (stamp > revision) writeBlock.run(id, block.id, stamp, JSON.stringify(block));
+      }
+      this.db.prepare("INSERT INTO session_journal VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision,metadata=excluded.metadata,block_ids=excluded.block_ids")
+        .run(id, value.revision, JSON.stringify({ ...rest, session }), JSON.stringify(blocks.map((block) => block.id)));
+      this.db.prepare("UPDATE sessions SET summary=?, revision=?, updated_at=?,status=? WHERE id=?")
+        .run(JSON.stringify(summary(value)), value.revision, value.updatedAt, value.status, id);
+      const insert = this.db.prepare("INSERT INTO events VALUES (?, ?, ?)");
+      for (const row of rows) insert.run(id, row.revision, JSON.stringify(row.event));
+      this.db.prepare("DELETE FROM events WHERE session_id=? AND revision<?").run(id, value.revision - 2_000);
+    };
+    if (this.inTransaction) run(); else this.transaction(run);
   }
 
   updateSession(

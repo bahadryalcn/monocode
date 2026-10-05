@@ -437,6 +437,9 @@ export const RUNTIME_MODE_HINT: Record<RuntimeMode, string> = {
 export type WorkspaceMode = "current" | "worktree";
 
 export type Session = {
+  /** Only a tail page is available; sending/editing/persistence must wait. */
+  historyLoading?: boolean;
+  historyLoadError?: string;
   /** Receipt for an acknowledged floating-composer handoff. */
   quickLaunchAccepted?: boolean;
   /** Internal worker: displayed in its lead's panel rather than a workspace tab. */

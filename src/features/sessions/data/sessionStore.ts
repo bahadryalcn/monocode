@@ -1,4 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { buildSessionBlockDelta, type PersistedBlock } from "./sessionDelta";
+import { PersistenceBaselines } from "./persistenceBaselines";
+import { startPerformanceSpan } from "../../../shared/lib/performanceTrace";
 import {
   isWeakToolTitle,
   titleFromToolInput,
@@ -62,6 +65,7 @@ import { restoreOrchestrationProposal } from "../../orchestration/model/orchestr
 import type { OrchestrationSummary } from "../../orchestration/model/orchestrationSummary";
 
 export type SessionSummary = {
+  transcriptRevision?: number;
   orchestrationLeadId?: string;
   orchestration?: OrchestrationSummary;
   id: string;
@@ -87,6 +91,7 @@ export type SessionSummary = {
 };
 
 type SessionRecord = {
+  transcriptRevision?: number;
   orchestrationLeadId?: string;
   id: string;
   cwd: string;
@@ -132,6 +137,7 @@ type SessionUpsertPayload = {
 /** Only real chats belong in project history — blank tabs stay ephemeral. */
 export function shouldPersistSession(session: Session): boolean {
   return (
+    !session.historyLoading &&
     !session.inboxAsk &&
     !isRemoteProjectPath(session.cwd) &&
     session.cwd !== "~" &&
@@ -227,6 +233,26 @@ export function sanitizeSessionForPersist(
  * overwrite a newer one. Chain them per session; different sessions still
  * write concurrently.
  */
+const persistenceBaselines = new PersistenceBaselines();
+const sanitizedBlocks = new WeakMap<Block, Block | null>();
+function incrementalBlocks(session: Session): PersistedBlock[] {
+  const firstUser = session.blocks.findIndex((block) => block.role === "user");
+  const result: PersistedBlock[] = [];
+  session.blocks.forEach((source, index) => {
+    let value = sanitizedBlocks.get(source);
+    if (value === undefined) { value = sanitizeBlock(source); sanitizedBlocks.set(source, value); }
+    if (!value) return;
+    if (index === firstUser && session.orchestrationLeadId && value.orchestrationLeadId !== session.orchestrationLeadId) {
+      value = { ...value, orchestrationLeadId: session.orchestrationLeadId };
+    }
+    if (value.orchestrationLeadId && deletedSessionIds.has(value.orchestrationLeadId)) {
+      value = { ...value, orchestrationLeadId: undefined };
+    }
+    result.push({ source, value });
+  });
+  return result;
+}
+
 const sessionWriteQueues = new Map<string, Promise<unknown>>();
 const sessionWriteLeadById = new Map<string, string>();
 const deletedSessionIds = new Set<string>();
@@ -312,23 +338,28 @@ export function upsertSessionLive(
       }
       latestOptions.onStart?.();
       try {
-        const payload = sanitizeSessionForPersist(latest);
-        if (latest.orchestrationLeadId) {
-          sessionWriteLeadById.set(id, latest.orchestrationLeadId);
-        } else {
-          sessionWriteLeadById.delete(id);
-        }
-        await invoke<SessionSummary>("session_upsert", {
-          session: {
-            ...payload,
-            blocks: payload.blocks.map((block) =>
-              block.orchestrationLeadId &&
-              deletedSessionIds.has(block.orchestrationLeadId)
-                ? { ...block, orchestrationLeadId: undefined }
-                : block,
-            ),
-          },
-        });
+        const finish = startPerformanceSpan("session-save");
+        try {
+          const blocks = incrementalBlocks(latest);
+          const baseline = persistenceBaselines.get(id);
+          if (baseline?.normalized && baseline.writes < 32) {
+            const delta = buildSessionBlockDelta(baseline.blocks, blocks);
+            const ack = await invoke<{ updatedAt: number; revision: number } | null>("session_apply_delta", {
+              delta: { session: { ...persistableMeta(latest), blocks: [] }, expectedUpdatedAt: baseline.updatedAt, expectedRevision: baseline.revision, ...delta },
+            });
+            if (!ack) throw new Error("Session changed in another window; reload before saving");
+            persistenceBaselines.set(id, { blocks, updatedAt: ack.updatedAt, revision: ack.revision, writes: baseline.writes + 1, normalized: true });
+            finish({ blocks: delta.changes.length, revision: ack.revision });
+          } else {
+            const summary = await invoke<SessionSummary | null>("session_upsert", {
+              session: { ...persistableMeta(latest), blocks: blocks.map((item) => item.value) },
+              ...(baseline ? { expectedUpdatedAt: baseline.updatedAt, expectedRevision: baseline.revision } : {}),
+            });
+            if (!summary) throw new Error("Session changed in another window; reload before saving");
+            persistenceBaselines.set(id, { blocks, updatedAt: summary.updatedAt, revision: summary.transcriptRevision, writes: 0, normalized: true });
+            finish({ blocks: blocks.length });
+          }
+        } catch (error) { finish(); throw error; }
       } catch {
         latestOptions.onFailed?.();
       }
@@ -355,19 +386,20 @@ export async function storedSessionUpdatedAt(
 export async function upsertSessionIfUnchanged(
   session: Session,
   expectedUpdatedAt: number | null,
+  expectedRevision?: number,
 ): Promise<boolean> {
   const summary = await persistSession(
     session,
     expectedUpdatedAt === null
       ? { expectMissing: true }
-      : { expectedUpdatedAt },
+      : { expectedUpdatedAt, expectedRevision },
   );
   return !!summary;
 }
 
 async function persistSession(
   session: Session,
-  guard?: { expectedUpdatedAt: number } | { expectMissing: true },
+  guard?: { expectedUpdatedAt: number; expectedRevision?: number } | { expectMissing: true },
 ): Promise<SessionSummary | null> {
   if (!shouldPersistSession(session) || deletedSessionIds.has(session.id)) {
     return null;
@@ -380,18 +412,20 @@ async function persistSession(
   }
   const summary = await enqueueSessionWrite(session.id, async () => {
     if (deletedSessionIds.has(session.id)) return null;
-    return invoke<SessionSummary | null>("session_upsert", {
+    const baseline = persistenceBaselines.get(session.id);
+    const summary = await invoke<SessionSummary | null>("session_upsert", {
       session: {
         ...payload,
         blocks: payload.blocks.map((block) =>
-          block.orchestrationLeadId &&
-          deletedSessionIds.has(block.orchestrationLeadId)
-            ? { ...block, orchestrationLeadId: undefined }
-            : block,
-        ),
+          block.orchestrationLeadId && deletedSessionIds.has(block.orchestrationLeadId)
+            ? { ...block, orchestrationLeadId: undefined } : block),
       },
-      ...guard,
+      ...(guard ?? (baseline ? { expectedUpdatedAt: baseline.updatedAt, expectedRevision: baseline.revision } : {})),
     });
+    if (summary) persistenceBaselines.set(session.id, {
+      blocks: incrementalBlocks(session), updatedAt: summary.updatedAt, revision: summary.transcriptRevision, writes: 0, normalized: true,
+    });
+    return summary;
   });
   return summary ? normalizeSummary(summary) : null;
 }
@@ -585,9 +619,77 @@ export async function searchSessionContent(options: {
   };
 }
 
-export async function getSession(sessionId: string): Promise<Session | null> {
-  const session = await loadStoredSession(sessionId);
-  return session ? withStoredQueue(session) : null;
+export type SessionHydrationOptions = {
+  /** Applied only if the consumer still owns the original, idle snapshot. */
+  onHydrated?: (original: Session, hydrated: Session) => void;
+  onHydrationFailed?: (original: Session) => void;
+};
+type StoredTranscriptPage = { session: SessionRecord; before?: number; totalBlocks: number; revision: number };
+
+export async function getSession(sessionId: string, options: SessionHydrationOptions = {}): Promise<Session | null> {
+  const finish = startPerformanceSpan("session-load");
+  // Consumers without progressive callbacks require complete history and queues.
+  // The native full read uses the authoritative transcript compatibility view.
+  if (!options.onHydrated) {
+    try {
+      const record = await invoke<SessionRecord | null>("session_get", { sessionId });
+      if (!record) return null;
+      const session = recordToSession(record);
+      persistenceBaselines.set(sessionId, { blocks: incrementalBlocks(session), updatedAt: record.updatedAt, revision: record.transcriptRevision, writes: 0, normalized: false });
+      return await hydrateStoredSession(session, record.updatedAt, record.transcriptRevision);
+    } finally { finish(); }
+  }
+  let page: StoredTranscriptPage | null;
+  try {
+    page = await invoke<StoredTranscriptPage | null>("session_get_page", { sessionId, limit: 80 });
+  } catch (error) { finish(); throw error; }
+  if (!page) { finish(); return null; }
+  const record = page.session;
+  const session = recordToSession(record);
+  session.historyLoading = page.before != null;
+  finish({ blocks: session.blocks.length, revision: page.revision });
+  if (!session.historyLoading) persistenceBaselines.set(sessionId, {
+    blocks: incrementalBlocks(session), updatedAt: record.updatedAt, revision: record.transcriptRevision, writes: 0, normalized: false,
+  });
+  // Publish the tail first. Provider log repair, queue attachment checks and
+  // earlier pages cannot delay it. Every page is pinned to the first revision.
+  window.setTimeout(() => {
+    void (async () => {
+      const pages: Block[][] = [session.blocks];
+      let before = page.before;
+      while (before != null) {
+        if (deletedSessionIds.has(sessionId)) return;
+        const previous = await invoke<StoredTranscriptPage | null>("session_get_page", {
+          sessionId, before, revision: page.revision, limit: 200,
+        });
+        if (!previous || (previous.before != null && previous.before >= before)) throw new Error("Invalid transcript cursor");
+        pages.push(recordToSession(previous.session).blocks);
+        before = previous.before;
+      }
+      const complete = session.historyLoading ? {
+        ...session, blocks: pages.reverse().flat(), historyLoading: false,
+      } : session;
+      if (deletedSessionIds.has(sessionId)) return;
+      // A tail snapshot never becomes a persistence baseline. Only the complete
+      // logical transcript may be checkpointed or used for provider resume.
+      persistenceBaselines.set(sessionId, {
+        blocks: incrementalBlocks(complete), updatedAt: record.updatedAt, revision: record.transcriptRevision, writes: 0, normalized: false,
+      });
+      if (session.historyLoading) options.onHydrated?.(session, complete);
+      const hydrated = await hydrateStoredSession(complete, record.updatedAt, record.transcriptRevision);
+      if (!deletedSessionIds.has(sessionId)) options.onHydrated?.(complete, hydrated);
+    })().catch(() => options.onHydrationFailed?.(session));
+  }, 0);
+  return session;
+}
+
+async function hydrateStoredSession(original: Session, expectedUpdatedAt: number, expectedRevision?: number): Promise<Session> {
+  const session = { ...original };
+  const [repaired, queued] = await Promise.all([
+    repairStoredSession(session, expectedUpdatedAt, expectedRevision),
+    withStoredQueue(session),
+  ]);
+  return { ...repaired, ...(queued.queuedMessages ? { queuedMessages: queued.queuedMessages, queueStatus: "restored" as const } : {}) };
 }
 
 /** Which of `paths` still exist on disk. */
@@ -636,12 +738,7 @@ export async function setSessionQueue(
   });
 }
 
-async function loadStoredSession(sessionId: string): Promise<Session | null> {
-  const record = await invoke<SessionRecord | null>("session_get", {
-    sessionId,
-  });
-  if (!record) return null;
-  const session = recordToSession(record);
+async function repairStoredSession(session: Session, expectedUpdatedAt: number, expectedRevision?: number): Promise<Session> {
   if (session.harness === "claude" && session.providerSessionId) {
     const toolIds = shellPlaceholderIds(session.blocks);
     if (toolIds.length) {
@@ -654,7 +751,7 @@ async function loadStoredSession(sessionId: string): Promise<Session | null> {
         const blocks = backfillClaudeShellCommands(session.blocks, commands);
         if (blocks !== session.blocks) {
           session.blocks = blocks;
-          await upsertSession(session);
+          await upsertSessionIfUnchanged(session, expectedUpdatedAt, expectedRevision);
         }
       } catch {
         // A missing or unreadable Claude transcript must not block the session.
@@ -670,7 +767,7 @@ async function loadStoredSession(sessionId: string): Promise<Session | null> {
       session.blocks = blocks;
       // A failed write must not cost the reader the session. The repair stays
       // in memory and the next load retries it.
-      await upsertSession(session).catch(() => undefined);
+      await upsertSessionIfUnchanged(session, expectedUpdatedAt, expectedRevision).catch(() => undefined);
     }
   }
   if (session.harness !== "omp" || !session.providerSessionId) {
@@ -685,10 +782,10 @@ async function loadStoredSession(sessionId: string): Promise<Session | null> {
     const blocks = backfillOmpInterjections(session.blocks, anchors, source);
     if (blocks !== session.blocks) {
       session.blocks = blocks;
-      // Persist before exposing the restored session to a new live turn.
+      // Persist only while the original stored revision still owns the row.
       // Re-reading the source on later loads allows partial repairs to retry;
       // deterministic IDs ensure already repaired transcripts are not written.
-      await upsertSession(session);
+      await upsertSessionIfUnchanged(session, expectedUpdatedAt, expectedRevision);
     }
   } catch {
     // Source logs may be absent/unreadable. Even a failed write must not stop
@@ -793,6 +890,7 @@ export async function deleteSession(
     await enqueueSessionWrite(sessionId, () =>
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
+    persistenceBaselines.delete(sessionId);
     removeSessionAdditionalDirs(sessionId);
     // The cache's change listener deletes the saved draft row.
     clearComposerDraft(sessionId);
@@ -811,6 +909,7 @@ export async function discardDraftSessionRecord(
   await enqueueSessionWrite(sessionId, () =>
     invoke<void>("session_delete", { sessionId, imagePaths: [] }),
   );
+  persistenceBaselines.delete(sessionId);
 }
 
 export async function setSessionArchived(

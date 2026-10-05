@@ -13,6 +13,10 @@ import type {
   PlanBuildTarget,
 } from "../../sessions/model/session";
 import { uploadRemoteAttachments } from "../model/remoteAttachments";
+import { snapshotWeight } from "../model/snapshotWeight";
+import { canApplyRemotePreview } from "../model/remotePreviewBinding";
+import { canCacheRemoteSnapshot, createRemoteHistoryGeneration } from "../model/remoteHistoryGeneration";
+import { beginSessionPerformanceTrace, sessionPerformanceTrace, startPerformanceSpan, recordPerformanceEvent } from "../../../shared/lib/performanceTrace";
 import { temporaryWorktreeBranchName } from "../../source-control/model/worktrees";
 import type { AgentModel } from "../../sessions/model/models";
 import { isModelEnabled } from "../../sessions/model/models";
@@ -134,10 +138,19 @@ const snapshotKey = (machineId: string, sessionId: string) =>
 const catalogKey = (machineId: string, projectId: string) =>
   JSON.stringify([machineId, projectId]);
 function rememberSessionSnapshot(key: string, snapshot: HostSession) {
+  if (!canCacheRemoteSnapshot(snapshot)) return;
   cachedSessionSnapshots.delete(key);
   cachedSessionSnapshots.set(key, snapshot);
   if (cachedSessionSnapshots.size > 8)
     cachedSessionSnapshots.delete(cachedSessionSnapshots.keys().next().value!);
+  let bytes = 0;
+  for (const value of [...cachedSessionSnapshots.values()].reverse()) {
+    bytes += snapshotWeight(value);
+    if (bytes > 32 * 1024 * 1024) {
+      for (const [entryKey, entry] of cachedSessionSnapshots)
+        if (entry === value) cachedSessionSnapshots.delete(entryKey);
+    }
+  }
 }
 
 /** Fetches a host conversation into the snapshot cache, so its tab opens with
@@ -299,6 +312,7 @@ function ConnectedRemoteSession({
     useState<WorkspaceMode>("current");
   const [draftWorktreeBase, setDraftWorktreeBase] = useState("HEAD");
   const [sending, setSending] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ offset: number; size: number }>();
   const sendingRef = useRef(false);
   const preparingRef = useRef(false);
   const [unseenSend, setUnseenSend] = useState<
@@ -417,6 +431,7 @@ function ConnectedRemoteSession({
     let timer: ReturnType<typeof setTimeout>;
     let failed = 0;
     let polling = false;
+    const historyGeneration = createRemoteHistoryGeneration();
     const version = bindingVersion.current;
     const stale = () =>
       disposed ||
@@ -447,14 +462,39 @@ function ConnectedRemoteSession({
           setDescriptor(host);
           described = true;
         }
-        const known =
+        const known = historyGeneration.known(
           snapshotRef.current?.session.id === sessionId
             ? snapshotRef.current
-            : undefined;
+            : undefined);
         const next = sessionId
-          ? await loadRemoteSession(machine.id, sessionId, known)
+          ? await loadRemoteSession(machine.id, sessionId, known, {
+              waitMs: visible && !document.hidden && cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.longPoll") ? 10_000 : 0,
+              pages: cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.pages"),
+              isCurrent: () => !stale(),
+              onHistory: (history) => {
+                if (stale() || snapshotRef.current?.revision !== history.revision) return;
+                snapshotRef.current = history;
+                setSnapshot(history);
+                onSnapshot?.(shell.id, history);
+                rememberSessionSnapshot(snapshotKey(machine.id, sessionId), history);
+              },
+              onHistoryError: (reason) => {
+                if (stale()) return;
+                // A changed revision restarts tail loading without overwriting
+                // the transcript that has already been displayed.
+                snapshotRef.current = undefined;
+                historyGeneration.failed();
+                setError(`History loading failed: ${String(reason)}. Retrying.`);
+              },
+              onPreviews: (preview) => {
+                if (stale() || !canApplyRemotePreview(snapshotRef.current, preview)) return;
+                rememberSessionSnapshot(snapshotKey(machine.id, sessionId), preview);
+                setSnapshot(preview);
+              },
+            })
           : undefined;
         if (stale()) return;
+        historyGeneration.loaded();
         if (next && next.projectId !== project.projectId)
           throw new Error("This session belongs to a different host project");
         setOnline(true);
@@ -465,11 +505,13 @@ function ConnectedRemoteSession({
         if (next && sessionId)
           rememberSessionSnapshot(snapshotKey(machine.id, sessionId), next);
         setSnapshot(next);
+        snapshotRef.current = next;
+        if (next) recordPerformanceEvent("renderer-receive", { revision: next.revision, blocks: next.session.blocks.length }, sessionPerformanceTrace(shell.id));
         if (next) onSnapshot?.(shell.id, next);
         // A `!command` still running on the host changes the transcript too.
-        active =
+        active = !next?.historyLoading && (
           next?.status === "running" ||
-          !!next?.session.blocks.some((block) => block.shell?.running);
+          !!next?.session.blocks.some((block) => block.shell?.running));
       } catch (reason) {
         if (stale()) return;
         setOnline(false);
@@ -482,7 +524,7 @@ function ConnectedRemoteSession({
       if (!disposed)
         timer = setTimeout(
           () => void poll(),
-          remoteSessionPollDelay(active, visible, document.hidden, failed),
+          active && visible && !document.hidden && failed === 0 && cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.longPoll") ? 100 : remoteSessionPollDelay(active, visible, document.hidden, failed),
         );
     };
     const onVisibility = () => {
@@ -663,6 +705,8 @@ function ConnectedRemoteSession({
         followup,
       );
       setPending(command);
+      const traceId = sessionPerformanceTrace(shell.id);
+      const dispatchDone = startPerformanceSpan("dispatch", {}, traceId);
       const receipt = await remoteRequest<CommandReceipt>(
         machine.id,
         "commands.dispatch",
@@ -670,6 +714,8 @@ function ConnectedRemoteSession({
         false,
         true,
       );
+      dispatchDone();
+      recordPerformanceEvent("host-ack", { revision: receipt.revision }, traceId);
       if (command.type === "create") {
         const next = pendingRemoteFollowup(
           project.key,
@@ -852,7 +898,11 @@ function ConnectedRemoteSession({
     const refs = turn.draftBlockId
       ? []
       : (uploaded ??
-        (await uploadRemoteAttachments(machine.id, turn.attachments)));
+        (await uploadRemoteAttachments(machine.id, turn.attachments, {
+          resumable: descriptor?.capabilities.includes("attachments.resume"),
+          onProgress: (_id, offset, size) => { if (alive.current && version === bindingVersion.current) setUploadProgress({ offset, size }); },
+        })));
+    setUploadProgress(undefined);
     if (!alive.current || version !== bindingVersion.current) return undefined;
     return run(
       turn.draft
@@ -882,7 +932,10 @@ function ConnectedRemoteSession({
       const uploaded = await uploadRemoteAttachments(
         machine.id,
         turn.attachments,
+        { resumable: descriptor?.capabilities.includes("attachments.resume"),
+          onProgress: (_id, offset, size) => { if (alive.current && version === bindingVersion.current) setUploadProgress({ offset, size }); } },
       );
+      setUploadProgress(undefined);
       if (version !== bindingVersion.current) return;
       let worktreeCwd = selectedCwd;
       let autoWorktreeBranch: string | undefined;
@@ -932,6 +985,7 @@ function ConnectedRemoteSession({
             turn.draftBlockId,
             turn.planBlockId,
           );
+      const atomic = descriptor?.capabilities.includes("sessions.createFirstTurn") ?? false;
       const receipt = await run(
         {
           type: "create",
@@ -943,9 +997,10 @@ function ConnectedRemoteSession({
           model: draft.model,
           modelSettings: draft.settings,
           runtimeMode: draft.mode,
+          ...(atomic ? { firstTurn: followup as Extract<HostCommand, { type: "send" | "draft" }> } : {}),
         },
         turn,
-        followup,
+        atomic ? undefined : followup,
       );
       if (version !== bindingVersion.current) return;
       if (!receipt) {
@@ -953,6 +1008,7 @@ function ConnectedRemoteSession({
         return;
       }
       if (version !== bindingVersion.current) return;
+      if (atomic) return;
       const sent = await run(
         { ...followup, sessionId: receipt.sessionId },
         turn,
@@ -1176,6 +1232,8 @@ function ConnectedRemoteSession({
     asDraft = false,
     planBlockId?: string,
   ): boolean => {
+    if (snapshotRef.current?.historyLoading) return false;
+    beginSessionPerformanceTrace(shell.id);
     const shellCommand =
       asDraft || attachments.length || options?.draftBlockId || planBlockId
         ? undefined
@@ -1244,7 +1302,7 @@ function ConnectedRemoteSession({
     session: queuedSession,
     loaded: queue.loaded,
     online,
-    canSend: connection.canSend,
+    canSend: connection.canSend && !snapshot?.historyLoading,
     working,
     changing: !!changes,
   });
@@ -1656,7 +1714,7 @@ function ConnectedRemoteSession({
     },
     remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     remoteSessionStarted: !!sessionId,
-    sendBlockedReason: outboxIssues.length
+    sendBlockedReason: snapshot?.historyLoading ? "Loading earlier messages…" : outboxIssues.length
       ? "An unfinished request needs recovery. Check the host and review the request above."
       : blocksSending(connection.status)
         ? needsSignIn(connection.status)
@@ -1757,6 +1815,8 @@ function ConnectedRemoteSession({
   return (
     <ModelSourceContext.Provider value={modelSource}>
       <div className="relative flex h-full min-h-0 flex-col">
+        {uploadProgress ? <div role="status" className="shrink-0 px-4 py-2 text-xs text-content/65">Uploading attachment: {Math.round(uploadProgress.size ? uploadProgress.offset / uploadProgress.size * 100 : 100)}%</div> : null}
+        {snapshot?.historyLoading ? <div role="status" className="shrink-0 px-4 py-2 text-xs text-content/65">Loading earlier messages…</div> : null}
         <RemoteConnectionBanner cwd={project.key} stale={!!hostSession} />
         {online && hostSession && snapshot?.status === "running" ? (
           <div

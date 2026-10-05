@@ -41,7 +41,9 @@ describe("AgentMarkdown hard breaks", () => {
 
   it("breaks between lines that are each a single inline element", () => {
     expect(render("*a*\n*b*")).toContain("<em>a</em><br/><em>b</em>");
-    expect(render("`a`\n`b`")).toMatch(/<\/code><br\/><code/);
+    expect(render("`a`\n`b`")).toMatch(
+      /<code\b[^>]*>a<\/code><\/span><br\/><span\b[^>]*><code\b[^>]*>b<\/code>/,
+    );
     expect(render("[a](https://x.com)\n[b](https://y.com)")).toMatch(
       /<\/a><br\/><a/,
     );
@@ -51,7 +53,7 @@ describe("AgentMarkdown hard breaks", () => {
   // belongs to the line the next element begins.
   it.each([
     ["emphasis", "*second*", "<em>"],
-    ["inline code", "`second`", "<code"],
+    ["inline code", "`second`", '<span class="inline-flex'],
     ["a link", "[second](https://x.com)", "<a "],
   ])(
     "keeps the line %s opens after the break that precedes it",

@@ -23,10 +23,12 @@ import { HostStewards } from "./stewards";
 import { DesktopSessions } from "./desktopSessions";
 import { branchCache } from "./git-actions";
 import { withOverlay } from "./desktopLive";
-import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
+import { writeAttachmentChunk, readAttachmentChunk, attachmentUploadStatus } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
 import { SyncTransfers } from "./sync-transfer";
+import { RevisionWaits } from "./revisionWait";
+import { TranscriptPages } from "./transcriptPage";
 import { syncPull, syncPush } from "./sync";
 import type { SyncOp } from "../src/features/sync/model/syncProtocol";
 import { browseHostDirectories } from "./browse";
@@ -253,6 +255,8 @@ export function createHostServer(
       ...snapshot,
       revision: Math.max(snapshot.revision, overlay?.changedAt ?? 0),
       ...(snapshot.status === "running" ? { runId: DESKTOP_RUN_ID } : {}),
+      ...(snapshot.blockRevisions ? { blockRevisions: { ...snapshot.blockRevisions,
+        ...Object.fromEntries((overlay?.pending ?? []).map((block) => [block.id, overlay?.changedAt ?? snapshot.revision])) } } : {}),
       session: withOverlay(snapshot.session, overlay),
     };
   };
@@ -265,6 +269,7 @@ export function createHostServer(
       first: number;
       revs: Map<string, number>;
       json: Map<string, string>;
+      bytes: number;
     }
   >();
   const desktopSync = (view: HostSession, client?: number): SessionSync => {
@@ -274,7 +279,8 @@ export function createHostServer(
       const revs = new Map<string, number>();
       const json = new Map<string, string>();
       for (const block of view.session.blocks) {
-        const text = JSON.stringify(block);
+        const persisted = view.blockRevisions?.[block.id];
+        const text = persisted !== undefined ? `revision:${persisted}` : JSON.stringify(block);
         json.set(block.id, text);
         revs.set(
           block.id,
@@ -288,11 +294,18 @@ export function createHostServer(
         first: entry?.first ?? view.revision,
         revs,
         json,
+        bytes: [...json].reduce((sum, [blockId, text]) => sum + (blockId.length + text.length) * 2 + 64, 0),
       };
       views.delete(id);
       views.set(id, entry);
       if (views.size > MAX_DESKTOP_VIEWS)
         views.delete(views.keys().next().value!);
+      let bytes = [...views.values()].reduce((sum, view) => sum + view.bytes, 0);
+      while (bytes > 64 * 1024 * 1024 && views.size) {
+        const key = views.keys().next().value!;
+        bytes -= views.get(key)!.bytes;
+        views.delete(key);
+      }
     }
     if (client === view.revision)
       return { kind: "unchanged", revision: client };
@@ -329,6 +342,8 @@ export function createHostServer(
     { binaries: string; probed: number; catalog: Promise<HostModelCatalog> }
   >();
   const transfers = new SyncTransfers();
+  const revisionWaits = new RevisionWaits();
+  const transcriptPages = new TranscriptPages();
   const workspace = new WorkspaceCommands(engine.store, (projectId, action) =>
     engine.withIdleProject(projectId, action),
   );
@@ -456,6 +471,9 @@ export function createHostServer(
               ),
               capabilities: [
                 "sessions",
+                "sessions.createFirstTurn",
+                "sessions.pages",
+                "sessions.longPoll",
                 "sessions.harnessSwitch",
                 "projects.browse",
                 "models.list",
@@ -481,6 +499,7 @@ export function createHostServer(
                 "git.actions",
                 "git.conflicts",
                 "attachments.upload",
+                "attachments.resume",
                 "attachments.read",
                 "sessions.draft",
                 "sessions.plan",
@@ -492,6 +511,7 @@ export function createHostServer(
                 "automations",
                 "tasks",
                 "tasks.todo",
+                "tasks.notes",
                 "goals",
                 "stewards",
                 "host.settings",
@@ -650,11 +670,27 @@ export function createHostServer(
             result = { deleted: true };
             break;
           }
+          case "sessions.page": {
+            const sessionId = String(params.sessionId ?? "");
+            const watch = desktopWatch(sessionId);
+            const page = transcriptPages.page(() => (watch && desktopView(sessionId, watch.projectId)) ?? engine.store.session(sessionId), sessionId,
+              params.before === undefined ? undefined : Number(params.before),
+              params.revision === undefined ? undefined : Number(params.revision));
+            result = { ...page, value: undefined, sync: transfers.respond(sessionId, { kind: "snapshot", value: page.value }) };
+            break;
+          }
           case "sessions.sync": {
             const sessionId = String(params.sessionId ?? "");
             const revision = Number.isSafeInteger(params.revision)
               ? Number(params.revision)
               : undefined;
+            if (revision !== undefined && Number.isFinite(params.waitMs) && Number(params.waitMs) > 0) {
+              await revisionWaits.wait(
+                () => desktopWatch(sessionId)?.revision ?? engine.store.session(sessionId).revision,
+                revision, Number(params.waitMs), () => response.destroyed || !engine.store.authenticated(token),
+              );
+              if (!engine.store.authenticated(token)) throw new Error("Device authorization was revoked");
+            }
             const watch = desktopWatch(sessionId);
             if (watch) {
               // Watching a desktop turn polls fast; skip the transcript read
@@ -795,6 +831,16 @@ export function createHostServer(
           case "tasks.move":
             result = await tasks.move(String(params.taskId ?? ""), params.to);
             break;
+          case "tasks.notes.read":
+            result = tasks.readNotes(String(params.taskId ?? ""), params.noteIds);
+            break;
+          case "tasks.notes.resolve":
+            result = tasks.resolveNote(
+              String(params.taskId ?? ""),
+              params.noteId,
+              params.resolved,
+            );
+            break;
           case "tasks.delete":
             await tasks.delete(
               String(params.taskId ?? ""),
@@ -848,6 +894,9 @@ export function createHostServer(
           case "stewards.decline":
             await stewards.decline(String(params.taskId ?? ""));
             result = { declined: true };
+            break;
+          case "attachments.status":
+            result = await attachmentUploadStatus(engine.store, params);
             break;
           case "attachments.upload":
             result = writeAttachmentChunk(engine.store, params);

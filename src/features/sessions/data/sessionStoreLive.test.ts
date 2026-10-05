@@ -9,7 +9,7 @@ type Deferred = { promise: Promise<unknown>; resolve: () => void };
 function deferred(): Deferred {
   let resolve!: () => void;
   const promise = new Promise<unknown>((res) => {
-    resolve = () => res(undefined);
+    resolve = () => res({ updatedAt: 1, transcriptRevision: 1 });
   });
   return { promise, resolve };
 }
@@ -35,8 +35,8 @@ function session(id: string, title = "") {
 
 function upsertTitles(): string[] {
   return mocks.invoke.mock.calls
-    .filter(([command]) => command === "session_upsert")
-    .map(([, args]) => args.session.title);
+    .filter(([command]) => command === "session_upsert" || command === "session_apply_delta")
+    .map(([command, args]) => command === "session_apply_delta" ? args.delta.session.title : args.session.title);
 }
 
 /** First upsert blocks until released; everything else resolves at once. */
@@ -45,7 +45,9 @@ function blockFirstUpsert() {
   let seen = 0;
   mocks.invoke.mockImplementation((command: string) => {
     if (command === "session_upsert" && seen++ === 0) return first.promise;
-    return Promise.resolve(undefined);
+    return Promise.resolve(command === "session_upsert" || command === "session_apply_delta"
+      ? { updatedAt: 2, transcriptRevision: 2, revision: 2 }
+      : undefined);
   });
   return first;
 }

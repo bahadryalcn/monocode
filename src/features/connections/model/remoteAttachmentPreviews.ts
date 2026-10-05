@@ -13,6 +13,9 @@ const MAX_PREVIEWS = 32;
 const failures = new Map<string, { count: number; retryAt: number }>();
 let activeDownloads = 0;
 const waiting: Array<() => void> = [];
+const normalizedBlocks = new WeakMap<object, object>();
+const completedSnapshots = new WeakSet<object>();
+const retrySnapshots = new WeakMap<object, number>();
 
 async function limitedDownload(run: () => Promise<string>): Promise<string> {
   if (activeDownloads >= 2)
@@ -99,6 +102,7 @@ async function attachmentPreviews(
   known: HostSession | undefined,
   read: PreviewRead,
 ): Promise<HostSession> {
+  if (snapshot === known && (completedSnapshots.has(snapshot) || (retrySnapshots.get(snapshot) ?? 0) > Date.now())) return snapshot;
   const sessionId = snapshot.session.id;
   const previous = new Map(
     (known?.session.id === snapshot.session.id ? known.session.blocks : [])
@@ -178,9 +182,20 @@ async function attachmentPreviews(
       return { ...block, attachments };
     }),
   );
-  return changed
+  const result = changed
     ? { ...snapshot, session: { ...snapshot.session, blocks } }
     : snapshot;
+  let retryAt = Infinity;
+  let missing = false;
+  for (const block of result.session.blocks) for (const file of block.attachments ?? []) {
+    if (canPreview(file) && selected.has(file.id) && !file.data && !file.previewUrl) {
+      missing = true;
+      retryAt = Math.min(retryAt, failures.get(downloadKey(machineId, sessionId, file))?.retryAt ?? 0);
+    }
+  }
+  if (!missing) completedSnapshots.add(result);
+  else retrySnapshots.set(result, retryAt);
+  return result;
 }
 
 /** Generated images use the same bounded, authorized chunk reader as uploads. */
@@ -190,21 +205,25 @@ export async function withRemoteAttachmentPreviews(
   known: HostSession | undefined,
   read: PreviewRead,
 ): Promise<HostSession> {
+  if (snapshot === known && (completedSnapshots.has(snapshot) || (retrySnapshots.get(snapshot) ?? 0) > Date.now())) return snapshot;
   const normalize = (value: HostSession): HostSession => ({
     ...value,
     session: {
       ...value.session,
-      blocks: value.session.blocks.map((block) =>
-        block.image
-          ? {
+      blocks: value.session.blocks.map((block) => {
+        if (!block.image) return block;
+        const cached = normalizedBlocks.get(block);
+        if (cached) return cached as typeof block;
+        const normalized = {
               ...block,
               attachments: [
                 ...(block.attachments ?? []),
                 { ...block.image, id: block.id, kind: "image" as const },
               ],
-            }
-          : block,
-      ),
+            };
+        normalizedBlocks.set(block, normalized);
+        return normalized;
+      }),
     },
   });
   if (!snapshot.session.blocks.some((block) => block.image))
@@ -215,7 +234,8 @@ export async function withRemoteAttachmentPreviews(
     known && normalize(known),
     read,
   );
-  return {
+  const originals = new Map(snapshot.session.blocks.map((block) => [block.id, block]));
+  const final = {
     ...result,
     session: {
       ...result.session,
@@ -223,6 +243,10 @@ export async function withRemoteAttachmentPreviews(
         if (!block.image) return block;
         const files = block.attachments ?? [];
         const preview = files[files.length - 1]!;
+        if (preview.data === block.image.data && preview.loadPreview === block.image.loadPreview) {
+          const original = originals.get(block.id);
+          if (original) return original;
+        }
         return {
           ...block,
           attachments: files.slice(0, -1),
@@ -235,4 +259,8 @@ export async function withRemoteAttachmentPreviews(
       }),
     },
   };
+  if (completedSnapshots.has(result)) completedSnapshots.add(final);
+  const retryAt = retrySnapshots.get(result);
+  if (retryAt !== undefined) retrySnapshots.set(final, retryAt);
+  return final;
 }

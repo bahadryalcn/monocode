@@ -28,7 +28,10 @@ import { bootstrap } from "./app/model/bootstrap";
 import { BootFailure } from "./app/shell/BootFailure";
 import { NoteDraftRecoveryNotice } from "./features/notes/ui/NoteDraftRecoveryNotice";
 
+import { startPerformanceSpan, recordPerformanceEvent } from "./shared/lib/performanceTrace";
+
 performance.mark("monocode:bootstrap");
+const finishStartup = startPerformanceSpan("startup");
 // Let local boot IPC overlap loading/evaluating the workspace UI.
 const appLoaded = import("./app/App");
 
@@ -41,7 +44,7 @@ const homeDirPrimed = Promise.allSettled([
   homeDir().then(setHomeDir),
   pathEnvironment().then(setPathEnvironment),
 ]);
-const providerBinaryPathsPrimed = initializeProviderBinaryPaths().catch(
+void initializeProviderBinaryPaths().catch(
   () => undefined,
 );
 
@@ -114,11 +117,27 @@ void listen("quit_aborted", () => {
 const appRoot = ReactDOM.createRoot(
   document.getElementById("root") as HTMLElement,
 );
+// Show a bounded, safe shell while workspace and durable drafts hydrate.
+// Composer remains unmounted until its draft cache is ready, preventing a
+// blank draft write from racing the saved draft read.
+appRoot.render(
+  <BootGate transferred={false}>
+    <div role="status" aria-live="polite" style={{ height: "100vh", display: "grid", placeContent: "center", gap: 12, textAlign: "center" }}>
+      <strong>MonoCode</strong>
+      <span>Restoring your workspace and saved drafts...</span>
+      <button type="button" onClick={() => window.location.reload()}>Retry loading</button>
+    </div>
+  </BootGate>,
+);
+performance.mark("monocode:shell-ready");
+recordPerformanceEvent("startup", { items: 1 });
+
 void bootstrap(
   () =>
     Promise.all([
       homeDirPrimed,
-      providerBinaryPathsPrimed,
+      // Provider discovery is best-effort and may finish after UI hydration.
+      Promise.resolve(),
       loadBootWorkspace(),
       // Saved drafts are in the cache before the first composer mounts.
       hydrateComposerDrafts(),
@@ -132,6 +151,8 @@ void bootstrap(
     { default: App },
   ]) => {
     performance.mark("monocode:workspace-ready");
+    performance.mark("monocode:input-ready");
+    finishStartup();
     const installedUpdate = windowTransfer ? null : consumeInstalledUpdate();
     if (windowTransfer) restoreTransferredDrafts(windowTransfer);
     appRoot.render(

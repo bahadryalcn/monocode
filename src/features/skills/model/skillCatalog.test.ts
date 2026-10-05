@@ -85,11 +85,53 @@ beforeEach(() => {
   ]);
   mocks.subscribe.mockReset();
   mocks.listSkills.mockReset();
+  mocks.readTextFile.mockReset();
   mocks.discoverPiSkills.mockResolvedValue([piSkill("architect")]);
   mocks.listSkills.mockResolvedValue([]);
 });
 
 describe("provider-aware skill catalog", () => {
+  it("injects a Codex $skill from another provider and reads edits on the next turn", async () => {
+    mocks.listSkills.mockResolvedValue([
+      {
+        name: "review",
+        description: "Review",
+        path: "/home/.claude/skills/review/SKILL.md",
+        scope: "user",
+        source: "claude",
+      },
+    ]);
+    mocks.readTextFile.mockResolvedValue("Review every changed file.");
+    const context = { harness: "codex" as const, cwd: "/repo" };
+    const first = await applySkillsToTurn("$review inspect this", context);
+    expect(first).toContain("Review every changed file.");
+    expect(first).toContain("Skill file: /home/.claude/skills/review/SKILL.md");
+    expect(first.endsWith("$review inspect this")).toBe(true);
+    mocks.readTextFile.mockResolvedValue("Also check callers.");
+    expect(await applySkillsToTurn("$review inspect this", context)).toContain(
+      "Also check callers.",
+    );
+    expect(mocks.listSkills).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops submission when a selected skill cannot be read", async () => {
+    mocks.listSkills.mockResolvedValue([
+      {
+        name: "review",
+        description: "",
+        path: "/skills/review/SKILL.md",
+        scope: "user",
+        source: "agents",
+      },
+    ]);
+    mocks.readTextFile.mockRejectedValue(new Error("missing"));
+    await expect(
+      applySkillsToTurn("$review inspect this", {
+        harness: "codex",
+        cwd: "/repo",
+      }),
+    ).rejects.toThrow("could not be read");
+  });
   it("uses Pi discovery without adding MonoCode's built-in row", async () => {
     const catalog = await loadSkills({ harness: "pi", cwd: "/repo/" });
 
@@ -394,22 +436,26 @@ describe("file skill visibility preferences", () => {
     // 3. Complete a fresh scan that selects the personal file fallback
     mocks.listSkills.mockResolvedValueOnce([personalSkill]);
     await loadSkills(context);
-    expect(peekSkills(context)?.find((s) => s.name === "review")).toMatchObject({
-      name: "review",
-      path: personalPath,
-      scope: "user",
-    });
+    expect(peekSkills(context)?.find((s) => s.name === "review")).toMatchObject(
+      {
+        name: "review",
+        path: personalPath,
+        scope: "user",
+      },
+    );
 
     // 4. Resolve older scan with the obsolete project candidate
     pending.resolve([projectSkill]);
     await oldScan;
 
     // Assert that the personal fallback remains active
-    expect(peekSkills(context)?.find((s) => s.name === "review")).toMatchObject({
-      name: "review",
-      path: personalPath,
-      scope: "user",
-    });
+    expect(peekSkills(context)?.find((s) => s.name === "review")).toMatchObject(
+      {
+        name: "review",
+        path: personalPath,
+        scope: "user",
+      },
+    );
 
     // 5. Cover re-enabling during a scan:
     const reEnablePending = deferred<DiscoveredSkill[]>();
@@ -422,22 +468,26 @@ describe("file skill visibility preferences", () => {
     // Complete fresh scan returning restored project winner
     mocks.listSkills.mockResolvedValueOnce([projectSkill]);
     await loadSkills(context);
-    expect(peekSkills(context)?.find((s) => s.name === "review")).toMatchObject({
-      name: "review",
-      path: projectPath,
-      scope: "project",
-    });
+    expect(peekSkills(context)?.find((s) => s.name === "review")).toMatchObject(
+      {
+        name: "review",
+        path: projectPath,
+        scope: "project",
+      },
+    );
 
     // Resolve the in-flight older scan
     reEnablePending.resolve([personalSkill]);
     await inFlightPersonalScan;
 
     // Assert that project winner remains active
-    expect(peekSkills(context)?.find((s) => s.name === "review")).toMatchObject({
-      name: "review",
-      path: projectPath,
-      scope: "project",
-    });
+    expect(peekSkills(context)?.find((s) => s.name === "review")).toMatchObject(
+      {
+        name: "review",
+        path: projectPath,
+        scope: "project",
+      },
+    );
   });
 
   it("falls back to same-name personal skill when project skill is disabled, and injects its content", async (): Promise<void> => {
@@ -478,7 +528,8 @@ describe("file skill visibility preferences", () => {
 
     mocks.readTextFile.mockImplementation(async (targetPath: string) => {
       if (targetPath === projectSkillPath) return "Project review instructions";
-      if (targetPath === personalSkillPath) return "Personal review instructions";
+      if (targetPath === personalSkillPath)
+        return "Personal review instructions";
       return "";
     });
 
@@ -490,7 +541,10 @@ describe("file skill visibility preferences", () => {
       path: projectSkillPath,
       scope: "project",
     });
-    const initialTurn = await applySkillsToTurn("/review inspect this", context);
+    const initialTurn = await applySkillsToTurn(
+      "/review inspect this",
+      context,
+    );
     expect(initialTurn).toContain("Project review instructions");
 
     // 2. Disabling only the project file makes the personal file the active result
@@ -502,7 +556,10 @@ describe("file skill visibility preferences", () => {
       path: personalSkillPath,
       scope: "user",
     });
-    const fallbackTurn = await applySkillsToTurn("/review inspect this", context);
+    const fallbackTurn = await applySkillsToTurn(
+      "/review inspect this",
+      context,
+    );
     expect(fallbackTurn).toContain("Personal review instructions");
     expect(fallbackTurn).not.toContain("Project review instructions");
 
@@ -515,7 +572,10 @@ describe("file skill visibility preferences", () => {
       path: projectSkillPath,
       scope: "project",
     });
-    const restoredTurn = await applySkillsToTurn("/review inspect this", context);
+    const restoredTurn = await applySkillsToTurn(
+      "/review inspect this",
+      context,
+    );
     expect(restoredTurn).toContain("Project review instructions");
 
     // 4. Disabling lower-priority candidate does not affect enabled winner
@@ -532,7 +592,10 @@ describe("file skill visibility preferences", () => {
     saveDisabledSkillPaths([projectSkillPath, personalSkillPath]);
     const disabledSkills = await loadSkills(context);
     expect(disabledSkills.find((s) => s.name === "review")).toBeUndefined();
-    const disabledTurn = await applySkillsToTurn("/review inspect this", context);
+    const disabledTurn = await applySkillsToTurn(
+      "/review inspect this",
+      context,
+    );
     expect(disabledTurn).toBe("/review inspect this");
   });
 });

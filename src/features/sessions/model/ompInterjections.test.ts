@@ -551,7 +551,10 @@ describe("persisted session loading", () => {
       throw new Error(command);
     });
     expect((await getSession(record.id))!.blocks).toEqual(record.blocks);
-    expect(commands).toEqual(["session_get", "omp_session_interjections", "omp_active_assistant_texts", "session_get_queue"]);
+    expect(commands[0]).toBe("session_get");
+    expect(commands).toHaveLength(4);
+    expect(commands).toEqual(expect.arrayContaining(["session_get", "omp_session_interjections", "omp_active_assistant_texts", "session_get_queue"]));
+    expect(commands.indexOf("omp_session_interjections")).toBeLessThan(commands.indexOf("omp_active_assistant_texts"));
   });
 
   it("leaves other harnesses and unbound OMP sessions untouched", async () => {

@@ -10,6 +10,45 @@ import { readAttachmentChunk, writeAttachmentChunk } from "./attachments";
 import { applySessionSync } from "../src/features/connections/model/protocol";
 
 const cleanups: Array<() => Promise<void> | void> = [];
+
+it("atomically creates a first turn and deduplicates a lost reply", () => {
+  const { engine, store, project, provider } = setup();
+  const command = { type: "create", commandId: "atomic", projectId: project.id,
+    harness: "codex", model: "codex:test", runtimeMode: "supervised",
+    firstTurn: { type: "send", commandId: "first", sessionId: "", text: "hello" } };
+  const receipt = engine.command(command);
+  expect(engine.command(command)).toEqual(receipt);
+  expect(store.session(receipt.sessionId).session.blocks.filter((block) => block.role === "user")).toHaveLength(1);
+  expect(provider.send).toHaveBeenCalledTimes(1);
+  expect(store.sessions(project.id)).toHaveLength(2);
+  expect(() => engine.command({ ...command, firstTurn: { ...command.firstTurn, text: "changed" } })).toThrow();
+});
+
+it("rolls back creation and avoids provider dispatch when the first turn fails", () => {
+  const { engine, store, project, provider } = setup();
+  const command = { type: "create", commandId: "failed-atomic", projectId: project.id,
+    harness: "codex", model: "codex:test", runtimeMode: "supervised",
+    firstTurn: { type: "send", commandId: "first", sessionId: "", text: "hello",
+      attachments: [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "missing", size: 1, mimeType: "text/plain", kind: "file" }] } };
+  expect(() => engine.command(command)).toThrow();
+  expect(store.sessions(project.id)).toHaveLength(1);
+  expect(provider.send).not.toHaveBeenCalled();
+});
+
+it("recovers the same atomic receipt after reopening the durable store", () => {
+  const { engine, directory, project } = setup();
+  const command = { type: "create", commandId: "durable-atomic", projectId: project.id,
+    harness: "codex", model: "codex:test", runtimeMode: "supervised",
+    firstTurn: { type: "send", commandId: "durable-first", sessionId: "", text: "once" } };
+  const receipt = engine.command(command);
+  const reopened = new HostStore(join(directory, "host.db"));
+  const send = vi.fn(async () => {});
+  const restarted = new HostEngine(reopened, { codex: { send, bind: vi.fn(), stop: async () => {}, cancel: async () => {}, approve: vi.fn(), answer: vi.fn() } });
+  cleanups.push(async () => { await restarted.close(); reopened.close(); });
+  expect(restarted.command(command)).toEqual(receipt);
+  expect(send).not.toHaveBeenCalled();
+  expect(reopened.session(receipt.sessionId).session.blocks.filter((block) => block.role === "user")).toHaveLength(1);
+});
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });

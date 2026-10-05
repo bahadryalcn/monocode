@@ -7,6 +7,42 @@ type MarkdownNode = {
   children?: MarkdownNode[];
 };
 
+// Parse only complete citations in prose. Code examples and incomplete streaming
+// fragments stay literal; generated links use the same path checks as Markdown.
+function fileCitationNodes(value: string, cwd?: string): MarkdownNode[] {
+  const nodes: MarkdownNode[] = [];
+  const citations =
+    /:codex-file-citation\{((?:[^{}"']|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')*)\}/g;
+  let offset = 0;
+  for (const match of value.matchAll(citations)) {
+    const attributes: Record<string, string> = {};
+    const rest = match[1].replace(
+      /([\w-]+)\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+      (_, key: string, quoted: string) => {
+        // Markdown already decoded escapes. Do not interpret native Windows
+        // separators such as \t and \r as JSON control characters.
+        attributes[key] = quoted.slice(1, -1);
+        return "";
+      },
+    );
+    const path = attributes.path;
+    if (rest.trim() || !path || !resolveWorkspaceFileReference(path, cwd))
+      continue;
+    if (match.index > offset)
+      nodes.push({ type: "text", value: value.slice(offset, match.index) });
+    const label = path.replace(/\\/g, "/").split("/").pop() || path;
+    nodes.push({
+      type: "link",
+      url: path,
+      children: [{ type: "text", value: label }],
+    });
+    offset = match.index + match[0].length;
+  }
+  if (offset < value.length)
+    nodes.push({ type: "text", value: value.slice(offset) });
+  return nodes;
+}
+
 /** Normalize local file links before URL sanitizing; keep all other URLs intact. */
 export function remarkWorkspaceFileLinks({ cwd }: { cwd?: string }) {
   function visit(node: MarkdownNode) {
@@ -19,21 +55,24 @@ export function remarkWorkspaceFileLinks({ cwd }: { cwd?: string }) {
         if (child.type !== "text" || !child.value) return [child];
         // Standalone path lines are common in agent replies, including Windows
         // paths containing spaces. Leave ordinary prose and web URLs untouched.
-        return child.value.split(/(\n)/).map((value): MarkdownNode => {
-          const candidate = value.trim();
-          if (
-            /^(?:[A-Za-z]:[\\/]|~[\\/]|%[A-Za-z_][A-Za-z0-9_]*(?:\(x86\))?%[\\/]|\/(?!\/))/i.test(
-              candidate,
-            ) &&
-            resolveWorkspaceFileReference(candidate, cwd)
-          ) {
-            return {
-              type: "link",
-              url: candidate,
-              children: [{ type: "text", value }],
-            };
-          }
-          return { type: "text", value };
+        return fileCitationNodes(child.value, cwd).flatMap((part) => {
+          if (part.type !== "text") return [part];
+          return (part.value ?? "").split(/(\n)/).map((value): MarkdownNode => {
+            const candidate = value.trim();
+            if (
+              /^(?:[A-Za-z]:[\\/]|~[\\/]|%[A-Za-z_][A-Za-z0-9_]*(?:\(x86\))?%[\\/]|\/(?!\/))/i.test(
+                candidate,
+              ) &&
+              resolveWorkspaceFileReference(candidate, cwd)
+            ) {
+              return {
+                type: "link",
+                url: candidate,
+                children: [{ type: "text", value }],
+              };
+            }
+            return { type: "text", value };
+          });
         });
       });
     }

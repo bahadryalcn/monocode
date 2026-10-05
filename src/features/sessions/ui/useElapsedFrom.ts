@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { usePresentationVisible } from "./presentationVisibility";
 
 /**
  * How long a turn has been running, ticking once a second. Time spent paused
@@ -9,6 +10,7 @@ export function useElapsedFrom(
   startedAt: number | undefined,
   paused: boolean,
 ): number | null {
+  const visible = usePresentationVisible();
   const fallback = useRef<number | null>(null);
   const pausedMs = useRef(0);
   const pauseStarted = useRef<number | null>(null);
@@ -36,12 +38,13 @@ export function useElapsedFrom(
       pausedMs.current += Date.now() - pauseStarted.current;
       pauseStarted.current = null;
     }
+    if (!visible) return;
     const tick = () =>
       setElapsedMs(Math.max(0, Date.now() - start - pausedMs.current));
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [startedAt, paused]);
+  }, [startedAt, paused, visible]);
 
   return elapsedMs;
 }

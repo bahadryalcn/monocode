@@ -601,6 +601,24 @@ export class HostEngine {
   }
 
   command(raw: unknown): CommandReceipt {
+    if (raw && typeof raw === "object" && (raw as Record<string, unknown>).type === "create" &&
+        (raw as Record<string, unknown>).firstTurn !== undefined) {
+      const input = raw as Record<string, unknown>;
+      const create = parseCommand({ ...input, firstTurn: undefined });
+      if (create.type !== "create") throw new Error("Invalid session creation");
+      const first = parseCommand({ ...(input.firstTurn as object), sessionId: "pending" });
+      if (first.type !== "send" && first.type !== "draft") throw new Error("Invalid first turn");
+      const signature = createHash("sha256").update(JSON.stringify({ create, first })).digest("hex");
+      const previous = this.store.receipt(create.commandId, signature);
+      if (previous) return previous;
+      return this.store.transaction(() => {
+        const created = this.command({ ...create, commandId: `${create.commandId}:create` });
+        const sent = this.command({ ...first, sessionId: created.sessionId });
+        const receipt = { ...sent, commandId: create.commandId };
+        this.store.recordReceipt(signature, receipt);
+        return receipt;
+      });
+    }
     if (this.closing) throw new Error("Host is stopping");
     const command = parseCommand(raw);
     const signature = createHash("sha256")
@@ -1009,7 +1027,7 @@ export class HostEngine {
     const live = this.live.get(saved.session.id);
     if (live) live.value = saved;
     // A receipt means durable host acceptance, not provider completion.
-    effect?.(saved);
+    if (effect) this.store.afterCommit(() => effect!(saved));
     return receipt;
   }
 

@@ -28,16 +28,34 @@ describe("mergeCliCommands", () => {
     });
   });
 
-  it("offers nothing for Codex, whose slash commands are terminal-only", () => {
+  it("offers Codex's goal RPC without treating its skill report as slash commands", () => {
     expect(
-      mergeCliCommands({ harness: "codex", reported: [], disk: [], taken: none }),
-    ).toEqual([]);
+      names(
+        mergeCliCommands({
+          harness: "codex",
+          reported: [{ name: "imagegen", kind: "skill" }],
+          disk: [],
+          taken: none,
+        }),
+      ),
+    ).toEqual(["goal"]);
+    expect(isCliCommandText("/goal tests pass", "codex")).toBe(true);
   });
 
   it("adds disk commands and lets a MonoCode or file-skill name win", () => {
     const disk: DiskCommand[] = [
-      { name: "gsd:help", description: "Help", argumentHint: "", scope: "user" },
-      { name: "plan", description: "Clash", argumentHint: "", scope: "project" },
+      {
+        name: "gsd:help",
+        description: "Help",
+        argumentHint: "",
+        scope: "user",
+      },
+      {
+        name: "plan",
+        description: "Clash",
+        argumentHint: "",
+        scope: "project",
+      },
     ];
     const merged = mergeCliCommands({
       harness: "claude",
@@ -102,7 +120,7 @@ describe("isCliCommandText", () => {
   it("ignores paths, other names and other harnesses", () => {
     expect(isCliCommandText("/goal/x", "claude")).toBe(false);
     expect(isCliCommandText("do /goal later", "claude")).toBe(false);
-    expect(isCliCommandText("/goal x", "codex")).toBe(false);
+    expect(isCliCommandText("/goal/x", "codex")).toBe(false);
   });
 });
 
@@ -117,7 +135,7 @@ describe("mergeDollarSkills", () => {
     source,
   });
 
-  it("lists Codex's report first, then Codex and shared skills on disk", () => {
+  it("includes other providers' file skills and preserves paths for injection", () => {
     const merged = mergeDollarSkills({
       harness: "codex",
       reported: [{ name: "imagegen", kind: "skill", description: "Images" }],
@@ -127,8 +145,25 @@ describe("mergeDollarSkills", () => {
         file("shadcn", "claude"),
       ],
     });
-    expect(names(merged)).toEqual(["imagegen", "docs"]);
-    expect(merged[0]).toMatchObject({ kind: "native", description: "Images" });
+    expect(names(merged)).toEqual(["imagegen", "docs", "shadcn"]);
+    expect(merged[0]).toMatchObject({
+      kind: "file",
+      description: "Images",
+      path: "/skills/imagegen/SKILL.md",
+    });
+  });
+
+  it("does not reintroduce disabled skills from Codex's report", () => {
+    expect(
+      mergeDollarSkills({
+        harness: "codex",
+        reported: [
+          { name: "docs", kind: "skill", path: "/skills/docs/SKILL.md" },
+        ],
+        files: [file("docs", "agents")],
+        disabledPaths: ["/skills/docs/SKILL.md"],
+      }),
+    ).toEqual([]);
   });
 
   it("is empty for harnesses that name skills with a slash", () => {
@@ -161,6 +196,11 @@ describe("dollarTokenAt", () => {
     expect(dollarTokenAt("run `echo $HOM", 14)).toBeNull();
     expect(dollarTokenAt("```\n$HOM", 8)).toBeNull();
     expect(dollarTokenAt("hello", 5)).toBeNull();
+    expect(dollarTokenAt("> $imagegen", 11)).toBeNull();
+  });
+
+  it("supports namespaced plugin skills", () => {
+    expect(dollarTokenAt("$plugin:review", 14)?.query).toBe("plugin:review");
   });
 
   it("inserts $name, not /name", () => {

@@ -23,6 +23,7 @@ import {
 import { formatShellIntent, inferShellIntent } from "../../core/shellIntent";
 import { streamTextDelta } from "../../core/streamText";
 import type { HarnessEvent } from "../../core/types";
+import { dollarTokenAt } from "../../../../features/skills/model/slashCommands";
 
 /** Codex approval / sandbox settings for thread/start and turn/start. */
 export type CodexThreadConfig = {
@@ -31,7 +32,11 @@ export type CodexThreadConfig = {
   approvalsReviewer: "user" | "auto_review";
   sandboxPolicy:
     | { type: "readOnly"; networkAccess?: boolean }
-    | { type: "workspaceWrite"; networkAccess?: boolean; writableRoots?: string[] }
+    | {
+        type: "workspaceWrite";
+        networkAccess?: boolean;
+        writableRoots?: string[];
+      }
     | { type: "dangerFullAccess" };
 };
 
@@ -47,7 +52,10 @@ function withWritableRoots(
     return config;
   return {
     ...config,
-    sandboxPolicy: { ...config.sandboxPolicy, writableRoots: [...additionalDirs] },
+    sandboxPolicy: {
+      ...config.sandboxPolicy,
+      writableRoots: [...additionalDirs],
+    },
   };
 }
 
@@ -231,7 +239,7 @@ function codexInput(
   return input;
 }
 
-const SKILL_MENTION_RE = /(?:^|\s)\$([A-Za-z0-9][A-Za-z0-9_.-]*)(?=\s|$)/g;
+const SKILL_MENTION_RE = /(^|\s)\$([A-Za-z0-9][A-Za-z0-9_.:-]*)(?=\s|$)/g;
 
 /** Names in `$name` mentions that Codex listed as skills for this thread. */
 export function codexSkillMentions(
@@ -241,7 +249,9 @@ export function codexSkillMentions(
   if (!skills || skills.size === 0) return [];
   const found = new Set<string>();
   for (const match of text.matchAll(SKILL_MENTION_RE)) {
-    if (skills.has(match[1]!)) found.add(match[1]!);
+    const name = match[2]!;
+    const end = match.index! + match[0].length;
+    if (skills.has(name) && dollarTokenAt(text, end)) found.add(name);
   }
   return [...found];
 }
@@ -250,7 +260,10 @@ export function codexSkillMentions(
 export function codexSkillsFromList(
   response: unknown,
 ): Array<{ name: string; description: string; path: string }> {
-  const out = new Map<string, { name: string; description: string; path: string }>();
+  const out = new Map<
+    string,
+    { name: string; description: string; path: string }
+  >();
   const entries = asRecord(response)?.data;
   for (const entry of Array.isArray(entries) ? entries : []) {
     const skills = asRecord(entry)?.skills;
@@ -310,7 +323,11 @@ export function stringField(
  * used `parsed_cmd`/`parsedCmd`, and an item replayed from one still carries
  * those, so every spelling is read.
  */
-const PARSED_COMMAND_KEYS = ["commandActions", "parsed_cmd", "parsedCmd"] as const;
+const PARSED_COMMAND_KEYS = [
+  "commandActions",
+  "parsed_cmd",
+  "parsedCmd",
+] as const;
 
 /** The action's own text. `command` is the protocol's, `cmd` the rollout files'. */
 const PARSED_COMMAND_FIELDS = ["command", "cmd"] as const;
@@ -342,9 +359,12 @@ export function codexCommandText(
     const posixShell = ["sh", "bash", "zsh", "dash", "ksh"].includes(
       launcher ?? "",
     );
-    const powerShell = ["pwsh", "pwsh.exe", "powershell", "powershell.exe"].includes(
-      launcher ?? "",
-    );
+    const powerShell = [
+      "pwsh",
+      "pwsh.exe",
+      "powershell",
+      "powershell.exe",
+    ].includes(launcher ?? "");
     const cmd = launcher === "cmd" || launcher === "cmd.exe";
     let flag = -1;
     for (let index = 1; index < parts.length - 1; index += 1) {
@@ -1001,7 +1021,8 @@ function mapSubAgentActivity(
   completed: boolean,
 ): HarnessEvent {
   const kind = (stringField(item, "kind") ?? "").toLowerCase();
-  const path = stringField(item, "agentPath") ?? stringField(item, "agent_path");
+  const path =
+    stringField(item, "agentPath") ?? stringField(item, "agent_path");
   const leaf = path?.split(/[/\\]/).filter(Boolean).pop();
   const title = leaf ? `${formatAgentType(leaf)} subagent` : "Subagent";
   if (kind === "interrupted") {
@@ -1196,7 +1217,8 @@ export function mapCodexSubagentSteps(
       if (event.type === "tool.started" || event.type === "tool.updated") {
         // A failure is shown open from `detail`; a settled result rides as
         // `output`, which the shared layer caps and budgets per run.
-        const failed = event.type === "tool.updated" && event.status === "failed";
+        const failed =
+          event.type === "tool.updated" && event.status === "failed";
         const detail = failed ? event.detail : undefined;
         const output =
           event.type === "tool.updated" && !failed ? event.detail : undefined;

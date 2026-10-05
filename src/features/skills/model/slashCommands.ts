@@ -27,8 +27,7 @@ export function rankSkills(
   ];
   if (!needle) {
     return templatesLast(
-      [...skills]
-      .sort((a, b) => {
+      [...skills].sort((a, b) => {
         const rank = scopeRank(a) - scopeRank(b);
         if (rank !== 0) return rank;
         return a.name.localeCompare(b.name);
@@ -107,7 +106,8 @@ export function dollarTokenAt(text: string, cursor: number): SlashToken | null {
   while (start > 0 && !isSpace(text[start - 1]!)) start -= 1;
   if (text[start] !== "$") return null;
   const typed = text.slice(start + 1, i);
-  if (!/^[A-Za-z0-9_.-]*$/.test(typed)) return null;
+  if (!/^[A-Za-z0-9_.:-]*$/.test(typed)) return null;
+  if (isMarkdownBlockquotePosition(text, start)) return null;
   if (isInCode(text, start)) return null;
 
   let end = start + 1;

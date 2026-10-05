@@ -184,6 +184,7 @@ export class DesktopSessions {
     if (!columns.has("id") || !columns.has("blocks_json")) return [];
     const optional = (name: string, fallback = "NULL") =>
       columns.has(name) ? name : `${fallback} AS ${name}`;
+    const transcriptView = blocks && !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='view' AND name='session_transcripts'").get();
     const sql = `SELECT id, cwd, harness, model, model_settings, runtime_mode, title,
       provider_session_id, ${blocks ? "blocks_json" : "NULL AS blocks_json"},
       created_at, updated_at,
@@ -191,7 +192,7 @@ export class DesktopSessions {
       ${optional("has_user_message", "1")}, ${optional("pinned", "0")},
       ${optional("linked_work_item_json")}, ${optional("provider_account_id")},
       ${optional("is_draft", "0")}, ${optional("inbox_ask")}
-      FROM sessions WHERE ${where}`;
+      FROM ${transcriptView ? "session_transcripts" : "sessions"} WHERE ${where}`;
     const running = new Set<string>();
     try {
       for (const r of db.prepare("SELECT session_id FROM in_flight_sessions").all())
@@ -205,10 +206,14 @@ export class DesktopSessions {
       .filter(
         (row) => !Number(row.is_draft) && Number(row.has_user_message) && !row.inbox_ask,
       )
-      .map((row) => ({
-        row,
-        inFlight: this.isRunning(String(row.id), running.has(String(row.id))),
-      }));
+      .map((sqlRow) => {
+        const row: Row = sqlRow;
+        if (transcriptView && Number(db.prepare("SELECT length FROM session_block_state WHERE session_id=?").get(String(row.id))?.length ?? -1) >= 0) {
+          row.block_revisions = Object.fromEntries(db.prepare("SELECT block_id, revision FROM session_blocks WHERE session_id=?").all(String(row.id))
+            .map((block) => [String(block.block_id), Number(block.revision)]));
+        }
+        return { row, inFlight: this.isRunning(String(row.id), running.has(String(row.id))) };
+      });
   }
 
   private summaryOf(
@@ -371,6 +376,7 @@ export class DesktopSessions {
     };
     return {
       session,
+      ...(row.block_revisions ? { blockRevisions: row.block_revisions as Record<string, number> } : {}),
       projectId,
       revision: updatedAt,
       status: found.inFlight ? "running" : "idle",

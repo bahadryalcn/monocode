@@ -1,8 +1,8 @@
 #[cfg(test)]
 use std::collections::HashMap;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap as LockMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -19,25 +19,62 @@ const MAX_SNAPSHOT_FILES: usize = 500;
 #[derive(Clone)]
 pub struct CheckpointStore {
     root: PathBuf,
-    gate: Arc<Mutex<()>>,
+    gates: Arc<Mutex<LockMap<String, Weak<Mutex<()>>>>>,
+}
+
+fn checkpoint_gate(gates: &mut LockMap<String, Weak<Mutex<()>>>, key: String) -> Arc<Mutex<()>> {
+    gates.retain(|_, gate| gate.strong_count()>0);
+    if let Some(gate)=gates.get(&key).and_then(Weak::upgrade) { return gate; }
+    let gate=Arc::new(Mutex::new(()));
+    gates.insert(key,Arc::downgrade(&gate));
+    gate
 }
 
 impl CheckpointStore {
     fn new(root: PathBuf) -> Self {
         Self {
             root,
-            gate: Arc::new(Mutex::new(())),
+            gates: Arc::new(Mutex::new(LockMap::new())),
         }
     }
 
     fn exclusive<T>(
         &self,
+        session_id: &str,
+        cwds: &[&str],
         operation: impl FnOnce(&Self) -> Result<T, String>,
     ) -> Result<T, String> {
-        let _guard = self
-            .gate
-            .lock()
-            .map_err(|_| "Checkpoint store lock poisoned".to_string())?;
+        // A session manifest and all affected working trees have one owner.
+        // Git's absolute top-level unifies subdirectories; canonicalize unifies
+        // symlink aliases. Different worktrees may proceed independently.
+        let session_gate = {
+            let mut gates = self.gates.lock().map_err(|_| "Checkpoint lock registry poisoned")?;
+            checkpoint_gate(&mut gates, format!("session:{session_id}"))
+        };
+        let _session = session_gate.lock().map_err(|_| "Checkpoint session lock poisoned")?;
+        let saved = read_manifest(&self.session_dir(session_id))?;
+        let mut keys = BTreeSet::new();
+        for cwd in cwds.iter().copied().chain(saved.as_ref().map(|m| m.cwd.as_str())) {
+            let root = match project_root(cwd) {
+                Ok(root) => root,
+                Err(_) if !cwds.contains(&cwd) => continue,
+                Err(error) => return Err(error),
+            };
+            let top = git_output(&root, &["rev-parse", "--show-toplevel"])
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default();
+            let path = if top.trim().is_empty() { root } else { PathBuf::from(top.trim()) };
+            let canonical = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+            let key = canonical.to_string_lossy().into_owned();
+            keys.insert(if cfg!(windows) { key.to_lowercase() } else { key });
+        }
+        let repo_gates: Vec<_> = {
+            let mut gates = self.gates.lock().map_err(|_| "Checkpoint lock registry poisoned")?;
+            keys.into_iter().map(|key| checkpoint_gate(&mut gates, format!("repo:{key}"))).collect()
+        };
+        let mut guards = Vec::new();
+        for gate in &repo_gates {
+            guards.push(gate.lock().map_err(|_| "Checkpoint repository lock poisoned")?);
+        }
         operation(self)
     }
 
@@ -46,11 +83,17 @@ impl CheckpointStore {
     }
 
     fn ensure(&self, session_id: &str, cwd: &str) -> Result<(), String> {
+        self.ensure_timed(session_id,cwd).map(|_| ())
+    }
+
+    fn ensure_timed(&self, session_id: &str, cwd: &str) -> Result<CheckpointTimings, String> {
+        let mut timings=CheckpointTimings::default();
+        let disk_started=std::time::Instant::now();
         let root = project_root(cwd)?;
         let dir = self.session_dir(session_id);
         if let Some(manifest) = read_manifest(&dir)? {
             if same_cwd(&manifest.cwd, cwd) {
-                return Ok(());
+                return Ok(timings);
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
@@ -60,6 +103,8 @@ impl CheckpointStore {
         let mut tracked = BTreeSet::new();
         let mut relatives = Vec::new();
         let mut seen = HashSet::new();
+        timings.disk_ms += disk_started.elapsed().as_secs_f64()*1000.0;
+        let git_started=std::time::Instant::now();
         for file in git_diff_files_for(&root).files {
             if seen.len() >= MAX_SNAPSHOT_FILES {
                 break;
@@ -72,6 +117,8 @@ impl CheckpointStore {
             }
         }
         let in_head = paths_in_head(&root, &relatives);
+        timings.git_ms = git_started.elapsed().as_secs_f64()*1000.0;
+        let snapshot_started=std::time::Instant::now();
         for relative in relatives {
             if in_head.contains(&relative) {
                 tracked.insert(relative.clone());
@@ -90,7 +137,9 @@ impl CheckpointStore {
                 stats: BTreeMap::new(),
                 diverged: BTreeSet::new(),
             },
-        )
+        )?;
+        timings.disk_ms += snapshot_started.elapsed().as_secs_f64()*1000.0;
+        Ok(timings)
     }
 
     fn prepare(&self, session_id: &str, cwd: &str, paths: &[String]) -> Result<(), String> {
@@ -193,12 +242,18 @@ impl CheckpointStore {
             }
             let after = snapshot_after_file(&dir, &root, &relative)?;
             manifest.after.insert(relative.clone(), after);
-            if let Some(stats) = calculate_session_stats(&dir, &manifest, &relative) {
-                manifest.stats.insert(relative, stats);
-            }
             dirty = true;
         }
         if dirty {
+            // Compare the captured directories once, rather than start one Git
+            // process per edited file. Missing snapshots are empty blobs.
+            let stats = batch_session_stats(&dir, &manifest, &valid);
+            for relative in &valid {
+                manifest.stats.remove(relative);
+                if let Some(stats) = stats.as_ref().and_then(|stats| stats.get(relative)) {
+                    manifest.stats.insert(relative.clone(), stats.clone());
+                }
+            }
             write_manifest(&dir, &manifest)?;
         }
         Ok(())
@@ -590,16 +645,26 @@ pub fn init(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Default, Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct CheckpointTimings { checkpoint_wait_ms: f64, git_ms: f64, disk_ms: f64 }
+
 #[tauri::command]
 pub async fn session_checkpoint_ensure(
     store: State<'_, CheckpointStore>,
     session_id: String,
     cwd: String,
-) -> Result<(), String> {
+) -> Result<CheckpointTimings, String> {
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.ensure(&session_id, &cwd))
+        let started=std::time::Instant::now();
+        store.exclusive(&session_id, &[&cwd], |store| {
+            let waited=started.elapsed().as_secs_f64()*1000.0;
+            let mut timings=store.ensure_timed(&session_id,&cwd)?;
+            timings.checkpoint_wait_ms=waited;
+            Ok(timings)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -618,7 +683,7 @@ pub async fn session_checkpoint_prepare(
     }
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.prepare(&session_id, &cwd, &paths))
+        store.exclusive(&session_id, &[&cwd], |store| store.prepare(&session_id, &cwd, &paths))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -637,7 +702,7 @@ pub async fn session_checkpoint_capture(
     }
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.capture(&session_id, &cwd, &paths))
+        store.exclusive(&session_id, &[&cwd], |store| store.capture(&session_id, &cwd, &paths))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -652,7 +717,7 @@ pub async fn session_checkpoint_status(
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.status(&session_id, &cwd))
+        store.exclusive(&session_id, &[&cwd], |store| store.status(&session_id, &cwd))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -668,7 +733,7 @@ pub async fn session_checkpoint_apply(
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.apply(&session_id, &from_cwd, &to_cwd))
+        store.exclusive(&session_id, &[&from_cwd, &to_cwd], |store| store.apply(&session_id, &from_cwd, &to_cwd))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -683,7 +748,7 @@ pub async fn session_checkpoint_cleanup_safe(
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.cleanup_safe(&session_id, &cwd))
+        store.exclusive(&session_id, &[&cwd], |store| store.cleanup_safe(&session_id, &cwd))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -696,7 +761,7 @@ pub async fn session_checkpoint_forget(
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || store.exclusive(|store| store.forget(&session_id)))
+    tauri::async_runtime::spawn_blocking(move || store.exclusive(&session_id, &[], |store| store.forget(&session_id)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -711,7 +776,7 @@ pub async fn session_checkpoint_file_diff(
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.file_diff(&session_id, &cwd, &relative))
+        store.exclusive(&session_id, &[&cwd], |store| store.file_diff(&session_id, &cwd, &relative))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -727,7 +792,7 @@ pub async fn session_checkpoint_undo(
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.undo(&session_id, &cwd, relative.as_deref()))
+        store.exclusive(&session_id, &[&cwd], |store| store.undo(&session_id, &cwd, relative.as_deref()))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -743,7 +808,7 @@ pub async fn session_checkpoint_keep(
     validate_id(&session_id, "session")?;
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        store.exclusive(|store| store.keep(&session_id, &cwd, relative.as_deref()))
+        store.exclusive(&session_id, &[&cwd], |store| store.keep(&session_id, &cwd, relative.as_deref()))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1062,6 +1127,51 @@ fn describe_change(
     }
 }
 
+fn batch_session_stats(dir: &Path, manifest: &Manifest, relatives: &[String]) -> Option<BTreeMap<String, ChangeStats>> {
+    let output = git_cmd_output(git_cmd().args([
+        "diff", "--no-index", "--no-ext-diff", "--no-renames", "--numstat", "-z", "--",
+    ]).arg(dir.join("files")).arg(dir.join("after"))).ok()?;
+    if !output.status.success() && output.status.code() != Some(1) { return None; }
+    let counts = parse_batch_numstat(&output.stdout, relatives)?;
+    let mut result = BTreeMap::new();
+    for relative in relatives {
+        let Some(before) = manifest.files.get(relative) else { continue; };
+        let Some(after) = manifest.after.get(relative) else { continue; };
+        if *before == SnapshotKind::Skipped || *after == SnapshotKind::Skipped { continue; }
+        let Some((additions, deletions)) = counts.get(relative).copied().unwrap_or(Some((0,0))) else { continue; };
+        result.insert(relative.clone(), ChangeStats {
+            status: match (before,after) {
+                (SnapshotKind::Missing, SnapshotKind::Missing) => "modified",
+                (SnapshotKind::Missing, _) => "added",
+                (_, SnapshotKind::Missing) => "deleted",
+                _ => "modified",
+            }.into(), additions, deletions,
+        });
+    }
+    Some(result)
+}
+
+fn parse_batch_numstat(bytes: &[u8], relatives: &[String]) -> Option<BTreeMap<String, Option<(i64,i64)>>> {
+    let mut fields = bytes.split(|byte| *byte==0).peekable();
+    let mut result = BTreeMap::new();
+    while let Some(record) = fields.next() {
+        if record.is_empty() { continue; }
+        let mut row = record.splitn(3, |byte| *byte==b'\t');
+        let additions = std::str::from_utf8(row.next()?).ok()?.parse::<i64>().ok();
+        let deletions = std::str::from_utf8(row.next()?).ok()?.parse::<i64>().ok();
+        let mut path = row.next()?;
+        // With -z, different source/destination names use two following paths.
+        if path.is_empty() { fields.next()?; path=fields.next()?; }
+        let path=String::from_utf8_lossy(path).replace('\\', "/");
+        let relative=relatives.iter().filter(|relative| path==**relative || path.ends_with(&format!("/{relative}")))
+            .max_by_key(|relative|relative.len());
+        if let Some(relative)=relative { result.insert(relative.clone(), additions.zip(deletions)); }
+        // Other files may have only a before snapshot and are not this capture.
+    }
+    Some(result)
+}
+
+#[cfg(test)]
 fn calculate_session_stats(dir: &Path, manifest: &Manifest, relative: &str) -> Option<ChangeStats> {
     let before = manifest.files.get(relative).copied()?;
     let after = manifest.after.get(relative).copied()?;
@@ -1084,6 +1194,7 @@ fn calculate_session_stats(dir: &Path, manifest: &Manifest, relative: &str) -> O
     })
 }
 
+#[cfg(test)]
 fn diff_numstat(before: &Path, after: &Path) -> Option<(i64, i64)> {
     let output = git_cmd_output(
         git_cmd()
@@ -1487,6 +1598,39 @@ mod tests {
                 Err(error) => panic!("{}", error),
             }
         }
+    }
+
+    #[test]
+    fn batched_numstat_handles_zero_binary_and_nul_paths() {
+        let relatives=vec!["file.txt".into(),"folder/tab\tname.txt".into(),"binary.dat".into()];
+        let rows=parse_batch_numstat(b"2\t1\t/root/after/file.txt\0-\t-\t/root/after/binary.dat\03\t0\t\0/root/files/folder/tab\tname.txt\0/root/after/folder/tab\tname.txt\0",&relatives).unwrap();
+        assert_eq!(rows.get("file.txt"),Some(&Some((2,1))));
+        assert_eq!(rows.get("folder/tab\tname.txt"),Some(&Some((3,0))));
+        assert_eq!(rows.get("binary.dat"),Some(&None));
+    }
+
+    #[test]
+    fn unrelated_repository_checkpoint_gates_do_not_block_each_other() {
+        let (_tmp,store)=store();let first=tmp("gate-first");let second=tmp("gate-second");
+        let (entered_rx,release_tx,worker)={
+            let (entered_tx,entered_rx)=std::sync::mpsc::channel();let (release_tx,release_rx)=std::sync::mpsc::channel();let cloned=store.clone();let cwd=first.0.to_string_lossy().into_owned();
+            let worker=std::thread::spawn(move||cloned.exclusive("first",&[&cwd],|_|{entered_tx.send(()).unwrap();release_rx.recv().unwrap();Ok(())}).unwrap());(entered_rx,release_tx,worker)
+        };
+        entered_rx.recv().unwrap();
+        let cloned=store.clone();let cwd=second.0.to_string_lossy().into_owned();let (done_tx,done_rx)=std::sync::mpsc::channel();
+        let independent=std::thread::spawn(move||{cloned.exclusive("second",&[&cwd],|_|Ok(())).unwrap();done_tx.send(()).unwrap();});
+        let completed=done_rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok();release_tx.send(()).unwrap();worker.join().unwrap();independent.join().unwrap();assert!(completed);
+    }
+
+    #[test]
+    fn canonical_subdirectory_aliases_share_repository_gate() {
+        let (_tmp,store)=store();let repo=tmp("gate-alias");if !init_git_commit(&repo.0,&[("sub/file.txt","initial")]){return;}
+        let cwd=repo.0.to_string_lossy().into_owned();let alias=repo.0.join("sub").to_string_lossy().into_owned();
+        let (entered_tx,entered_rx)=std::sync::mpsc::channel();let (release_tx,release_rx)=std::sync::mpsc::channel();let cloned=store.clone();
+        let worker=std::thread::spawn(move||cloned.exclusive("first",&[&cwd],|_|{entered_tx.send(()).unwrap();release_rx.recv().unwrap();Ok(())}).unwrap());entered_rx.recv().unwrap();
+        let (done_tx,done_rx)=std::sync::mpsc::channel();let cloned=store.clone();
+        let other=std::thread::spawn(move||{cloned.exclusive("second",&[&alias],|_|Ok(())).unwrap();done_tx.send(()).unwrap();});
+        let blocked=done_rx.recv_timeout(std::time::Duration::from_millis(100)).is_err();release_tx.send(()).unwrap();worker.join().unwrap();other.join().unwrap();assert!(blocked);
     }
 
     fn git(dir: &Path, args: &[&str]) -> bool {

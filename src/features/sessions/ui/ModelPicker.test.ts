@@ -2,6 +2,7 @@
 import { act, createElement, type CSSProperties, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HARNESSES } from "../model/session";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   getHarnessAvailabilitySnapshot: () => 0,
@@ -235,9 +236,12 @@ describe("model picker", () => {
     const modelFlyout = container.querySelector<HTMLElement>(
       '[role="dialog"][aria-label="Models"]',
     )!;
-    expect(modelFlyout.style.height).toBe("404px");
-    expect(modelFlyout.dataset.minHeight).toBe("406");
-    expect(modelFlyout.dataset.maxHeight).toBe("406");
+    // Reserve a 32px tab for every registered provider and Favorites, with
+    // 4px gaps, 12px rail padding and a 2px frame.
+    const railHeight = (HARNESSES.length + 1) * 32 + HARNESSES.length * 4 + 12;
+    expect(modelFlyout.style.height).toBe(`${railHeight}px`);
+    expect(modelFlyout.dataset.minHeight).toBe(String(railHeight + 2));
+    expect(modelFlyout.dataset.maxHeight).toBe(String(railHeight + 2));
     expect(
       container.querySelector('[role="tablist"][aria-orientation="vertical"]'),
     ).not.toBeNull();

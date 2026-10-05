@@ -353,6 +353,35 @@ export async function moveTask(
   return { ...task, ...moved };
 }
 
+export async function readTaskNotes(
+  task: BoardTask,
+  noteIds: string[],
+): Promise<BoardTask> {
+  const updated = await remoteRequest<HostTask>(
+    task.machineId,
+    "tasks.notes.read",
+    { taskId: task.id, noteIds },
+    false,
+    true,
+  );
+  return { ...task, ...updated };
+}
+
+export async function resolveTaskNote(
+  task: BoardTask,
+  noteId: string,
+  resolved: boolean,
+): Promise<BoardTask> {
+  const updated = await remoteRequest<HostTask>(
+    task.machineId,
+    "tasks.notes.resolve",
+    { taskId: task.id, noteId, resolved },
+    false,
+    true,
+  );
+  return { ...task, ...updated };
+}
+
 /** `discard` also removes the branch and worktree of a task that was never
  * merged; the host refuses to delete such a task without it. */
 export async function deleteTask(

@@ -41,6 +41,21 @@ def lifecycle(action):
         response.read()
     return state['pid']
 
+
+def stop_windows_host():
+    """An already-exited host has no lifecycle endpoint to stop. A live PID
+    still requires successful shutdown; a network error never means idle."""
+    state = read_json(BASE / 'running.json')
+    old_pid = state['pid']
+    if alive(old_pid):
+        old_pid = lifecycle('stop')
+        deadline = time.monotonic() + 30
+        while alive(old_pid) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        if alive(old_pid):
+            raise RuntimeError('Old host did not stop; service paths left unchanged')
+    return state['port']
+
 def host_install(release, manifest, report):
     source = release / 'host'
     verify_tree(source, manifest['hostHashes'])
@@ -64,13 +79,7 @@ def host_install(release, manifest, report):
     report('installing', runtime=str(runtime))
     if os.name == 'nt':
         # Request host shutdown, not Stop-ScheduledTask (which can orphan node.exe).
-        port = read_json(BASE / 'running.json')['port']
-        old_pid = lifecycle('stop')
-        deadline = time.monotonic() + 30
-        while alive(old_pid) and time.monotonic() < deadline:
-            time.sleep(0.5)
-        if alive(old_pid):
-            raise RuntimeError('Old host did not stop; service paths left unchanged')
+        port = stop_windows_host()
         task = '$name="MonoCode Host-"+[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; '
         ps(task + '$deadline=(Get-Date).AddSeconds(15); while ((Get-ScheduledTask -TaskName $name).State -eq "Running") { if ((Get-Date) -gt $deadline) { throw "Host task did not stop" }; Start-Sleep -Milliseconds 300 }')
         try:

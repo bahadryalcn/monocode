@@ -1,5 +1,6 @@
 import type { Element, ElementContent, Root } from "hast";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { usePresentationVisible } from "./presentationVisibility";
 
 /*
  * Streaming prose, paced. Tokens land in uneven bursts; read straight off the
@@ -27,6 +28,8 @@ const REVEAL_CATCHUP_S = 0.22;
  * caught up to it. Past this the stream has paused on it, so it shows as is.
  */
 const REVEAL_HOLD_MS = 150;
+export const REVEAL_MAX_BACKLOG = 4096;
+export const REVEAL_MAX_LAG_MS = 500;
 
 /**
  * Where to stop revealing `text` for a reveal that has reached `at`: the end
@@ -54,33 +57,52 @@ function isSpace(code: number): boolean {
 /**
  * The part of `text` to show right now. Text that is already there when the
  * component mounts, or that changes while nothing is streaming, shows at
- * once; only what streams in is paced, and a stream that ends ahead of the
- * reveal is still let out at pace. `revealing` stays true until the reveal
- * has caught up.
+ * once; only what streams in is paced. Completion immediately reveals all
+ * remaining text. `revealing` stays true while active text is catching up.
  */
 export function usePacedText(
   text: string,
   streaming: boolean,
 ): { text: string; revealing: boolean } {
+  const visible = usePresentationVisible();
   const shown = useRef(text.length);
   const pacing = useRef(streaming);
+  const backlogSince = useRef<number | null>(null);
+  const [direct, setDirect] = useState(false);
+  useEffect(() => {
+    const preference = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const update = () => setDirect(!!preference?.matches || window.localStorage.getItem("monocode-low-latency-text") === "true");
+    update();
+    preference?.addEventListener?.("change", update);
+    window.addEventListener("storage", update);
+    return () => { preference?.removeEventListener?.("change", update); window.removeEventListener("storage", update); };
+  }, []);
   const [, rerender] = useReducer((n: number) => n + 1, 0);
 
   if (streaming) pacing.current = true;
   if (!pacing.current) shown.current = text.length;
   shown.current = Math.min(shown.current, text.length);
+  if (!visible || direct || !streaming || text.length - shown.current > REVEAL_MAX_BACKLOG) shown.current = text.length;
   const behind = shown.current < text.length;
 
   useEffect(() => {
     if (!pacing.current) return;
     if (!behind) {
+      backlogSince.current = null;
       if (!streaming) pacing.current = false;
       return;
     }
     let position = shown.current;
     let last = performance.now();
+    backlogSince.current ??= last;
     let hold = 0;
     let frame = requestAnimationFrame(function tick(now) {
+      if (now - (backlogSince.current ?? now) >= REVEAL_MAX_LAG_MS) {
+        shown.current = text.length;
+        backlogSince.current = null;
+        rerender();
+        return;
+      }
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       const backlog = text.length - position;
@@ -97,6 +119,7 @@ export function usePacedText(
       else if (shown.current < text.length) {
         hold = window.setTimeout(() => {
           shown.current = text.length;
+          backlogSince.current = null;
           rerender();
         }, REVEAL_HOLD_MS);
       }

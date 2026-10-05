@@ -41,6 +41,11 @@ import {
 } from "../../core/generatedImages";
 import { codexQuestions, codexQuestionResponse } from "./codexQuestions";
 import { codexMcpConfirmation } from "./codexElicitation";
+import {
+  parseCodexGoalCommand,
+  codexGoalRequest,
+  codexGoalSummary,
+} from "./codexGoal";
 import { snapshotRemainder } from "../../core/streamText";
 import type {
   ApprovalDecision,
@@ -116,6 +121,7 @@ type Live = {
   usageLimited: boolean;
   /** Skill name to SKILL.md path, so a `$name` can be sent as a skill input. */
   skills: Map<string, string>;
+  skillsLoading?: Promise<void>;
 };
 
 function trackNotificationQueue(live: Live, queued: Promise<void>): void {
@@ -164,6 +170,33 @@ export async function sendCodexTurn(input: SendTurnInput): Promise<void> {
       live.cancelled = false;
       live.muteUpdates = false;
       try {
+        const goal = parseCodexGoalCommand(input.text);
+        if (goal) {
+          const request = codexGoalRequest(goal, live.threadId);
+          const response = await live.rpc.request(
+            request.method,
+            request.params,
+          );
+          if (goal.action === "set") {
+            await runTurn(live, { ...input, text: goal.objective });
+          } else if (goal.action === "resume") {
+            await runTurn(live, {
+              ...input,
+              text: "Continue working toward the active goal.",
+            });
+          } else {
+            input.onAccepted?.();
+            live.onEvent({
+              type: "message.delta",
+              text:
+                goal.action === "clear"
+                  ? "Codex goal cleared."
+                  : codexGoalSummary(response),
+            });
+            live.onEvent({ type: "message.completed" });
+          }
+          return;
+        }
         await runTurn(live, input);
       } catch (error) {
         if (live.cancelled) return;
@@ -265,6 +298,10 @@ export async function steerCodexTurn(input: SteerTurnInput): Promise<void> {
   if (!live) throw new Error("No active Codex session");
   const turnId = live.activeTurnId;
   if (!turnId) throw new Error("No active turn to steer");
+
+  if (/(?:^|\s)\$[A-Za-z0-9]/.test(input.text))
+    await loadCodexSkills(live, input.sessionId);
+  if (live.cancelled) return;
 
   const params = buildTurnSteerParams({
     threadId: live.threadId,
@@ -674,10 +711,25 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 }
 
 /** Ask Codex which skills it sees for this thread; the `$` menu lists them. */
-async function loadCodexSkills(live: Live, sessionId: string): Promise<void> {
+function loadCodexSkills(live: Live, sessionId: string): Promise<void> {
+  if (live.skillsLoading) return live.skillsLoading;
+  const loading = refreshCodexSkills(live, sessionId).finally(() => {
+    if (live.skillsLoading === loading) live.skillsLoading = undefined;
+  });
+  live.skillsLoading = loading;
+  return loading;
+}
+
+async function refreshCodexSkills(
+  live: Live,
+  sessionId: string,
+): Promise<void> {
   try {
     const skills = codexSkillsFromList(
-      await live.rpc.request("skills/list", { cwds: [live.cwd] }),
+      await live.rpc.request("skills/list", {
+        cwds: [live.cwd],
+        forceReload: true,
+      }),
     );
     live.skills = new Map(skills.map((skill) => [skill.name, skill.path]));
     reportSessionCommands(
@@ -690,6 +742,11 @@ async function loadCodexSkills(live: Live, sessionId: string): Promise<void> {
 }
 
 async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
+  // The first skill-bearing turn must wait for discovery; later turns refresh
+  // so skills created or edited in this session are available immediately.
+  if (/(?:^|\s)\$[A-Za-z0-9]/.test(input.text))
+    await loadCodexSkills(live, input.sessionId);
+  if (live.cancelled) return;
   const model = nativeModelId(input.model);
   const effort = input.modelSettings?.reasoningEffort;
   const serviceTier = input.modelSettings?.serviceTier;
@@ -781,6 +838,13 @@ function handleNotification(
   params: unknown,
 ): void | Promise<void> {
   if (live.muteUpdates || live.cancelled) return;
+  if (method === "skills/changed") {
+    const sessionId = [...liveByThread].find(
+      ([, value]) => value === live,
+    )?.[0];
+    if (sessionId) void loadCodexSkills(live, sessionId);
+    return;
+  }
   const rec = asRecord(params);
   if (method === "serverRequest/resolved") {
     for (const pending of live.approvals.values()) {

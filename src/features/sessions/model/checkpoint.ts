@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { startPerformanceSpan, sessionPerformanceTrace } from "../../../shared/lib/performanceTrace";
 
 export type CheckpointFile = {
   path: string;
@@ -39,7 +40,14 @@ function enqueueCheckpoint<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   const previous = checkpointQueues.get(sessionId) ?? Promise.resolve();
-  const result = previous.then(operation, operation);
+  const traceId = sessionPerformanceTrace(sessionId);
+  const finishWait = startPerformanceSpan("checkpoint", { phase: 1 }, traceId);
+  const run = () => {
+    finishWait();
+    const finishOperation = startPerformanceSpan("checkpoint", { phase: 2 }, traceId);
+    return operation().finally(finishOperation);
+  };
+  const result = previous.then(run, run);
   const tail = result.then(
     () => undefined,
     () => undefined,
@@ -78,9 +86,13 @@ export function ensureSessionCheckpoint(
   sessionId: string,
   cwd: string,
 ): Promise<void> {
-  return enqueueCheckpoint(sessionId, () =>
-    invoke<void>("session_checkpoint_ensure", { sessionId, cwd }),
-  );
+  return enqueueCheckpoint(sessionId, async () => {
+    const finish = startPerformanceSpan("checkpoint", { phase: 3 }, sessionPerformanceTrace(sessionId));
+    try {
+      const timings = await invoke<{ checkpointWaitMs: number; gitMs: number; diskMs: number }>("session_checkpoint_ensure", { sessionId, cwd });
+      finish(timings);
+    } catch (error) { finish(); throw error; }
+  });
 }
 
 /** Snapshot the worktree before a live turn so Keep/Undo can target this session. */

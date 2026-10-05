@@ -162,6 +162,17 @@ describe("replaceSlashToken", () => {
 });
 
 describe("skillNamesInText", () => {
+  it("finds dollar skills and plugin names while leaving quoted and code text alone", () => {
+    expect(
+      skillNamesInText(
+        "$review-pr $plugin:review\n> $ignore\n`$code`\n```\n$fenced\n```",
+      ),
+    ).toEqual(["review-pr", "plugin:review"]);
+    expect(skillTextParts("use $review-pr", new Set(["review-pr"]))).toEqual([
+      { text: "use ", skill: false },
+      { text: "$review-pr", skill: true },
+    ]);
+  });
   it("collects unique /skill tokens", () => {
     expect(skillNamesInText("/create-skill write a deploy skill")).toEqual([
       "create-skill",

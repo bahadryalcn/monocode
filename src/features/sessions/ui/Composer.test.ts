@@ -35,6 +35,7 @@ vi.mock("../../source-control/hooks/useProjectBranches", () => ({
 }));
 
 import { Composer, ComposerAction } from "./Composer";
+import { reportSessionCommands } from "../../../integrations/harness/core/reportedCommands";
 import {
   clearMcpSettingsCache,
   loadMcpSettings,
@@ -187,8 +188,16 @@ describe("Composer question focus", () => {
   it("shows the working folder picker without additional projects", async () => {
     localStorage.clear();
     await renderComposer(
-      undefined, vi.fn(), false, 0, undefined, undefined, vi.fn(),
-      "folder-default", "codex", "/repo",
+      undefined,
+      vi.fn(),
+      false,
+      0,
+      undefined,
+      undefined,
+      vi.fn(),
+      "folder-default",
+      "codex",
+      "/repo",
     );
     const trigger = container.querySelector<HTMLButtonElement>(
       '[aria-label="Folders for this session"]',
@@ -198,9 +207,9 @@ describe("Composer question focus", () => {
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
       "Working folder",
     );
-    expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain(
-      "Change project…",
-    );
+    expect(
+      document.querySelector('[role="dialog"]')?.textContent,
+    ).not.toContain("Change project…");
   });
 
   it.each([
@@ -816,6 +825,79 @@ describe("Composer question focus", () => {
     expect(textarea.value).toBe(initialDraft);
     expect(textarea.selectionStart).toBe(initialDraft.length);
     expect(textarea.selectionEnd).toBe(initialDraft.length);
+  });
+
+  it("explains Codex skill tagging and offers its goal command", async () => {
+    await renderComposer(
+      undefined,
+      vi.fn(),
+      false,
+      0,
+      "/goal",
+      undefined,
+      vi.fn(),
+      "codex-goal-menu",
+      "codex",
+    );
+    const textarea = container.querySelector("textarea")!;
+    expect(textarea.placeholder).toContain("$ for skills");
+    await act(async () =>
+      textarea.dispatchEvent(new Event("input", { bubbles: true })),
+    );
+    const goal = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((button) => button.textContent?.includes("/goal"));
+    expect(goal).toBeDefined();
+    await act(async () => goal!.click());
+    expect(textarea.value).toBe("/goal ");
+  });
+
+  it("picks a Codex skill with $ and highlights it in the chat input", async () => {
+    reportSessionCommands("codex-skill-menu", [
+      {
+        name: "plugin:review",
+        kind: "skill",
+        description: "Review code",
+        path: "/skills/review/SKILL.md",
+      },
+    ]);
+    await renderComposer(
+      undefined,
+      vi.fn(),
+      false,
+      0,
+      "Review this",
+      undefined,
+      vi.fn(),
+      "codex-skill-menu",
+      "codex",
+    );
+    const textarea = container.querySelector("textarea")!;
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Add files or choose a mode"]',
+        )!
+        .click(),
+    );
+    const skillsButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        "[data-composer-plus] button",
+      ),
+    ).find((button) =>
+      button.textContent?.includes("Choose a skill or type $name"),
+    );
+    expect(skillsButton).toBeDefined();
+    await act(async () => skillsButton!.click());
+    const skill = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((button) => button.textContent?.includes("$plugin:review"));
+    expect(skill).toBeDefined();
+    await act(async () => skill!.click());
+    expect(textarea.value).toBe("Review this $plugin:review ");
+    expect(container.querySelector(".text-skill")?.textContent).toBe(
+      "$plugin:review",
+    );
   });
 
   it("offers /operator in the slash picker and submits it as a local command", async () => {

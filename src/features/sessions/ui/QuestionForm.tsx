@@ -1,3 +1,4 @@
+import { usePresentationVisible } from "./presentationVisibility";
 import {
   useEffect,
   useMemo,
@@ -27,13 +28,14 @@ export function QuestionForm({ prompt, onReply, onInteraction }: Props) {
   const [answers, setAnswers] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
   const [now, setNow] = useState(Date.now);
+  const visible = usePresentationVisible();
 
   useEffect(() => {
-    if (prompt.autoResolveAt == null) return;
+    if (prompt.autoResolveAt == null || !visible) return;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [prompt.requestId, prompt.autoResolveAt]);
+  }, [prompt.requestId, prompt.autoResolveAt, visible]);
 
   const interact = () => {
     if (prompt.autoResolveAt != null) onInteraction?.(prompt.requestId);

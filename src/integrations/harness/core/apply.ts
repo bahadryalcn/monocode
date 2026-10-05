@@ -28,6 +28,7 @@ import {
   capStepOutput,
 } from "../../../features/sessions/model/agentOutput";
 import { joinStreamText } from "./streamText";
+import { registerStreamingTextUpdate } from "../../../features/sessions/model/stableBlocks";
 import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
@@ -830,6 +831,7 @@ function patchStreaming(
       text: nextText,
       streaming,
     };
+    if (last.streaming === streaming) registerStreamingTextUpdate(session.blocks, blocks, index);
     return { ...session, blocks };
   }
   const blocks = sealLastStream(session.blocks);

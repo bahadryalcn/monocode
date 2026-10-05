@@ -22,6 +22,13 @@ beforeEach(() => {
   localStorage.clear();
   vi.restoreAllMocks();
 });
+
+it("retains an atomic first turn through durable outbox recovery", () => {
+  const atomic = { ...create, firstTurn: { type: "send" as const, commandId: "first", sessionId: "", text: "hello" } };
+  savePendingRemoteCommand("project", "env", atomic, "shell");
+  expect(pendingRemoteCommand("project", "env", null, "shell")).toEqual(atomic);
+  expect(pendingRemoteFollowup("project", "env", "good")).toBeUndefined();
+});
 afterEach(() => vi.unstubAllGlobals());
 
 it.each([

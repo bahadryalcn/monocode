@@ -1,5 +1,13 @@
 import type { Attachment, Block } from "./session";
 import type { LastTurnRecall } from "./editLastTurn";
+const textUpdates = new WeakMap<Block[], WeakMap<Block[], number>>();
+/** Only call at a producer that copied the array and changed just this text. */
+export function registerStreamingTextUpdate(previous: Block[], next: Block[], index: number): void {
+  let updates = textUpdates.get(previous);
+  if (!updates) { updates = new WeakMap(); textUpdates.set(previous, updates); }
+  updates.set(next, index);
+}
+export function streamingTextUpdate(previous: Block[], next: Block[]): number | undefined { return textUpdates.get(previous)?.get(next); }
 
 /**
  * True when `next` differs from `previous` only by the text of the block being
@@ -13,6 +21,7 @@ export function sameBlocksIgnoringStreamingText(
   next: Block[],
 ): boolean {
   if (previous === next) return true;
+  if (streamingTextUpdate(previous, next) === next.length - 1) return true;
   if (previous.length !== next.length || next.length === 0) return false;
   const last = next.length - 1;
   for (let index = 0; index < last; index += 1) {

@@ -15,7 +15,7 @@ import type { SendTurnInput } from "../src/integrations/harness/core/types";
 import type { HostProvider } from "./providers";
 import { HostEngine } from "./engine";
 import { HostStore } from "./store";
-import { HostTasks, MAX_RUNNING_TASKS } from "./tasks";
+import { HostTasks, MAX_RUNNING_TASKS, MAX_REPAIR_ATTEMPTS } from "./tasks";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -1115,6 +1115,212 @@ describe("task verification", () => {
       },
     });
   });
+
+  it("repairs goal work on its existing branch, keeps dependents waiting, then delivers", async () => {
+    const { tasks, input, reviewing, task, turns, finish, addRepo } = setup();
+    const repo = addRepo("repair");
+    const original = await reviewing({
+      projectId: repo.id,
+      goalId: "goal",
+      autoMerge: true,
+    });
+    tasks.save(
+      input({ id: "dependent", projectId: repo.id, dependsOn: ["main"] }),
+    );
+    await finish(
+      original.reviewer!.sessionId!,
+      "file.txt:1 needs Friday.\nVERDICT: FAIL - Friday is missing.",
+    );
+    expect(task()).toMatchObject({
+      status: "running",
+      repairAttempts: 1,
+      branch: original.branch,
+      worktreeCwd: original.worktreeCwd,
+    });
+    expect(task("dependent").status).toBe("queued");
+    expect(turns.at(-1)!.input.text).toContain("file.txt:1 needs Friday.");
+    expect(task().sessionId).not.toBe(original.sessionId);
+    writeFileSync(join(original.worktreeCwd!, "file.txt"), "Friday\n");
+    await finish(task().sessionId!);
+    await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+    expect(task()).toMatchObject({ status: "done", autoMerged: true });
+    expect(task("dependent").status).toBe("running");
+  });
+
+  it("bounds automatic corrections across host scheduler recreation and resets on manual retry", async () => {
+    const { tasks, store, engine, clock, reviewing, task, finish } = setup();
+    await reviewing({ goalId: "goal" });
+    for (let attempt = 1; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
+      await finish(
+        task().reviewer!.sessionId!,
+        "VERDICT: FAIL - Friday is missing.",
+      );
+      expect(task()).toMatchObject({
+        status: "running",
+        repairAttempts: attempt,
+      });
+      expect(
+        new HostTasks(store, engine, () => clock.now).get("main")!
+          .repairAttempts,
+      ).toBe(attempt);
+      await finish(task().sessionId!);
+    }
+    await finish(
+      task().reviewer!.sessionId!,
+      "VERDICT: FAIL - Friday is still missing.",
+    );
+    expect(task()).toMatchObject({
+      status: "blocked",
+      repairAttempts: MAX_REPAIR_ATTEMPTS,
+    });
+    await tasks.tick();
+    expect(task().status).toBe("blocked");
+    await tasks.move("main", "queued");
+    expect(task().repairAttempts).toBeUndefined();
+    expect(task().retryFeedback).toContain("Friday is still missing.");
+  });
+
+  it.each(["missing verdict", "runtime failure", "owner stop"])(
+    "does not auto-repair a goal review with %s",
+    async (failure) => {
+      const { tasks, reviewing, task, turns, finish, settled, advance } =
+        setup();
+      const original = await reviewing({ goalId: "goal" });
+      if (failure === "owner stop") {
+        await tasks.move("main", "blocked");
+        await settled(original.reviewer!.sessionId!);
+        await advance();
+      } else if (failure === "runtime failure") {
+        turns.at(-1)!.fail(new Error("Not signed in"));
+        await settled(original.reviewer!.sessionId!);
+        await advance();
+      } else await finish(original.reviewer!.sessionId!, "Could not review.");
+      expect(task().status).toBe("blocked");
+      expect(task().repairAttempts).toBeUndefined();
+    },
+  );
+
+  it("recovers a legacy goal review failure once and refuses a stopped task", async () => {
+    const { tasks, store, reviewing, task, finish } = setup();
+    const original = await reviewing();
+    await finish(
+      original.reviewer!.sessionId!,
+      "VERDICT: FAIL - Friday is missing.",
+    );
+    const legacy = { ...task(), goalId: "goal" };
+    store.db
+      .prepare("UPDATE tasks SET value=? WHERE id=?")
+      .run(JSON.stringify(legacy), "main");
+    expect(tasks.recoverGoalReview("main", "other")!.status).toBe("blocked");
+    expect(tasks.recoverGoalReview("main", "goal")).toMatchObject({
+      status: "queued",
+      repairAttempts: 1,
+    });
+    expect(tasks.recoverGoalReview("main", "goal")!.repairAttempts).toBe(1);
+    store.db
+      .prepare("UPDATE tasks SET value=? WHERE id=?")
+      .run(JSON.stringify({ ...legacy, error: "Stopped by you." }), "main");
+    expect(tasks.recoverGoalReview("main", "goal")!.status).toBe("blocked");
+  });
+
+  it("persists review notes across retries, read updates and successful verification", async () => {
+    const { tasks, store, engine, clock, reviewing, task, turns, finish } =
+      setup();
+    await reviewing();
+    const firstReviewer = task().reviewer!.sessionId!;
+    const finding =
+      '```json\n{"reviewNotes":[{"finding":"Friday is missing.","suggestion":"Include the Friday totals."}]}\n```';
+    // Some providers emit the findings and verdict as separate assistant messages.
+    turns.at(-1)!.input.onEvent({ type: "message.delta", text: finding });
+    turns.at(-1)!.input.onEvent({ type: "message.completed" });
+    await finish(firstReviewer, "VERDICT: FAIL - Friday is missing.");
+    expect(task().reviewNotes).toHaveLength(1);
+    const id = task().reviewNotes![0].id;
+    expect(task().reviewNotes![0]).toMatchObject({
+      suggestion: "Include the Friday totals.",
+      sessionId: firstReviewer,
+    });
+    tasks.readNotes("main", [id]);
+    const recreated = new HostTasks(store, engine, () => clock.now);
+    expect(recreated.get("main")!.reviewNotes![0].readAt).toBe(clock.now);
+    expect(() => tasks.readNotes("main", ["unknown"])).toThrow(
+      "Review note not found",
+    );
+    expect(() => tasks.resolveNote("main", id, "yes")).toThrow(
+      "Invalid review note status",
+    );
+    tasks.resolveNote("main", id, true);
+    expect(task().status).toBe("blocked");
+    tasks.resolveNote("main", id, false);
+    await tasks.move("main", "queued");
+    await tasks.tick();
+    expect(turns.at(-1)!.input.text).toContain(
+      "Open review notes for this task",
+    );
+    expect(turns.at(-1)!.input.text).toContain("Include the Friday totals.");
+    await finish(task().sessionId!);
+    await finish(
+      task().reviewer!.sessionId!,
+      `${finding}\nVERDICT: FAIL - Friday is missing.`,
+    );
+    expect(task().reviewNotes).toHaveLength(1);
+    expect(task().reviewNotes![0]).toMatchObject({ id, occurrences: 2 });
+    expect(task().reviewNotes![0].sessionIds).toHaveLength(2);
+    await tasks.move("main", "queued");
+    await tasks.tick();
+    await finish(task().sessionId!);
+    await finish(
+      task().reviewer!.sessionId!,
+      '```json\n{"reviewNotes":[{"finding":"Consider a shortcut.","kind":"suggestion"}]}\n```\nVERDICT: PASS',
+    );
+    expect(task().status).toBe("review");
+    expect(task().reviewNotes).toHaveLength(2);
+    expect(task().reviewNotes![0].resolvedAt).toBe(clock.now);
+    expect(task().reviewNotes![1].resolvedAt).toBeUndefined();
+    // A read action based on an older snapshot must not acknowledge new notes.
+    tasks.readNotes("main", [id]);
+    expect(task().reviewNotes![1].readAt).toBeUndefined();
+  });
+
+  it("backfills available legacy review findings once without changing task status", async () => {
+    const { tasks, store, reviewing, task, finish } = setup();
+    const original = await reviewing();
+    await finish(
+      original.reviewer!.sessionId!,
+      "file.ts:42 skips Friday.\nVERDICT: FAIL - Friday is missing.",
+    );
+    const { reviewNotes, ...legacy } = task();
+    store.db
+      .prepare("UPDATE tasks SET value=? WHERE id=?")
+      .run(JSON.stringify(legacy), "main");
+    const migrated = tasks.list()[0];
+    expect(migrated.status).toBe("blocked");
+    expect(migrated.reviewNotes![0]).toMatchObject({
+      finding: "Friday is missing.",
+      details: "file.ts:42 skips Friday.",
+    });
+    expect(tasks.list()[0].reviewNotes).toEqual(migrated.reviewNotes);
+    expect(tasks.get("main")!.updatedAt).toBe(legacy.updatedAt);
+  });
+
+  it(
+    "automatically corrects a goal check failure with the command output",
+    async () => {
+      const { run, task, turns, finish } = setup();
+      const original = await run({
+        goalId: "goal",
+        review: false,
+        verifyCommand: 'node -e "console.log(123456); process.exit(1)"',
+      });
+      await finish(original.sessionId!);
+      expect(task()).toMatchObject({ status: "queued", repairAttempts: 1 });
+      // Verification runs asynchronously; the next scheduler tick starts the correction.
+      expect(task().retryFeedback).toContain("123456");
+      expect(task().retryFeedback).toContain("Check command:");
+      expect(turns).toHaveLength(1);
+    },
+    SHELL_TEST_MS,
+  );
 
   it("reads a verdict followed by another short message", async () => {
     const { reviewing, task, turns, settled, advance } = setup();

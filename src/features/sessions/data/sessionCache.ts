@@ -7,7 +7,7 @@ export const SESSION_LOAD_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const estimatedBytes = new WeakMap<object, number>();
 
 /** Conservative retained-size estimate without allocating a serialized copy. */
-export function estimateSessionCacheBytes(session: Session): number {
+export function estimateSessionCacheBytes(session: object): number {
   const known = estimatedBytes.get(session);
   if (known != null) return known;
 

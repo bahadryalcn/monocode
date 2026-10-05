@@ -425,6 +425,14 @@ export class HostGoals {
         (goal.status !== "running" && goal.status !== "blocked")
       )
         continue;
+      for (const id of goal.taskIds) {
+        const at = tasks.findIndex((task) => task.id === id);
+        const task = tasks[at];
+        if (task?.status !== "blocked" || task.repairAttempts !== undefined)
+          continue;
+        const recovered = this.tasks.recoverGoalReview(id, goal.id);
+        if (recovered && at >= 0) tasks[at] = recovered;
+      }
       const state = goalStateFromTasks(goal, tasks);
       if (state.status === goal.status && state.error === goal.error) continue;
       this.write({
