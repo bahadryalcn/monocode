@@ -374,6 +374,8 @@ async function openThread(
         "thread/resume",
         {
           threadId: requestedThreadId,
+          // Only the id is consumed here; keep image-heavy history in Codex.
+          excludeTurns: true,
           ...buildThreadStartParams({
             cwd,
             runtimeMode: TEXT_RUNTIME_MODE,

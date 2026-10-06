@@ -1,10 +1,33 @@
 # Automatic corrections for unattended tasks
 
-Goal and steward tasks get up to three automatic correction runs after a concrete
-review failure or a check command returning a nonzero exit code. Manual tasks keep
+Goal, steward and explicitly auto-merge tasks get up to three automatic correction runs after a concrete
+review failure or a check command returning a nonzero exit code. Other manual tasks keep
 their existing explicit Retry behavior. Each correction uses a fresh worker session
 in the existing task worktree, with the original prompt and bounded verification
 feedback. The original checks and reviewer run again before delivery.
+Structured open findings are sent once with their suggestions; their surrounding
+review transcript is not duplicated in correction prompts. Legacy details remain available.
+
+## Automatic integration recovery
+
+Verified auto-merge tasks waiting in Review are reconsidered on host ticks, including
+cards left by older hosts. A dirty/wrong-branch checkout or another pending merge
+waits without a worker. Unchanged checkout failures have a persisted five-minute
+backoff; changed branch heads or checkout state allow immediate retry. Merges into
+one project are serialized. The host never stashes, resets or switches the owner's checkout.
+
+A real merge conflict queues an integration correction in the retained task worktree.
+The host merges the recorded base commit there, preserving both histories. Only
+unresolved integration defects are handed to the worker; a clean base integration
+goes straight to verification without a worker. Checks and review run again against
+the updated base before delivery and dependent tasks start. Unresolved Git index
+entries cannot be automatically staged as completed work. Integration corrections
+have a separate persisted three-attempt limit and obey concurrency/daily limits.
+Owner stops and unavailable acceptance checks remain stopped. A dirty task checkout
+after review is retained for inspection rather than silently absorbed into recovery.
+
+If delivery succeeds but worktree removal fails, its path and cleanup error remain
+on the done task. Later drafts are retained; removal is never forced.
 
 A required review note may explicitly specify `category: "external"` plus an
 actionable suggestion naming missing device/access and the check required. If all
@@ -35,8 +58,31 @@ approach. Independent queued tasks continue; dependent tasks wait for delivery.
 Correction counts are stored with the task and survive host restarts. The board
 shows the attempt number and the latest finding. After three corrections, another
 failure leaves the task blocked with its verification details; an explicit Retry
-resets this allowance. Concurrency, daily usage limits and dependencies still apply.
+does not reset this allowance. Concurrency, daily usage limits and dependencies still apply.
 Independent queued work can continue; dependents wait until the prerequisite is done.
+
+Three failed reviews since the last instruction change also stop the task, even
+when finding wording changes or Retry previously reset the correction counter.
+Legacy tasks recover this count from their retained attempt history. External-only
+findings, unchanged findings, and a failed review-only recheck stop earlier.
+The next host tick gives blocked verification failures one independent AI takeover
+before asking the owner for help. The fresh session keeps the assigned model,
+branch and worktree, and receives the original task contract, earlier outcomes,
+remaining findings and blocker as a bounded JSON handoff. It must diagnose a
+different approach, complete the work and pass the original checks plus review.
+Takeover only starts from Blocked; owner stops, provider failures, missing verdicts,
+cancelled goals and unavailable check processes are not automatically retried.
+Concurrency, dependencies and daily budgets also gate takeover. Its durable marker
+survives restarts; it cannot recursively hand off or start another correction loop.
+
+If takeover still fails, the task shows **Needs input / Waiting for your
+instructions** and **Update instructions** instead of Retry/Recheck. The recovery
+agent is asked to leave one concrete request naming the missing resource or input.
+The owner can change the description to explain a new approach, provide missing
+evidence/access, or revise the requirement.
+Renaming, whitespace edits, host restarts and moving through To do cannot bypass
+the gate. Saving new instructions resets the budget without starting work; the
+owner can then Retry or Recheck. Existing worktrees, findings and history remain.
 
 Worker/runtime failures, owner stops, reviewer failures or missing verdicts, and
 check timeouts or commands that cannot start remain blocked. Reviews distinguish
@@ -48,6 +94,16 @@ Recovery requires a matching successful reviewer session and its explicit FAIL
 verdict. Cancelled goals, owner-stopped tasks, missing sessions and exhausted
 correction attempts are not revived. Installing this host change is required for
 the policy to affect tasks on that machine.
+
+## Structured task briefs
+
+New goal plans use a `monocode.task.v1` brief with `objective`, `deliverables`,
+`acceptance`, `constraints` and `verification`. The host stores the JSON as prompt
+text for compatibility and sends workers/reviewers a task-contract envelope.
+Cards display the objective; details render the brief as readable sections.
+Legacy plain-text instructions remain intact. Unknown JSON fields are never
+silently discarded. Hosts advertise automatic takeover with `tasks.blocked-takeover`;
+the UI does not promise it for older hosts.
 
 ## Persistent review notes
 

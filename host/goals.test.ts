@@ -267,7 +267,7 @@ describe("goal planning", () => {
       status: "queued",
     });
     expect(second.verifyCommand).toBeUndefined();
-    expect(turnOf(first.sessionId!).input.text).toBe("Instructions for api");
+    expect(JSON.parse(turnOf(first.sessionId!).input.text).task.instructions.objective).toBe("Instructions for api");
   });
 
   it("waits for the owner to approve the plan when asked to", async () => {
@@ -510,8 +510,10 @@ describe("goal tasks", () => {
     const legacy = { ...tasks.get(reviewing.id)!, goalId: "goal" };
     if (cancelled) await goals.cancel("goal");
     store.db.prepare("UPDATE tasks SET value=? WHERE id=?").run(JSON.stringify(legacy), legacy.id);
+    await tasks.tick();
     expect(goal().status).toBe(cancelled ? "cancelled" : "running");
-    expect(planned().a.status).toBe(cancelled ? "blocked" : "queued");
+    expect(planned().a.status).toBe(cancelled ? "blocked" : "running");
+    if (!cancelled) expect(planned().a.blockedTakeover).toBeDefined();
     expect(planned().b.status).toBe(cancelled ? "blocked" : "queued");
   });
 

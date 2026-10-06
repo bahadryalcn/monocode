@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { buildRecentSessions } from "../../sessions/model/recentSessions";
 import { pathKey } from "../../../shared/lib/paths";
+import { workingProjectPaths } from "../../sessions/model/liveAgents";
 import type { HostSessionSummary } from "./protocol";
 import {
   nextRemoteUnseenFinished,
@@ -46,6 +47,14 @@ it("shows only running host sessions and ones waiting for input as working", () 
     { id: "running", cwd: project, title: "Roadmap", activity: "Working", needsApproval: false },
     { id: "asking", activity: "Needs input", needsApproval: true },
   ]);
+});
+
+it("marks unopened remote projects working until the host finishes or needs input", () => {
+  const paths = (session: Partial<HostSessionSummary> & { id: string }) =>
+    workingProjectPaths(remoteLiveAgents(unopenedRemoteSessions([listed(session)], new Set())));
+  expect(paths({ id: "background", status: "running" })).toEqual([project]);
+  expect(paths({ id: "background", status: "running", needsInput: true })).toEqual([]);
+  expect(paths({ id: "background", status: "idle" })).toEqual([]);
 });
 
 it("lists a host session that was never opened here in Last sessions", () => {

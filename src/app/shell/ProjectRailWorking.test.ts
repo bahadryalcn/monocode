@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { ProjectRail } from "./ProjectRail";
+import { workingProjectPaths } from "../../features/sessions/model/liveAgents";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => undefined),
@@ -69,6 +70,43 @@ it("places Working between Search and Inbox and preserves project navigation whe
     expect(project.closest("[hidden]")).toBeNull();
     act(() => project.click());
     expect(onSelectProject).toHaveBeenCalledWith("/work/project");
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("shows project activity even without the Working preview and clears it on completion", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  localStorage.clear();
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const agent = {
+    id: "host-turn", cwd: "/work/blockblaster", title: "Improve game",
+    harness: "codex" as const, activity: "Working on host", needsApproval: false, done: false,
+  };
+  const render = async (done: boolean) => {
+    await act(async () => root.render(createElement(ProjectRail, {
+      cwd: "/work/monocode",
+      recents: [{ path: agent.cwd, openedAt: 1 }],
+      busyPaths: workingProjectPaths([{ ...agent, done }]),
+      liveAgents: [],
+      onSelectProject: vi.fn(), onOpenProject: vi.fn(),
+    })));
+  };
+  try {
+    await render(false);
+    const project = container.querySelector('[data-project-path="/work/blockblaster"]')!;
+    expect(project.getAttribute("data-project-working")).toBe("true");
+    expect(project.querySelector("[data-project-working-indicator]")?.getAttribute("aria-label")).toBe("Working");
+    expect(project.querySelector("button")?.getAttribute("aria-label")).toContain("working");
+    expect(container.querySelector('[data-project-path="/work/monocode"]')?.hasAttribute("data-project-working")).toBe(false);
+    await render(true);
+    expect(project.hasAttribute("data-project-working")).toBe(false);
+    expect(project.querySelector("[data-project-working-indicator]")).toBeNull();
   } finally {
     act(() => root.unmount());
     container.remove();

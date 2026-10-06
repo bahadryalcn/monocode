@@ -1,0 +1,1864 @@
+{
+  "format": "monocode.remote-session-resource-benchmark.v1",
+  "generatedAt": "2026-10-05T20:03:41.360Z",
+  "source": "working tree; uses production transcriptPage, partialSessionSync, SyncTransfers, and applySessionSync helpers",
+  "sourceHead": "e78d881e + dirty working tree",
+  "environment": {
+    "node": "v22.22.3",
+    "platform": "win32",
+    "arch": "x64",
+    "cpu": "AMD Ryzen 9 9950X3D 16-Core Processor          ",
+    "logicalCpuCount": 32,
+    "totalSystemMemoryBytes": 66183458816
+  },
+  "methodology": {
+    "repetitionsPerModeFixture": 3,
+    "targetMeasurementMsPerFreshProcess": 750,
+    "workers": "serial fresh Node subprocesses with --expose-gc; full/lazy order alternates by repetition; no benchmark workers overlap",
+    "operation": "serialize host response, JSON parse, perform SyncTransfers assembly when chunked, and apply snapshot+delta; lazy additionally constructs a production tail page and production partial delta",
+    "warmupAndReuse": "each fresh worker constructs and JSON-materializes the authoritative source once before baseline, constructs the next revision once, runs two untimed warmups, retains the same flat source objects for each mode, and regenerates per-operation transfer/page/delta transforms. Production block preview WeakMap entries are primed by lazy warmups and reused, as in a warm running process",
+    "cpu": "process.cpuUsage user/system delta over calibrated batch; wall p50/p95 is per complete operation; this is process work, not instantaneous CPU percent",
+    "memory": "fixture/source state retained equally as baseline; post-GC retained client state and RSS deltas are reported. Sampled high-water checks memory at operation boundaries every 8 operations and is not a true within-operation peak; process maxRSS is lifetime high-water including warm-up, in raw platform units",
+    "limitations": "one Node process simulates host helpers plus a client; no installed app, live host, network, renderer/WebView, native/system idle CPU or full app idle RAM measured. The host's authoritative full transcript is retained in both cases."
+  },
+  "summaries": [
+    {
+      "fixture": "small",
+      "full": {
+        "freshProcesses": 3,
+        "medianOperations": 26857,
+        "medianCpuUserMsPerOperation": 0.027675137621597165,
+        "medianCpuSystemMsPerOperation": 0.0013233844854286922,
+        "medianCpuTotalMsPerOperation": 0.02904270767397699,
+        "medianOperationWallP50Ms": 0.024900000000002365,
+        "medianOperationWallP95Ms": 0.03489999999999327,
+        "medianFixtureBaselineHeapBytes": 4501736,
+        "medianSampledHighWaterHeapBytes": 6700800,
+        "medianRetainedClientHeapBytes": 4590904,
+        "medianRetainedHeapDeltaBytes": 89168,
+        "medianSampledHighWaterRssBytes": 47173632,
+        "medianSampledHighWaterRssMiB": 44.98828125,
+        "medianRetainedRssDeltaBytes": 4907008,
+        "medianRetainedHeapDeltaMiB": 0.0850372314453125,
+        "medianLifetimeMaxRssRawPlatformUnits": 46160
+      },
+      "lazy": {
+        "freshProcesses": 3,
+        "medianOperations": 21766,
+        "medianCpuUserMsPerOperation": 0.035881650280253606,
+        "medianCpuSystemMsPerOperation": 0.0021593310668014333,
+        "medianCpuTotalMsPerOperation": 0.03804098134705504,
+        "medianOperationWallP50Ms": 0.03380000000004202,
+        "medianOperationWallP95Ms": 0.04729999999995016,
+        "medianFixtureBaselineHeapBytes": 4539664,
+        "medianSampledHighWaterHeapBytes": 6812944,
+        "medianRetainedClientHeapBytes": 4708784,
+        "medianRetainedHeapDeltaBytes": 169120,
+        "medianSampledHighWaterRssBytes": 48267264,
+        "medianSampledHighWaterRssMiB": 46.03125,
+        "medianRetainedRssDeltaBytes": 4915200,
+        "medianRetainedHeapDeltaMiB": 0.161285400390625,
+        "medianLifetimeMaxRssRawPlatformUnits": 47184
+      }
+    },
+    {
+      "fixture": "long",
+      "full": {
+        "freshProcesses": 3,
+        "medianOperations": 21,
+        "medianCpuUserMsPerOperation": 29.818181818181817,
+        "medianCpuSystemMsPerOperation": 10.636363636363637,
+        "medianCpuTotalMsPerOperation": 40.904761904761905,
+        "medianOperationWallP50Ms": 37.49540000000002,
+        "medianOperationWallP95Ms": 40.57730000000004,
+        "medianFixtureBaselineHeapBytes": 14607624,
+        "medianSampledHighWaterHeapBytes": 161377728,
+        "medianRetainedClientHeapBytes": 14590904,
+        "medianRetainedHeapDeltaBytes": -16720,
+        "medianSampledHighWaterRssBytes": 224432128,
+        "medianSampledHighWaterRssMiB": 214.03515625,
+        "medianRetainedRssDeltaBytes": 62365696,
+        "medianRetainedHeapDeltaMiB": -0.0159454345703125,
+        "medianLifetimeMaxRssRawPlatformUnits": 231636
+      },
+      "lazy": {
+        "freshProcesses": 3,
+        "medianOperations": 709,
+        "medianCpuUserMsPerOperation": 0.8457374830852503,
+        "medianCpuSystemMsPerOperation": 0.24259520451339917,
+        "medianCpuTotalMsPerOperation": 1.0784844384303112,
+        "medianOperationWallP50Ms": 0.9909999999999854,
+        "medianOperationWallP95Ms": 1.487400000000008,
+        "medianFixtureBaselineHeapBytes": 9651720,
+        "medianSampledHighWaterHeapBytes": 44753000,
+        "medianRetainedClientHeapBytes": 9972664,
+        "medianRetainedHeapDeltaBytes": 320944,
+        "medianSampledHighWaterRssBytes": 103313408,
+        "medianSampledHighWaterRssMiB": 98.52734375,
+        "medianRetainedRssDeltaBytes": 24719360,
+        "medianRetainedHeapDeltaMiB": 0.3060760498046875,
+        "medianLifetimeMaxRssRawPlatformUnits": 102472
+      }
+    },
+    {
+      "fixture": "large-tool",
+      "full": {
+        "freshProcesses": 3,
+        "medianOperations": 7,
+        "medianCpuUserMsPerOperation": 93.71428571428571,
+        "medianCpuSystemMsPerOperation": 31.333333333333332,
+        "medianCpuTotalMsPerOperation": 127.14285714285714,
+        "medianOperationWallP50Ms": 116.14069999999992,
+        "medianOperationWallP95Ms": 133.3597000000001,
+        "medianFixtureBaselineHeapBytes": 22553552,
+        "medianSampledHighWaterHeapBytes": 256906264,
+        "medianRetainedClientHeapBytes": 40611688,
+        "medianRetainedHeapDeltaBytes": 18058136,
+        "medianSampledHighWaterRssBytes": 295985152,
+        "medianSampledHighWaterRssMiB": 282.2734375,
+        "medianRetainedRssDeltaBytes": 18153472,
+        "medianRetainedHeapDeltaMiB": 17.221580505371094,
+        "medianLifetimeMaxRssRawPlatformUnits": 324320
+      },
+      "lazy": {
+        "freshProcesses": 3,
+        "medianOperations": 469,
+        "medianCpuUserMsPerOperation": 1.232409381663113,
+        "medianCpuSystemMsPerOperation": 0.6024340770791075,
+        "medianCpuTotalMsPerOperation": 1.5991471215351811,
+        "medianOperationWallP50Ms": 1.5489000000000033,
+        "medianOperationWallP95Ms": 2.3444999999999823,
+        "medianFixtureBaselineHeapBytes": 22650256,
+        "medianSampledHighWaterHeapBytes": 52215600,
+        "medianRetainedClientHeapBytes": 23000392,
+        "medianRetainedHeapDeltaBytes": 350136,
+        "medianSampledHighWaterRssBytes": 102817792,
+        "medianSampledHighWaterRssMiB": 98.0546875,
+        "medianRetainedRssDeltaBytes": 20385792,
+        "medianRetainedHeapDeltaMiB": 0.33391571044921875,
+        "medianLifetimeMaxRssRawPlatformUnits": 146840
+      }
+    },
+    {
+      "fixture": "oversized-tail-tool",
+      "full": {
+        "freshProcesses": 3,
+        "medianOperations": 7,
+        "medianCpuUserMsPerOperation": 98.28571428571429,
+        "medianCpuSystemMsPerOperation": 35.714285714285715,
+        "medianCpuTotalMsPerOperation": 134,
+        "medianOperationWallP50Ms": 122.4434,
+        "medianOperationWallP95Ms": 137.49790000000007,
+        "medianFixtureBaselineHeapBytes": 22553664,
+        "medianSampledHighWaterHeapBytes": 169788248,
+        "medianRetainedClientHeapBytes": 22788400,
+        "medianRetainedHeapDeltaBytes": 234736,
+        "medianSampledHighWaterRssBytes": 209260544,
+        "medianSampledHighWaterRssMiB": 199.56640625,
+        "medianRetainedRssDeltaBytes": 282624,
+        "medianRetainedHeapDeltaMiB": 0.2238616943359375,
+        "medianLifetimeMaxRssRawPlatformUnits": 307184
+      },
+      "lazy": {
+        "freshProcesses": 3,
+        "medianOperations": 407,
+        "medianCpuUserMsPerOperation": 1.3341013824884793,
+        "medianCpuSystemMsPerOperation": 0.6142506142506142,
+        "medianCpuTotalMsPerOperation": 1.8796068796068797,
+        "medianOperationWallP50Ms": 1.7419999999999618,
+        "medianOperationWallP95Ms": 2.8045000000000186,
+        "medianFixtureBaselineHeapBytes": 22650128,
+        "medianSampledHighWaterHeapBytes": 51445736,
+        "medianRetainedClientHeapBytes": 22935880,
+        "medianRetainedHeapDeltaBytes": 285752,
+        "medianSampledHighWaterRssBytes": 102334464,
+        "medianSampledHighWaterRssMiB": 97.59375,
+        "medianRetainedRssDeltaBytes": 18984960,
+        "medianRetainedHeapDeltaMiB": 0.27251434326171875,
+        "medianLifetimeMaxRssRawPlatformUnits": 146796
+      }
+    }
+  ],
+  "runs": [
+    {
+      "repetition": 1,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "small",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 35515,
+        "wallMs": 750.0722,
+        "cpuUserMs": 703,
+        "cpuSystemMs": 47,
+        "cpuTotalMs": 750,
+        "cpuUserMsPerOperation": 0.019794453048007882,
+        "cpuSystemMsPerOperation": 0.0013233844854286922,
+        "cpuTotalMsPerOperation": 0.021117837533436577,
+        "operationWallMs": {
+          "p50": 0.021200000000021646,
+          "p95": 0.029599999999959437,
+          "max": 0.14419999999995525
+        },
+        "wallMsPerOperation": 0.021119870477263127
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 12,
+        "baselineAfterFixtureGc": {
+          "rss": 41259008,
+          "heapTotal": 7442432,
+          "heapUsed": 4501736,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 47120384,
+          "heapTotal": 9539584,
+          "heapUsed": 6700800,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 45989888,
+          "heapTotal": 9539584,
+          "heapUsed": 5496536,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 46166016,
+          "heapTotal": 13733888,
+          "heapUsed": 4592456,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 90720,
+        "retainedRssDeltaFromFixtureBaseline": 4907008,
+        "lifetimeMaxRssRawPlatformUnits": 46056
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 12,
+        "visibleTailBlocks": 12,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 1,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "small",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 22459,
+        "wallMs": 750.014,
+        "cpuUserMs": 766,
+        "cpuSystemMs": 16,
+        "cpuTotalMs": 782,
+        "cpuUserMsPerOperation": 0.03410659423838996,
+        "cpuSystemMsPerOperation": 0.0007124092791308607,
+        "cpuTotalMsPerOperation": 0.03481900351752082,
+        "operationWallMs": {
+          "p50": 0.033599999999978536,
+          "p95": 0.04729999999995016,
+          "max": 0.41030000000000655
+        },
+        "wallMsPerOperation": 0.03339480831737834
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 12,
+        "baselineAfterFixtureGc": {
+          "rss": 41443328,
+          "heapTotal": 7442432,
+          "heapUsed": 4539664,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 48435200,
+          "heapTotal": 13733888,
+          "heapUsed": 7784104,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 48435200,
+          "heapTotal": 13733888,
+          "heapUsed": 7785120,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 47214592,
+          "heapTotal": 13733888,
+          "heapUsed": 4726264,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 186600,
+        "retainedRssDeltaFromFixtureBaseline": 5771264,
+        "lifetimeMaxRssRawPlatformUnits": 47628
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 12,
+        "visibleTailBlocks": 12,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 2,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "small",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 20132,
+        "wallMs": 750.0122,
+        "cpuUserMs": 766,
+        "cpuSystemMs": 62,
+        "cpuTotalMs": 828,
+        "cpuUserMsPerOperation": 0.03804887740909994,
+        "cpuSystemMsPerOperation": 0.0030796741506060005,
+        "cpuTotalMsPerOperation": 0.04112855155970594,
+        "operationWallMs": {
+          "p50": 0.035399999999981446,
+          "p95": 0.048100000000090404,
+          "max": 0.47090000000002874
+        },
+        "wallMsPerOperation": 0.03725472878998609
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 12,
+        "baselineAfterFixtureGc": {
+          "rss": 41340928,
+          "heapTotal": 7442432,
+          "heapUsed": 4539664,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 47398912,
+          "heapTotal": 9539584,
+          "heapUsed": 6801432,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 46190592,
+          "heapTotal": 9539584,
+          "heapUsed": 5681256,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 46256128,
+          "heapTotal": 9801728,
+          "heapUsed": 4698032,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 158368,
+        "retainedRssDeltaFromFixtureBaseline": 4915200,
+        "lifetimeMaxRssRawPlatformUnits": 46460
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 12,
+        "visibleTailBlocks": 12,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 2,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "small",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 26857,
+        "wallMs": 750.0919,
+        "cpuUserMs": 765,
+        "cpuSystemMs": 15,
+        "cpuTotalMs": 780,
+        "cpuUserMsPerOperation": 0.028484194064862047,
+        "cpuSystemMsPerOperation": 0.0005585136091149421,
+        "cpuTotalMsPerOperation": 0.02904270767397699,
+        "operationWallMs": {
+          "p50": 0.024900000000002365,
+          "p95": 0.03489999999999327,
+          "max": 0.3079000000000178
+        },
+        "wallMsPerOperation": 0.02792910228245895
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 12,
+        "baselineAfterFixtureGc": {
+          "rss": 41345024,
+          "heapTotal": 7442432,
+          "heapUsed": 4501736,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 50343936,
+          "heapTotal": 13733888,
+          "heapUsed": 8738632,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 50212864,
+          "heapTotal": 13733888,
+          "heapUsed": 7891768,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 50257920,
+          "heapTotal": 13733888,
+          "heapUsed": 4590904,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 89168,
+        "retainedRssDeltaFromFixtureBaseline": 8912896,
+        "lifetimeMaxRssRawPlatformUnits": 49216
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 12,
+        "visibleTailBlocks": 12,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 3,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "small",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 26522,
+        "wallMs": 750.1016,
+        "cpuUserMs": 734,
+        "cpuSystemMs": 47,
+        "cpuTotalMs": 781,
+        "cpuUserMsPerOperation": 0.027675137621597165,
+        "cpuSystemMsPerOperation": 0.0017721137169142598,
+        "cpuTotalMsPerOperation": 0.029447251338511424,
+        "operationWallMs": {
+          "p50": 0.02580000000000382,
+          "p95": 0.03590000000008331,
+          "max": 0.25100000000009004
+        },
+        "wallMsPerOperation": 0.028282241158283688
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 12,
+        "baselineAfterFixtureGc": {
+          "rss": 41320448,
+          "heapTotal": 7442432,
+          "heapUsed": 4501736,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 47173632,
+          "heapTotal": 9539584,
+          "heapUsed": 6670864,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 46071808,
+          "heapTotal": 9539584,
+          "heapUsed": 5838520,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 46084096,
+          "heapTotal": 9539584,
+          "heapUsed": 4588824,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 87088,
+        "retainedRssDeltaFromFixtureBaseline": 4763648,
+        "lifetimeMaxRssRawPlatformUnits": 46160
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 12,
+        "visibleTailBlocks": 12,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 3,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "small",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 21766,
+        "wallMs": 750.0098,
+        "cpuUserMs": 781,
+        "cpuSystemMs": 47,
+        "cpuTotalMs": 828,
+        "cpuUserMsPerOperation": 0.035881650280253606,
+        "cpuSystemMsPerOperation": 0.0021593310668014333,
+        "cpuTotalMsPerOperation": 0.03804098134705504,
+        "operationWallMs": {
+          "p50": 0.03380000000004202,
+          "p95": 0.04290000000003147,
+          "max": 0.2518000000000029
+        },
+        "wallMsPerOperation": 0.03445786088394744
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 12,
+        "baselineAfterFixtureGc": {
+          "rss": 41377792,
+          "heapTotal": 7442432,
+          "heapUsed": 4539664,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 48267264,
+          "heapTotal": 9539584,
+          "heapUsed": 6812944,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 46239744,
+          "heapTotal": 9539584,
+          "heapUsed": 6689848,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 46268416,
+          "heapTotal": 9801728,
+          "heapUsed": 4708784,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 169120,
+        "retainedRssDeltaFromFixtureBaseline": 4890624,
+        "lifetimeMaxRssRawPlatformUnits": 47184
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 12,
+        "visibleTailBlocks": 12,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 1,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "long",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 22,
+        "wallMs": 769.8814,
+        "cpuUserMs": 656,
+        "cpuSystemMs": 234,
+        "cpuTotalMs": 890,
+        "cpuUserMsPerOperation": 29.818181818181817,
+        "cpuSystemMsPerOperation": 10.636363636363637,
+        "cpuTotalMsPerOperation": 40.45454545454545,
+        "operationWallMs": {
+          "p50": 35.47060000000005,
+          "p95": 40.39870000000002,
+          "max": 42.452
+        },
+        "wallMsPerOperation": 34.99460909090909
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 2000,
+        "baselineAfterFixtureGc": {
+          "rss": 62775296,
+          "heapTotal": 49385472,
+          "heapUsed": 14607624,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 224432128,
+          "heapTotal": 191868928,
+          "heapUsed": 161377728,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 197152768,
+          "heapTotal": 146649088,
+          "heapUsed": 116567184,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 125140992,
+          "heapTotal": 49385472,
+          "heapUsed": 14590904,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": -16720,
+        "retainedRssDeltaFromFixtureBaseline": 62365696,
+        "lifetimeMaxRssRawPlatformUnits": 231632
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 2000,
+        "visibleTailBlocks": 100,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 1,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "long",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 739,
+        "wallMs": 750.3669,
+        "cpuUserMs": 625,
+        "cpuSystemMs": 172,
+        "cpuTotalMs": 797,
+        "cpuUserMsPerOperation": 0.8457374830852503,
+        "cpuSystemMsPerOperation": 0.2327469553450609,
+        "cpuTotalMsPerOperation": 1.0784844384303112,
+        "operationWallMs": {
+          "p50": 0.947400000000016,
+          "p95": 1.4262999999999977,
+          "max": 3.1103999999999985
+        },
+        "wallMsPerOperation": 1.0153814614343708
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 2000,
+        "baselineAfterFixtureGc": {
+          "rss": 59912192,
+          "heapTotal": 44404736,
+          "heapUsed": 9651720,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 104792064,
+          "heapTotal": 64393216,
+          "heapUsed": 45487328,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 100552704,
+          "heapTotal": 60145664,
+          "heapUsed": 36628240,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 85024768,
+          "heapTotal": 44929024,
+          "heapUsed": 9972664,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 320944,
+        "retainedRssDeltaFromFixtureBaseline": 25112576,
+        "lifetimeMaxRssRawPlatformUnits": 102840
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 100,
+        "visibleTailBlocks": 100,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 2,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "long",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 709,
+        "wallMs": 750.1766,
+        "cpuUserMs": 578,
+        "cpuSystemMs": 172,
+        "cpuTotalMs": 750,
+        "cpuUserMsPerOperation": 0.8152327221438646,
+        "cpuSystemMsPerOperation": 0.24259520451339917,
+        "cpuTotalMsPerOperation": 1.0578279266572637,
+        "operationWallMs": {
+          "p50": 0.9909999999999854,
+          "p95": 1.575099999999992,
+          "max": 3.5393000000000256
+        },
+        "wallMsPerOperation": 1.0580770098730607
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 2000,
+        "baselineAfterFixtureGc": {
+          "rss": 60026880,
+          "heapTotal": 44404736,
+          "heapUsed": 9651720,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 103174144,
+          "heapTotal": 63393792,
+          "heapUsed": 44508224,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 100200448,
+          "heapTotal": 59895808,
+          "heapUsed": 36378536,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 84746240,
+          "heapTotal": 44929024,
+          "heapUsed": 9972664,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 320944,
+        "retainedRssDeltaFromFixtureBaseline": 24719360,
+        "lifetimeMaxRssRawPlatformUnits": 102472
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 100,
+        "visibleTailBlocks": 100,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 2,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "long",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 21,
+        "wallMs": 772.3811,
+        "cpuUserMs": 625,
+        "cpuSystemMs": 234,
+        "cpuTotalMs": 859,
+        "cpuUserMsPerOperation": 29.761904761904763,
+        "cpuSystemMsPerOperation": 11.142857142857142,
+        "cpuTotalMsPerOperation": 40.904761904761905,
+        "operationWallMs": {
+          "p50": 37.49540000000002,
+          "p95": 40.57730000000004,
+          "max": 46.175700000000006
+        },
+        "wallMsPerOperation": 36.78005238095238
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 2000,
+        "baselineAfterFixtureGc": {
+          "rss": 63180800,
+          "heapTotal": 49385472,
+          "heapUsed": 14607624,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 224702464,
+          "heapTotal": 191606784,
+          "heapUsed": 161377728,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 195231744,
+          "heapTotal": 138883072,
+          "heapUsed": 114045312,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 126017536,
+          "heapTotal": 49385472,
+          "heapUsed": 14590904,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": -16720,
+        "retainedRssDeltaFromFixtureBaseline": 62836736,
+        "lifetimeMaxRssRawPlatformUnits": 232844
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 2000,
+        "visibleTailBlocks": 100,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 3,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "long",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 20,
+        "wallMs": 776.1068,
+        "cpuUserMs": 703,
+        "cpuSystemMs": 157,
+        "cpuTotalMs": 860,
+        "cpuUserMsPerOperation": 35.15,
+        "cpuSystemMsPerOperation": 7.85,
+        "cpuTotalMsPerOperation": 43,
+        "operationWallMs": {
+          "p50": 37.5249,
+          "p95": 43.47750000000002,
+          "max": 47.87699999999995
+        },
+        "wallMsPerOperation": 38.80534
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 2000,
+        "baselineAfterFixtureGc": {
+          "rss": 62803968,
+          "heapTotal": 49385472,
+          "heapUsed": 14606544,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 224419840,
+          "heapTotal": 192131072,
+          "heapUsed": 161377728,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 175939584,
+          "heapTotal": 122314752,
+          "heapUsed": 92052400,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 122486784,
+          "heapTotal": 49647616,
+          "heapUsed": 14590904,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": -15640,
+        "retainedRssDeltaFromFixtureBaseline": 59682816,
+        "lifetimeMaxRssRawPlatformUnits": 231636
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 2000,
+        "visibleTailBlocks": 100,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 3,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "long",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 665,
+        "wallMs": 750.3524,
+        "cpuUserMs": 579,
+        "cpuSystemMs": 188,
+        "cpuTotalMs": 767,
+        "cpuUserMsPerOperation": 0.8706766917293233,
+        "cpuSystemMsPerOperation": 0.28270676691729324,
+        "cpuTotalMsPerOperation": 1.1533834586466165,
+        "operationWallMs": {
+          "p50": 1.1017000000000507,
+          "p95": 1.487400000000008,
+          "max": 3.433899999999994
+        },
+        "wallMsPerOperation": 1.1283494736842106
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 2000,
+        "baselineAfterFixtureGc": {
+          "rss": 60059648,
+          "heapTotal": 44666880,
+          "heapUsed": 9651720,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 103313408,
+          "heapTotal": 63905792,
+          "heapUsed": 44753000,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 92495872,
+          "heapTotal": 53161984,
+          "heapUsed": 21988440,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 83795968,
+          "heapTotal": 45191168,
+          "heapUsed": 9972664,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 320944,
+        "retainedRssDeltaFromFixtureBaseline": 23736320,
+        "lifetimeMaxRssRawPlatformUnits": 101892
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 100,
+        "visibleTailBlocks": 100,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 1,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "large-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 7,
+        "wallMs": 831.2968000000001,
+        "cpuUserMs": 656,
+        "cpuSystemMs": 234,
+        "cpuTotalMs": 890,
+        "cpuUserMsPerOperation": 93.71428571428571,
+        "cpuSystemMsPerOperation": 33.42857142857143,
+        "cpuTotalMsPerOperation": 127.14285714285714,
+        "operationWallMs": {
+          "p50": 116.14069999999992,
+          "p95": 133.3597000000001,
+          "max": 133.3597000000001
+        },
+        "wallMsPerOperation": 118.75668571428572
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 62205952,
+          "heapTotal": 56733696,
+          "heapUsed": 22553552,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 295985152,
+          "heapTotal": 291192832,
+          "heapUsed": 256906264,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 224059392,
+          "heapTotal": 219246592,
+          "heapUsed": 184814512,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 80265216,
+          "heapTotal": 74829824,
+          "heapUsed": 40611688,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 18058136,
+        "retainedRssDeltaFromFixtureBaseline": 18059264,
+        "lifetimeMaxRssRawPlatformUnits": 324320
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 1,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "large-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 469,
+        "wallMs": 751.4024,
+        "cpuUserMs": 578,
+        "cpuSystemMs": 172,
+        "cpuTotalMs": 750,
+        "cpuUserMsPerOperation": 1.232409381663113,
+        "cpuSystemMsPerOperation": 0.36673773987206826,
+        "cpuTotalMsPerOperation": 1.5991471215351811,
+        "operationWallMs": {
+          "p50": 1.5489000000000033,
+          "p95": 2.3444999999999823,
+          "max": 3.8605999999999767
+        },
+        "wallMsPerOperation": 1.6021373134328356
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 65183744,
+          "heapTotal": 56995840,
+          "heapUsed": 22650256,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 102928384,
+          "heapTotal": 75046912,
+          "heapUsed": 52215600,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 88596480,
+          "heapTotal": 59772928,
+          "heapUsed": 27345624,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 85848064,
+          "heapTotal": 57257984,
+          "heapUsed": 23000392,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 350136,
+        "retainedRssDeltaFromFixtureBaseline": 20664320,
+        "lifetimeMaxRssRawPlatformUnits": 146840
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 2,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "large-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 395,
+        "wallMs": 751.0930000000001,
+        "cpuUserMs": 500,
+        "cpuSystemMs": 282,
+        "cpuTotalMs": 782,
+        "cpuUserMsPerOperation": 1.2658227848101267,
+        "cpuSystemMsPerOperation": 0.7139240506329114,
+        "cpuTotalMsPerOperation": 1.9797468354430379,
+        "operationWallMs": {
+          "p50": 1.8608000000000402,
+          "p95": 2.3673,
+          "max": 4.255600000000015
+        },
+        "wallMsPerOperation": 1.901501265822785
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 65314816,
+          "heapTotal": 57257984,
+          "heapUsed": 22650256,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 102817792,
+          "heapTotal": 75309056,
+          "heapUsed": 52215600,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 91258880,
+          "heapTotal": 63737856,
+          "heapUsed": 33320616,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 84971520,
+          "heapTotal": 57520128,
+          "heapUsed": 23000392,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 350136,
+        "retainedRssDeltaFromFixtureBaseline": 19656704,
+        "lifetimeMaxRssRawPlatformUnits": 146968
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 2,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "large-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 6,
+        "wallMs": 777.3254,
+        "cpuUserMs": 578,
+        "cpuSystemMs": 188,
+        "cpuTotalMs": 766,
+        "cpuUserMsPerOperation": 96.33333333333333,
+        "cpuSystemMsPerOperation": 31.333333333333332,
+        "cpuTotalMsPerOperation": 127.66666666666667,
+        "operationWallMs": {
+          "p50": 132.1963,
+          "p95": 139.53579999999994,
+          "max": 139.53579999999994
+        },
+        "wallMsPerOperation": 129.55423333333331
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 62263296,
+          "heapTotal": 56995840,
+          "heapUsed": 22553552,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 296144896,
+          "heapTotal": 291192832,
+          "heapUsed": 256904656,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 152256512,
+          "heapTotal": 147300352,
+          "heapUsed": 112723888,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 80416768,
+          "heapTotal": 75091968,
+          "heapUsed": 40611536,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 18057984,
+        "retainedRssDeltaFromFixtureBaseline": 18153472,
+        "lifetimeMaxRssRawPlatformUnits": 324456
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 3,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "large-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 7,
+        "wallMs": 763.6809999999999,
+        "cpuUserMs": 547,
+        "cpuSystemMs": 219,
+        "cpuTotalMs": 766,
+        "cpuUserMsPerOperation": 78.14285714285714,
+        "cpuSystemMsPerOperation": 31.285714285714285,
+        "cpuTotalMsPerOperation": 109.42857142857143,
+        "operationWallMs": {
+          "p50": 109.62020000000007,
+          "p95": 121.8306,
+          "max": 121.8306
+        },
+        "wallMsPerOperation": 109.0972857142857
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 61960192,
+          "heapTotal": 56995840,
+          "heapUsed": 22553552,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 295931904,
+          "heapTotal": 291192832,
+          "heapUsed": 256906280,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 223993856,
+          "heapTotal": 219508736,
+          "heapUsed": 184845224,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 80273408,
+          "heapTotal": 75091968,
+          "heapUsed": 40611688,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 18058136,
+        "retainedRssDeltaFromFixtureBaseline": 18313216,
+        "lifetimeMaxRssRawPlatformUnits": 324272
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 3,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "large-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 493,
+        "wallMs": 750.6962000000001,
+        "cpuUserMs": 468,
+        "cpuSystemMs": 297,
+        "cpuTotalMs": 765,
+        "cpuUserMsPerOperation": 0.949290060851927,
+        "cpuSystemMsPerOperation": 0.6024340770791075,
+        "cpuTotalMsPerOperation": 1.5517241379310345,
+        "operationWallMs": {
+          "p50": 1.4290999999999485,
+          "p95": 2.2661999999999694,
+          "max": 3.644900000000007
+        },
+        "wallMsPerOperation": 1.5227103448275865
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 64909312,
+          "heapTotal": 56995840,
+          "heapUsed": 22650256,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 102305792,
+          "heapTotal": 75046912,
+          "heapUsed": 52215600,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 92143616,
+          "heapTotal": 63938560,
+          "heapUsed": 34344800,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 85295104,
+          "heapTotal": 57257984,
+          "heapUsed": 23000392,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 350136,
+        "retainedRssDeltaFromFixtureBaseline": 20385792,
+        "lifetimeMaxRssRawPlatformUnits": 146736
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 1,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "oversized-tail-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 7,
+        "wallMs": 827.6770999999999,
+        "cpuUserMs": 578,
+        "cpuSystemMs": 250,
+        "cpuTotalMs": 828,
+        "cpuUserMsPerOperation": 82.57142857142857,
+        "cpuSystemMsPerOperation": 35.714285714285715,
+        "cpuTotalMsPerOperation": 118.28571428571429,
+        "operationWallMs": {
+          "p50": 116.89089999999999,
+          "p95": 137.49790000000007,
+          "max": 137.49790000000007
+        },
+        "wallMsPerOperation": 118.2395857142857
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 62414848,
+          "heapTotal": 56995840,
+          "heapUsed": 22553632,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 209461248,
+          "heapTotal": 204214272,
+          "heapUsed": 169788216,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 134729728,
+          "heapTotal": 129466368,
+          "heapUsed": 94900632,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 62906368,
+          "heapTotal": 57257984,
+          "heapUsed": 22788368,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 234736,
+        "retainedRssDeltaFromFixtureBaseline": 491520,
+        "lifetimeMaxRssRawPlatformUnits": 307396
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 1,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "oversized-tail-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 407,
+        "wallMs": 750.7689,
+        "cpuUserMs": 515,
+        "cpuSystemMs": 250,
+        "cpuTotalMs": 765,
+        "cpuUserMsPerOperation": 1.2653562653562653,
+        "cpuSystemMsPerOperation": 0.6142506142506142,
+        "cpuTotalMsPerOperation": 1.8796068796068797,
+        "operationWallMs": {
+          "p50": 1.7419999999999618,
+          "p95": 2.8045000000000186,
+          "max": 3.830500000000029
+        },
+        "wallMsPerOperation": 1.844641031941032
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 65781760,
+          "heapTotal": 56995840,
+          "heapUsed": 22650128,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 102146048,
+          "heapTotal": 74584064,
+          "heapUsed": 51444536,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 93745152,
+          "heapTotal": 66252800,
+          "heapUsed": 37954520,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 84602880,
+          "heapTotal": 57257984,
+          "heapUsed": 22935880,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 285752,
+        "retainedRssDeltaFromFixtureBaseline": 18821120,
+        "lifetimeMaxRssRawPlatformUnits": 146796
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 2,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "oversized-tail-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 434,
+        "wallMs": 750.3632,
+        "cpuUserMs": 579,
+        "cpuSystemMs": 172,
+        "cpuTotalMs": 751,
+        "cpuUserMsPerOperation": 1.3341013824884793,
+        "cpuSystemMsPerOperation": 0.39631336405529954,
+        "cpuTotalMsPerOperation": 1.7304147465437787,
+        "operationWallMs": {
+          "p50": 1.6464999999999463,
+          "p95": 2.5920999999999594,
+          "max": 4.095699999999965
+        },
+        "wallMsPerOperation": 1.728947465437788
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 66342912,
+          "heapTotal": 56995840,
+          "heapUsed": 22650128,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 102879232,
+          "heapTotal": 74584064,
+          "heapUsed": 51445736,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 101699584,
+          "heapTotal": 73658368,
+          "heapUsed": 49963736,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 85327872,
+          "heapTotal": 57257984,
+          "heapUsed": 22935880,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 285752,
+        "retainedRssDeltaFromFixtureBaseline": 18984960,
+        "lifetimeMaxRssRawPlatformUnits": 146972
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 2,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "oversized-tail-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 7,
+        "wallMs": 860.9449999999999,
+        "cpuUserMs": 718,
+        "cpuSystemMs": 266,
+        "cpuTotalMs": 984,
+        "cpuUserMsPerOperation": 102.57142857142857,
+        "cpuSystemMsPerOperation": 38,
+        "cpuTotalMsPerOperation": 140.57142857142858,
+        "operationWallMs": {
+          "p50": 122.4434,
+          "p95": 132.4742,
+          "max": 132.4742
+        },
+        "wallMsPerOperation": 122.99214285714285
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 62398464,
+          "heapTotal": 56995840,
+          "heapUsed": 22553664,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 209260544,
+          "heapTotal": 204476416,
+          "heapUsed": 169788248,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 134533120,
+          "heapTotal": 129204224,
+          "heapUsed": 94900664,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 62664704,
+          "heapTotal": 57257984,
+          "heapUsed": 22788400,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 234736,
+        "retainedRssDeltaFromFixtureBaseline": 266240,
+        "lifetimeMaxRssRawPlatformUnits": 307184
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 3,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "full",
+      "fixture": "oversized-tail-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 7,
+        "wallMs": 870.9844999999999,
+        "cpuUserMs": 688,
+        "cpuSystemMs": 250,
+        "cpuTotalMs": 938,
+        "cpuUserMsPerOperation": 98.28571428571429,
+        "cpuSystemMsPerOperation": 35.714285714285715,
+        "cpuTotalMsPerOperation": 134,
+        "operationWallMs": {
+          "p50": 123.72710000000006,
+          "p95": 137.52149999999995,
+          "max": 137.52149999999995
+        },
+        "wallMsPerOperation": 124.42635714285713
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 62271488,
+          "heapTotal": 56733696,
+          "heapUsed": 22553664,
+          "external": 1878300,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 209113088,
+          "heapTotal": 204214272,
+          "heapUsed": 169788248,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 134365184,
+          "heapTotal": 129466368,
+          "heapUsed": 94900664,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 62554112,
+          "heapTotal": 57257984,
+          "heapUsed": 22788400,
+          "external": 1878356,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 234736,
+        "retainedRssDeltaFromFixtureBaseline": 282624,
+        "lifetimeMaxRssRawPlatformUnits": 307016
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    },
+    {
+      "repetition": 3,
+      "format": "monocode.remote-session-resource-worker.v1",
+      "mode": "lazy",
+      "fixture": "oversized-tail-tool",
+      "runtime": {
+        "node": "v22.22.3",
+        "platform": "win32",
+        "arch": "x64"
+      },
+      "measurement": {
+        "targetMs": 750,
+        "warmupOperations": 2,
+        "operations": 360,
+        "wallMs": 750.4072,
+        "cpuUserMs": 500,
+        "cpuSystemMs": 234,
+        "cpuTotalMs": 734,
+        "cpuUserMsPerOperation": 1.3888888888888888,
+        "cpuSystemMsPerOperation": 0.65,
+        "cpuTotalMsPerOperation": 2.0388888888888888,
+        "operationWallMs": {
+          "p50": 2.0258999999999787,
+          "p95": 2.872799999999984,
+          "max": 4.11020000000002
+        },
+        "wallMsPerOperation": 2.0844644444444445
+      },
+      "memory": {
+        "unit": "bytes",
+        "fixtureSourceBlocksRetained": 81,
+        "baselineAfterFixtureGc": {
+          "rss": 66080768,
+          "heapTotal": 57257984,
+          "heapUsed": 22650128,
+          "external": 1876252,
+          "arrayBuffers": 16619
+        },
+        "sampledHighWaterAtOperationBoundaries": {
+          "rss": 102334464,
+          "heapTotal": 74846208,
+          "heapUsed": 51593536,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "transientAfterTwoAdditionalOperations": {
+          "rss": 86577152,
+          "heapTotal": 58183680,
+          "heapUsed": 24207768,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedClientStateAfterGc": {
+          "rss": 85839872,
+          "heapTotal": 57520128,
+          "heapUsed": 22935672,
+          "external": 1876308,
+          "arrayBuffers": 16635
+        },
+        "retainedHeapDeltaFromFixtureBaseline": 285544,
+        "retainedRssDeltaFromFixtureBaseline": 19759104,
+        "lifetimeMaxRssRawPlatformUnits": 146760
+      },
+      "finalState": {
+        "revision": 2,
+        "clientLoadedBlocks": 81,
+        "visibleTailBlocks": 81,
+        "visibleTailOrderValid": true
+      }
+    }
+  ]
+}

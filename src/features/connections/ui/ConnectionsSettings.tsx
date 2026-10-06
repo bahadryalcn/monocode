@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { RemoteOutboxNotice } from "./RemoteOutboxNotice";
+import { RemoteDataStatus } from "./RemoteDataStatus";
 import { useEffect, useRef, useState } from "react";
-import { Internet, Loader, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
+import {
+  Internet,
+  Loader,
+  Pencil,
+  Plus,
+  Trash2,
+} from "../../../shared/ui/icons";
 import {
   connectMachine,
   disconnectMachine,
@@ -61,7 +68,13 @@ function SyncLine({ machineId }: { machineId: string }) {
 }
 
 export function ConnectionsSettings() {
-  const { machines, loaded } = useRemoteMachines();
+  const {
+    machines,
+    loaded,
+    loading,
+    error: loadError,
+    refresh,
+  } = useRemoteMachines();
   const [adding, setAdding] = useState(false);
   // The machine whose definition the form edits; none when it adds one.
   const [editing, setEditing] = useState<RemoteMachine>();
@@ -218,7 +231,11 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
       clearTimeout(timer);
     };
   }, [machines, busy]);
-  const begin = async (machine?: RemoteMachine, upgrade = false, edited = false) => {
+  const begin = async (
+    machine?: RemoteMachine,
+    upgrade = false,
+    edited = false,
+  ) => {
     if (submitting.current) return;
     submitting.current = true;
     afterEdit.current = edited;
@@ -284,7 +301,11 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
     setBusy(true);
     setError("");
     try {
-      const saved = await updateMachine(editing, parsed.value, impact.reconnect);
+      const saved = await updateMachine(
+        editing,
+        parsed.value,
+        impact.reconnect,
+      );
       closeForm();
       setBusy(false);
       if (impact.reconnect) await begin(saved, false, true);
@@ -369,6 +390,22 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
   return (
     <div data-setting-id="remote-machines" className="flex flex-col gap-5">
       <RemoteOutboxNotice />
+      <RemoteDataStatus
+        label="machines"
+        state={{
+          phase: loading
+            ? machines.length
+              ? "refreshing"
+              : "loading"
+            : loadError
+              ? "error"
+              : machines.length
+                ? "ready"
+                : "empty",
+          error: loadError,
+        }}
+        onRefresh={refresh}
+      />
       <div className="flex items-end justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-[13px] font-semibold text-content">
@@ -531,7 +568,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
             </div>
           ))}
         </div>
-      ) : loaded && !adding ? (
+      ) : loaded && !loading && !loadError && !adding ? (
         <div className="rounded-xl border border-dashed border-content/15 px-5 py-8 text-center text-[13px] text-content/45">
           Add your always-on Windows, Mac, or Linux machine to get started.
         </div>
@@ -676,7 +713,13 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               Cancel
             </button>
             <button className={button} disabled={busy || !target.trim()}>
-              {editing ? (busy ? "Saving…" : saveLabel) : busy ? "Connecting…" : "Connect"}
+              {editing
+                ? busy
+                  ? "Saving…"
+                  : saveLabel
+                : busy
+                  ? "Connecting…"
+                  : "Connect"}
             </button>
           </div>
         </form>

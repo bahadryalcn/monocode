@@ -10,11 +10,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+#[path = "remote_changes.rs"]
+mod changes;
+
 /// Sent to every window when a machine's SSH process ends on its own.
 const TUNNEL_EXIT_EVENT: &str = "remote://tunnel-exit";
 
 #[derive(Default)]
 pub struct RemoteConnections {
+    changes: changes::Changes,
+    reads: changes::Reads,
     store: Mutex<()>,
     tunnels: Tunnels,
     jobs: Mutex<HashMap<String, Arc<Job>>>,
@@ -479,6 +484,7 @@ pub fn remote_disconnect(
 #[tauri::command(async)]
 pub fn remote_request(
     app: AppHandle,
+    window: tauri::Window,
     state: State<'_, RemoteConnections>,
     machine_id: String,
     method: String,
@@ -488,6 +494,23 @@ pub fn remote_request(
 ) -> Result<Value, String> {
     if !supported_remote_method(&method) {
         return Err("Unsupported remote operation".into());
+    }
+    if method == "machine.changes"
+        && params.get("tasksKnown").is_none()
+        && ["sessions", "projects"].iter().all(|key| {
+            params
+                .get(key)
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        })
+    {
+        // Releasing a renderer registration is local. Never start an SSH tunnel
+        // or read credentials merely because a disconnected pane closes.
+        return state
+            .changes
+            .request(&machine_id, window.label(), params, |_| {
+                Err("Empty subscriptions do not need a host request".into())
+            });
     }
     let machine = {
         let _guard = state
@@ -521,13 +544,32 @@ pub fn remote_request(
         .as_ref()
         .map(|lease| lease.endpoint.as_str())
         .unwrap_or(&machine.endpoint);
-    let response = rpc(
-        endpoint,
-        &machine.token,
-        Some(&machine.environment_id),
-        &method,
-        params,
-    );
+    let send = |params| {
+        rpc(
+            endpoint,
+            &machine.token,
+            Some(&machine.environment_id),
+            &method,
+            params,
+        )
+    };
+    let response = if method == "machine.changes" {
+        state
+            .changes
+            .request(&machine.id, window.label(), params, send)
+    } else if shareable_remote_read(&method, &params) {
+        let key = serde_json::to_string(&json!([
+            machine.id,
+            machine.environment_id,
+            machine.token,
+            method,
+            params
+        ]))
+        .map_err(|_| "Invalid remote read")?;
+        state.reads.request(key, || send(params))
+    } else {
+        send(params)
+    };
     // The tunnel accepted the connection but the machine refused it onward.
     let response = match response {
         Err(error)
@@ -560,10 +602,42 @@ pub fn remote_request(
     Ok(result)
 }
 
+fn shareable_remote_read(method: &str, params: &Value) -> bool {
+    matches!(
+        method,
+        "sessions.sync"
+            | "sessions.page"
+            | "sessions.block"
+            | "sessions.syncChunk"
+            | "sessions.list"
+            | "environment.describe"
+            | "models.list"
+            | "git.diff"
+            | "git.index"
+            | "git.fileDiff"
+            | "git.branches"
+            | "git.worktrees"
+    ) || (method == "workspace.run"
+        && matches!(
+            params.get("command").and_then(Value::as_str),
+            Some(
+                "git_diff_index"
+                    | "git_file_diff"
+                    | "git_diff_files"
+                    | "git_diff_stats"
+                    | "stat_files"
+                    | "list_dir"
+                    | "list_project_files"
+            )
+        ))
+}
+
 fn supported_remote_method(method: &str) -> bool {
     matches!(
         method,
         "environment.describe"
+            | "machine.changes"
+            | "commands.status"
             | "projects.list"
             | "projects.browse"
             | "projects.open"
@@ -573,6 +647,7 @@ fn supported_remote_method(method: &str) -> bool {
             | "sessions.delete"
             | "sessions.sync"
             | "sessions.page"
+            | "sessions.block"
             | "sessions.syncChunk"
             | "sessions.adopted"
             | "sessions.desktopLive"
@@ -925,6 +1000,33 @@ pub fn remote_ssh_cancel(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sharing_never_serializes_writes_behind_a_read() {
+        assert!(super::shareable_remote_read(
+            "git.index",
+            &serde_json::json!({"projectId":"p"})
+        ));
+        assert!(super::shareable_remote_read(
+            "git.fileDiff",
+            &serde_json::json!({"projectId":"p","path":"a.txt"})
+        ));
+        assert!(!super::shareable_remote_read(
+            "git.action",
+            &serde_json::json!({"action":"commit"})
+        ));
+        assert!(super::shareable_remote_read(
+            "workspace.run",
+            &serde_json::json!({"command":"stat_files"})
+        ));
+        assert!(!super::shareable_remote_read(
+            "workspace.run",
+            &serde_json::json!({"command":"git_commit"})
+        ));
+        assert!(!super::shareable_remote_read(
+            "commands.dispatch",
+            &serde_json::json!({"type":"cancel"})
+        ));
+    }
     use super::*;
 
     #[test]
@@ -949,7 +1051,10 @@ mod tests {
         assert_eq!(rpc_timeout("workspace.run", &read), DEFAULT_RPC_TIMEOUT);
         assert_eq!(rpc_timeout("workspace.run", &none), DEFAULT_RPC_TIMEOUT);
         assert_eq!(rpc_timeout("git.index", &none), DEFAULT_RPC_TIMEOUT);
-        assert_eq!(rpc_timeout("environment.describe", &none), DEFAULT_RPC_TIMEOUT);
+        assert_eq!(
+            rpc_timeout("environment.describe", &none),
+            DEFAULT_RPC_TIMEOUT
+        );
     }
 
     #[test]

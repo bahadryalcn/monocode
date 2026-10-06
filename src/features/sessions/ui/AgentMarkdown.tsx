@@ -181,6 +181,9 @@ function fileLinkMenuItems(
       id: "reveal",
       label: remote ? "Open Containing Folder in MonoCode" : REVEAL_LABEL,
     },
+    ...(remote
+      ? [{ kind: "item" as const, id: "reveal-local", label: REVEAL_LABEL }]
+      : []),
     { kind: "sep" },
     { kind: "item", id: "copy-path", label: "Copy Path" },
     ...(canCopyRelativePath
@@ -637,6 +640,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   const [fileMenu, setFileMenu] = useState<FileLinkMenu | null>(null);
   const [fileActionError, setFileActionError] = useState<string | null>(null);
   const [remoteFolder, setRemoteFolder] = useState<string>();
+  const [revealRemoteOnOpen, setRevealRemoteOnOpen] = useState(false);
   const openFile = useCallback<OpenFileFn>(
     (...args) => {
       const [path] = args;
@@ -646,14 +650,17 @@ export const AgentMarkdown = memo(function AgentMarkdown({
       }
       // Host file managers are not visible on this computer. Folders open here.
       void listDir(path).then(
-        () => setRemoteFolder(path),
+        () => {
+          setRevealRemoteOnOpen(false);
+          setRemoteFolder(path);
+        },
         () => onOpenFile?.(...args),
       );
     },
     [onOpenFile],
   );
   const onRevealFile = useCallback(
-    (path: string) => {
+    (path: string, revealLocal = false) => {
       setFileActionError(null);
       void (async () => {
         const resolved = cwd ? await resolveFileOpenRequest(cwd, path) : path;
@@ -662,6 +669,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
             () => resolved,
             () => parentPath(resolved),
           );
+          setRevealRemoteOnOpen(revealLocal);
           setRemoteFolder(folder);
           return;
         }
@@ -758,8 +766,8 @@ export const AgentMarkdown = memo(function AgentMarkdown({
     setFileMenu(null);
     setFileActionError(null);
 
-    if (id === "reveal") {
-      onRevealFile(reference);
+    if (id === "reveal" || id === "reveal-local") {
+      onRevealFile(reference, id === "reveal-local");
       return;
     }
     // The context menu resolves shortened paths in the same way as a click.
@@ -830,8 +838,9 @@ export const AgentMarkdown = memo(function AgentMarkdown({
           ) : null}
           {remoteFolder ? (
             <ChatFolderBrowser
-              key={remoteFolder}
+              key={`${remoteFolder}:${revealRemoteOnOpen}`}
               path={remoteFolder}
+              revealOnOpen={revealRemoteOnOpen}
               onOpenFile={onOpenFile}
               onClose={() => setRemoteFolder(undefined)}
             />

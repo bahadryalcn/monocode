@@ -4,6 +4,7 @@ import {
 } from "../../connections/model/protocol";
 import { RUNTIME_MODES, type RuntimeMode } from "../../sessions/model/session";
 import type { HostTask } from "./hostTasks";
+import { readTaskInstructions } from "./taskInstructions";
 
 /** One main job a machine's host breaks into tasks across several of its
  * projects and carries out. The host advertises this capability when it has
@@ -288,12 +289,9 @@ export function parseGoalPlan(
       );
     if (typeof v.title !== "string" || !v.title.trim() || v.title.length > 200)
       throw new Error(`${name} needs a “title” under 200 characters.`);
-    if (
-      typeof v.prompt !== "string" ||
-      !v.prompt.trim() ||
-      v.prompt.length > 256_000 ||
-      v.prompt.includes("\0")
-    )
+    const structured = readTaskInstructions(v.prompt);
+    const prompt = typeof v.prompt === "string" ? v.prompt : structured ? JSON.stringify(structured) : "";
+    if (!prompt.trim() || prompt.length > 256_000 || prompt.includes("\0"))
       throw new Error(`${name} has no “prompt”.`);
     const dependsOn = v.dependsOn ?? [];
     if (
@@ -305,7 +303,7 @@ export function parseGoalPlan(
       key: v.key,
       project,
       title: v.title.trim(),
-      prompt: v.prompt,
+      prompt,
       dependsOn: [...new Set(dependsOn as string[])],
     });
   });

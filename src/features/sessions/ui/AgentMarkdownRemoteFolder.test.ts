@@ -20,6 +20,7 @@ const onOpenFile = vi.fn();
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.clearAllMocks();
+  localStorage.clear();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -32,9 +33,15 @@ beforeEach(() => {
     if (path === "remote://env/repo/assets/images") return [];
     throw new Error("Not a directory");
   });
-  actions.statFiles.mockImplementation(async (paths: string[]) => paths.map((path) => ({
-    path, mtimeMs: null, isDir: path === "remote://env/repo/assets" || path === "remote://env/repo/assets/images",
-  })));
+  actions.statFiles.mockImplementation(async (paths: string[]) =>
+    paths.map((path) => ({
+      path,
+      mtimeMs: null,
+      isDir:
+        path === "remote://env/repo/assets" ||
+        path === "remote://env/repo/assets/images",
+    })),
+  );
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -53,7 +60,9 @@ async function render(text: string) {
   );
 }
 it("recognizes existing bare and relative folders while leaving protocol methods as code", async () => {
-  await render("`assets/images` and `currentTime/read` and `assets` and `someVariable`");
+  await render(
+    "`assets/images` and `currentTime/read` and `assets` and `someVariable`",
+  );
   const codes = [...container.querySelectorAll("code")];
   expect(codes[0].getAttribute("role")).toBe("link");
   expect(codes[1].getAttribute("role")).toBeNull();
@@ -98,4 +107,94 @@ it("opens a remote file's containing folder from its visible icon", async () => 
   expect(dialog.textContent).toContain("This folder is empty");
   expect(actions.revealPath).not.toHaveBeenCalled();
   expect(actions.openPathWithDefaultApp).not.toHaveBeenCalled();
+});
+
+it("opens mapped folders on this computer and reuses the mapping for subfolders", async () => {
+  const { saveExplorerMapping } =
+    await import("../../../shared/lib/remoteExplorerPaths");
+  saveExplorerMapping("remote://env/repo/assets", "\\\\MacBook\\assets");
+  await render("`/repo/assets`");
+  await act(async () =>
+    container.querySelector<HTMLElement>('code[role="link"]')!.click(),
+  );
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  const reveal = [...dialog.querySelectorAll("button")].find((button) =>
+    /Reveal in|Open in File Manager/.test(button.textContent ?? ""),
+  )!;
+  await act(async () => reveal.click());
+  expect(actions.openPathWithDefaultApp).toHaveBeenLastCalledWith(
+    "//MacBook/assets",
+  );
+  await act(async () =>
+    [...dialog.querySelectorAll("button")]
+      .find((button) => button.textContent === "images")!
+      .click(),
+  );
+  await act(async () => reveal.click());
+  expect(actions.openPathWithDefaultApp).toHaveBeenLastCalledWith(
+    "//MacBook/assets/images",
+  );
+});
+
+it("requests an explicit share mapping and reports OS access failures", async () => {
+  await render("`/repo/assets`");
+  await act(async () =>
+    container.querySelector<HTMLElement>('code[role="link"]')!.click(),
+  );
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+  await act(async () =>
+    [...dialog.querySelectorAll("button")]
+      .find((button) =>
+        /Reveal in|Open in File Manager/.test(button.textContent ?? ""),
+      )!
+      .click(),
+  );
+  expect(dialog.textContent).toContain("Same folder on this computer");
+  expect(actions.openPathWithDefaultApp).not.toHaveBeenCalled();
+  const input = dialog.querySelectorAll("input")[1];
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!.call(input, "\\\\MacBook\\assets");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  actions.openPathWithDefaultApp.mockRejectedValueOnce(
+    new Error("Network share unavailable"),
+  );
+  await act(async () =>
+    dialog
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(actions.openPathWithDefaultApp).toHaveBeenCalledWith(
+    "//MacBook/assets",
+  );
+  expect(dialog.querySelector('[role="alert"]')!.textContent).toContain(
+    "Network share unavailable",
+  );
+});
+
+it("offers local file-manager reveal in the remote context menu", async () => {
+  await render("[Summary](/repo/assets/özet.md)");
+  await act(async () =>
+    container
+      .querySelector("a")!
+      .dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      ),
+  );
+  const menu = document.querySelector('[role="menu"]')!;
+  const reveal = [
+    ...menu.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+  ].find((item) =>
+    /^(Reveal in Finder|Reveal in File Explorer|Open Containing Folder)$/.test(
+      item.textContent ?? "",
+    ),
+  )!;
+  expect(reveal).toBeTruthy();
+  await act(async () => reveal.click());
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("Same folder on this computer");
+  expect(dialog.textContent).toContain("remote://env/repo/assets");
 });

@@ -30,6 +30,7 @@ export async function deleteSessionsInBulk(
     isRunning: (sessionId: string) => boolean;
     /** Resolves false when the conversation was kept; throws on an error. */
     deleteOne: (sessionId: string) => Promise<boolean | void>;
+    onProgress?: (completed: number, total: number) => void;
   },
 ): Promise<BulkSessionDeleteResult> {
   const result: BulkSessionDeleteResult = {
@@ -37,9 +38,14 @@ export async function deleteSessionsInBulk(
     skipped: [],
     failed: [],
   };
+  options.onProgress?.(0, sessionIds.length);
   for (const sessionId of sessionIds) {
     if (options.isRunning(sessionId)) {
       result.skipped.push(sessionId);
+      options.onProgress?.(
+        result.deleted.length + result.skipped.length + result.failed.length,
+        sessionIds.length,
+      );
       continue;
     }
     try {
@@ -53,8 +59,20 @@ export async function deleteSessionsInBulk(
       if (RUNNING_REFUSAL.test(detail)) result.skipped.push(sessionId);
       else result.failed.push({ sessionId, error: detail });
     }
+    options.onProgress?.(
+      result.deleted.length + result.skipped.length + result.failed.length,
+      sessionIds.length,
+    );
   }
   return result;
+}
+
+export function bulkDeleteOutcome(result: BulkSessionDeleteResult): string {
+  const success =
+    result.deleted.length > 0
+      ? `${conversations(result.deleted.length)} deleted.`
+      : "";
+  return [success, bulkDeleteSummary(result)].filter(Boolean).join(" ");
 }
 
 const conversations = (count: number, adjective = "") =>

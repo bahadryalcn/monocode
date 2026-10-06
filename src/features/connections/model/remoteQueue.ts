@@ -29,6 +29,23 @@ export type RemoteQueue = {
 };
 
 export const EMPTY_REMOTE_QUEUE: RemoteQueue = { messages: [] };
+export const REMOTE_QUEUE_MAX_MESSAGES = 100;
+export const REMOTE_QUEUE_MAX_BYTES = 32 * 1024 * 1024;
+
+/** Upper bound without serializing/copying attachment bodies. Existing saved
+ * queues are never truncated; a full queue leaves the next draft in the composer. */
+export function canEnqueueRemoteMessage(queue: RemoteQueue, message: RemoteQueueDraft): boolean {
+  if (queue.messages.length >= REMOTE_QUEUE_MAX_MESSAGES) return false;
+  let bytes = 0;
+  for (const entry of [...queue.messages, message]) {
+    bytes += entry.text.length * 3;
+    for (const attachment of entry.attachments) {
+      bytes += (attachment.data?.length ?? 0) * 2;
+    }
+    if (bytes > REMOTE_QUEUE_MAX_BYTES) return false;
+  }
+  return true;
+}
 
 export type RemoteQueueDraft = {
   modelTarget?: QueuedMessage["modelTarget"];
@@ -53,6 +70,7 @@ export function enqueueRemoteMessage(
   queue: RemoteQueue,
   message: RemoteQueueDraft,
 ): RemoteQueue {
+  if (!canEnqueueRemoteMessage(queue, message)) throw new Error("Remote queue is full");
   return {
     ...queue,
     messages: [...queue.messages, message],

@@ -23,6 +23,29 @@ const sync = (text: string): SessionSync => ({
   blocks: [{ id: "block", role: "assistant", text }],
 });
 
+it("bounds a single transfer and aggregate retained transfer bytes", () => {
+  const tooSmall = new SyncTransfers({ inline: 64, chunk: 32, maxUnits: 128 });
+  expect(() => tooSmall.respond("session", sync("x".repeat(256)))).toThrow(
+    "budget",
+  );
+  const transfers = new SyncTransfers({
+    inline: 64,
+    chunk: 256,
+    maxUnits: 4096,
+    cacheBytes: 4096,
+  });
+  const first = transfers.respond("session", sync("x".repeat(1000)));
+  const second = transfers.respond("session", sync("y".repeat(1000)));
+  if (first.kind !== "chunked" || second.kind !== "chunked")
+    throw new Error("Expected transfers");
+  expect(() => transfers.chunk("session", first.transfer, 0)).toThrow(
+    "expired",
+  );
+  expect(
+    transfers.chunk("session", second.transfer, 0).data.length,
+  ).toBeGreaterThan(0);
+});
+
 function read(transfers: SyncTransfers, transfer: string, length: number) {
   const pieces: string[] = [];
   for (let offset = 0; offset < length;) {

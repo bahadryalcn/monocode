@@ -5,7 +5,8 @@ export const HOST_SETTINGS = "host.settings";
 
 export const MAX_RUNNING_TASKS_LIMIT = 8;
 export const DEFAULT_MAX_RUNNING_TASKS = 2;
-export const MAX_DAILY_AGENT_MINUTES = 1440;
+// Concurrent agents accumulate time independently, so a day's total can exceed 24h.
+export const MAX_DAILY_AGENT_MINUTES = Number.MAX_SAFE_INTEGER;
 
 export type HostSettings = {
   /** How many tasks the host works on at once, 1 to 8. */

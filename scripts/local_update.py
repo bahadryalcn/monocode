@@ -70,6 +70,12 @@ def sync_source(archive, source, workspace):
 def dependency_key(files):
     return fingerprint({'package.json': files['package.json']})
 
+def host_key(files):
+    # esbuild bundles host/cli.ts together with shared adapters under src/.
+    return fingerprint({n: b for n, b in files.items()
+                        if '.test.' not in n and
+                        (n.startswith(('host/', 'src/')) or n.startswith('package.') or n == 'LICENSE')})
+
 def dependency_action(workspace, files, installed_key=None, previous_package=None):
     """Never reinstall just because a build cache is missing or force-build is set."""
     if not (workspace / 'node_modules').is_dir():
@@ -224,7 +230,7 @@ def worker(request):
         shipped = {n: b for n, b in files.items() if '.test.' not in n and not n.startswith('tests/')}
         keys = {
             'deps': dependency_key(files),
-            'host': fingerprint({n: b for n, b in shipped.items() if n.startswith('host/') or n.startswith('package.') or n == 'LICENSE'}),
+            'host': host_key(shipped),
             'web': fingerprint({n: b for n, b in shipped.items()
                                 if not n.startswith(('host/', 'src-tauri/', 'Cargo.', 'scripts/', '.github/'))
                                 and n not in ('AGENTS.md', 'README.md', 'LICENSE')}),

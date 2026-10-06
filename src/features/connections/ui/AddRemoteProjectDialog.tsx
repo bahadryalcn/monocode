@@ -11,6 +11,7 @@ import {
 import { remoteProjectMachines } from "../model/localSync";
 import { openRemoteProject } from "../model/remoteProjects";
 import type { HostDirectory } from "../model/protocol";
+import { RemoteDataStatus } from "./RemoteDataStatus";
 
 /** Adds a project whose folder is on a connected machine. Sessions in it run
  * on that machine; the project otherwise behaves like any other in the rail. */
@@ -22,7 +23,13 @@ export function AddRemoteProjectDialog({
   /** Receives the new project's rail key. */
   onOpen: (key: string) => void;
 }) {
-  const { machines: allMachines, loaded } = useRemoteMachines();
+  const {
+    machines: allMachines,
+    loaded,
+    loading: machinesLoading,
+    error: machinesError,
+    refresh: refreshMachines,
+  } = useRemoteMachines();
   const machines = remoteProjectMachines(allMachines);
   const [machineId, setMachineId] = useState<string>();
   const machine =
@@ -34,6 +41,9 @@ export function AddRemoteProjectDialog({
   const [error, setError] = useState("");
   const alive = useRef(true);
   const requestVersion = useRef(0);
+  const requestedPath = useRef<string | undefined>(undefined);
+  const [browseError, setBrowseError] = useState("");
+  const [verifiedAt, setVerifiedAt] = useState<number>();
   const cancel = () => {
     alive.current = false;
     requestVersion.current++;
@@ -62,9 +72,11 @@ export function AddRemoteProjectDialog({
   const browse = async (next?: string) => {
     if (!machine) return;
     const version = ++requestVersion.current;
+    requestedPath.current = next;
     setLoading(true);
     setOpening(false);
     setError("");
+    setBrowseError("");
     try {
       const value = await remoteRequest<HostDirectory>(
         machine.id,
@@ -76,36 +88,52 @@ export function AddRemoteProjectDialog({
       if (!alive.current || version !== requestVersion.current) return;
       setDirectory(value);
       setPath(value.path);
+      setVerifiedAt(Date.now());
     } catch (reason) {
-      if (alive.current && version === requestVersion.current) setError(String(reason).replace(/^Error: /, ""));
+      if (alive.current && version === requestVersion.current)
+        setBrowseError(String(reason).replace(/^Error: /, ""));
     } finally {
-      if (alive.current && version === requestVersion.current) setLoading(false);
+      if (alive.current && version === requestVersion.current)
+        setLoading(false);
     }
   };
 
   useEffect(() => {
     setDirectory(undefined);
     setPath("");
+    setVerifiedAt(undefined);
     if (machine) void browse();
   }, [machine?.id]);
 
   const open = async () => {
-    if (!machine || !path.trim() || opening) return;
+    if (
+      !machine ||
+      !path.trim() ||
+      opening ||
+      loading ||
+      browseError ||
+      machinesError
+    )
+      return;
     const version = ++requestVersion.current;
     setOpening(true);
     setLoading(false);
     setError("");
     try {
       const project = await openRemoteProject(
-        (method, params) => remoteRequest(machine.id, method, params, false, true),
+        (method, params) =>
+          remoteRequest(machine.id, method, params, false, true),
         machine.environmentId,
         path.trim(),
       );
-      if (alive.current && version === requestVersion.current) onOpen(project.key);
+      if (alive.current && version === requestVersion.current)
+        onOpen(project.key);
     } catch (reason) {
-      if (alive.current && version === requestVersion.current) setError(String(reason).replace(/^Error: /, ""));
+      if (alive.current && version === requestVersion.current)
+        setError(String(reason).replace(/^Error: /, ""));
     } finally {
-      if (alive.current && version === requestVersion.current) setOpening(false);
+      if (alive.current && version === requestVersion.current)
+        setOpening(false);
     }
   };
 
@@ -133,7 +161,21 @@ export function AddRemoteProjectDialog({
             MonoCode here.
           </p>
         </div>
-        {!loaded ? null : !machine ? (
+        {machinesLoading || machinesError ? (
+          <RemoteDataStatus
+            label="machines"
+            state={{
+              phase: machinesLoading
+                ? machines.length
+                  ? "refreshing"
+                  : "loading"
+                : "error",
+              error: machinesError,
+            }}
+            onRefresh={refreshMachines}
+          />
+        ) : null}
+        {!loaded || (machinesError && !machine) ? null : !machine ? (
           <>
             <p className="text-[12px] leading-snug text-content/55">
               No machines are connected yet. Add one in Settings, then open a
@@ -189,6 +231,35 @@ export function AddRemoteProjectDialog({
               autoComplete="off"
               onChange={(event) => setPath(event.target.value)}
             />
+            <RemoteDataStatus
+              label="folders"
+              state={{
+                phase: loading
+                  ? directory
+                    ? "refreshing"
+                    : "loading"
+                  : browseError
+                    ? "error"
+                    : directory
+                      ? directory.entries.length
+                        ? "ready"
+                        : "empty"
+                      : "loading",
+                error: browseError,
+                updatedAt: verifiedAt,
+              }}
+              onRefresh={() =>
+                void browse(
+                  browseError ? requestedPath.current : directory?.path,
+                )
+              }
+              disabled={opening}
+            />
+            {directory && (loading || browseError) ? (
+              <p className="text-[12px] text-content/55">
+                Showing last loaded folder: {directory.path}
+              </p>
+            ) : null}
             <div
               aria-label="Folders"
               className="min-h-24 flex-1 overflow-y-auto overscroll-contain rounded-md border border-content/10"
@@ -237,7 +308,13 @@ export function AddRemoteProjectDialog({
               </button>
               <button
                 type="submit"
-                disabled={opening || !path.trim()}
+                disabled={
+                  opening ||
+                  loading ||
+                  !!browseError ||
+                  !!machinesError ||
+                  !path.trim()
+                }
                 className="rounded-md bg-selection px-3 py-1.5 text-[12px] font-medium hover:bg-selection-hover disabled:opacity-40"
               >
                 {opening ? "Opening…" : "Open"}

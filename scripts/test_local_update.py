@@ -10,11 +10,21 @@ import time
 import unittest
 from unittest.mock import patch
 
-from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, finish_build
+from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, finish_build, host_key
 from local_update_lib import backup, count, safe_child, write_json, read_json, alive, digest, windows_binary_digest
 from local_install import wait_idle, stop_windows_host
 
 class LocalUpdateTests(unittest.TestCase):
+    def test_shared_provider_edit_invalidates_host_cache(self):
+        files = {'host/cli.ts': b'entry',
+                 'src/integrations/harness/providers/codex/codex.ts': b'old'}
+        before = host_key(files)
+        files['src/integrations/harness/providers/codex/codex.ts'] = b'excludeTurns: true'
+        self.assertNotEqual(before, host_key(files))
+        after = host_key(files)
+        files['src/integrations/harness/providers/codex/codexLive.test.ts'] = b'test'
+        self.assertEqual(after, host_key(files))
+
     def test_exited_windows_host_does_not_require_a_live_lifecycle_endpoint(self):
         with patch('local_install.read_json', return_value={'pid': 123, 'port': 3774}), \
              patch('local_install.alive', return_value=False), patch('local_install.lifecycle') as lifecycle:

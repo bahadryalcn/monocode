@@ -9,6 +9,10 @@ function record(id:string,blocks:unknown[],harness="codex"){return {id,cwd:"/tmp
 beforeEach(()=>{vi.useFakeTimers();vi.stubGlobal("window",{setTimeout:(fn:()=>void,delay:number)=>setTimeout(fn,delay)});vi.mocked(invoke).mockReset();vi.mocked(claudeShellCommands).mockReset();});
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals();});
 describe("progressive stored history",()=>{
+  it("never persists an incomplete remote view even if it has a local path",()=>{
+    const partial={id:"partial",cwd:"/local/project",harness:"codex",model:"m",runtimeMode:"supervised",title:"t",blocks:[{id:"u",role:"user",text:"tail"}],historyPartial:true};
+    expect(shouldPersistSession(partial as Parameters<typeof shouldPersistSession>[0])).toBe(false);
+  });
   it("publishes a nonpersistable tail without waiting for earlier pages",async()=>{
     const earlier=deferred<unknown>();const onHydrated=vi.fn();
     vi.mocked(invoke).mockImplementation((command,args)=>{

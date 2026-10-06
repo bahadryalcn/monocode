@@ -1,4 +1,5 @@
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
+import { confirmSessionDelete } from "../../features/sessions/model/confirmSessionDelete";
 import {
   type WorktreeFocus,
   inWorktreeFocus,
@@ -71,6 +72,7 @@ import {
 import { IS_MAC, MOD } from "../../platform/tauri/platform";
 import { copyText } from "../../platform/tauri/clipboard";
 import { forgetRemoteQueue } from "../../features/connections/model/useRemoteQueue";
+import { RemoteDataStatus } from "../../features/connections/ui/RemoteDataStatus";
 import { resolveModel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
 import { sessionDisplayTitle } from "../../features/sessions/model/session";
@@ -85,11 +87,11 @@ import {
 } from "../../features/sessions/model/sessionSelection";
 import {
   bulkDeleteConfirmMessage,
+  bulkDeleteOutcome,
   bulkDeleteSummary,
   deleteSessionsInBulk,
   splitRunningSessions,
 } from "../../features/sessions/model/bulkSessionDelete";
-import { TransientNotice } from "../../shared/ui/TransientNotice";
 import {
   paneDropFromPoint,
   setExternalPaneDrop,
@@ -222,7 +224,7 @@ import { SourceControl } from "../../features/source-control/ui/SourceControl";
 import { GithubStarPrompt } from "./GithubStarPrompt";
 import {
   refreshRemoteProjectSessions,
-  remoteRequest,
+  sessionAccessForMachine,
   remotePendingWorktree,
   remoteSessionFor,
   useRemoteProjectSessions,
@@ -318,7 +320,10 @@ type Props = {
   onDeleteSessions?: (sessionIds: readonly string[]) => void;
   /** Delete without asking. Resolves false when the session was kept and
    * rejects on an error, so a bulk delete can report it. */
-  onDeleteSessionNow?: (sessionId: string) => Promise<boolean>;
+  onDeleteSessionNow?: (
+    sessionId: string,
+    skipWorktreeConfirm?: boolean,
+  ) => Promise<boolean>;
   onOpenFile: OpenFileFn;
   onOpenTerminal?: (cwd: string) => void;
   onFileMoved?: (from: string, to: string) => void;
@@ -503,11 +508,13 @@ function SidebarComponent({
       return;
     }
     try {
-      await remoteRequest(remote.machine.id, "sessions.update", {
-        projectId: hostProject.projectId,
+      await sessionAccessForMachine(remote.machine.id, false, true).update(
         sessionId,
-        ...patch,
-      });
+        {
+          projectId: hostProject.projectId,
+          ...patch,
+        },
+      );
       refreshRemoteProjectSessions();
     } catch (error) {
       window.alert(`Could not update this session.\n\n${String(error)}`);
@@ -520,17 +527,17 @@ function SidebarComponent({
       return;
     }
     if (
-      !window.confirm(
+      !(await confirmSessionDelete(
         `Delete ${sessionIds.length === 1 ? "this conversation" : `${sessionIds.length} conversations`}? This can’t be undone.`,
-      )
+      ))
     )
       return;
     try {
       for (const sessionId of sessionIds) {
-        await remoteRequest(remote.machine.id, "sessions.delete", {
-          projectId: hostProject.projectId,
+        await sessionAccessForMachine(remote.machine.id, false, true).delete(
           sessionId,
-        });
+          hostProject.projectId,
+        );
         forgetRemoteQueue(sessionId);
         onRemoteSessionDeleted?.(sessionId);
       }
@@ -652,17 +659,18 @@ function SidebarComponent({
       )
       .map((session) => session.id),
   ).size;
-  const workingSessionsBadge = workingSessionCount > 0 ? (
-    <span
-      data-workspace-working-count
-      aria-live="polite"
-      aria-label={`${workingSessionCount} working ${workingSessionCount === 1 ? "session" : "sessions"}`}
-      title={`${workingSessionCount} working ${workingSessionCount === 1 ? "session" : "sessions"}`}
-      className="ml-2 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 px-1.5 text-[11px] font-semibold tabular-nums leading-none text-accent"
-    >
-      {workingSessionCount}
-    </span>
-  ) : null;
+  const workingSessionsBadge =
+    workingSessionCount > 0 ? (
+      <span
+        data-workspace-working-count
+        aria-live="polite"
+        aria-label={`${workingSessionCount} working ${workingSessionCount === 1 ? "session" : "sessions"}`}
+        title={`${workingSessionCount} working ${workingSessionCount === 1 ? "session" : "sessions"}`}
+        className="ml-2 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 px-1.5 text-[11px] font-semibold tabular-nums leading-none text-accent"
+      >
+        {workingSessionCount}
+      </span>
+    ) : null;
   const remoteExecutionCwd =
     remote.sessions.find((session) => session.id === activeRemoteId)?.cwd ??
     (activeSessionId ? remotePendingWorktree(activeSessionId) : undefined) ??
@@ -705,6 +713,14 @@ function SidebarComponent({
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
   const dismissBulkNotice = useCallback(() => setBulkNotice(null), []);
   const bulkDeleteActive = useRef(false);
+  const [deleteProgress, setDeleteProgress] = useState<{
+    cwd: string;
+    completed: number;
+    total: number;
+  } | null>(null);
+  const [deleteNoticeError, setDeleteNoticeError] = useState(false);
+  const [deleteNoticeCwd, setDeleteNoticeCwd] = useState(cwd);
+  const deleting = deleteProgress !== null;
   const [folderMenu, setFolderMenu] = useState<{
     x: number;
     y: number;
@@ -1543,8 +1559,15 @@ function SidebarComponent({
       return;
     }
     if (id === "delete") {
-      if (sessionIds.length > 1) void bulkDeleteSessions(sessionIds);
-      else for (const id of sessionIds) onDeleteSession?.(id);
+      if (
+        !remoteProject &&
+        !onDeleteLocalSessionNow &&
+        sessionIds.length === 1
+      ) {
+        onDeleteSession?.(sessionIds[0]);
+        return;
+      }
+      void bulkDeleteSessions(sessionIds);
     }
   };
 
@@ -1585,14 +1608,19 @@ function SidebarComponent({
     const deleteOne =
       remoteProject && machine && hostProject
         ? async (sessionId: string) => {
-            await remoteRequest(machine.id, "sessions.delete", {
-              projectId: hostProject.projectId,
+            await sessionAccessForMachine(machine.id, false, true).delete(
               sessionId,
-            });
+              hostProject.projectId,
+            );
             forgetRemoteQueue(sessionId);
             onRemoteSessionDeleted?.(sessionId);
           }
-        : onDeleteLocalSessionNow;
+        : onDeleteLocalSessionNow
+          ? (sessionId: string) =>
+              sessionIds.length === 1
+                ? onDeleteLocalSessionNow(sessionId, false)
+                : onDeleteLocalSessionNow(sessionId)
+          : undefined;
     if (!deleteOne) {
       // Without the reporting delete, only a handler that asks first may run.
       onDeleteSessions?.(sessionIds);
@@ -1603,29 +1631,48 @@ function SidebarComponent({
       runningSessionIdsRef.current,
     );
     if (deletable.length === 0) {
+      setDeleteNoticeCwd(cwd);
+      setDeleteNoticeError(false);
       setBulkNotice(bulkDeleteSummary({ skipped: running, failed: [] }));
       return;
     }
-    if (
-      !window.confirm(
-        bulkDeleteConfirmMessage(deletable.length, running.length),
-      )
-    )
-      return;
     bulkDeleteActive.current = true;
     try {
+      if (
+        !(await confirmSessionDelete(
+          bulkDeleteConfirmMessage(deletable.length, running.length),
+        ))
+      )
+        return;
+      setBulkNotice(null);
+      setDeleteNoticeCwd(cwd);
+      setDeleteProgress({ cwd, completed: 0, total: deletable.length });
       const result = await deleteSessionsInBulk(deletable, {
         isRunning: (id) => runningSessionIdsRef.current.has(id),
         deleteOne,
+        onProgress: (completed, total) =>
+          setDeleteProgress({ cwd, completed, total }),
       });
+      setDeleteNoticeError(result.failed.length > 0);
       setBulkNotice(
-        bulkDeleteSummary({
+        bulkDeleteOutcome({
+          ...result,
           skipped: [...running, ...result.skipped],
-          failed: result.failed,
         }),
+      );
+      const deleted = new Set(result.deleted);
+      setSelectedSessionIds(
+        (current) => new Set([...current].filter((id) => !deleted.has(id))),
+      );
+    } catch (error) {
+      setDeleteNoticeCwd(cwd);
+      setDeleteNoticeError(true);
+      setBulkNotice(
+        `Could not delete conversations: ${error instanceof Error ? error.message : String(error)}`,
       );
     } finally {
       bulkDeleteActive.current = false;
+      setDeleteProgress(null);
       if (remoteProject) refreshRemoteProjectSessions();
     }
   };
@@ -1766,7 +1813,11 @@ function SidebarComponent({
       void bulkDeleteSessions(selectedOrderedIds);
       return;
     }
-    onDeleteSession?.(sessionId);
+    if (!remoteProject && !onDeleteLocalSessionNow) {
+      onDeleteSession?.(sessionId);
+      return;
+    }
+    void bulkDeleteSessions([sessionId]);
   };
 
   const cardHandlers = useRef({
@@ -2185,6 +2236,7 @@ function SidebarComponent({
                 {onPinSession || onPinSessions ? (
                   <BulkBarAction
                     label={allSelectedPinned ? "Unpin" : "Pin"}
+                    disabled={deleting}
                     onClick={() =>
                       pinSessions(selectedOrderedIds, !allSelectedPinned)
                     }
@@ -2195,6 +2247,7 @@ function SidebarComponent({
                 {onArchiveSession || onArchiveSessions ? (
                   <BulkBarAction
                     label={allSelectedArchived ? "Unarchive" : "Archive"}
+                    disabled={deleting}
                     onClick={() =>
                       archiveSessions(selectedOrderedIds, !allSelectedArchived)
                     }
@@ -2204,16 +2257,67 @@ function SidebarComponent({
                 ) : null}
                 {onDeleteSession || onDeleteSessions ? (
                   <BulkBarAction
-                    label="Delete"
+                    label={deleting ? "Deleting…" : "Delete"}
+                    disabled={deleting}
                     danger
                     onClick={() => void bulkDeleteSessions(selectedOrderedIds)}
                   >
-                    <Trash2 className="size-3" strokeWidth={1.75} />
+                    {deleting ? (
+                      <Loader className="size-3 animate-spin" aria-hidden />
+                    ) : (
+                      <Trash2 className="size-3" strokeWidth={1.75} />
+                    )}
                   </BulkBarAction>
                 ) : null}
               </span>
             ) : null}
           </div>
+        ) : null}
+        {tab === "sessions" &&
+        (deleteProgress?.cwd === cwd ||
+          (bulkNotice && deleteNoticeCwd === cwd)) ? (
+          <div
+            role={
+              deleteProgress ? "status" : deleteNoticeError ? "alert" : "status"
+            }
+            aria-live={
+              deleteNoticeError && !deleteProgress ? "assertive" : "polite"
+            }
+            aria-atomic="true"
+            data-session-delete-status
+            className={`flex shrink-0 items-start gap-2 border-b border-stroke px-3 py-2 text-[12px] ${deleteNoticeError && !deleteProgress ? "text-red-400" : "text-content/70"}`}
+          >
+            {deleteProgress ? (
+              <Loader
+                className="mt-0.5 size-3.5 shrink-0 animate-spin"
+                aria-hidden
+              />
+            ) : deleteNoticeError ? (
+              <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            ) : (
+              <Check className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            )}
+            <span className="min-w-0 flex-1 break-words">
+              {deleteProgress
+                ? `Deleting conversations… ${deleteProgress.completed}/${deleteProgress.total} completed`
+                : bulkNotice}
+            </span>
+            {!deleteProgress ? (
+              <button
+                type="button"
+                onClick={dismissBulkNotice}
+                aria-label="Dismiss deletion result"
+                className="shrink-0 text-content/50 hover:text-content"
+              >
+                Dismiss
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {tab === "sessions" && remoteProject ? (
+          <RemoteDataStatus state={remote.dataState}
+            label={remote.machine ? `sessions from ${remote.machine.name}` : "sessions"}
+            onRefresh={remote.refresh} disabled={!remote.machine && !remote.dataState.error} />
         ) : null}
         <div
           ref={(el) => {
@@ -2231,14 +2335,10 @@ function SidebarComponent({
             </p>
           ) : (
             <div>
-              {/*
-              A project's first load stays deliberately blank. The listing is
-              served from a covering index and resolves within a frame or two,
-              so a placeholder only ever flashed — reading as a glitch rather
-              than as progress. This is checked before the empty state so that
-              cannot claim "No sessions yet" before the rows have landed.
-            */}
-              {remoteLoading ? (
+              {/* Loading and errors precede empty results, so an unfinished
+                  request never claims this project has no conversations. */}
+              {remoteProject && projectSessions.length === 0 &&
+                !["ready", "empty"].includes(remote.dataState.phase) ? null : pendingFirstLoad ? (
                 <p
                   role="status"
                   className="flex items-center gap-2 px-3 py-2 text-[12px] text-content/50"
@@ -2248,20 +2348,37 @@ function SidebarComponent({
                     strokeWidth={1.75}
                     aria-hidden
                   />
-                  {remote.machine
-                    ? `Loading sessions from ${remote.machine.name}…`
-                    : "Connecting to this project’s machine…"}
+                  {remoteLoading
+                    ? remote.machine
+                      ? `Loading sessions from ${remote.machine.name}…`
+                      : "Connecting to this project’s machine…"
+                    : "Loading conversations…"}
                 </p>
-              ) : pendingFirstLoad ? null : remoteProject &&
+              ) : remoteProject &&
                 remote.failed &&
                 projectSessions.length === 0 ? (
-                <p className="px-3 py-2 text-[12px] text-content/50">
-                  {remote.machine
-                    ? `Couldn’t reach ${remote.machine.name}. Trying again…`
-                    : "Couldn’t load sessions"}
-                </p>
+                <div
+                  role="alert"
+                  className="px-3 py-2 text-[12px] text-content/50"
+                >
+                  <p>
+                    {remote.machine
+                      ? `Couldn’t reach ${remote.machine.name}. Trying again…`
+                      : "Couldn’t load sessions"}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={refreshRemoteProjectSessions}
+                    className="mt-2 rounded-md bg-content/8 px-2 py-1 text-content/80 hover:bg-content/15"
+                  >
+                    Retry
+                  </button>
+                </div>
               ) : status === "error" && projectSessions.length === 0 ? (
-                <p className="px-3 py-2 text-[12px] text-content/50">
+                <p
+                  role="alert"
+                  className="px-3 py-2 text-[12px] text-content/50"
+                >
                   Couldn’t load sessions
                 </p>
               ) : visibleSessions.length === 0 ? (
@@ -2634,9 +2751,6 @@ function SidebarComponent({
           onChange={onSessionFiltersChange}
           onClose={() => setFilterMenu(null)}
         />
-      ) : null}
-      {bulkNotice ? (
-        <TransientNotice message={bulkNotice} onDismiss={dismissBulkNotice} />
       ) : null}
       {linkingSession ? (
         <LinkSessionWorkItemDialog
@@ -3362,11 +3476,13 @@ function WorkspaceTitleActions({
 function BulkBarAction({
   label,
   danger = false,
+  disabled = false,
   onClick,
   children,
 }: {
   label: string;
   danger?: boolean;
+  disabled?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -3375,8 +3491,9 @@ function BulkBarAction({
       type="button"
       title={`${label} selected`}
       aria-label={`${label} selected`}
+      disabled={disabled}
       onClick={onClick}
-      className={`grid size-6 place-items-center rounded-md text-content/60 hover:bg-content/10 ${
+      className={`grid size-6 place-items-center rounded-md text-content/60 hover:bg-content/10 disabled:pointer-events-none disabled:opacity-40 ${
         danger ? "hover:text-red-400" : "hover:text-content"
       }`}
     >

@@ -789,6 +789,21 @@ describe("codex live turn sequence", () => {
     await turn;
   });
 
+  it("continues the stored thread without requesting its image-heavy transcript", async () => {
+    const { turn } = await startTurn("codex-metadata-resume", { resume: true });
+    expect(
+      parse().find((message) => message.method === "thread/resume")?.params,
+    ).toMatchObject({ threadId: "thr_1", excludeTurns: true });
+    expect(
+      parse().find((message) => message.method === "turn/start")?.params,
+    ).toMatchObject({ threadId: "thr_1" });
+    expect(parse().some((message) => message.method === "thread/start")).toBe(
+      false,
+    );
+    notify("turn/completed", { turn: { id: "turn_1", status: "completed" } });
+    await turn;
+  });
+
   it("does not resume a legacy default thread under a named account", async () => {
     const { turn } = await startTurn("codex-live", {
       resume: true,

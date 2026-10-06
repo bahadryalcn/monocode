@@ -47,6 +47,11 @@ export function prettyCwd(cwd: string): string {
 }
 
 export function parentPath(path: string): string {
+  const remote = /^(remote:\/\/[^/]+\/)(.*)$/.exec(path);
+  if (remote) {
+    const hostPath = /^[A-Za-z]:/.test(remote[2]) ? remote[2] : `/${remote[2]}`;
+    return remote[1] + parentPath(hostPath).replace(/^\//, "");
+  }
   const trimmed = trimSlash(path);
   if (/^\/\/[^/]+\/[^/]+$/.test(trimmed)) return trimmed;
   if (/^[A-Za-z]:$/.test(trimmed)) return `${trimmed}/`;

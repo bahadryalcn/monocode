@@ -111,6 +111,16 @@ export type HostTask = HostTaskInput & {
   retryFeedback?: string;
   /** Automatic correction runs used by a goal/steward task, persisted across restarts. */
   repairAttempts?: number;
+  /** Failed reviews since the owner last changed the task instructions. */
+  reviewFailureCount?: number;
+  /** Saving instructions does not silently restart blocked work. */
+  awaitingOwnerRestart?: boolean;
+  /** One independent recovery worker per owner instruction revision. */
+  blockedTakeover?: {
+    at: number;
+    previousSessionId?: string;
+    blocker: string;
+  };
   /** The finding that triggered the latest automatic correction. */
   repairNote?: string;
   repairStop?: {
@@ -158,6 +168,17 @@ export type HostTask = HostTaskInput & {
   diffStat?: string;
   /** Why the last attempt to merge a reviewed task failed. */
   mergeError?: string;
+  /** Models are only used for conflicts in the retained task checkout. */
+  mergeRepair?: {
+    baseHead: string;
+    conflicts: string[];
+    attempts: number;
+    prepared?: boolean;
+  };
+  /** Retry unchanged checkout failures with backoff, without another agent. */
+  mergeRetry?: { fingerprint: string; after: number };
+  /** Cleanup failure does not discard the retained working copy's location. */
+  cleanupError?: string;
   /** The running session is waiting on an approval or a question. */
   needsInput?: boolean;
   createdAt: number;
@@ -192,6 +213,50 @@ export function canMoveTask(from: TaskStatus, to: TaskStatus): boolean {
 /** A task can be edited while nothing has run or is running for it. */
 export function canEditTask(status: TaskStatus): boolean {
   return status === "todo" || status === "queued" || status === "blocked";
+}
+
+export const MAX_TASK_REVIEW_FAILURES = 3;
+export const TASK_INPUT_REQUIRED =
+  "Update the task description before retrying: explain what changed, provide the missing evidence, or revise the requirement.";
+
+export function taskReviewFailureCount(task: HostTask): number {
+  if (task.reviewFailureCount !== undefined) return task.reviewFailureCount;
+  // Older hosts reset repairAttempts on Retry. Recover the budget from history.
+  const history = task.attemptHistory ?? [];
+  let failures = 0;
+  for (let index = history.length - 1; index >= 0; index--) {
+    if (history[index].verdict === "pass") break;
+    if (history[index].verdict === "fail") failures++;
+  }
+  return failures;
+}
+
+export function taskRequiresInstructions(task: HostTask): boolean {
+  if (canTakeOverBlockedTask(task)) return false;
+  // Only the scheduler queues a takeover; manual retries are checked while blocked.
+  if (task.status === "queued" && task.blockedTakeover) return false;
+  return (
+    ["blocked", "todo", "queued"].includes(task.status) &&
+    Boolean(
+      task.blockedTakeover || task.repairStop ||
+      (task.status !== "queued" &&
+        (task.repairAttempts ?? 0) >= MAX_TASK_REVIEW_FAILURES) ||
+      taskReviewFailureCount(task) >= MAX_TASK_REVIEW_FAILURES,
+    )
+  );
+}
+
+export function canTakeOverBlockedTask(task: HostTask & { blockedTakeoverSupported?: boolean }): boolean {
+  if (task.blockedTakeoverSupported === false) return false;
+  if (task.status !== "blocked" || task.blockedTakeover || task.awaitingOwnerRestart || !task.sessionId) return false;
+  const review = task.verification?.review;
+  const command = task.verification?.command;
+  return Boolean(
+    (review?.verdict === "fail" && review.note !== NO_VERDICT &&
+      task.error === `Review failed: ${review.note}`) ||
+    (command && !command.timedOut && command.exitCode !== null && command.exitCode !== 0 &&
+      task.error === `The check command failed (exit code ${command.exitCode}).`),
+  );
 }
 
 /** Where a new task may start: on the queue, or as a to-do item. */

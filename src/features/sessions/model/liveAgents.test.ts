@@ -3,6 +3,7 @@ import {
   formatLiveElapsed,
   liveAgentsFromSessions,
   shouldShowLiveAgents,
+  workingProjectPaths,
 } from "./liveAgents";
 import { newSession, type Block, type Session } from "./session";
 
@@ -27,6 +28,25 @@ function edit(id: string, path = "src/App.tsx", status = "in_progress"): Block {
     },
   };
 }
+
+it("marks local and adopted host projects working and clears completed turns", () => {
+  const local = chat("/local", { busy: true });
+  const host = chat("/host", { continuingElsewhere: true });
+  const hidden = chat("/worker", { busy: true, orchestrationLeadId: "lead" });
+  const inbox = chat("/inbox", {
+    busy: true,
+    inboxAsk: { key: "issue", title: "Issue", url: "https://example.com/issue", provider: "github" },
+  });
+  const removed = chat("/removed", { busy: true, worktreeRemoved: true });
+  const agents = liveAgentsFromSessions([local, local, host, hidden, inbox, removed]);
+  expect(workingProjectPaths(agents)).toEqual(["/local", "/host"]);
+  expect(workingProjectPaths(agents.map((agent) => ({ ...agent, needsApproval: true })))).toEqual([]);
+  expect(workingProjectPaths(agents.map((agent) => ({ ...agent, done: true })))).toEqual([]);
+  expect(workingProjectPaths(liveAgentsFromSessions([
+    { ...local, busy: false },
+    { ...host, continuingElsewhere: false },
+  ]))).toEqual([]);
+});
 
 describe("liveAgentsFromSessions", () => {
   it("shows loaded remote turns and adopted turns with a conflicting local copy", () => {

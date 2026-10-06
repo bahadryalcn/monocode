@@ -1918,6 +1918,11 @@ export class Orchestrator {
   }
   /** Drain control writes before the database removes a lead or one of its workers. */
   deleteSession(id: string, remove: () => Promise<void>): Promise<void> {
+    // Ordinary history has no orchestration writes to drain. A slow control
+    // action in another conversation must not block its deletion.
+    if (!this.forSession(id)) {
+      return remove().then(() => { this.deleted.add(id); });
+    }
     const result = this.actions
       .catch(() => undefined)
       .then(async () => {

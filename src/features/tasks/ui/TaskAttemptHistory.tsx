@@ -1,6 +1,10 @@
-import type { HostTask } from "../model/hostTasks";
+import { TASK_INPUT_REQUIRED, canTakeOverBlockedTask, taskRequiresInstructions, type HostTask } from "../model/hostTasks";
 
 export function repairStopLabel(task: HostTask): string | undefined {
+  if (canTakeOverBlockedTask(task)) return "AI takeover pending";
+  if (task.blockedTakeover && ["queued", "running", "verifying"].includes(task.status))
+    return "Independent AI completing blocked work";
+  if (taskRequiresInstructions(task)) return "Waiting for your instructions";
   if (task.repairStop?.reason === "external")
     return "Waiting for external verification";
   if (task.repairStop?.reason === "no_progress")
@@ -31,10 +35,11 @@ export function TaskAttemptHistory({
         <div className="space-y-1 text-[12px] text-amber-400">
           <p className="font-medium">{stop}</p>
           <p className="whitespace-pre-wrap break-words">
-            {task.repairStop?.message ??
+            {canTakeOverBlockedTask(task) ? "A fresh AI session will inspect the previous attempts and continue the retained work automatically when capacity is available." : task.blockedTakeover && task.status !== "blocked" ? "The recovery agent must pass the original checks and review before delivery." : task.repairStop?.message ??
               "Inspect the previous worker and review before retrying."}
           </p>
           <p className="text-content/55">
+            {taskRequiresInstructions(task) ? `${TASK_INPUT_REQUIRED} ` : ""}
             Dependent tasks stay queued until this task passes its checks and is
             delivered. Independent queued tasks can continue.
           </p>

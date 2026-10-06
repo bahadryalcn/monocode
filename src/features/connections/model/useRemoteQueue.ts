@@ -28,6 +28,11 @@ import {
  */
 const live = new Map<string, RemoteQueue>();
 
+/** Test harness isolation for suites that reuse host session identifiers. */
+export function resetRemoteQueuesForTests(): void {
+  live.clear();
+}
+
 /** The conversation is gone: its queue goes from memory and from the store. */
 export function forgetRemoteQueue(key: string): void {
   live.delete(key);

@@ -2,6 +2,7 @@ import { invoke as invokeLocal } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { slash } from "../../shared/lib/paths";
 import { REMOTE_PATH_PREFIX } from "../../shared/lib/remotePaths";
+import { localExplorerPath } from "../../shared/lib/remoteExplorerPaths";
 import type { InterjectionMeta } from "../../features/sessions/model/session";
 
 export { REMOTE_PATH_PREFIX } from "../../shared/lib/remotePaths";
@@ -856,6 +857,14 @@ export function copyFileToClipboard(path: string): Promise<void> {
 }
 
 export function revealPath(path: string): Promise<void> {
+  if (path.startsWith(REMOTE_PATH_PREFIX)) {
+    const localPath = localExplorerPath(path);
+    if (!localPath)
+      return Promise.reject(
+        new Error("Set the shared folder path in the remote folder browser to reveal it on this computer."),
+      );
+    return invokeLocal<void>("reveal_path", { path: localPath });
+  }
   return invoke<void>("reveal_path", { path });
 }
 

@@ -6,6 +6,11 @@
  */
 const due = new Set<string>();
 
+/** Test harness isolation for tests that reuse the same conversation ids. */
+export function resetAutoContinueForTests(): void {
+  due.clear();
+}
+
 export function markAutoContinueDue(sessionId: string): void {
   due.add(sessionId);
 }

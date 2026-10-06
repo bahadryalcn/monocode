@@ -96,6 +96,7 @@ import {
 import { type ClaudeSessionSummary } from "../platform/tauri/fs";
 import { ProviderSignInDialog } from "../features/sessions/ui/ProviderSignInDialog";
 import { TitleBar, type Tab as TitleTab } from "./shell/TitleBar";
+import { NavigationBoundary } from "./shell/NavigationBoundary";
 import { MenuBar } from "./shell/MenuBar";
 import {
   FilePicker,
@@ -470,6 +471,7 @@ import {
   type AddToChatRequest,
 } from "../features/sessions/model/quoteDraft";
 import { createSessionRemover } from "../features/sessions/model/sessionRemoval";
+import { confirmSessionDelete } from "../features/sessions/model/confirmSessionDelete";
 import { shouldGenerateSessionTitle } from "../features/sessions/model/sessionTitle";
 import {
   DEFAULT_PROVIDER_ACCOUNT_ID,
@@ -570,7 +572,10 @@ import {
   TranscriptPoolOutlet,
 } from "../features/sessions/ui/TranscriptPool";
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
-import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
+import {
+  liveAgentsFromSessions,
+  workingProjectPaths,
+} from "../features/sessions/model/liveAgents";
 import {
   liveSessionInfos,
   sameLiveSessionInfos,
@@ -686,6 +691,7 @@ import {
   OPEN_CONNECTIONS_EVENT,
   OPEN_REMOTE_PROJECT_EVENT,
   REMOTE_HISTORY_UPDATED,
+  REMOTE_TAB_BINDING_CHANGE,
   cachedRemoteSessionSummary,
   knownRemoteMachine,
   rememberRemotePendingWorktree,
@@ -707,6 +713,7 @@ import {
   remoteSessionActions,
 } from "../features/connections/model/remoteSessionActions";
 import { remoteSessionState } from "../features/connections/model/remoteSessionState";
+import { findRemoteSessionTab } from "../features/connections/model/remoteSessionNavigation";
 import { takePendingSessionWrites } from "./model/pendingSessionWrites";
 import {
   parseRemotePath,
@@ -1587,6 +1594,12 @@ function Workspace({
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
   const workspaceSyncKey = useRef<string | null>(null);
+  const [remoteBindingRevision, setRemoteBindingRevision] = useState(0);
+  useEffect(() => {
+    const changed = () => setRemoteBindingRevision((revision) => revision + 1);
+    window.addEventListener(REMOTE_TAB_BINDING_CHANGE, changed);
+    return () => window.removeEventListener(REMOTE_TAB_BINDING_CHANGE, changed);
+  }, []);
   const observedSessions = useRef(new Map<string, Session>());
   const pendingPersist = useRef(new Map<string, Session>());
   const removingSessionIds = useRef(new Set<string>());
@@ -2477,9 +2490,11 @@ function Workspace({
     );
     const key = workspaceSnapshotKey(snapshot);
     if (workspaceSyncKey.current === key) return;
-    workspaceSyncKey.current = key;
     const timer = window.setTimeout(() => {
-      void saveWorkspaceSnapshot(snapshot).catch(() => undefined);
+      workspaceSyncKey.current = key;
+      void saveWorkspaceSnapshot(snapshot).catch(() => {
+        if (workspaceSyncKey.current === key) workspaceSyncKey.current = null;
+      });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [
@@ -2493,6 +2508,7 @@ function Workspace({
     keepWorkspaceTab,
     projectWorktree?.path,
     workspaceNavigation.revision,
+    remoteBindingRevision,
   ]);
 
   useEffect(() => {
@@ -2740,14 +2756,14 @@ function Workspace({
       setInboxViewOpen(false);
       setNotesViewOpen(false);
       setAutomationsViewOpen(false);
-      const existing = tabsRef.current
-        .map((tab) => ({
-          tab,
-          shellId: leafIds(tab.layout).find(
-            (shellId) => remoteSessionFor(shellId) === remoteSessionId,
-          ),
-        }))
-        .find(({ shellId }) => shellId);
+      workspaceNavigation.cancel();
+      const existing = findRemoteSessionTab(
+        tabsRef.current,
+        sessionsRef.current,
+        project,
+        remoteSessionId,
+        remoteSessionFor,
+      );
       if (existing) {
         activateTab(existing.tab.id, existing.shellId);
         return;
@@ -2760,8 +2776,16 @@ function Workspace({
       setSessions((prev) => [...prev, session]);
       appendTab(tab, project);
       setActiveTabId(tab.id);
+      followProject(project);
     },
-    [activateTab, appendTab, sessionDefaults?.runtimeMode],
+    [
+      activateTab,
+      appendTab,
+      followProject,
+      sessionDefaults?.runtimeMode,
+      setActiveTabId,
+      workspaceNavigation.cancel,
+    ],
   );
 
   const onStartInboxItem = useCallback(
@@ -6074,9 +6098,9 @@ function Workspace({
     async (sessionIds: readonly string[]) => {
       if (sessionIds.length === 0) return;
       if (
-        !window.confirm(
+        !(await confirmSessionDelete(
           `Delete ${sessionIds.length} selected conversations? This can’t be undone.`,
-        )
+        ))
       )
         return;
       for (const sessionId of sessionIds) {
@@ -6087,12 +6111,12 @@ function Workspace({
   );
 
   const onDeleteHistorySessionNow = useCallback(
-    async (sessionId: string): Promise<boolean> => {
+    async (sessionId: string, skipWorktreeConfirm = true): Promise<boolean> => {
       const failures: string[] = [];
       const removed = await onRemoveHistorySession(
         sessionId,
         "delete",
-        true,
+        skipWorktreeConfirm,
         (detail) => failures.push(detail),
       );
       if (failures.length > 0) throw new Error(failures[0]);
@@ -11356,10 +11380,11 @@ function Workspace({
 
   const nextBusyProjectPaths = useMemo(
     () =>
-      sessions.flatMap((session) =>
-        session.busy && session.cwd ? [session.cwd] : [],
-      ),
-    [sessions],
+      workingProjectPaths([
+        ...liveAgentsFromSessions(sessions),
+        ...remoteLiveAgents(unopenedRemote),
+      ]),
+    [sessions, unopenedRemote],
   );
   const busyProjectPathsRef = useRef(nextBusyProjectPaths);
   if (!stringArraysEqual(busyProjectPathsRef.current, nextBusyProjectPaths)) {
@@ -12967,15 +12992,17 @@ function Workspace({
                 />
               ) : null}
               {automationsViewOpen && taskBoardShown ? (
-                <TasksView
-                  besideRail={projectRailOpen || compactProjectRail}
-                  compactRail={compactRailActive}
-                  cwd={projectCwd}
-                  recents={visibleRecents}
-                  onClose={onLeaveAutomations}
-                  onToggleSidebar={onToggleSidebar}
-                  onOpenBackgroundSession={onOpenBackgroundSession}
-                />
+                <NavigationBoundary name="Tasks" onBack={onLeaveAutomations}>
+                  <TasksView
+                    besideRail={projectRailOpen || compactProjectRail}
+                    compactRail={compactRailActive}
+                    cwd={projectCwd}
+                    recents={visibleRecents}
+                    onClose={onLeaveAutomations}
+                    onToggleSidebar={onToggleSidebar}
+                    onOpenBackgroundSession={onOpenBackgroundSession}
+                  />
+                </NavigationBoundary>
               ) : automationsViewOpen ? (
                 <AutomationsView
                   besideRail={projectRailOpen || compactProjectRail}

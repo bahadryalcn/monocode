@@ -1,12 +1,17 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { promisify } from "node:util";
 import {
   autoMergeBlocker,
   canEditTask,
   canMoveTask,
+  canTakeOverBlockedTask,
   EMPTY_PROMPT_ERROR,
+  MAX_TASK_REVIEW_FAILURES,
+  TASK_INPUT_REQUIRED,
+  taskReviewFailureCount,
+  taskRequiresInstructions,
   hasUnmergedBranch,
   isNewTaskStatus,
   isTaskStatus,
@@ -18,6 +23,7 @@ import {
   type TaskVerification,
 } from "../src/features/tasks/model/hostTasks";
 import { DEFAULT_MAX_RUNNING_TASKS } from "../src/features/tasks/model/hostSettings";
+import { blockedHandoff, taskContract } from "./task-handoff";
 import {
   addReviewNotes,
   coalesceReviewNotes,
@@ -52,6 +58,17 @@ const RETRY_FEEDBACK_LIMIT = 12_000;
 export const MAX_REPAIR_ATTEMPTS = 3;
 
 const exec = promisify(execFile);
+
+class MergeConflict extends Error {
+  constructor(
+    message: string,
+    readonly conflicts: string[],
+  ) {
+    super(message);
+  }
+}
+
+class UnresolvedMerge extends Error {}
 
 async function git(
   cwd: string,
@@ -135,6 +152,10 @@ async function commitLeftovers(
       `The agent left the working copy on ${current || "no branch"} instead of ${branch}.`,
     );
   if (!(await git(cwd, ["status", "--porcelain"]))) return;
+  if (await git(cwd, ["diff", "--name-only", "--diff-filter=U"]))
+    throw new UnresolvedMerge(
+      "Unresolved merge conflicts remain; the task's work is retained.",
+    );
   try {
     await git(cwd, ["add", "-A"]);
     await git(cwd, ["commit", "-q", "-m", title], 120_000);
@@ -160,6 +181,10 @@ async function mergeTaskBranch(
     throw new Error(
       `The project is on ${current || "no branch"}. Check out ${baseBranch} there, then merge again.`,
     );
+  if (await git(cwd, ["rev-parse", "--verify", "MERGE_HEAD"]).catch(() => ""))
+    throw new Error(
+      "The project already has a merge in progress. Finish it before delivery retries.",
+    );
   if (await git(cwd, ["status", "--porcelain", "--untracked-files=no"]))
     throw new Error(
       "The project has uncommitted changes. Commit or stash them, then merge again.",
@@ -172,12 +197,14 @@ async function mergeTaskBranch(
       "--name-only",
       "--diff-filter=U",
     ]).catch(() => "");
-    await git(cwd, ["merge", "--abort"]).catch(() => {});
-    throw new Error(
-      conflicts
-        ? `${branch} conflicts with ${baseBranch} in ${conflicts.split(/\r?\n/).join(", ")}. Nothing was merged.`
-        : `Could not merge ${branch}: ${gitError(error)}`,
-    );
+    if (await git(cwd, ["rev-parse", "--verify", "MERGE_HEAD"]).catch(() => ""))
+      await git(cwd, ["merge", "--abort"]);
+    if (conflicts)
+      throw new MergeConflict(
+        `${branch} conflicts with ${baseBranch} in ${conflicts.split(/\r?\n/).join(", ")}. Nothing was merged.`,
+        conflicts.split(/\r?\n/),
+      );
+    throw new Error(`Could not merge ${branch}: ${gitError(error)}`);
   }
 }
 
@@ -194,7 +221,7 @@ function reviewPrompt(task: HostTask): string {
     `Task: ${task.title}`,
     "",
     "What was asked:",
-    task.prompt,
+    taskContract(task),
     "",
     `Review ${changes} and judge whether they do what was asked, completely and correctly.`,
     "Fail for concrete missing or incorrect deliverables and explain actionable fixes. A worker reporting an unavailable physical-device, release or external-service acceptance check is not by itself a code defect: inspect the implementation and available evidence. Fail for missing acceptance evidence only when the task explicitly requires that evidence; never claim an unperformed check passed.",
@@ -215,13 +242,32 @@ function reviewPrompt(task: HostTask): string {
  * its own: an agent told to work in the project folder would otherwise edit
  * the main checkout, leaving the task's branch empty. */
 function workerPrompt(task: HostTask, projectCwd: string): string {
+  if (task.blockedTakeover)
+    return [
+      `Work only in ${task.worktreeCwd ?? projectCwd}${task.branch ? ` on ${task.branch}` : ""}. The host owns delivery; retain all existing work.`,
+      taskContract(task),
+      blockedHandoff(task),
+      task.retryFeedback ?? "",
+    ].filter(Boolean).join("\n\n");
+  if (task.mergeRepair)
+    return [
+      `Continue the existing task in ${task.worktreeCwd} on ${task.branch}. Do not edit or switch branches in ${projectCwd}.`,
+      `Task: ${task.title}`,
+      taskContract(task),
+      `The host merged base commit ${task.mergeRepair.baseHead} into this task checkout. Resolve only the integration defects and conflicts in: ${task.mergeRepair.conflicts.join(", ")}.`,
+      "Keep both the completed task and the newer base-branch functionality. Inspect each conflict; never blindly choose ours/theirs, reset, rebase, or discard work. Stage the resolved files and finish the merge. Do not restart the task or broaden its scope. The host will rerun the configured checks and review before delivery.",
+      openReviewNotesPrompt(task.reviewNotes),
+      task.retryFeedback ?? "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   const original = task.worktreeCwd
     ? [
         `You are working in ${task.worktreeCwd}, a separate checkout of the project at ${projectCwd}${task.branch ? ` on the branch ${task.branch}` : ""}. Make every change in this folder. Do not edit, commit in or switch branches in ${projectCwd}: paths under it in the task below mean the same files under this folder.`,
         "",
-        task.prompt,
+        taskContract(task),
       ].join("\n")
-    : task.prompt;
+    : taskContract(task);
   const notes = openReviewNotesPrompt(task.reviewNotes);
   const prompt = notes ? `${original}\n\n${notes}` : original;
   if (!task.retryFeedback) return prompt;
@@ -274,6 +320,7 @@ export class HostTasks {
   private readonly jobs = new Map<string, Promise<void>>();
   /** Tasks being merged. */
   private readonly delivering = new Set<string>();
+  private readonly mergingProjects = new Set<string>();
   /** Runs on every tick once running tasks are settled, before queued ones
    * start, so work it queues can start in the same tick. */
   private beforeStart?: () => Promise<void> | void;
@@ -346,10 +393,13 @@ export class HostTasks {
       throw new Error(
         "Only a blocked task with a failed review and existing worker can be rechecked.",
       );
+    if (canTakeOverBlockedTask(task)) throw new Error("Automatic AI takeover is pending.");
+    if (taskRequiresInstructions(task)) throw new Error(TASK_INPUT_REQUIRED);
     const next = this.write({
       ...task,
       status: "verifying",
       reviewOnly: true,
+      awaitingOwnerRestart: undefined,
       repairStop: undefined,
       error: undefined,
       needsInput: undefined,
@@ -398,6 +448,18 @@ export class HostTasks {
       projectId: previous.projectId,
       // Work already on a branch stays there.
       ...(hasUnmergedBranch(previous) ? { isolate: true } : {}),
+      ...(input.prompt.trim().replace(/\s+/g, " ") !== previous.prompt.trim().replace(/\s+/g, " ")
+        ? {
+            reviewFailureCount: 0,
+            blockedTakeover: undefined,
+            awaitingOwnerRestart: true,
+            // Zero records owner input; undefined lets legacy goal recovery run.
+            repairAttempts: 0,
+            repairStop: undefined,
+            repairNote: undefined,
+            needsInput: undefined,
+          }
+        : {}),
       updatedAt: now,
     });
   }
@@ -405,6 +467,7 @@ export class HostTasks {
   /** Moving a reviewed task to done merges its branch; that can fail, and the
    * task then stays in review. */
   async move(id: string, to: unknown): Promise<HostTask> {
+    if (this.delivering.has(id)) throw new Error("This task is being merged.");
     const task = this.find(id);
     if (!task) throw new Error("Task not found.");
     if (!isTaskStatus(to)) throw new Error("Invalid task status");
@@ -413,6 +476,10 @@ export class HostTasks {
     const now = this.now();
     if (to === "queued" && !task.prompt.trim())
       throw new Error(EMPTY_PROMPT_ERROR);
+    if (to === "queued" && canTakeOverBlockedTask(task))
+      return this.queueTakeover(task, now);
+    if (to === "queued" && taskRequiresInstructions(task))
+      throw new Error(TASK_INPUT_REQUIRED);
     if (to === "todo" && task.status === "queued") {
       // Only a task nothing has run for can be pulled back.
       if (task.sessionId || task.startedAt || hasUnmergedBranch(task))
@@ -448,9 +515,11 @@ export class HostTasks {
         completedAt,
         verification,
         reviewOnly,
+        awaitingOwnerRestart,
         reviewer,
         diffStat,
         mergeError,
+        mergeRetry,
         autoMerged,
         mergedAt,
         ...rest
@@ -458,10 +527,13 @@ export class HostTasks {
       if (!task.merged)
         return this.write({
           ...rest,
+          ...(rest.mergeRepair
+            ? { mergeRepair: { ...rest.mergeRepair, attempts: 0 } }
+            : {}),
           retryFeedback: this.retryFeedback(task),
-          repairAttempts: undefined,
-          repairNote: undefined,
-          repairStop: undefined,
+          repairAttempts: task.repairAttempts,
+          repairNote: task.repairNote,
+          repairStop: task.repairStop,
           status: to,
           updatedAt: now,
         });
@@ -476,6 +548,8 @@ export class HostTasks {
         repairNote,
         repairStop,
         attemptHistory,
+        mergeRepair,
+        cleanupError,
         ...fresh
       } = rest;
       return this.write({ ...fresh, status: to, updatedAt: now });
@@ -598,6 +672,8 @@ export class HostTasks {
       task.goalId !== goalId ||
       task.status !== "blocked" ||
       task.repairAttempts !== undefined ||
+      canTakeOverBlockedTask(task) ||
+      taskRequiresInstructions(task) ||
       review?.verdict !== "fail" ||
       review.note === NO_VERDICT ||
       task.error !== `Review failed: ${review.note}`
@@ -626,7 +702,11 @@ export class HostTasks {
     const task = this.find(id);
     if (task?.status === "running" || task?.status === "verifying")
       await this.move(id, "blocked");
-    else if (task?.status === "queued") this.block(task, reason, this.now());
+    else if (
+      task?.status === "queued" ||
+      (task?.status === "review" && task.autoMerge)
+    )
+      this.block(task, reason, this.now());
   }
 
   /** Settles running and verifying tasks, stops those past their time limit,
@@ -641,6 +721,8 @@ export class HostTasks {
 
   private async work(): Promise<void> {
     const now = this.now();
+    // A newly failed task remains visibly blocked until the next scheduler tick.
+    const takeoverCandidates = new Set(this.list().filter(canTakeOverBlockedTask).map((task) => task.id));
     for (const task of this.list()) {
       try {
         if (
@@ -652,6 +734,12 @@ export class HostTasks {
         else if (task.status === "running") this.settle(task, now);
         else if (task.status === "verifying")
           await this.settleVerification(task, now);
+        else if (
+          task.status === "review" &&
+          task.autoMerge &&
+          hasUnmergedBranch(task)
+        )
+          await this.recoverMerge(task, now);
       } catch (error) {
         console.error("Could not settle a task:", errorMessage(error));
       }
@@ -666,9 +754,17 @@ export class HostTasks {
       (task) => task.status === "running" || task.status === "verifying",
     );
     const { maxRunningTasks } = this.limits.settings();
-    for (const task of tasks) {
+    for (let task of tasks) {
       if (active.length >= maxRunningTasks) break;
+      if (takeoverCandidates.has(task.id) && canTakeOverBlockedTask(task) && this.takeoverGoalActive(task)) {
+        if (this.limits.reached() || unfinishedDependencies(task, tasks).length) continue;
+        task = this.queueTakeover(task, now);
+      }
       if (task.status !== "queued") continue;
+      if (taskRequiresInstructions(task)) {
+        this.block(task, TASK_INPUT_REQUIRED, now);
+        continue;
+      }
       // Used-up daily time holds queued work back; running work finishes.
       if (this.limits.reached()) break;
       // A task waits for every task it depends on to be merged, and then
@@ -676,7 +772,8 @@ export class HostTasks {
       if (unfinishedDependencies(task, tasks).length) continue;
       try {
         const started = await this.launch(task, now, active);
-        if (started.status === "running") active.push(started);
+        if (started.status === "running" || started.status === "verifying")
+          active.push(started);
       } catch (error) {
         console.error("Could not start a task:", errorMessage(error));
       }
@@ -690,6 +787,27 @@ export class HostTasks {
     return row
       ? this.withReviewNotes(JSON.parse(String(row.value)) as HostTask)
       : undefined;
+  }
+
+  private takeoverGoalActive(task: HostTask): boolean {
+    if (!task.goalId) return true;
+    if (!this.store.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='goals'").get()) return true;
+    const row = this.store.db.prepare("SELECT value FROM goals WHERE id=?").get(task.goalId);
+    return !row || JSON.parse(String(row.value)).status !== "cancelled";
+  }
+
+  private queueTakeover(task: HostTask, now: number): HostTask {
+    return this.write({
+      ...task,
+      status: "queued",
+      blockedTakeover: { at: now, previousSessionId: task.sessionId, blocker: task.error ?? "Verification failed." },
+      retryFeedback: this.retryFeedback(task),
+      review: true,
+      sessionId: undefined, runId: undefined, reviewer: undefined,
+      verification: undefined, reviewOnly: undefined, repairStop: undefined,
+      error: undefined, needsInput: undefined, completedAt: undefined,
+      updatedAt: now,
+    });
   }
 
   /** Backfill the available legacy review once; runtime/missing-verdict
@@ -761,7 +879,7 @@ export class HostTasks {
       ...task,
       status: "blocked",
       error,
-      needsInput: undefined,
+      needsInput: taskRequiresInstructions({ ...task, status: "blocked", error }) || undefined,
       reviewer: undefined,
       completedAt: now,
       updatedAt: now,
@@ -771,10 +889,21 @@ export class HostTasks {
   /** Correct failed deliverables in unattended work without releasing dependencies.
    * Runtime failures, cancellation, missing verdicts and unavailable checks stay stopped. */
   private repairOrBlock(task: HostTask, error: string, now: number): HostTask {
+    if (task.blockedTakeover)
+      return this.block({ ...task, repairStop: { reason: "no_progress", message: "The independent recovery agent could not complete this task. Provide the missing resource or update the instructions using the worker's concrete request." } }, error, now);
+    if (taskReviewFailureCount(task) >= MAX_TASK_REVIEW_FAILURES && !task.repairStop)
+      task = { ...task, repairStop: { reason: "limit", message: TASK_INPUT_REQUIRED } };
+    if (task.reviewOnly && !task.repairStop)
+      task = { ...task, repairStop: { reason: "no_progress", message: TASK_INPUT_REQUIRED } };
     const attempts = task.repairAttempts ?? 0;
     if (task.repairStop || task.reviewOnly) return this.block(task, error, now);
     if (
-      !(task.goalId || task.source === "goal" || task.source === "steward") ||
+      !(
+        task.autoMerge ||
+        task.goalId ||
+        task.source === "goal" ||
+        task.source === "steward"
+      ) ||
       attempts >= MAX_REPAIR_ATTEMPTS
     )
       return this.block(
@@ -861,6 +990,11 @@ export class HostTasks {
     }
     if (review?.verdict === "fail") {
       parts.push(`Reviewer finding: ${review.note}`);
+      const structured = (task.reviewNotes ?? []).filter(
+        (note) => note.kind === "finding" && note.resolvedAt === undefined,
+      );
+      if (structured.length && structured.every((note) => !note.details))
+        return parts.join("\n\n").slice(0, RETRY_FEEDBACK_LIMIT);
       try {
         const blocks = this.store.session(review.sessionId).session.blocks;
         const lastUser = blocks.findLastIndex((block) => block.role === "user");
@@ -887,7 +1021,13 @@ export class HostTasks {
       if (task.worktreeCwd && available(task.worktreeCwd)) return task;
       // The worktree was removed; the branch still holds the work.
       const tree = await createHostWorktree(project.cwd, task.branch, "", true);
-      return { ...task, worktreeCwd: tree.path };
+      return {
+        ...task,
+        worktreeCwd: tree.path,
+        ...(task.mergeRepair
+          ? { mergeRepair: { ...task.mergeRepair, prepared: false } }
+          : {}),
+      };
     }
     if (task.isolate === false) return task;
     const base = await checkoutBase(project.cwd);
@@ -928,6 +1068,77 @@ export class HostTasks {
       )
     )
       return task;
+    if (ready.mergeRepair && !ready.mergeRepair.prepared) {
+      try {
+        const cwd = ready.worktreeCwd!;
+        if (
+          !cwd ||
+          (await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"])) !==
+            ready.branch
+        )
+          throw new Error(
+            "The retained task checkout is not on its recorded branch.",
+          );
+        const pending = await git(cwd, [
+          "rev-parse",
+          "--verify",
+          "MERGE_HEAD",
+        ]).catch(() => "");
+        if (pending && pending !== ready.mergeRepair.baseHead)
+          throw new Error(
+            "The task checkout has a different merge in progress. Work is retained.",
+          );
+        if (!pending) {
+          if (await git(cwd, ["status", "--porcelain"]))
+            throw new Error(
+              "The task checkout has changes after review. Work is retained; inspect before integration.",
+            );
+          try {
+            await git(
+              cwd,
+              ["merge", "--no-ff", "--no-edit", ready.mergeRepair.baseHead],
+              120_000,
+            );
+          } catch (error) {
+            const conflicts = await git(cwd, [
+              "diff",
+              "--name-only",
+              "--diff-filter=U",
+            ]);
+            if (!conflicts) throw error;
+            ready = {
+              ...ready,
+              mergeRepair: {
+                ...ready.mergeRepair,
+                conflicts: conflicts.split(/\r?\n/),
+              },
+            };
+          }
+        }
+        // A base update with no conflicts needs checks, not a worker turn.
+        ready = {
+          ...ready,
+          mergeRepair: { ...ready.mergeRepair!, prepared: true },
+        };
+        if (!(await git(cwd, ["diff", "--name-only", "--diff-filter=U"]))) {
+          if (this.find(task.id)?.updatedAt !== task.updatedAt)
+            return this.find(task.id) ?? task;
+          const next = this.write({
+            ...ready,
+            status: "verifying",
+            updatedAt: now,
+          });
+          this.verify(next);
+          return next;
+        }
+      } catch (error) {
+        if (this.find(task.id)?.updatedAt !== task.updatedAt)
+          return this.find(task.id) ?? task;
+        return this.block(ready, errorMessage(error), now);
+      }
+    }
+    if (this.find(task.id)?.updatedAt !== task.updatedAt)
+      return this.find(task.id) ?? task;
     const started = this.canResumeAfterHostStop(ready)
       ? this.resumeInterrupted(ready)
       : launchSessionRun(this.store, this.engine, {
@@ -936,6 +1147,7 @@ export class HostTasks {
         });
     const next = {
       ...ready,
+      awaitingOwnerRestart: undefined,
       sessionId: started.sessionId,
       runId: started.runId,
       startedAt: now,
@@ -1116,7 +1328,15 @@ export class HostTasks {
     const job: Promise<void> = run()
       .catch((error) => {
         const latest = current();
-        if (latest) this.block(latest, errorMessage(error), this.now());
+        if (latest) {
+          if (error instanceof UnresolvedMerge && latest.mergeRepair)
+            this.repairOrBlock(
+              { ...latest, retryFeedback: error.message },
+              error.message,
+              this.now(),
+            );
+          else this.block(latest, errorMessage(error), this.now());
+        }
       })
       .catch((error) =>
         console.error("Could not verify a task:", errorMessage(error)),
@@ -1247,11 +1467,16 @@ export class HostTasks {
             ...task,
             verification,
             repairStop,
+            reviewFailureCount: review.verdict === "fail" ? taskReviewFailureCount(task) + 1 : 0,
             attemptHistory,
             reviewNotes: addReviewNotes(
               review.verdict === "pass"
                 ? resolveReviewFindings(task.reviewNotes ?? [], now)
-                : resolveReviewedNotes(task.reviewNotes ?? [], reviewerReply(this.store.session(sessionId).session.blocks), now),
+                : resolveReviewedNotes(
+                    task.reviewNotes ?? [],
+                    reviewerReply(this.store.session(sessionId).session.blocks),
+                    now,
+                  ),
               findings,
               sessionId,
               now,
@@ -1290,10 +1515,12 @@ export class HostTasks {
     const reviewing: HostTask = {
       ...task,
       status: "review",
+      reviewFailureCount: 0,
       needsInput: undefined,
       reviewer: undefined,
       retryFeedback: undefined,
       reviewOnly: undefined,
+      mergeRetry: undefined,
       completedAt: now,
       updatedAt: now,
     };
@@ -1308,6 +1535,105 @@ export class HostTasks {
       );
     } catch (error) {
       return this.write({ ...reviewing, mergeError: errorMessage(error) });
+    }
+  }
+
+  /** Retry old/stale review cards without rerunning completed work. */
+  private async recoverMerge(task: HostTask, now: number): Promise<void> {
+    if (autoMergeBlocker(task) || this.mergingProjects.has(task.projectId))
+      return;
+    if (
+      task.goalId &&
+      this.store.db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='goals'",
+        )
+        .get()
+    ) {
+      const owner = this.store.db
+        .prepare("SELECT value FROM goals WHERE id=?")
+        .get(task.goalId);
+      if (owner && JSON.parse(String(owner.value)).status === "cancelled")
+        return;
+    }
+    const { cwd } = this.store.project(task.projectId);
+    const baseHead = await git(cwd, [
+      "rev-parse",
+      "--verify",
+      `${task.baseBranch}^{commit}`,
+    ]);
+    const fingerprint = createHash("sha256")
+      .update(
+        [
+          baseHead,
+          await git(cwd, ["rev-parse", "--verify", `${task.branch}^{commit}`]),
+          await git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(
+            () => "",
+          ),
+          await git(cwd, ["status", "--porcelain"]),
+        ].join("\n"),
+      )
+      .digest("hex");
+    if (
+      task.mergeRetry?.fingerprint === fingerprint &&
+      now < task.mergeRetry.after
+    )
+      return;
+    const current = this.find(task.id);
+    if (current?.status !== "review" || current.updatedAt !== task.updatedAt)
+      return;
+    // Persist before attempting Git, so restarting a host cannot cause a hot loop.
+    const retrying = this.write({
+      ...task,
+      mergeRetry: { fingerprint, after: now + 5 * 60_000 },
+    });
+    try {
+      await this.deliver(retrying, true);
+    } catch (error) {
+      const latest = this.find(task.id);
+      if (
+        latest?.status !== "review" ||
+        latest.updatedAt !== retrying.updatedAt
+      )
+        return;
+      if (!(error instanceof MergeConflict)) return;
+      const attempts = task.mergeRepair?.attempts ?? 0;
+      if (attempts >= MAX_REPAIR_ATTEMPTS) {
+        this.block(
+          {
+            ...latest,
+            repairStop: {
+              reason: "limit",
+              message:
+                "Automatic integration correction limit reached. All work is retained.",
+            },
+          },
+          error.message,
+          now,
+        );
+        return;
+      }
+      this.write({
+        ...latest,
+        status: "queued",
+        mergeRepair: {
+          baseHead,
+          conflicts: error.conflicts,
+          attempts: attempts + 1,
+        },
+        baseCommit: baseHead,
+        sessionId: undefined,
+        runId: undefined,
+        reviewer: undefined,
+        verification: undefined,
+        startedAt: undefined,
+        completedAt: undefined,
+        retryFeedback: undefined,
+        reviewOnly: undefined,
+        mergeRetry: undefined,
+        error: undefined,
+        updatedAt: now,
+      });
     }
   }
 
@@ -1331,7 +1657,12 @@ export class HostTasks {
   private async deliver(task: HostTask, auto = false): Promise<HostTask> {
     if (this.delivering.has(task.id))
       throw new Error("This task is already being merged.");
+    if (this.mergingProjects.has(task.projectId))
+      throw new Error(
+        "Another task is being merged into this project. Delivery will retry.",
+      );
     this.delivering.add(task.id);
+    this.mergingProjects.add(task.projectId);
     try {
       const { cwd } = this.store.project(task.projectId);
       try {
@@ -1347,19 +1678,29 @@ export class HostTasks {
       // The work is merged. A worktree holding changes made after the agent
       // finished is not forced away; it and the branch then stay behind.
       const worktreeCwd = task.worktreeCwd;
+      let cleanupError: string | undefined;
       if (worktreeCwd && available(worktreeCwd))
         await git(cwd, ["worktree", "remove", "--", worktreeCwd]).catch(
-          (error) =>
-            console.error("Could not remove a task worktree:", gitError(error)),
+          (error) => {
+            cleanupError = `Could not remove a task worktree: ${gitError(error)}`;
+          },
         );
       await git(cwd, ["worktree", "prune"]).catch(() => {});
       await git(cwd, ["branch", "-d", "--", task.branch!]).catch((error) =>
         console.error("Could not delete a task branch:", gitError(error)),
       );
-      const { worktreeCwd: removed, mergeError, ...rest } = task;
+      const {
+        worktreeCwd: removed,
+        mergeError,
+        mergeRetry,
+        mergeRepair,
+        cleanupError: previousCleanup,
+        ...rest
+      } = task;
       const now = this.now();
       return this.write({
         ...rest,
+        ...(cleanupError ? { worktreeCwd, cleanupError } : {}),
         status: "done",
         merged: true,
         mergedAt: now,
@@ -1368,6 +1709,7 @@ export class HostTasks {
       });
     } finally {
       this.delivering.delete(task.id);
+      this.mergingProjects.delete(task.projectId);
     }
   }
 

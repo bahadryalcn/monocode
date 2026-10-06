@@ -132,6 +132,27 @@ describe("worker assignment prompts", () => {
 });
 
 describe("local orchestration", () => {
+  it("deletes unrelated history while another run's control save is pending", async () => {
+    const f = setup();
+    await f.start();
+    vi.mocked(f.host.stop).mockClear();
+    let release!: () => void;
+    const pendingSave = new Promise<void>((resolve) => { release = resolve; });
+    f.store.save.mockImplementationOnce(async () => { await pendingSave; });
+    const control = f.delegate(["src"]);
+    await vi.waitFor(() => expect(f.store.save).toHaveBeenCalledTimes(2));
+    const remove = vi.fn(async () => {});
+    try {
+      await f.manager.deleteSession("old-history", remove);
+      expect(remove).toHaveBeenCalledOnce();
+      expect(f.manager.run("lead")?.status).toBe("active");
+      expect(f.host.stop).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await control;
+    }
+  });
+
   it("stops and forgets a deleted lead without persisting it again", async () => {
     const f = setup();
     await f.start();

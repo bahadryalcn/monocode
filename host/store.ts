@@ -41,6 +41,10 @@ export class HostStore {
   // treat returned values as immutable.
   private cache = new Map<string, HostSession>();
   private cacheWeights = new Map<string, number>();
+  private stateMetadata = new Map<
+    string,
+    { revision: number; status: HostSession["status"]; desktop: boolean }
+  >();
   private receiptWrites = 0;
   // Write-behind state, consulted before the cache and SQLite by every read.
   // Kept apart from the LRU cache so eviction can never drop unwritten data.
@@ -50,6 +54,8 @@ export class HostStore {
   private flushedInTransaction: PendingWrite[] = [];
   /** Snapshot upserts issued so far; lets tests count checkpoints. */
   snapshotWrites = 0;
+  /** Incremented whenever session metadata or content changes in this process. */
+  changeVersion = 0;
 
   constructor(path: string) {
     this.attachmentDir = join(dirname(path), "attachments");
@@ -139,7 +145,11 @@ export class HostStore {
       this.flushedInTransaction = [];
       const effects = this.commitEffects.splice(0);
       for (const effect of effects) {
-        try { effect(); } catch (error) { console.error("Committed command dispatch failed:", error); }
+        try {
+          effect();
+        } catch (error) {
+          console.error("Committed command dispatch failed:", error);
+        }
       }
       return value;
     } catch (error) {
@@ -190,7 +200,10 @@ export class HostStore {
     this.cache.delete(value.session.id);
     this.cache.set(value.session.id, value);
     this.cacheWeights.set(value.session.id, snapshotWeight(value));
-    let bytes = [...this.cache.keys()].reduce((sum, id) => sum + (this.cacheWeights.get(id) ?? 0), 0);
+    let bytes = [...this.cache.keys()].reduce(
+      (sum, id) => sum + (this.cacheWeights.get(id) ?? 0),
+      0,
+    );
     while (this.cache.size > CACHED_SESSIONS || bytes > 64 * 1024 * 1024) {
       // One active transcript is already owned by the engine. Keeping its
       // immutable reference avoids rehydrating a giant journal every token.
@@ -213,22 +226,39 @@ export class HostStore {
       .get(id);
     if (!row) return undefined;
     let value = JSON.parse(String(row.snapshot)) as HostSession;
-    const journal = this.db.prepare("SELECT * FROM session_journal WHERE session_id=?").get(id);
+    const journal = this.db
+      .prepare("SELECT * FROM session_journal WHERE session_id=?")
+      .get(id);
     if (journal && Number(journal.revision) > value.revision) {
-      const blocks = new Map(value.session.blocks.map((block) => [block.id, block]));
+      const blocks = new Map(
+        value.session.blocks.map((block) => [block.id, block]),
+      );
       const revisions = { ...value.blockRevisions };
-      for (const changed of this.db.prepare("SELECT * FROM session_journal_blocks WHERE session_id=?").all(id)) {
-        blocks.set(String(changed.block_id), JSON.parse(String(changed.payload)));
+      for (const changed of this.db
+        .prepare("SELECT * FROM session_journal_blocks WHERE session_id=?")
+        .all(id)) {
+        blocks.set(
+          String(changed.block_id),
+          JSON.parse(String(changed.payload)),
+        );
         revisions[String(changed.block_id)] = Number(changed.revision);
       }
       const metadata = JSON.parse(String(journal.metadata)) as HostSession;
       const ids = JSON.parse(String(journal.block_ids)) as string[];
-      value = { ...metadata, blockRevisions: Object.fromEntries(ids.map((blockId) => [blockId, revisions[blockId] ?? value.revision])),
-        session: { ...metadata.session, blocks: ids.map((blockId) => {
-          const block = blocks.get(blockId);
-          if (!block) throw new Error("Incomplete session journal");
-          return block;
-        }) } };
+      value = {
+        ...metadata,
+        blockRevisions: Object.fromEntries(
+          ids.map((blockId) => [blockId, revisions[blockId] ?? value.revision]),
+        ),
+        session: {
+          ...metadata.session,
+          blocks: ids.map((blockId) => {
+            const block = blocks.get(blockId);
+            if (!block) throw new Error("Incomplete session journal");
+            return block;
+          }),
+        },
+      };
     }
     return this.remember(value);
   }
@@ -256,10 +286,9 @@ export class HostStore {
         )
           return cached;
         const fresh = summary(this.session(String(row.id)));
-        this.db.prepare("UPDATE sessions SET summary=? WHERE id=?").run(
-          JSON.stringify(fresh),
-          String(row.id),
-        );
+        this.db
+          .prepare("UPDATE sessions SET summary=? WHERE id=?")
+          .run(JSON.stringify(fresh), String(row.id));
         return fresh;
       })
       .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -358,15 +387,15 @@ export class HostStore {
             cwd: unwritten.session.cwd ?? null,
           };
         return {
-        id: String(row.id),
-        hasDesktop: !!Number(row.has_desktop),
-        running: row.status === "running",
-        shellRunning: !!Number(row.shell_running),
-        providerSessionId: row.provider_session_id
-          ? String(row.provider_session_id)
-          : null,
-        harness: row.harness == null ? null : String(row.harness),
-        cwd: row.session_cwd == null ? null : String(row.session_cwd),
+          id: String(row.id),
+          hasDesktop: !!Number(row.has_desktop),
+          running: row.status === "running",
+          shellRunning: !!Number(row.shell_running),
+          providerSessionId: row.provider_session_id
+            ? String(row.provider_session_id)
+            : null,
+          harness: row.harness == null ? null : String(row.harness),
+          cwd: row.session_cwd == null ? null : String(row.session_cwd),
         };
       });
   }
@@ -378,11 +407,80 @@ export class HostStore {
           .all(projectId)
       : this.db.prepare("SELECT id, snapshot FROM sessions").all();
     return rows
-      .map(
-        (row) =>
-          this.session(String(row.id)),
-      )
+      .map((row) => this.session(String(row.id)))
       .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  /** Reads the indexed revision column without parsing the transcript snapshot. */
+  sessionRevision(id: string): number | undefined {
+    const pending = this.pending.get(id);
+    if (pending) return pending.value.revision;
+    const cached = this.cache.get(id);
+    if (cached) return cached.revision;
+    return this.sessionStateMetadata(id)?.revision;
+  }
+
+  sessionStateMetadata(
+    id: string,
+  ):
+    | { revision: number; status: HostSession["status"]; desktop: boolean }
+    | undefined {
+    const pending = this.pending.get(id)?.value;
+    if (pending)
+      return {
+        revision: pending.revision,
+        status: pending.status,
+        desktop: pending.desktop != null,
+      };
+    const cached = this.cache.get(id);
+    if (cached)
+      return {
+        revision: cached.revision,
+        status: cached.status,
+        desktop: cached.desktop != null,
+      };
+    const known = this.stateMetadata.get(id);
+    if (known) {
+      this.stateMetadata.delete(id);
+      this.stateMetadata.set(id, known);
+      return known;
+    }
+    const row = this.db
+      .prepare("SELECT revision,status,has_desktop FROM sessions WHERE id=?")
+      .get(id);
+    if (!row) return undefined;
+    const value = {
+      revision: Number(row.revision),
+      status: row.status as HostSession["status"],
+      desktop: !!Number(row.has_desktop),
+    };
+    this.rememberStateMetadata(id, value);
+    return value;
+  }
+
+  private rememberStateMetadata(
+    id: string,
+    value: {
+      revision: number;
+      status: HostSession["status"];
+      desktop: boolean;
+    },
+  ) {
+    this.stateMetadata.delete(id);
+    this.stateMetadata.set(id, value);
+    while (this.stateMetadata.size > 4096)
+      this.stateMetadata.delete(this.stateMetadata.keys().next().value!);
+  }
+
+  private updateStateMetadata(value: HostSession) {
+    const update = () =>
+      this.rememberStateMetadata(value.session.id, {
+        revision: value.revision,
+        status: value.status,
+        desktop: value.desktop != null,
+      });
+    if (this.inTransaction) this.commitEffects.push(update);
+    else update();
   }
 
   /** Returns the saved value, stamped with per-block change revisions.
@@ -393,13 +491,17 @@ export class HostStore {
     event: unknown,
     options: { deferred?: boolean } = {},
   ): HostSession {
+    this.changeVersion++;
     const previous = this.find(input.session.id);
     const value = {
       ...input,
       // Older snapshots have no creation time. Preserve their last recorded
       // timestamp when they are first written by this version of the host.
       createdAt:
-        input.createdAt ?? previous?.createdAt ?? previous?.updatedAt ?? input.updatedAt,
+        input.createdAt ??
+        previous?.createdAt ??
+        previous?.updatedAt ??
+        input.updatedAt,
       blockRevisions: blockRevisions(previous, input),
     };
     const id = value.session.id;
@@ -410,6 +512,7 @@ export class HostStore {
       entry.events.push(row);
       this.pending.set(id, entry);
       this.arm(id, entry);
+      this.updateStateMetadata(value);
       return value;
     }
     // Pending soft state goes out in the same write, so the stored snapshot
@@ -421,13 +524,17 @@ export class HostStore {
       if (entry) this.restore(entry);
       throw error;
     }
-    return this.remember(value);
+    const remembered = this.remember(value);
+    this.updateStateMetadata(value);
+    return remembered;
   }
 
   /** Writes every session whose latest state is still only in memory. */
   flushAll(): void {
     for (const id of [...this.pending.keys()]) this.flushPending(id);
-    for (const row of this.db.prepare("SELECT session_id FROM session_journal").all())
+    for (const row of this.db
+      .prepare("SELECT session_id FROM session_journal")
+      .all())
       this.write(this.session(String(row.session_id)), []);
   }
 
@@ -513,8 +620,12 @@ export class HostStore {
       this.db
         .prepare("DELETE FROM events WHERE session_id=? AND revision<?")
         .run(value.session.id, value.revision - 2_000);
-      this.db.prepare("DELETE FROM session_journal WHERE session_id=?").run(value.session.id);
-      this.db.prepare("DELETE FROM session_journal_blocks WHERE session_id=?").run(value.session.id);
+      this.db
+        .prepare("DELETE FROM session_journal WHERE session_id=?")
+        .run(value.session.id);
+      this.db
+        .prepare("DELETE FROM session_journal_blocks WHERE session_id=?")
+        .run(value.session.id);
     };
     if (this.inTransaction) run();
     else this.transaction(run);
@@ -523,36 +634,78 @@ export class HostStore {
 
   /** Streaming checkpoints serialize changed blocks only. Hard commands still
    * commit a full compatible checkpoint together with their receipt. */
-  private writeJournal(value: HostSession, rows: { revision: number; event: unknown }[]): void {
+  private writeJournal(
+    value: HostSession,
+    rows: { revision: number; event: unknown }[],
+  ): void {
     const id = value.session.id;
-    const previous = this.db.prepare("SELECT revision FROM session_journal WHERE session_id=?").get(id)
-      ?? this.db.prepare("SELECT revision FROM sessions WHERE id=?").get(id);
+    const previous =
+      this.db
+        .prepare("SELECT revision FROM session_journal WHERE session_id=?")
+        .get(id) ??
+      this.db.prepare("SELECT revision FROM sessions WHERE id=?").get(id);
     const revision = Number(previous?.revision ?? -1);
-    const { blockRevisions: _revisions, session: { blocks, ...session }, ...rest } = value;
+    const {
+      blockRevisions: _revisions,
+      session: { blocks, ...session },
+      ...rest
+    } = value;
     const run = () => {
-      const writeBlock = this.db.prepare("INSERT INTO session_journal_blocks VALUES (?, ?, ?, ?) ON CONFLICT(session_id,block_id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload");
+      const writeBlock = this.db.prepare(
+        "INSERT INTO session_journal_blocks VALUES (?, ?, ?, ?) ON CONFLICT(session_id,block_id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",
+      );
       for (const block of blocks) {
         const stamp = value.blockRevisions?.[block.id] ?? value.revision;
-        if (stamp > revision) writeBlock.run(id, block.id, stamp, JSON.stringify(block));
+        if (stamp > revision)
+          writeBlock.run(id, block.id, stamp, JSON.stringify(block));
       }
-      this.db.prepare("INSERT INTO session_journal VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision,metadata=excluded.metadata,block_ids=excluded.block_ids")
-        .run(id, value.revision, JSON.stringify({ ...rest, session }), JSON.stringify(blocks.map((block) => block.id)));
-      this.db.prepare("UPDATE sessions SET summary=?, revision=?, updated_at=?,status=? WHERE id=?")
-        .run(JSON.stringify(summary(value)), value.revision, value.updatedAt, value.status, id);
+      this.db
+        .prepare(
+          "INSERT INTO session_journal VALUES (?, ?, ?, ?) ON CONFLICT(session_id) DO UPDATE SET revision=excluded.revision,metadata=excluded.metadata,block_ids=excluded.block_ids",
+        )
+        .run(
+          id,
+          value.revision,
+          JSON.stringify({ ...rest, session }),
+          JSON.stringify(blocks.map((block) => block.id)),
+        );
+      this.db
+        .prepare(
+          "UPDATE sessions SET summary=?, revision=?, updated_at=?,status=? WHERE id=?",
+        )
+        .run(
+          JSON.stringify(summary(value)),
+          value.revision,
+          value.updatedAt,
+          value.status,
+          id,
+        );
       const insert = this.db.prepare("INSERT INTO events VALUES (?, ?, ?)");
-      for (const row of rows) insert.run(id, row.revision, JSON.stringify(row.event));
-      this.db.prepare("DELETE FROM events WHERE session_id=? AND revision<?").run(id, value.revision - 2_000);
+      for (const row of rows)
+        insert.run(id, row.revision, JSON.stringify(row.event));
+      this.db
+        .prepare("DELETE FROM events WHERE session_id=? AND revision<?")
+        .run(id, value.revision - 2_000);
     };
-    if (this.inTransaction) run(); else this.transaction(run);
+    if (this.inTransaction) run();
+    else this.transaction(run);
   }
 
   updateSession(
     id: string,
-    patch: { title?: string; archived?: boolean; pinned?: boolean; linkedWorkItem?: LinkedWorkItem | null },
+    patch: {
+      title?: string;
+      archived?: boolean;
+      pinned?: boolean;
+      linkedWorkItem?: LinkedWorkItem | null;
+    },
   ): HostSessionSummary {
     return this.transaction(() => {
       const current = this.session(id);
-      if (patch.title !== undefined && (!patch.title.trim() || patch.title.length > 200))
+      if (
+        patch.title !== undefined &&
+        (!patch.title.trim() || patch.title.length > 200)
+      )
         throw new Error("Invalid session title");
       const next = this.save(
         {
@@ -583,6 +736,8 @@ export class HostStore {
       this.db.prepare("DELETE FROM events WHERE session_id=?").run(id);
       this.db.prepare("DELETE FROM sessions WHERE id=?").run(id);
       this.cache.delete(id);
+      this.commitEffects.push(() => this.stateMetadata.delete(id));
+      this.changeVersion++;
     });
   }
 
@@ -592,6 +747,15 @@ export class HostStore {
     if (row.signature !== signature)
       throw new Error("Command ID was already used with a different payload");
     return JSON.parse(String(row.receipt)) as CommandReceipt;
+  }
+
+  receiptStatus(id: string): CommandReceipt | undefined {
+    const row = this.db
+      .prepare("SELECT receipt FROM receipts WHERE id=?")
+      .get(id);
+    return row
+      ? (JSON.parse(String(row.receipt)) as CommandReceipt)
+      : undefined;
   }
 
   recordReceipt(signature: string, receipt: CommandReceipt): void {
@@ -606,7 +770,9 @@ export class HostStore {
   /** Clients retry a command for seconds to minutes, never days. */
   pruneReceipts(now = Date.now()): void {
     this.db
-      .prepare("DELETE FROM receipts WHERE created_at IS NULL OR created_at < ?")
+      .prepare(
+        "DELETE FROM receipts WHERE created_at IS NULL OR created_at < ?",
+      )
       .run(now - RECEIPT_RETENTION_MS);
   }
 
@@ -704,7 +870,9 @@ export function summary(value: HostSession): HostSessionSummary {
     pinned: value.pinned,
     linkedWorkItem: value.session.linkedWorkItem,
     needsInput: sessionNeedsInput(value.session),
-    draft: value.session.blocks.some((block) => block.role === "user" && block.draft),
+    draft: value.session.blocks.some(
+      (block) => block.role === "user" && block.draft,
+    ),
   };
 }
 

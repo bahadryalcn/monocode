@@ -618,6 +618,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           "thread/resume",
           {
             threadId: resume.threadId,
+            // MonoCode already owns the transcript. Avoid retransmitting the
+            // full history (including base64 images); Codex keeps its context.
+            excludeTurns: true,
             ...buildThreadStartParams({
               cwd: input.cwd,
               runtimeMode: input.runtimeMode,

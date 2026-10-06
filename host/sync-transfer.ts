@@ -13,6 +13,8 @@ export const INLINE_SYNC_BYTES = 4 * 1024 * 1024;
 export const SYNC_CHUNK_BYTES = 4 * 1024 * 1024;
 const TRANSFER_TTL_MS = 2 * 60_000;
 const MAX_TRANSFERS = 8;
+export const MAX_SYNC_TRANSFER_UNITS = 32 * 1024 * 1024;
+export const MAX_TRANSFER_CACHE_BYTES = 128 * 1024 * 1024;
 
 const encodedBytes = (value: string) =>
   Buffer.byteLength(JSON.stringify(value));
@@ -24,7 +26,12 @@ export class SyncTransfers {
   >();
 
   constructor(
-    private readonly limits = {
+    private readonly limits: {
+      inline: number;
+      chunk: number;
+      maxUnits?: number;
+      cacheBytes?: number;
+    } = {
       inline: INLINE_SYNC_BYTES,
       chunk: SYNC_CHUNK_BYTES,
     },
@@ -35,11 +42,31 @@ export class SyncTransfers {
     if (sync.kind === "unchanged") return sync;
     const text = JSON.stringify(sync);
     if (
+      text.length > (this.limits.maxUnits ?? MAX_SYNC_TRANSFER_UNITS) ||
+      text.length * 2 > (this.limits.cacheBytes ?? MAX_TRANSFER_CACHE_BYTES)
+    )
+      throw new Error(
+        "Session content exceeds the transfer budget; use bounded history pages or read the source file.",
+      );
+    if (
       text.length * 3 <= this.limits.inline ||
       Buffer.byteLength(text) <= this.limits.inline
     )
       return sync;
     this.prune();
+    let retained = [...this.transfers.values()].reduce(
+      (bytes, entry) => bytes + entry.text.length * 2,
+      0,
+    );
+    for (const [id, entry] of this.transfers) {
+      if (
+        retained + text.length * 2 <=
+        (this.limits.cacheBytes ?? MAX_TRANSFER_CACHE_BYTES)
+      )
+        break;
+      retained -= entry.text.length * 2;
+      this.transfers.delete(id);
+    }
     const transfer = randomUUID();
     this.transfers.set(transfer, {
       sessionId,

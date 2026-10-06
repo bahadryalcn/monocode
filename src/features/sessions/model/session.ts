@@ -323,6 +323,8 @@ export type TurnMetrics = {
 };
 
 export type Block = {
+  /** Bounded remote preview; full content is requested explicitly, never persisted. */
+  remoteContent?: { revision: number; bytes: number };
   id: string;
   role: BlockRole;
   text: string;
@@ -437,6 +439,8 @@ export const RUNTIME_MODE_HINT: Record<RuntimeMode, string> = {
 export type WorkspaceMode = "current" | "worktree";
 
 export type Session = {
+  /** Incomplete remote view. Sending may proceed; authoritative persistence may not. */
+  historyPartial?: boolean;
   /** Only a tail page is available; sending/editing/persistence must wait. */
   historyLoading?: boolean;
   historyLoadError?: string;

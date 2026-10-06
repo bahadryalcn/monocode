@@ -120,12 +120,89 @@ it("points to Settings when no machine is connected", async () => {
   expect(button("Add a machine")).toBeTruthy();
 });
 
+it("retains the old folder during failed navigation and retries the requested folder before allowing Open", async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  let fail!: (error: unknown) => void;
+  let first = true;
+  vi.mocked(invoke).mockImplementation((command, input) => {
+    const request = input as
+      { method?: string; params?: { path?: string } } | undefined;
+    if (
+      first &&
+      request?.method === "projects.browse" &&
+      request.params?.path === "/home/me/code"
+    ) {
+      first = false;
+      return new Promise((_resolve, reject) => {
+        fail = reject;
+      });
+    }
+    return original(command, input);
+  });
+  await render();
+  await act(async () => button("code").click());
+  expect(document.body.textContent).toContain("Refreshing folders");
+  expect((button("Open") as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => fail(new Error("Permission denied")));
+  expect(document.body.textContent).toContain("Permission denied");
+  expect(document.body.textContent).toContain(
+    "Showing last loaded folder: /home/me",
+  );
+  expect((button("Open") as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => button("Retry").click());
+  expect(
+    document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="Folder path on the machine"]',
+    )?.value,
+  ).toBe("/home/me/code");
+  expect((button("Open") as HTMLButtonElement).disabled).toBe(false);
+  expect(document.body.textContent).not.toContain("Permission denied");
+});
+
+it("does not present an unreadable machine registry as a successful empty result", async () => {
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, input) =>
+    command === "remote_machines"
+      ? Promise.reject(new Error("Registry unavailable"))
+      : original(command, input),
+  );
+  await render();
+  expect(document.body.textContent).toContain("Registry unavailable");
+  expect(document.body.textContent).not.toContain(
+    "No machines are connected yet",
+  );
+  vi.mocked(invoke).mockImplementation(original);
+  await act(async () => button("Retry").click());
+  expect(document.body.textContent).not.toContain("Registry unavailable");
+  expect(button("code")).toBeTruthy();
+});
+
+it("ignores an older machine-list failure after a newer read succeeds", async () => {
+  await render();
+  const reads: { resolve: (value: unknown) => void; reject: (error: unknown) => void }[] = [];
+  const original = vi.mocked(invoke).getMockImplementation()!;
+  vi.mocked(invoke).mockImplementation((command, input) => command === "remote_machines"
+    ? new Promise((resolve, reject) => reads.push({ resolve, reject }))
+    : original(command, input));
+  await act(async () => {
+    window.dispatchEvent(new Event("monocode:remote-machines"));
+    window.dispatchEvent(new Event("monocode:remote-machines"));
+  });
+  expect(reads).toHaveLength(2);
+  await act(async () => reads[1].resolve([]));
+  await act(async () => reads[0].reject(new Error("Old read failed")));
+  expect(document.body.textContent).toContain("No machines are connected yet");
+  expect(document.body.textContent).not.toContain("Old read failed");
+});
+
 it("ignores a project that finishes opening after cancellation", async () => {
   const original = vi.mocked(invoke).getMockImplementation()!;
   let finish!: (value: unknown) => void;
   vi.mocked(invoke).mockImplementation((command, input) => {
     if ((input as { method?: string } | undefined)?.method === "projects.open")
-      return new Promise((resolve) => { finish = resolve; });
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
     return original(command, input);
   });
   await render();

@@ -183,6 +183,11 @@ type Props = {
   busy?: boolean;
   historyLoading?: boolean;
   historyLoadError?: string;
+  remoteHistoryHasMore?: boolean;
+  remoteHistoryLoading?: boolean;
+  remoteHistoryError?: string;
+  onLoadRemoteHistory?: () => Promise<number | void> | void;
+  onLoadRemoteBlock?: (blockId: string, revision: number) => Promise<void> | void;
   performanceTraceId?: string;
   cwd?: string;
   harness?: HarnessId;
@@ -231,6 +236,11 @@ function AgentTranscriptComponent({
   busy,
   historyLoading = false,
   historyLoadError,
+  remoteHistoryHasMore = false,
+  remoteHistoryLoading = false,
+  remoteHistoryError,
+  onLoadRemoteHistory,
+  onLoadRemoteBlock,
   performanceTraceId,
   cwd,
   harness,
@@ -579,7 +589,7 @@ function AgentTranscriptComponent({
     el.scrollTop += el.scrollHeight - previousHeight;
     distanceFromBottom.current =
       el.scrollHeight - el.scrollTop - el.clientHeight;
-  }, [visibleTurnCount]);
+  }, [visibleTurnCount, blocks.length]);
 
   // Short turns can leave the first paint with empty space above them, and
   // the rest of the window arriving later would then push everything down.
@@ -607,11 +617,16 @@ function AgentTranscriptComponent({
     stickToBottom.current = false;
   }, []);
 
-  const loadEarlier = () => {
+  const loadEarlier = async () => {
     prepareToPrepend();
-    setVisibleTurnCount((count) =>
-      Math.min(turns.length, count + TURN_PAGE_SIZE),
-    );
+    if (firstVisibleTurn > 0) {
+      setVisibleTurnCount((count) => Math.min(turns.length, count + TURN_PAGE_SIZE));
+      return;
+    }
+    if (remoteHistoryHasMore && onLoadRemoteHistory) {
+      const count = await onLoadRemoteHistory();
+      setVisibleTurnCount((current) => Math.min(turns.length + Math.max(1, Number(count) || TURN_PAGE_SIZE), current + Math.max(1, Number(count) || TURN_PAGE_SIZE)));
+    }
   };
 
   const revealBlock = useCallback(
@@ -733,14 +748,16 @@ function AgentTranscriptComponent({
       <div className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-1 pb-8">
         {historyLoading ? <div role="status" className="px-4 py-3 font-sans text-xs text-content/60">Loading earlier messages…</div> : null}
         {historyLoadError ? <div role="alert" className="px-4 py-3 font-sans text-xs text-danger">{historyLoadError}</div> : null}
-        {firstVisibleTurn > 0 ? (
+        {remoteHistoryError ? <div role="alert" className="px-4 py-2 font-sans text-xs text-danger">{remoteHistoryError}</div> : null}
+        {firstVisibleTurn > 0 || remoteHistoryHasMore ? (
           <div className="flex justify-center px-4 py-3">
             <button
               type="button"
+              disabled={remoteHistoryLoading}
               className="rounded-md bg-content/8 px-2.5 py-1.5 font-sans text-[12px] text-content/60 hover:bg-content/12 hover:text-content"
-              onClick={loadEarlier}
+              onClick={() => void loadEarlier()}
             >
-              Load earlier messages
+              {remoteHistoryLoading ? "Loading earlier messages…" : "Load earlier messages"}
             </button>
           </div>
         ) : null}
@@ -798,6 +815,7 @@ function AgentTranscriptComponent({
               onOpenDiff={stableOpenDiff}
               onOpenPlan={stableOpenPlan}
               onBuildPlan={stableBuildPlan}
+              onLoadRemoteBlock={onLoadRemoteBlock}
               onSecondOpinion={stableSecondOpinion}
               onHandoff={stableHandoff}
               onEditLastTurn={stableEditLastTurn}
@@ -862,6 +880,7 @@ type TurnProps = {
   onOpenDiff?: (path: string) => void;
   onOpenPlan?: (blockId: string) => void;
   onBuildPlan?: (blockId: string, target?: PlanBuildTarget) => void;
+  onLoadRemoteBlock?: (blockId: string, revision: number) => Promise<void> | void;
   onSecondOpinion?: (target: ModelTarget, turn: Block[]) => void;
   onHandoff?: (target: ModelTarget, turn: Block[]) => void;
   onEditLastTurn?: () => void;
@@ -909,6 +928,7 @@ const Turn = memo(function Turn({
   onOpenDiff,
   onOpenPlan,
   onBuildPlan,
+  onLoadRemoteBlock,
   onSecondOpinion,
   onHandoff,
   onEditLastTurn,
@@ -1021,8 +1041,15 @@ const Turn = memo(function Turn({
         />
       )
     ) : (
+      <div key={item.block.id}>
+      {item.block.remoteContent && onLoadRemoteBlock ? (
+        <div className="mx-4 mb-1 flex items-center gap-2">
+          <button type="button" className="rounded-md bg-content/8 px-2 py-1 font-sans text-[11px] text-content/65 hover:bg-content/12 hover:text-content" onClick={() => void onLoadRemoteBlock(item.block.id, item.block.remoteContent!.revision)}>
+            Load full output ({Math.max(1, Math.ceil(item.block.remoteContent.bytes / 1024))} KB)
+          </button>
+        </div>
+      ) : null}
       <TranscriptBlock
-        key={item.block.id}
         block={item.block}
         layout={transcriptLayout}
         visible={item.block.role === "user" ? visible : undefined}
@@ -1064,6 +1091,7 @@ const Turn = memo(function Turn({
           item.block.id === editableUserBlockId
         }
       />
+      </div>
     );
   // Assistant messages and delegated runs stay visible even when the work
   // around them folds. A new update must never hide an earlier reply.

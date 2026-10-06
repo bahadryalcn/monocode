@@ -4,11 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { saveShowExcludedFiles } from "../../settings/model/appearance";
 import {
+  announceDirListings,
+  forgetDir,
   listCachedDir,
   notifyDirsChanged,
   refreshDir,
   saveExpanded,
   saveSelected,
+  verifiedDirAt,
 } from "../model/fileTree";
 import type { FsEntry } from "../../../platform/tauri/fs";
 import {
@@ -17,10 +20,12 @@ import {
 } from "../../../shared/lib/drag";
 import { FileTree } from "./FileTree";
 
-const { iconRender, directories, clipboardFiles, copied, dragDrop } =
+const { iconRender, directories, failures, pendingReads, clipboardFiles, copied, dragDrop } =
   vi.hoisted(() => ({
     iconRender: vi.fn(),
     directories: new Map<string, FsEntry[]>(),
+    failures: new Map<string, string>(),
+    pendingReads: new Map<string, Promise<FsEntry[]>>(),
     clipboardFiles: [] as string[],
     copied: [] as { from: string; destParent: string }[],
     dragDrop: {
@@ -30,7 +35,13 @@ const { iconRender, directories, clipboardFiles, copied, dragDrop } =
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, string>) => {
-    if (command === "list_dir") return directories.get(args.path) ?? [];
+    if (command === "list_dir") {
+      const failure = failures.get(args.path);
+      if (failure) throw new Error(failure);
+      const pending = pendingReads.get(args.path);
+      if (pending) return pending;
+      return directories.get(args.path) ?? [];
+    }
     if (command === "clipboard_file_paths") return [...clipboardFiles];
     if (command === "copy_path") {
       copied.push({ from: args.from, destParent: args.destParent });
@@ -114,6 +125,7 @@ beforeEach(async () => {
   cwd = `/project-${++project}`;
   props = { cwd, onOpenFile: vi.fn() };
   directories.set(cwd, [file("first.ts")]);
+  failures.delete(cwd);
   await listCachedDir(cwd);
   container = document.createElement("div");
   document.body.append(container);
@@ -125,6 +137,8 @@ afterEach(() => {
   container.remove();
   localStorage.removeItem("monocode.showExcludedFiles");
   vi.clearAllMocks();
+  failures.clear();
+  pendingReads.clear();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   clipboardFiles.length = 0;
@@ -132,6 +146,137 @@ afterEach(() => {
 });
 
 describe("FileTree render isolation", () => {
+  it("shows an initial read failure separately from an empty directory and retries the root", async () => {
+    forgetDir(cwd);
+    failures.set(cwd, "host unavailable");
+
+    await act(async () => render());
+    expect(container.querySelector('[data-remote-data-state="error"]')).not.toBeNull();
+    expect(container.querySelector('[data-remote-data-state="empty"]')).toBeNull();
+    expect(row("first.ts")).toBeNull();
+
+    failures.delete(cwd);
+    directories.set(cwd, [file("recovered.ts")]);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Retry loading files"]')!.click();
+      await vi.waitFor(() => expect(row("recovered.ts")).not.toBeNull());
+    });
+    expect(container.querySelector('[data-remote-data-state="ready"]')).not.toBeNull();
+  });
+
+  it("clears old refresh state on a cached root switch and ignores the late old response", async () => {
+    await act(async () => render());
+    let finishOldRead!: (entries: FsEntry[]) => void;
+    const oldRead = new Promise<FsEntry[]>((resolve) => {
+      finishOldRead = resolve;
+    });
+    pendingReads.set(cwd, oldRead);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Refresh files"]')!.click();
+    });
+    expect(container.querySelector('[data-remote-data-state="refreshing"]')).not.toBeNull();
+
+    const oldRoot = cwd;
+    const nextRoot = `/cached-project-${project}`;
+    directories.set(nextRoot, [{ name: "second.ts", path: `${nextRoot}/second.ts`, isDir: false, ignored: false }]);
+    await listCachedDir(nextRoot);
+    cwd = nextRoot;
+    props = { ...props, cwd };
+    await act(async () => render());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(`button[title="${nextRoot}"]`)!.click();
+    });
+    expect(container.querySelector('[data-remote-data-state="ready"]')).not.toBeNull();
+    expect(container.querySelector('[data-remote-data-state="refreshing"]')).toBeNull();
+    expect(row("second.ts")).not.toBeNull();
+    expect(container.querySelector('[title^="Last verified"]')?.getAttribute("title")).toBe(
+      `Last verified ${new Date(verifiedDirAt(nextRoot)!).toLocaleString()}`,
+    );
+
+    pendingReads.delete(oldRoot);
+    await act(async () => {
+      finishOldRead([{ name: "late-old.ts", path: `${oldRoot}/late-old.ts`, isDir: false, ignored: false }]);
+      await oldRead;
+    });
+    expect(row("second.ts")).not.toBeNull();
+    expect(row("late-old.ts")).toBeNull();
+    expect(container.querySelector('[data-remote-data-state="ready"]')).not.toBeNull();
+    expect(container.querySelector('[data-remote-data-state="refreshing"]')).toBeNull();
+  });
+
+  it("keeps cached root rows visible and stale after refresh failure, then retries the root", async () => {
+    await act(async () => render());
+    failures.set(cwd, "permission denied");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Refresh files"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.textContent).toContain("permission denied");
+    expect(container.querySelector('[data-remote-data-state="stale"]')).not.toBeNull();
+    expect(row("first.ts")).not.toBeNull();
+    expect(container.textContent).toContain("permission denied");
+
+    failures.delete(cwd);
+    directories.set(cwd, [file("fresh.ts")]);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Refresh files"]')!.click();
+      await vi.waitFor(() => expect(row("fresh.ts")).not.toBeNull());
+    });
+    expect(row("first.ts")).toBeNull();
+  });
+
+  it("marks an automatically refreshed root as verified when its listing changes", async () => {
+    await act(async () => render());
+    const previousVerification = verifiedDirAt(cwd)!;
+    vi.useFakeTimers();
+    vi.setSystemTime(previousVerification + 60_000);
+    directories.set(cwd, [file("automatically-added.ts")]);
+    await act(async () => {
+      notifyDirsChanged(cwd, true);
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(row("automatically-added.ts")).not.toBeNull();
+    expect(container.querySelector('[data-remote-data-state="ready"]')).not.toBeNull();
+    expect(verifiedDirAt(cwd)).toBeGreaterThan(previousVerification);
+  });
+
+  it("refreshes cached expanded child listings and keeps them on failure", async () => {
+    const childPath = `${cwd}/docs`;
+    const childFile = (name: string): FsEntry => ({
+      name,
+      path: `${childPath}/${name}`,
+      isDir: false,
+      ignored: false,
+    });
+    directories.set(cwd, [folder("docs")]);
+    directories.set(childPath, [childFile("old.ts")]);
+    await refreshDir(cwd);
+    await listCachedDir(childPath);
+    await act(async () => {
+      announceDirListings();
+      render();
+    });
+    await act(async () => row("docs").click());
+    expect(row("docs/old.ts")).not.toBeNull();
+
+    failures.set(childPath, "child host unavailable");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Refresh files in docs"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(container.querySelector('[data-remote-data-state="stale"]')).not.toBeNull();
+    expect(row("docs/old.ts")).not.toBeNull();
+
+    failures.delete(childPath);
+    directories.set(childPath, [childFile("new.ts")]);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Refresh files in docs"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(row("docs/new.ts")).not.toBeNull();
+    expect(row("docs/old.ts")).toBeNull();
+  });
+
   it("uses a worktree branch as the explorer root identity", async () => {
     props = { ...props, rootLabel: "mc/update-readme-tests" };
 

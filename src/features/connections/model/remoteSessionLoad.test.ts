@@ -1,14 +1,19 @@
 // @vitest-environment happy-dom
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import type { HostSession } from "./protocol";
-import { loadRemoteSession, remoteRequest } from "./connections";
+import { loadRemoteHistoryPage, loadRemoteSession } from "./connections";
 import { canApplyRemotePreview } from "./remotePreviewBinding";
-import { canCacheRemoteSnapshot, createRemoteHistoryGeneration } from "./remoteHistoryGeneration";
+import { canCacheRemoteSnapshot } from "./remoteHistoryGeneration";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-const snapshot = (): HostSession => ({ projectId: "p", revision: 1, updatedAt: 1, status: "running",
+beforeEach(() => vi.clearAllMocks());
+
+const snapshot = (): HostSession => ({
+  projectId: "p", revision: 1, updatedAt: 11, status: "running",
   session: { id: "load-session", cwd: "/tmp", harness: "codex", model: "test", runtimeMode: "supervised", title: "Test",
-    blocks: [{ id: "user", role: "user", text: "ready text", attachments: [{ id: "load-image", name: "x.png", kind: "image", mimeType: "image/png", size: 3 }] }] } });
+    blocks: [{ id: "user", role: "user", text: "ready text", attachments: [{ id: "load-image", name: "x.png", kind: "image", mimeType: "image/png", size: 3 }] }] },
+});
+
 it("publishes text and running status without waiting for an image RPC", async () => {
   let finish!: (chunk: { data: string; offset: number; size: number }) => void;
   const image = new Promise((resolve) => { finish = resolve; });
@@ -25,21 +30,21 @@ it("publishes text and running status without waiting for an image RPC", async (
   expect(visible.session.blocks[0]!.text).toBe("ready text");
   expect(visible.status).toBe("running");
   expect(onPreviews).not.toHaveBeenCalled();
-  await remoteRequest("m", "commands.dispatch", {});
   finish({ data: btoa("abc"), offset: 3, size: 3 });
   await vi.waitFor(() => expect(onPreviews).toHaveBeenCalledOnce());
 });
-it("rejects late previews after a session switch, newer revision or full hydration", () => {
+
+it("rejects stale or narrower preview snapshots", () => {
   const old = snapshot();
   expect(canApplyRemotePreview(old, old)).toBe(true);
   expect(canApplyRemotePreview({ ...old, session: { ...old.session, id: "other" } }, old)).toBe(false);
   expect(canApplyRemotePreview({ ...old, revision: 2 }, old)).toBe(false);
-  expect(canApplyRemotePreview({ ...old, historyLoading: false }, { ...old, historyLoading: true })).toBe(false);
+  expect(canApplyRemotePreview({ ...old, session: { ...old.session, blocks: [{ ...old.session.blocks[0]!, id: "other" }] } }, old)).toBe(false);
+  expect(canApplyRemotePreview({ ...old, history: { before: 1, revision: 1, totalBlocks: 2 } }, old)).toBe(false);
 });
 
-it("preserves attachment previews for adopted and preload callers without callbacks", async () => {
+it("preserves attachment previews for callers that need one complete snapshot", async () => {
   const base = snapshot();
-  base.session.blocks[0]!.attachments![0]!.id = "legacy-preview-image";
   vi.mocked(invoke).mockImplementation(async (_command, input) => {
     const { method } = input as { method: string };
     if (method === "sessions.sync") return { kind: "snapshot", value: base };
@@ -50,72 +55,66 @@ it("preserves attachment previews for adopted and preload callers without callba
   expect(complete.session.blocks[0]!.attachments![0]!.data).toBe(btoa("abc"));
 });
 
-it("shows the tail before history pages settle and cancels a stale binding", async () => {
-  vi.useFakeTimers();
-  try {
-    const base = snapshot();
-    let current = true;
-    let finish!: (page: unknown) => void;
-    const older = new Promise((resolve) => { finish = resolve; });
-    const onHistory = vi.fn();
-    vi.mocked(invoke).mockImplementation(async (_command, input) => {
-      const { method, params } = input as { method: string; params: { before?: number } };
-      if (method !== "sessions.page") throw new Error(method);
-      if (params.before === undefined) return { sync: { kind: "snapshot", value: base }, before: 1, totalBlocks: 2, revision: 1 };
-      return older;
-    });
-    const tail = await loadRemoteSession("m", "load-session", undefined, { pages: true, onHistory, isCurrent: () => current });
-    expect(tail.historyLoading).toBe(true);
-    expect(tail.session.blocks[0]!.text).toBe("ready text");
-    await vi.advanceTimersByTimeAsync(0);
-    current = false;
-    finish({ sync: { kind: "snapshot", value: base }, totalBlocks: 2, revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(onHistory).not.toHaveBeenCalled();
-  } finally { vi.useRealTimers(); }
+it("opens with the tail and loads one older page only after an explicit request", async () => {
+  const base = snapshot();
+  const older = { ...base, session: { ...base.session, blocks: [{ id: "earlier", role: "user" as const, text: "earlier" }] } };
+  vi.mocked(invoke).mockImplementation(async (_command, input) => {
+    const { method, params } = input as { method: string; params: { before?: number } };
+    if (method !== "sessions.page") throw new Error(method);
+    return params.before === undefined
+      ? { sync: { kind: "snapshot", value: base }, before: 1, totalBlocks: 2, revision: 1 }
+      : { sync: { kind: "snapshot", value: older }, totalBlocks: 2, revision: 1 };
+  });
+  const tail = await loadRemoteSession("m", "load-session", undefined, { pages: true });
+  expect(tail.session.blocks.map((block) => block.id)).toEqual(["user"]);
+  expect(tail.history).toEqual({ before: 1, revision: 1, totalBlocks: 2 });
+  expect(tail.historyLoading).toBeUndefined();
+  expect(canCacheRemoteSnapshot(tail)).toBe(true);
+  expect(vi.mocked(invoke)).toHaveBeenCalledTimes(1);
+  const full = await loadRemoteHistoryPage("m", "load-session", tail);
+  expect(full?.session.blocks.map((block) => block.id)).toEqual(["earlier", "user"]);
+  expect(full?.history?.before).toBeUndefined();
+  expect(vi.mocked(invoke)).toHaveBeenCalledTimes(2);
 });
 
-it.each(["visibility toggle", "remount"])("restarts interrupted history after %s without restarting every poll", async () => {
-  vi.useFakeTimers();
-  try {
-    const base = snapshot();
-    let oldCurrent = true;
-    let finishOld!: (page: unknown) => void;
-    const oldPage = new Promise(resolve => { finishOld = resolve; });
-    let tails = 0;
-    const oldHistory = vi.fn();
-    const newHistory = vi.fn();
-    vi.mocked(invoke).mockImplementation(async (_command, input) => {
-      const { method, params } = input as { method: string; params: { before?: number } };
-      if (method !== "sessions.page") throw new Error(method);
-      if (params.before === undefined) {
-        tails++;
-        return { sync: { kind: "snapshot", value: base }, before: 1, totalBlocks: 2, revision: 1 };
-      }
-      if (tails === 1) return oldPage;
-      return { sync: { kind: "snapshot", value: { ...base, session: { ...base.session, blocks: [{ id: "earlier", role: "user", text: "earlier" }] } } }, totalBlocks: 2, revision: 1 };
-    });
-    const first = createRemoteHistoryGeneration();
-    const tail = await loadRemoteSession("m", "load-session", first.known(undefined), { pages: true, onHistory: oldHistory, isCurrent: () => oldCurrent });
-    first.loaded();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(canCacheRemoteSnapshot(tail)).toBe(false);
-    expect(first.known(tail)).toBe(tail);
-    oldCurrent = false; // The visibility effect cleanup or unmount cancels this loader.
-    const next = createRemoteHistoryGeneration();
-    expect(next.known(tail)).toBeUndefined();
-    const restarted = await loadRemoteSession("m", "load-session", next.known(tail), { pages: true, onHistory: newHistory, isCurrent: () => true });
-    next.loaded();
-    const beforePoll = tails;
-    expect(await loadRemoteSession("m", "load-session", next.known(restarted), { pages: true, onHistory: newHistory })).toBe(restarted);
-    expect(tails).toBe(beforePoll);
-    finishOld({ sync: { kind: "snapshot", value: base }, totalBlocks: 2, revision: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(oldHistory).not.toHaveBeenCalled();
-    expect(newHistory).toHaveBeenCalledOnce();
-    const history = newHistory.mock.calls[0][0] as HostSession;
-    expect(history.session.blocks.map(block => block.id)).toEqual(["earlier", "user"]);
-    expect(history.historyLoading).toBe(false);
-    expect(canCacheRemoteSnapshot(history)).toBe(true);
-  } finally { vi.useRealTimers(); }
+it("discards stale history pages without replacing live output or deleted blocks", async () => {
+  const base = snapshot();
+  vi.mocked(invoke).mockImplementation(async (_command, input) => {
+    const { method } = input as { method: string };
+    if (method !== "sessions.page") throw new Error(method);
+    return { sync: { kind: "snapshot", value: { ...base, session: { ...base.session, blocks: [{ id: "old", role: "user", text: "old" }] } } }, totalBlocks: 2, revision: 1 };
+  });
+  const current = { ...base, history: { before: 1, revision: 1, totalBlocks: 2 }, session: { ...base.session, blocks: [...base.session.blocks, { id: "live", role: "assistant" as const, text: "live output" }] } };
+  expect(await loadRemoteHistoryPage("m", "load-session", current, () => false)).toBeUndefined();
+  expect(await loadRemoteHistoryPage("m", "load-session", { ...current, revision: 2 })).toBeUndefined();
+  expect(current.session.blocks.at(-1)?.text).toBe("live output");
+});
+
+it("sends every loaded block ID for capable lazy-history hosts", async () => {
+  const base = snapshot();
+  const known = { ...base, session: { ...base.session, blocks: [
+    ...base.session.blocks,
+    { id: "middle", role: "assistant" as const, text: "middle" },
+    { id: "last", role: "assistant" as const, text: "last" },
+  ] }, history: { before: 8, revision: 1, totalBlocks: 10 } };
+  vi.mocked(invoke).mockResolvedValue({ kind: "unchanged", revision: 1 });
+  await loadRemoteSession("m", "load-session", known, { partialHistory: true });
+  const call = vi.mocked(invoke).mock.calls[0]![1] as { method: string; params: { partial?: boolean; loadedBlockIds?: string[]; windowStart?: number } };
+  expect(call.method).toBe("sessions.sync");
+  expect(call.params.partial).toBe(true);
+  expect(call.params.loadedBlockIds).toEqual(["user", "middle", "last"]);
+  expect(call.params.windowStart).toBe(8);
+});
+
+it("keeps an old-host loaded window on unchanged revision and resets to the fresh tail on change", async () => {
+  const known = { ...snapshot(), revision: 4, history: { before: 2, revision: 4, totalBlocks: 3 }, session: { ...snapshot().session, blocks: [{ id: "loaded-older", role: "user" as const, text: "older" }, ...snapshot().session.blocks] } };
+  vi.mocked(invoke).mockImplementation(async (_command, input) => {
+    const { method, params } = input as { method: string; params: { sessionId: string } };
+    expect(method).toBe("sessions.page");
+    return { sync: { kind: "snapshot", value: { ...snapshot(), revision: 5 } }, before: 1, totalBlocks: 4, revision: 5 };
+  });
+  const changed = await loadRemoteSession("m", "load-session", known, { pages: true });
+  expect(changed.revision).toBe(5);
+  expect(changed.session.blocks.map((block) => block.id)).toEqual(["user"]);
+  expect(changed.history?.before).toBe(1);
 });

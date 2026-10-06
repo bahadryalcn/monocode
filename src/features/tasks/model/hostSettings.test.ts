@@ -37,7 +37,7 @@ const mac: RemoteMachine = {
 };
 
 describe("host settings", () => {
-  it("accepts 1 to 8 tasks and 0 to 1440 minutes, keeping what is not sent", () => {
+  it("accepts 1 to 8 tasks and custom daily minutes, keeping what is not sent", () => {
     expect(parseHostSettings({ maxRunningTasks: 8, dailyAgentMinutes: 1440 }))
       .toEqual({ maxRunningTasks: 8, dailyAgentMinutes: 1440 });
     expect(parseHostSettings({ dailyAgentMinutes: 60 })).toEqual({
@@ -49,11 +49,13 @@ describe("host settings", () => {
       { maxRunningTasks: 9 },
       { maxRunningTasks: 2.5 },
       { dailyAgentMinutes: -5 },
-      { dailyAgentMinutes: 1441 },
+      { dailyAgentMinutes: Number.MAX_SAFE_INTEGER + 1 },
+      { dailyAgentMinutes: 2.5 },
       { dailyAgentMinutes: "60" },
     ])
       expect(() => parseHostSettings(bad)).toThrow();
     expect(() => parseHostSettings([])).toThrow("Invalid settings");
+    expect(parseHostSettings({ dailyAgentMinutes: 2880 }).dailyAgentMinutes).toBe(2880);
   });
 
   it("reads a host reply, and refuses anything else", () => {

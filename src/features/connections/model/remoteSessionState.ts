@@ -16,6 +16,7 @@ export function remoteSessionState(
     id: shell.id,
     cwd: shell.cwd,
     busy: snapshot.status === "running",
+    historyPartial: snapshot.history?.before !== undefined || host.blocks.some((block) => !!block.remoteContent),
     worktreeCwd: host.cwd === project.cwd
       ? undefined
       : remotePath(project.environmentId, host.cwd),

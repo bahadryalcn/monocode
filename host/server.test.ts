@@ -116,16 +116,254 @@ async function setup(providers: RemoteProvider[] = ["codex"]) {
 }
 
 describe("remote host API", () => {
+  it("returns bounded machine change cursors and command receipt status", async () => {
+    const s = await setup();
+    const created = s.engine.command({
+      type: "create",
+      commandId: "status-create",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
+    const reset = await s.call("machine.changes", {
+      sessions: [{ sessionId: created.sessionId, revision: 0 }],
+      projects: [{ projectId: s.project.id }],
+      tasksKnown: "",
+    });
+    expect(reset.value.result).toMatchObject({
+      reset: true,
+      instanceId: expect.any(String),
+      sessions: [{ sessionId: created.sessionId, revision: created.revision }],
+      projects: [
+        {
+          projectId: s.project.id,
+          etag: expect.any(String),
+          sessions: expect.any(Array),
+        },
+      ],
+    });
+    expect(reset.value.result.tasks).toEqual({ etag: expect.any(String) });
+    const steady = await s.call("machine.changes", {
+      instanceId: reset.value.result.instanceId,
+      sessions: [{ sessionId: created.sessionId, revision: created.revision }],
+      projects: [
+        { projectId: s.project.id, known: reset.value.result.projects[0].etag },
+      ],
+      tasksKnown: reset.value.result.tasks.etag,
+    });
+    expect(steady.value.result).toMatchObject({
+      reset: false,
+      sessions: [],
+      projects: [],
+    });
+    const summaries = vi.spyOn(s.store, "summaries");
+    await s.call("machine.changes", {
+      instanceId: reset.value.result.instanceId,
+      waitMs: 400,
+      sessions: [{ sessionId: created.sessionId, revision: created.revision }],
+      projects: [
+        { projectId: s.project.id, known: reset.value.result.projects[0].etag },
+      ],
+    });
+    expect(summaries.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(
+      (await s.call("commands.status", { commandId: "status-create" })).value
+        .result,
+    ).toMatchObject({
+      commandId: "status-create",
+      sessionId: created.sessionId,
+    });
+    expect(
+      (await s.call("commands.status", { commandId: "missing" })).value.result,
+    ).toBeNull();
+    expect(
+      (
+        await s.call(
+          "machine.changes",
+          { sessions: [], projects: [] },
+          "invalid",
+        )
+      ).status,
+    ).toBe(401);
+  });
+
+  it("keeps partial sync bounded to the loaded transcript tail", async () => {
+    const s = await setup();
+    const created = s.engine.command({
+      type: "create",
+      commandId: "partial-create",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
+    const base = s.store.session(created.sessionId);
+    const original = {
+      id: "loaded",
+      role: "assistant" as const,
+      text: "first",
+    };
+    const loaded = s.store.save(
+      {
+        ...base,
+        revision: base.revision + 1,
+        updatedAt: base.updatedAt + 1,
+        session: { ...base.session, blocks: [original] },
+      },
+      { type: "test" },
+    );
+    const appended = {
+      id: "appended",
+      role: "assistant" as const,
+      text: "second",
+    };
+    const current = s.store.save(
+      {
+        ...loaded,
+        revision: loaded.revision + 1,
+        updatedAt: loaded.updatedAt + 1,
+        session: {
+          ...loaded.session,
+          blocks: [...loaded.session.blocks, appended],
+        },
+      },
+      { type: "test" },
+    );
+    const loadedBlockIds = loaded.session.blocks.map((block) => block.id);
+    const delta = await s.call("sessions.sync", {
+      sessionId: created.sessionId,
+      revision: base.revision,
+      partial: true,
+      loadedBlockIds,
+    });
+    expect(delta.status).toBe(200);
+    expect(delta.value.result).toMatchObject({
+      kind: "delta",
+      partial: true,
+      value: {
+        history: {
+          revision: current.revision,
+          totalBlocks: current.session.blocks.length,
+        },
+      },
+    });
+    expect(delta.value.result.blockIds).toEqual(
+      current.session.blocks.map((block: { id: string }) => block.id),
+    );
+    expect(
+      (
+        await s.call("sessions.sync", {
+          sessionId: created.sessionId,
+          partial: true,
+          loadedBlockIds: ["not-present"],
+        })
+      ).value.result,
+    ).toMatchObject({
+      kind: "snapshot",
+      value: { history: { revision: current.revision } },
+    });
+  });
+
+  it("previews an oversized tail block and serves its full revision-pinned content on demand", async () => {
+    const s = await setup();
+    const created = s.engine.command({
+      type: "create",
+      commandId: "large-block-create",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
+    const before = s.store.session(created.sessionId);
+    const large = {
+      id: "large-tail",
+      role: "assistant" as const,
+      text: "x".repeat(2_000_000),
+    };
+    const current = s.store.save(
+      {
+        ...before,
+        revision: before.revision + 1,
+        updatedAt: before.updatedAt + 1,
+        session: { ...before.session, blocks: [large] },
+      },
+      { type: "test" },
+    );
+    const page = await s.call("sessions.page", {
+      sessionId: created.sessionId,
+      preview: true,
+    });
+    const preview = page.value.result.sync.value.session.blocks[0];
+    expect(preview).toMatchObject({
+      id: "large-tail",
+      remoteContent: { revision: current.revision, bytes: expect.any(Number) },
+    });
+    expect(preview.text.length).toBeLessThan(64 * 1024);
+    const legacy = await s.call("sessions.page", {
+      sessionId: created.sessionId,
+    });
+    expect(legacy.value.result.sync.value.session.blocks[0]).toMatchObject({
+      id: "large-tail",
+      text: large.text,
+    });
+    expect(legacy.value.result.sync.value.session.blocks[0]).not.toHaveProperty(
+      "remoteContent",
+    );
+    const full = await s.call("sessions.block", {
+      sessionId: created.sessionId,
+      blockId: "large-tail",
+      revision: current.revision,
+    });
+    expect(full.value.result).toMatchObject({
+      kind: "snapshot",
+      value: {
+        revision: current.revision,
+        session: {
+          blocks: [{ id: "large-tail", text: "x".repeat(2_000_000) }],
+        },
+      },
+    });
+    expect(
+      (
+        await s.call("sessions.block", {
+          sessionId: created.sessionId,
+          blockId: "large-tail",
+          revision: current.revision - 1,
+        })
+      ).status,
+    ).not.toBe(200);
+  });
+
   it("accepts a command while a revision long-poll is pending", async () => {
     const s = await setup();
-    const created = s.engine.command({ type: "create", commandId: "longpoll-create", projectId: s.project.id,
-      harness: "codex", model: "codex:test", runtimeMode: "supervised" });
-    const waiting = s.call("sessions.sync", { sessionId: created.sessionId, revision: created.revision, waitMs: 10_000 });
-    const sent = await s.call("commands.dispatch", { type: "send", commandId: "longpoll-send", sessionId: created.sessionId, text: "go" });
+    const created = s.engine.command({
+      type: "create",
+      commandId: "longpoll-create",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
+    const waiting = s.call("sessions.sync", {
+      sessionId: created.sessionId,
+      revision: created.revision,
+      waitMs: 10_000,
+    });
+    const sent = await s.call("commands.dispatch", {
+      type: "send",
+      commandId: "longpoll-send",
+      sessionId: created.sessionId,
+      text: "go",
+    });
     expect(sent.status).toBe(200);
     const update = await waiting;
     expect(update.value.result.kind).toBe("delta");
-    expect(update.value.result.blocks.filter((block: { role: string }) => block.role === "user")).toHaveLength(1);
+    expect(
+      update.value.result.blocks.filter(
+        (block: { role: string }) => block.role === "user",
+      ),
+    ).toHaveLength(1);
   });
   it("returns metadata for chat folder paths, including the workspace root", async () => {
     const s = await setup();
@@ -134,7 +372,9 @@ describe("remote host API", () => {
     writeFileSync(join(s.directory, "guide.md"), "guide");
     const response = await s.call("workspace.run", {
       command: "stat_files",
-      args: { paths: [root, `${root}/assets`, `${root}/guide.md`, `${root}/missing`] },
+      args: {
+        paths: [root, `${root}/assets`, `${root}/guide.md`, `${root}/missing`],
+      },
     });
     expect(response.value.result).toEqual([
       { path: root, mtimeMs: null, isDir: true },
@@ -147,14 +387,35 @@ describe("remote host API", () => {
   it("rejects a credential revoked while its request body is arriving", async () => {
     const s = await setup();
     const authenticated = vi.spyOn(s.store, "authenticated");
-    const body = JSON.stringify({ version: 1, environmentId: s.store.environmentId,
-      method: "commands.dispatch", params: { type: "create", commandId: "revoked-create",
-        projectId: s.project.id, harness: "codex", model: "codex:test", runtimeMode: "supervised" } });
+    const body = JSON.stringify({
+      version: 1,
+      environmentId: s.store.environmentId,
+      method: "commands.dispatch",
+      params: {
+        type: "create",
+        commandId: "revoked-create",
+        projectId: s.project.id,
+        harness: "codex",
+        model: "codex:test",
+        runtimeMode: "supervised",
+      },
+    });
     let req: ReturnType<typeof request>;
     const response = new Promise<number | undefined>((resolve, reject) => {
-      req = request(s.url, { method: "POST", headers: {
-        Authorization: `Bearer ${s.first.token}`, "Content-Length": Buffer.byteLength(body),
-      } }, (res) => { res.resume(); res.on("end", () => resolve(res.statusCode)); });
+      req = request(
+        s.url,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${s.first.token}`,
+            "Content-Length": Buffer.byteLength(body),
+          },
+        },
+        (res) => {
+          res.resume();
+          res.on("end", () => resolve(res.statusCode));
+        },
+      );
       req.on("error", reject);
       req.write(body.slice(0, 1));
     });
@@ -168,15 +429,42 @@ describe("remote host API", () => {
   it("uploads an authenticated attachment and sends its host path to the provider", async () => {
     const s = await setup();
     const id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-    const upload = { id, offset: 0, size: 5, data: Buffer.from("hello").toString("base64") };
-    expect((await s.call("attachments.upload", upload, "invalid")).status).toBe(401);
-    expect((await s.call("attachments.upload", upload)).value.result).toEqual({ offset: 5 });
-    const created = await s.call("commands.dispatch", { type: "create", commandId: "upload-create",
-      projectId: s.project.id, harness: "codex", model: "codex:test", runtimeMode: "supervised" });
+    const upload = {
+      id,
+      offset: 0,
+      size: 5,
+      data: Buffer.from("hello").toString("base64"),
+    };
+    expect((await s.call("attachments.upload", upload, "invalid")).status).toBe(
+      401,
+    );
+    expect((await s.call("attachments.upload", upload)).value.result).toEqual({
+      offset: 5,
+    });
+    const created = await s.call("commands.dispatch", {
+      type: "create",
+      commandId: "upload-create",
+      projectId: s.project.id,
+      harness: "codex",
+      model: "codex:test",
+      runtimeMode: "supervised",
+    });
     const sessionId = created.value.result.sessionId;
-    const sent = await s.call("commands.dispatch", { type: "send", commandId: "upload-send",
-      sessionId, text: "Read this", attachments: [{ id, name: "notes.txt",
-        mimeType: "text/plain", kind: "file", size: 5 }] });
+    const sent = await s.call("commands.dispatch", {
+      type: "send",
+      commandId: "upload-send",
+      sessionId,
+      text: "Read this",
+      attachments: [
+        {
+          id,
+          name: "notes.txt",
+          mimeType: "text/plain",
+          kind: "file",
+          size: 5,
+        },
+      ],
+    });
     expect(sent.status).toBe(200);
     await vi.waitFor(() => expect(s.send).toHaveBeenCalledTimes(1));
     expect(s.turn().attachments?.[0].path).toContain(id);
@@ -200,18 +488,43 @@ describe("remote host API", () => {
       pinned: true,
     });
     expect(changed.status).toBe(200);
-    expect((await s.call("sessions.list", { projectId: s.project.id })).value.result[0])
-      .toMatchObject({ id: sessionId, title: "Codex · Card title", pinned: true, model: "codex:test" });
-    expect((await s.call("sessions.update", {
-      projectId: "wrong-project", sessionId, archived: true,
-    })).status).not.toBe(200);
-    expect((await s.call("sessions.delete", {
-      projectId: "wrong-project", sessionId,
-    })).status).not.toBe(200);
-    expect((await s.call("sessions.delete", {
-      projectId: s.project.id, sessionId,
-    })).status).toBe(200);
-    expect((await s.call("sessions.list", { projectId: s.project.id })).value.result).toEqual([]);
+    expect(
+      (await s.call("sessions.list", { projectId: s.project.id })).value
+        .result[0],
+    ).toMatchObject({
+      id: sessionId,
+      title: "Codex · Card title",
+      pinned: true,
+      model: "codex:test",
+    });
+    expect(
+      (
+        await s.call("sessions.update", {
+          projectId: "wrong-project",
+          sessionId,
+          archived: true,
+        })
+      ).status,
+    ).not.toBe(200);
+    expect(
+      (
+        await s.call("sessions.delete", {
+          projectId: "wrong-project",
+          sessionId,
+        })
+      ).status,
+    ).not.toBe(200);
+    expect(
+      (
+        await s.call("sessions.delete", {
+          projectId: s.project.id,
+          sessionId,
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await s.call("sessions.list", { projectId: s.project.id })).value.result,
+    ).toEqual([]);
   });
 
   it("lists, creates, and selects registered remote worktrees through RPC", async () => {
@@ -245,7 +558,14 @@ describe("remote host API", () => {
         .value.result.current,
     ).toBe("main");
     // Prime the allowed-root cache before creating a checkout.
-    expect((await s.call("workspace.run", { command: "list_dir", args: { path: s.project.cwd } })).status).toBe(200);
+    expect(
+      (
+        await s.call("workspace.run", {
+          command: "list_dir",
+          args: { path: s.project.cwd },
+        })
+      ).status,
+    ).toBe(200);
     const created = await s.call("git.worktreeCreate", {
       projectId: s.project.id,
       branch: "feature",
@@ -261,9 +581,16 @@ describe("remote host API", () => {
       }),
     );
     expect(tree.branch).toBe("feature");
-    expect((await s.call("workspace.run", { command: "read_text_file", args: {
-      path: join(tree.path, "file.txt"),
-    } })).value.result).toBe("initial\n");
+    expect(
+      (
+        await s.call("workspace.run", {
+          command: "read_text_file",
+          args: {
+            path: join(tree.path, "file.txt"),
+          },
+        })
+      ).value.result,
+    ).toBe("initial\n");
     expect(
       (await s.call("git.worktrees", { projectId: s.project.id })).value.result
         .worktrees,
@@ -286,13 +613,15 @@ describe("remote host API", () => {
     expect(s.store.session(opened.value.result.sessionId).session.cwd).toBe(
       tree.path,
     );
-    expect((await s.call("sessions.list", { projectId: s.project.id })).value.result[0])
-      .toMatchObject({
-        id: opened.value.result.sessionId,
-        branch: "feature",
-        worktreeCwd: tree.path,
-        repo: s.project.name,
-      });
+    expect(
+      (await s.call("sessions.list", { projectId: s.project.id })).value
+        .result[0],
+    ).toMatchObject({
+      id: opened.value.result.sessionId,
+      branch: "feature",
+      worktreeCwd: tree.path,
+      repo: s.project.name,
+    });
     expect(
       (
         await s.call("commands.dispatch", {
@@ -327,11 +656,16 @@ describe("remote host API", () => {
   });
   it("advertises newer providers only to desktops that request them", async () => {
     const s = await setup(["codex", "cursor"]);
-    expect((await s.call("environment.describe")).value.result.providers)
-      .toEqual(["codex"]);
-    expect((await s.call("environment.describe", {
-      supportedProviders: ["codex", "cursor"],
-    })).value.result.providers).toEqual(["codex", "cursor"]);
+    expect(
+      (await s.call("environment.describe")).value.result.providers,
+    ).toEqual(["codex"]);
+    expect(
+      (
+        await s.call("environment.describe", {
+          supportedProviders: ["codex", "cursor"],
+        })
+      ).value.result.providers,
+    ).toEqual(["codex", "cursor"]);
   });
   it("re-probes models after the provider CLI is updated", async () => {
     const s = await setup();
@@ -528,7 +862,9 @@ describe("remote host API", () => {
   it("answers this app's file commands inside host projects only", async () => {
     const s = await setup();
     const outside = mkdtempSync(join(tmpdir(), "monocode-outside-"));
-    cleanups.push(async () => rmSync(outside, { recursive: true, force: true }));
+    cleanups.push(async () =>
+      rmSync(outside, { recursive: true, force: true }),
+    );
     const checkout = join(s.directory, "checkout");
     mkdirSync(join(checkout, "src"), { recursive: true });
     writeFileSync(join(checkout, "src", "app.ts"), "before\n");
@@ -546,7 +882,10 @@ describe("remote host API", () => {
     expect(
       (await run("read_binary_file", { path: `${root}/src/app.ts` })).result,
     ).toBe(Buffer.from("before\n").toString("base64"));
-    await run("write_text_file", { path: `${root}/src/app.ts`, content: "after\n" });
+    await run("write_text_file", {
+      path: `${root}/src/app.ts`,
+      content: "after\n",
+    });
     expect(
       (await run("read_text_file", { path: `${root}/src/app.ts` })).result,
     ).toBe("after\n");
@@ -557,24 +896,42 @@ describe("remote host API", () => {
     expect(typeof stat.mtimeMs).toBe("number");
 
     expect(
-      (await run("create_path", { parent: root, name: "docs/a.md", isDir: false }))
-        .result,
+      (
+        await run("create_path", {
+          parent: root,
+          name: "docs/a.md",
+          isDir: false,
+        })
+      ).result,
     ).toBe(`${root}/docs/a.md`);
     expect(
-      (await run("create_path", { parent: root, name: "docs/a.md", isDir: false }))
-        .error,
+      (
+        await run("create_path", {
+          parent: root,
+          name: "docs/a.md",
+          isDir: false,
+        })
+      ).error,
     ).toContain("already exists");
     expect(
       (await run("rename_path", { path: `${root}/docs/a.md`, name: "b.md" }))
         .result,
     ).toBe(`${root}/docs/b.md`);
     expect(
-      (await run("copy_path", { from: `${root}/docs/b.md`, destParent: `${root}/docs` }))
-        .result,
+      (
+        await run("copy_path", {
+          from: `${root}/docs/b.md`,
+          destParent: `${root}/docs`,
+        })
+      ).result,
     ).toBe(`${root}/docs/b copy.md`);
     expect(
-      (await run("move_path", { from: `${root}/docs/b.md`, destParent: `${root}/src` }))
-        .result,
+      (
+        await run("move_path", {
+          from: `${root}/docs/b.md`,
+          destParent: `${root}/src`,
+        })
+      ).result,
     ).toBe(`${root}/src/b.md`);
     await run("delete_path", { path: `${root}/docs` });
     expect(
@@ -583,8 +940,8 @@ describe("remote host API", () => {
         .sort(),
     ).toEqual(["src/app.ts", "src/b.md"]);
     expect(
-      (await s.call("files.index", { projectId: project.id, cwd: root }))
-        .value.result,
+      (await s.call("files.index", { projectId: project.id, cwd: root })).value
+        .result,
     ).toEqual(["src/app.ts", "src/b.md"]);
 
     const git = (...args: string[]) => execFileSync("git", args, { cwd: root });
@@ -594,30 +951,67 @@ describe("remote host API", () => {
     git("add", "src");
     git("commit", "-qm", "initial");
     writeFileSync(join(root, "src", "app.ts"), "changed\n");
-    expect((await run("search_project", { options: { cwd: root, query: "changed" } })).result.matches)
-      .toContainEqual(expect.objectContaining({
-        path: `${root}/src/app.ts`, relative: "src/app.ts", line: 1,
-      }));
+    expect(
+      (
+        await run("search_project", {
+          options: { cwd: root, query: "changed" },
+        })
+      ).result.matches,
+    ).toContainEqual(
+      expect.objectContaining({
+        path: `${root}/src/app.ts`,
+        relative: "src/app.ts",
+        line: 1,
+      }),
+    );
     const gitIndex = (await run("git_diff_index", { cwd: root })).result;
-    expect(gitIndex.files).toContainEqual(expect.objectContaining({
-      path: "src/app.ts", relative: "src/app.ts", unstaged: true,
-    }));
-    expect((await run("git_file_diff", { cwd: root, relative: "src/app.ts", staged: false })).result)
-      .toMatchObject({ original: "after\n", current: "changed\n" });
+    expect(gitIndex.files).toContainEqual(
+      expect.objectContaining({
+        path: "src/app.ts",
+        relative: "src/app.ts",
+        unstaged: true,
+      }),
+    );
+    expect(
+      (
+        await run("git_file_diff", {
+          cwd: root,
+          relative: "src/app.ts",
+          staged: false,
+        })
+      ).result,
+    ).toMatchObject({ original: "after\n", current: "changed\n" });
     await run("git_stage_file", { cwd: root, relative: "src/app.ts" });
-    expect((await run("git_diff_index", { cwd: root })).result.files)
-      .toContainEqual(expect.objectContaining({ relative: "src/app.ts", staged: true }));
+    expect(
+      (await run("git_diff_index", { cwd: root })).result.files,
+    ).toContainEqual(
+      expect.objectContaining({ relative: "src/app.ts", staged: true }),
+    );
     const history = (await run("git_history", { cwd: root, limit: 10 })).result;
-    expect(history.commits[0])
-      .toMatchObject({ subject: "initial", head: true });
+    expect(history.commits[0]).toMatchObject({
+      subject: "initial",
+      head: true,
+    });
     expect(history.commits[0].timestamp).toBeLessThan(10_000_000_000);
-    expect((await run("git_commit_files", { cwd: root, sha: history.head })).result)
-      .toContainEqual(expect.objectContaining({ relative: "src/app.ts", additions: 1 }));
-    expect((await run("git_commit_file_diff", {
-      cwd: root, sha: history.head, relative: "src/app.ts",
-    })).result).toMatchObject({ original: "", current: "after\n", status: "added" });
-    expect((await run("git_worktrees", { cwd: root })).result.worktrees)
-      .toContainEqual(expect.objectContaining({ path: project.cwd, isMain: true }));
+    expect(
+      (await run("git_commit_files", { cwd: root, sha: history.head })).result,
+    ).toContainEqual(
+      expect.objectContaining({ relative: "src/app.ts", additions: 1 }),
+    );
+    expect(
+      (
+        await run("git_commit_file_diff", {
+          cwd: root,
+          sha: history.head,
+          relative: "src/app.ts",
+        })
+      ).result,
+    ).toMatchObject({ original: "", current: "after\n", status: "added" });
+    expect(
+      (await run("git_worktrees", { cwd: root })).result.worktrees,
+    ).toContainEqual(
+      expect.objectContaining({ path: project.cwd, isMain: true }),
+    );
 
     for (const path of [outside, `${root}/../outside`, `${root}/.git/config`])
       expect((await run("read_text_file", { path })).error).toBeTruthy();
@@ -775,9 +1169,9 @@ describe("remote host API", () => {
   });
   it("answers the git.actions commands, advertised as a capability", async () => {
     const s = await setup();
-    expect((await s.call("environment.describe")).value.result.capabilities).toEqual(
-      expect.arrayContaining(["git.actions", "git.conflicts"]),
-    );
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toEqual(expect.arrayContaining(["git.actions", "git.conflicts"]));
     const checkout = join(s.directory, "actions");
     mkdirSync(checkout);
     const git = (...args: string[]) =>
@@ -794,18 +1188,35 @@ describe("remote host API", () => {
     const project = await s.engine.openProject(checkout);
     const cwd = project.cwd.replace(/\\/g, "/");
     const run = async (command: string, args: Record<string, unknown> = {}) =>
-      (await s.call("workspace.run", { command, args: { cwd, ...args } })).value;
+      (await s.call("workspace.run", { command, args: { cwd, ...args } }))
+        .value;
 
     expect((await run("git_tags")).result).toEqual([]);
-    expect((await run("git_create_tag", { name: "v1", sha: head })).error).toBeUndefined();
+    expect(
+      (await run("git_create_tag", { name: "v1", sha: head })).error,
+    ).toBeUndefined();
     expect((await run("git_tags")).result).toEqual(["v1"]);
-    expect((await run("git_operation_status")).result).toEqual({ operation: null, conflicts: [] });
-    expect((await run("git_blame", { relative: "a.txt" })).result).toHaveLength(1);
+    expect((await run("git_operation_status")).result).toEqual({
+      operation: null,
+      conflicts: [],
+    });
+    expect((await run("git_blame", { relative: "a.txt" })).result).toHaveLength(
+      1,
+    );
     // Nothing is conflicted: the index says so, and there is nothing to compare.
-    expect((await run("git_diff_index")).result).toMatchObject({ conflicts: [], operation: null });
-    expect((await run("git_conflict_stages", { relative: "a.txt" })).error).toContain("no merge conflict");
-    expect((await run("git_reset", { sha: "--hard", mode: "hard" })).error).toBe("Invalid commit");
-    expect((await run("git_blame", { relative: "../a.txt" })).error).toContain("outside");
+    expect((await run("git_diff_index")).result).toMatchObject({
+      conflicts: [],
+      operation: null,
+    });
+    expect(
+      (await run("git_conflict_stages", { relative: "a.txt" })).error,
+    ).toContain("no merge conflict");
+    expect(
+      (await run("git_reset", { sha: "--hard", mode: "hard" })).error,
+    ).toBe("Invalid commit");
+    expect((await run("git_blame", { relative: "../a.txt" })).error).toContain(
+      "outside",
+    );
 
     // History: the default graph follows HEAD; `all` adds other branches.
     git("checkout", "-q", "-b", "side");
@@ -814,19 +1225,33 @@ describe("remote host API", () => {
     git("commit", "-q", "-m", "side work");
     git("checkout", "-q", "main");
     const subjects = async (all: boolean) =>
-      (await run("git_history", { all })).result.commits.map((commit: { subject: string }) => commit.subject);
+      (await run("git_history", { all })).result.commits.map(
+        (commit: { subject: string }) => commit.subject,
+      );
     expect(await subjects(false)).toEqual(["first"]);
     expect(await subjects(true)).toEqual(["side work", "first"]);
 
     // Commit sign-off.
     writeFileSync(join(checkout, "a.txt"), "two\n");
     git("add", "a.txt");
-    expect((await run("git_commit", { message: "signed", amend: false, signoff: true })).error).toBeUndefined();
-    expect(git("log", "-1", "--format=%B")).toContain("Signed-off-by: Test <test@example.test>");
+    expect(
+      (
+        await run("git_commit", {
+          message: "signed",
+          amend: false,
+          signoff: true,
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(git("log", "-1", "--format=%B")).toContain(
+      "Signed-off-by: Test <test@example.test>",
+    );
 
     // Only folders of this host's projects are served.
     const outside = mkdtempSync(join(tmpdir(), "monocode-outside-"));
-    cleanups.push(async () => rmSync(outside, { recursive: true, force: true }));
+    cleanups.push(async () =>
+      rmSync(outside, { recursive: true, force: true }),
+    );
     const refused = (
       await s.call("workspace.run", {
         command: "git_tags",
@@ -837,25 +1262,51 @@ describe("remote host API", () => {
 
     // Like a branch switch, rewriting history waits for running sessions.
     await expect(
-      s.engine.withIdleProject(project.id, async () => (await run("git_reset", { sha: head, mode: "soft" })).error),
+      s.engine.withIdleProject(
+        project.id,
+        async () => (await run("git_reset", { sha: head, mode: "soft" })).error,
+      ),
     ).resolves.toBe("A branch switch is already in progress");
-    expect((await run("git_reset", { sha: head, mode: "soft" })).error).toBeUndefined();
+    expect(
+      (await run("git_reset", { sha: head, mode: "soft" })).error,
+    ).toBeUndefined();
   });
 
   it("accepts sync pushes and pulls, rejecting a stale push", async () => {
     const s = await setup();
     const pushed = await s.call("sync.push", {
-      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "Work", collapsed: false } }],
+      ops: [
+        {
+          table: "group",
+          id: "g1",
+          baseRev: 0,
+          value: { id: "g1", name: "Work", collapsed: false },
+        },
+      ],
     });
-    expect(pushed.value.result.applied).toEqual([{ table: "group", id: "g1", rev: pushed.value.result.rev }]);
+    expect(pushed.value.result.applied).toEqual([
+      { table: "group", id: "g1", rev: pushed.value.result.rev },
+    ]);
 
     const pulled = await s.call("sync.pull", { sinceRev: 0 });
     expect(pulled.value.result.records).toEqual([
-      { table: "group", id: "g1", rev: pushed.value.result.rev, value: { id: "g1", name: "Work", collapsed: false } },
+      {
+        table: "group",
+        id: "g1",
+        rev: pushed.value.result.rev,
+        value: { id: "g1", name: "Work", collapsed: false },
+      },
     ]);
 
     const stale = await s.call("sync.push", {
-      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "Renamed", collapsed: false } }],
+      ops: [
+        {
+          table: "group",
+          id: "g1",
+          baseRev: 0,
+          value: { id: "g1", name: "Renamed", collapsed: false },
+        },
+      ],
     });
     expect(stale.value.result.applied).toEqual([]);
     expect(stale.value.result.rejected).toHaveLength(1);
@@ -864,7 +1315,15 @@ describe("remote host API", () => {
   it("skips a malformed sync op without failing the rest of the push", async () => {
     const s = await setup();
     const pushed = await s.call("sync.push", {
-      ops: [{ table: "group", id: "g9", baseRev: 0, value: { id: "g9", name: "Kept", collapsed: false } }, null],
+      ops: [
+        {
+          table: "group",
+          id: "g9",
+          baseRev: 0,
+          value: { id: "g9", name: "Kept", collapsed: false },
+        },
+        null,
+      ],
     });
     expect(pushed.status).toBe(200);
     expect(pushed.value.result.applied).toHaveLength(1);
@@ -884,7 +1343,14 @@ describe("remote host API", () => {
     const s = await setup();
     // Desktop A pushes a new group.
     const a = await s.call("sync.push", {
-      ops: [{ table: "group", id: "g1", baseRev: 0, value: { id: "g1", name: "From A", collapsed: false } }],
+      ops: [
+        {
+          table: "group",
+          id: "g1",
+          baseRev: 0,
+          value: { id: "g1", name: "From A", collapsed: false },
+        },
+      ],
     });
     expect(a.value.result.rejected).toEqual([]);
 
@@ -896,14 +1362,28 @@ describe("remote host API", () => {
     // Both edit the same group while "disconnected" from each other (each
     // still believes the revision it last pulled).
     const bPush = await s.call("sync.push", {
-      ops: [{ table: "group", id: "g1", baseRev: bRev, value: { id: "g1", name: "From B", collapsed: false } }],
+      ops: [
+        {
+          table: "group",
+          id: "g1",
+          baseRev: bRev,
+          value: { id: "g1", name: "From B", collapsed: false },
+        },
+      ],
     });
     expect(bPush.value.result.applied).toHaveLength(1);
 
     // A, still at the revision from its own first push, tries to edit too —
     // this is the "concurrent edit" case: A's base revision is now stale.
     const aRetry = await s.call("sync.push", {
-      ops: [{ table: "group", id: "g1", baseRev: a.value.result.applied[0].rev, value: { id: "g1", name: "From A again", collapsed: false } }],
+      ops: [
+        {
+          table: "group",
+          id: "g1",
+          baseRev: a.value.result.applied[0].rev,
+          value: { id: "g1", name: "From A again", collapsed: false },
+        },
+      ],
     });
     expect(aRetry.value.result.rejected).toHaveLength(1);
     const winning = aRetry.value.result.rejected[0].current;
@@ -911,7 +1391,9 @@ describe("remote host API", () => {
     // Both sides pull and land on the same value: whichever write actually
     // reached the host last (B's).
     const finalPull = await s.call("sync.pull", { sinceRev: 0 });
-    const finalGroup = finalPull.value.result.records.find((r: any) => r.id === "g1");
+    const finalGroup = finalPull.value.result.records.find(
+      (r: any) => r.id === "g1",
+    );
     expect(finalGroup.value).toEqual(winning.value);
     expect(finalGroup.value.name).toBe("From B");
   });
@@ -945,7 +1427,8 @@ describe("remote host API", () => {
     });
     expect(todo.value.result).toMatchObject({ id: "idea", status: "todo" });
     expect(
-      (await s.call("tasks.move", { taskId: "idea", to: "queued" })).value.error,
+      (await s.call("tasks.move", { taskId: "idea", to: "queued" })).value
+        .error,
     ).toBe("Add a description before starting this task with an agent.");
     await s.call("tasks.delete", { taskId: "idea" });
     expect(
@@ -956,27 +1439,74 @@ describe("remote host API", () => {
 
   it("routes review note read and resolve updates without completing the task", async () => {
     const s = await setup();
-    expect((await s.call("environment.describe")).value.result.capabilities).toContain("tasks.notes");
-    expect((await s.call("environment.describe")).value.result.capabilities).toContain("tasks.review-recheck");
-    const saved = (await s.call("tasks.save", { task: {
-      id: "notes", title: "Ship the report", prompt: "Write it", projectId: s.project.id,
-      harness: "codex", model: "codex:test", runtimeMode: "auto", status: "todo",
-    } })).value.result;
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toContain("tasks.notes");
+    expect(
+      (await s.call("environment.describe")).value.result.capabilities,
+    ).toContain("tasks.review-recheck");
+    const saved = (
+      await s.call("tasks.save", {
+        task: {
+          id: "notes",
+          title: "Ship the report",
+          prompt: "Write it",
+          projectId: s.project.id,
+          harness: "codex",
+          model: "codex:test",
+          runtimeMode: "auto",
+          status: "todo",
+        },
+      })
+    ).value.result;
     const reviewNotes = ["seen", "newer"].map((id) => ({
-      id, finding: id, kind: "finding", createdAt: 1, updatedAt: 1, occurrences: 1,
+      id,
+      finding: id,
+      kind: "finding",
+      createdAt: 1,
+      updatedAt: 1,
+      occurrences: 1,
     }));
-    s.store.db.prepare("UPDATE tasks SET value=? WHERE id=?").run(JSON.stringify({ ...saved, reviewNotes }), saved.id);
-    const read = (await s.call("tasks.notes.read", { taskId: saved.id, noteIds: ["seen"] })).value.result;
+    s.store.db
+      .prepare("UPDATE tasks SET value=? WHERE id=?")
+      .run(JSON.stringify({ ...saved, reviewNotes }), saved.id);
+    const read = (
+      await s.call("tasks.notes.read", { taskId: saved.id, noteIds: ["seen"] })
+    ).value.result;
     expect(read.reviewNotes[0].readAt).toEqual(expect.any(Number));
     expect(read.reviewNotes[1].readAt).toBeUndefined();
-    const fixed = (await s.call("tasks.notes.resolve", { taskId: saved.id, noteId: "seen", resolved: true })).value.result;
+    const fixed = (
+      await s.call("tasks.notes.resolve", {
+        taskId: saved.id,
+        noteId: "seen",
+        resolved: true,
+      })
+    ).value.result;
     expect(fixed.status).toBe("todo");
     expect(fixed.reviewNotes[0].resolvedAt).toEqual(expect.any(Number));
-    expect((await s.call("tasks.notes.resolve", { taskId: saved.id, noteId: "missing", resolved: true })).value.error).toBe("Review note not found.");
-    const reopened = (await s.call("tasks.notes.resolve", { taskId: saved.id, noteId: "seen", resolved: false })).value.result;
+    expect(
+      (
+        await s.call("tasks.notes.resolve", {
+          taskId: saved.id,
+          noteId: "missing",
+          resolved: true,
+        })
+      ).value.error,
+    ).toBe("Review note not found.");
+    const reopened = (
+      await s.call("tasks.notes.resolve", {
+        taskId: saved.id,
+        noteId: "seen",
+        resolved: false,
+      })
+    ).value.result;
     expect(reopened.reviewNotes[0].resolvedAt).toBeUndefined();
-    expect((await s.call("tasks.list")).value.result[0].reviewNotes).toEqual(reopened.reviewNotes);
-    expect((await s.call("tasks.review.recheck", { taskId: saved.id })).value.error).toContain("Only a blocked task");
+    expect((await s.call("tasks.list")).value.result[0].reviewNotes).toEqual(
+      reopened.reviewNotes,
+    );
+    expect(
+      (await s.call("tasks.review.recheck", { taskId: saved.id })).value.error,
+    ).toContain("Only a blocked task");
   });
 
   it("answers the goal commands, advertised as a capability", async () => {

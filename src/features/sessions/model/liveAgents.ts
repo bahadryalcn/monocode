@@ -52,6 +52,17 @@ export function shouldShowLiveAgents(
   return agents.some((agent) => agent.id !== activeSessionId);
 }
 
+/** Project activity includes host-owned turns, but excludes finished or waiting chats. */
+export function workingProjectPaths(agents: readonly LiveAgent[]): string[] {
+  return [
+    ...new Set(
+      agents
+        .filter((agent) => !agent.done && !agent.needsApproval && agent.cwd)
+        .map((agent) => agent.cwd),
+    ),
+  ];
+}
+
 export function formatLiveElapsed(startedAt: number, now: number): string {
   const seconds = Math.max(1, Math.round((now - startedAt) / 1000));
   if (seconds < 60) return `${seconds}s`;

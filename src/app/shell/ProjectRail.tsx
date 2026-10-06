@@ -94,6 +94,7 @@ import {
   type LiveAgent,
 } from "../../features/sessions/model/liveAgents";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
+import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
 import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
 import { RailAction, RailSearch } from "./RailAction";
@@ -1336,6 +1337,7 @@ function ProjectCard({
       ref={(el) => sortable.setItemRef(item.path, el)}
       data-selected={selected || undefined}
       data-project-path={item.path}
+      data-project-working={busy || undefined}
       className={`reorder-item project-reorder-item group relative flex touch-none items-stretch rounded-md px-2 h-8 @max-[140px]/rail:px-0 ${
         selected
           ? "bg-accent/12 text-content ring-1 ring-inset ring-accent/25"
@@ -1391,6 +1393,17 @@ function ProjectCard({
             />
           )}
         </div>
+        {busy ? (
+          <span
+            data-project-working-indicator
+            role="img"
+            aria-label="Working"
+            title="Working"
+            className="shrink-0 text-accent @max-[140px]/rail:hidden"
+          >
+            <TerminalSpinner />
+          </span>
+        ) : null}
         {busy ? (
           <Shimmer as="span" duration={1.4} className={labelClassName}>
             {name}

@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment happy-dom
+import { beforeEach, describe, expect, it } from "vitest";
+import { rememberRemoteSession, remoteSessionFor } from "../../connections/model/connections";
 import { appendUser } from "../../../integrations/harness/core/apply";
 import {
   CONTINUE_PROMPT,
@@ -34,6 +36,44 @@ function chat(id: string, cwd: string): Session {
   session.providerSessionId = "p1";
   return session;
 }
+
+describe("remote conversation identity across a restart", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("restores the host binding and cached title after browser storage is lost", () => {
+    const shell = newSession("codex", "remote://env/repo");
+    rememberRemoteSession(shell.id, "host-thread");
+    localStorage.setItem(`monocode.remote-history.v2:${shell.cwd}`, JSON.stringify([
+      { id: "host-thread", title: "Repair the build", harness: "claude" },
+    ]));
+    const tab = newTab(shell.id);
+    const snapshot = collectWorkspaceSnapshot([tab], [shell], tab.id, shell.cwd, new Map());
+    expect(snapshot.sessions[0]).toMatchObject({ remoteSessionId: "host-thread", title: "Repair the build", harness: "claude" });
+    localStorage.clear();
+    const restored = hydrateWorkspaceSnapshot(snapshot, new Map());
+    expect(remoteSessionFor(shell.id)).toBe("host-thread");
+    expect(restored?.sessions[0].title).toBe("Repair the build");
+  });
+
+  it("keeps a newer live binding when the saved snapshot is older", () => {
+    const shell = newSession("codex", "remote://env/repo");
+    rememberRemoteSession(shell.id, "old-thread");
+    const tab = newTab(shell.id);
+    const snapshot = collectWorkspaceSnapshot([tab], [shell], tab.id, shell.cwd, new Map());
+    rememberRemoteSession(shell.id, "new-thread");
+    hydrateWorkspaceSnapshot(snapshot, new Map());
+    expect(remoteSessionFor(shell.id)).toBe("new-thread");
+  });
+
+  it("does not restore host bindings onto local conversations", () => {
+    const local = chat("local", "/repo");
+    const tab = newTab(local.id);
+    const snapshot = collectWorkspaceSnapshot([tab], [local], tab.id, local.cwd, new Map());
+    snapshot.sessions[0].remoteSessionId = "unrelated-host-thread";
+    hydrateWorkspaceSnapshot(snapshot, new Map([[local.id, local]]));
+    expect(remoteSessionFor(local.id)).toBeUndefined();
+  });
+});
 
 describe("project return snapshots", () => {
   it("migrates saved host file tabs to shared remote paths", () => {

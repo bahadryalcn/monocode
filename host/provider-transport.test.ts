@@ -14,6 +14,10 @@ import { HostEngine } from "./engine";
 import { hostProviders } from "./providers";
 import { readAttachmentChunk } from "./attachments";
 import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
+import {
+  runCodexTextPrompt,
+  stopCodexTextPrompt,
+} from "../src/integrations/harness/providers/codex/codexText";
 import { discoverClaudeModels } from "../src/integrations/harness/providers/claude/claudeCatalog";
 import {
   discoverPiModels,
@@ -51,7 +55,15 @@ readline.createInterface({input: process.stdin}).on('line', line => {
   if (request.method === 'initialize') send({id: request.id, result: {}});
   if (request.method === 'account/read') send({id: request.id, result: {account: {type: 'fixture'}, requiresOpenaiAuth: false}});
   if (request.method === 'model/list') send({id: request.id, result: {data: [{model: 'fixture-model', displayName: 'Fixture model', supportedReasoningEfforts: ['low', 'high']}], nextCursor: null}});
-  if (request.method === 'thread/start' || request.method === 'thread/resume') send({id: request.id, result: {thread: {id: 'fixture-thread'}}});
+  if (request.method === 'thread/start' || request.method === 'thread/resume') {
+    // Model a stored image-heavy transcript larger than the unchanged 64 MiB
+    // transport limit. A metadata-only resume never serializes this payload.
+    const turns = request.method === 'thread/resume' && request.params.excludeTurns !== true
+      ? [{items: [{type: 'imageGeneration', result: 'a'.repeat(65 * 1024 * 1024)}]}]
+      : [];
+    if (request.method === 'thread/resume') record({resumeThreadId: request.params.threadId, excludeTurns: request.params.excludeTurns});
+    send({id: request.id, result: {thread: {id: 'fixture-thread', turns}}});
+  }
   if (request.method === 'turn/start') {
     record({codexEffort: request.params.effort ?? null, fixtureTurn: request.params.input?.some(item => item.text === 'hello')});
     send({id: request.id, result: {turn: {id: 'fixture-turn'}}});
@@ -115,11 +127,33 @@ describe("existing providers over headless process I/O", () => {
     engine = new HostEngine(store, hostProviders);
   });
   afterAll(async () => {
+    await stopCodexTextPrompt();
     await engine?.close();
     await backend?.close();
     release?.();
     store?.close();
     if (directory) rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("resumes the text helper without transferring a transcript above 64 MiB", async () => {
+    try {
+      const output = await runCodexTextPrompt({
+        cwd: directory,
+        threadId: "fixture-thread",
+        prompt: "hello",
+      });
+      expect(output).toBe("Headless Codex completed");
+      const calls = readFileSync(join(directory, "calls.log"), "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(calls).toContainEqual({
+        resumeThreadId: "fixture-thread",
+        excludeTurns: true,
+      });
+    } finally {
+      await stopCodexTextPrompt();
+    }
   });
 
   it("discovers host models in parallel without probe process collisions", async () => {

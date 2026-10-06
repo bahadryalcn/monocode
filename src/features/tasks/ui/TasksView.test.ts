@@ -211,6 +211,69 @@ it("lays tasks out in six columns with the actions each status allows", async ()
   expect(column("queued").textContent).toContain("on this computer");
 });
 
+it("shows pending and genuinely empty task board states", async () => {
+  host([]);
+  const original = invoke.getMockImplementation()!;
+  let resolveMachines!: (machines: unknown[]) => void;
+  const pendingMachines = new Promise<unknown[]>((resolve) => {
+    resolveMachines = resolve;
+  });
+  invoke.mockImplementation((command: string, args?: any) =>
+    command === "remote_machines" ? pendingMachines : original(command, args),
+  );
+  await render();
+  expect(
+    container.querySelector('[data-remote-data-state="loading"]'),
+  ).toBeTruthy();
+  await act(async () => {
+    resolveMachines([]);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await act(async () => {});
+  expect(container.querySelector('[data-remote-data-state="empty"]')?.textContent)
+    .toContain("No task board.");
+});
+
+it("keeps last-known cards visible on a failed refresh and retries the network read", async () => {
+  const requests = host([task({ id: "kept", status: "todo" })]);
+  await render();
+  expect(container.querySelector('[data-remote-data-state="ready"]')).toBeTruthy();
+  expect(card("Ship the report")).toBeTruthy();
+
+  const original = invoke.getMockImplementation()!;
+  let failNextList = true;
+  let failedListAttempts = 0;
+  invoke.mockImplementation(async (command: string, args?: any) => {
+    if (
+      failNextList &&
+      command === "remote_request" &&
+      args?.method === "tasks.list"
+    ) {
+      failNextList = false;
+      failedListAttempts++;
+      throw new Error("Host timed out.");
+    }
+    return original(command, args);
+  });
+  const refreshCount = () =>
+    requests.filter((entry) => entry.method === "tasks.list").length +
+    failedListAttempts;
+  const beforeFailure = refreshCount();
+  await act(async () => button(container, "Refresh")!.click());
+  await act(async () => {});
+  expect(refreshCount()).toBe(beforeFailure + 1);
+  expect(container.querySelector('[data-remote-data-state="stale"]')?.textContent)
+    .toContain("Host timed out.");
+  expect(card("Ship the report")).toBeTruthy();
+
+  await act(async () => button(container, "Refresh")!.click());
+  await act(async () => {});
+  expect(refreshCount()).toBe(beforeFailure + 2);
+  expect(container.querySelector('[data-remote-data-state="ready"]')).toBeTruthy();
+  expect(card("Ship the report")).toBeTruthy();
+});
+
 it("asks the task's machine to move it", async () => {
   const requests = host([task({ status: "review", completedAt: 2 })]);
   await render();
@@ -492,12 +555,13 @@ it("adds a to-do item with a title and description, or adds and starts it", asyn
   });
 });
 
-it("shows an external stop and attempt outcome, and rechecks review without a worker retry", async () => {
+it("asks for instructions only after the independent takeover failed", async () => {
   const requests = host(
     [
       task({
         status: "blocked",
         sessionId: "worker-session",
+        blockedTakeover: { at: 1, blocker: "Acceptance missing", previousSessionId: "original-worker" },
         repairStop: {
           reason: "external",
           message: "Provide an Android device and test TalkBack reset.",
@@ -527,20 +591,44 @@ it("shows an external stop and attempt outcome, and rechecks review without a wo
   );
   await render();
   expect(card("Ship the report").textContent).toContain(
-    "Waiting for external verification",
+    "Waiting for your instructions",
   );
   await act(async () => card("Ship the report").click());
   const history = panel()!.querySelector('[aria-label="Attempt history"]')!;
   expect(history.textContent).toContain("Fixed reset and ran unit checks.");
   expect(history.textContent).toContain("Review: Acceptance missing");
   expect(history.textContent).toContain("Provide an Android device");
-  await act(async () => button(panel()!, "Recheck review")!.click());
+  expect(button(panel()!, "Recheck review")).toBeUndefined();
+  expect(button(panel()!, "Retry")).toBeUndefined();
+  expect(button(panel()!, "Update instructions")).toBeDefined();
+  expect(history.textContent).toContain("Update the task description");
   expect(
     requests.filter((request) => request.method === "tasks.review.recheck"),
-  ).toEqual([{ method: "tasks.review.recheck", params: { taskId: "main" } }]);
+  ).toEqual([]);
   expect(requests.some((request) => request.method === "tasks.move")).toBe(
     false,
   );
+});
+
+it("shows automatic takeover for a blocked task without asking the owner to retry", async () => {
+  host([task({ status: "blocked", sessionId: "worker", error: "Review failed: Missing evidence.",
+    verification: { review: { verdict: "fail", note: "Missing evidence.", sessionId: "review" } },
+  })], ["tasks", "tasks.blocked-takeover"]);
+  await render();
+  expect(card("Ship the report").textContent).toContain("AI takeover pending");
+  expect(button(card("Ship the report"), "Retry")).toBeUndefined();
+  expect(card("Ship the report").textContent).not.toContain("Needs input");
+});
+
+it("renders a structured task as a readable brief with a short card summary", async () => {
+  host([task({ prompt: JSON.stringify({ schema: "monocode.task.v1", objective: "Fix playback", deliverables: ["Retain seek position"], acceptance: ["Resume at 4 seconds"], constraints: [], verification: ["Run audio tests"] }) })]);
+  await render();
+  expect(card("Ship the report").querySelector("[data-task-description]")?.textContent).toBe("Fix playback");
+  await act(async () => card("Ship the report").click());
+  const description = panel()!.querySelector("[data-task-detail-description]")!;
+  expect(description.textContent).toContain("Acceptance criteria");
+  expect(description.textContent).toContain("Resume at 4 seconds");
+  expect(description.textContent).not.toContain("monocode.task.v1");
 });
 
 it("offers to update an older host instead of adding a to-do item", async () => {
@@ -1009,6 +1097,30 @@ it("lists each machine's limits, shows today's use and saves a change", async ()
   expect(
     pick("Max concurrent tasks on this computer: 4"),
   ).toBeTruthy();
+});
+
+it("saves custom daily hours above the presets and 24 hours", async () => {
+  const requests = host([], LIMIT_CAPABILITIES, [], [], LIMITS);
+  await render();
+  await act(async () => button(container, "Limits")!.click());
+  const form = container.querySelector<HTMLFormElement>(
+    'form[aria-label="Custom daily agent time on this computer"]',
+  )!;
+  const hours = form.querySelector<HTMLInputElement>('input[type="number"]')!;
+  expect(hours.value).toBe("2");
+  for (const value of ["18", "48", "12.5", "0"]) {
+    await act(async () => type(hours, value));
+    await act(async () => button(form, "Save")!.click());
+    expect(requests).toContainEqual({
+      method: "host.settings.save",
+      params: { settings: { dailyAgentMinutes: Number(value) * 60 } },
+    });
+    expect(hours.value).toBe(value);
+  }
+  for (const value of ["", "-1"]) {
+    await act(async () => type(hours, value));
+    expect(button(form, "Save")!.disabled).toBe(true);
+  }
 });
 
 it("has no Limits button on a host without work limits", async () => {

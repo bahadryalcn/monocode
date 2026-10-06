@@ -1,4 +1,5 @@
-import { remoteRequest } from "../../connections/model/connections";
+import { remoteRequest as sendHostRequest } from "../../connections/model/connections";
+import { subscribeRemoteMachineChannel } from "../../connections/model/remoteMachineChannel";
 import { isLocalSyncMachine } from "../../connections/model/localSync";
 import {
   isRemoteProvider,
@@ -47,6 +48,7 @@ export type BoardTask = HostTask & {
   /** The machine did not answer; this is what it last reported. */
   stale?: boolean;
   reviewRecheckSupported?: boolean;
+  blockedTakeoverSupported?: boolean;
 };
 
 /** What the task form edits. A draft with an ID edits that task. */
@@ -277,29 +279,142 @@ export function taskTimeLabel(
 }
 
 const lastBoardTasks: LastGoodLists<BoardTask> = new Map();
+const watchedTasks = new Map<
+  string,
+  {
+    count: number;
+    dirty: boolean;
+    etag: string;
+    stop: () => void;
+    listeners: Set<() => void>;
+  }
+>();
+function remoteRequest<T>(
+  ...args: Parameters<typeof sendHostRequest>
+): Promise<T> {
+  return sendHostRequest<T>(...args).then((value) => {
+    if (args[1] !== "tasks.list") {
+      const watch = watchedTasks.get(args[0]);
+      if (watch) watch.dirty = true;
+    }
+    return value;
+  });
+}
+
+/** Task metadata rides the existing machine lane. Board refreshes still update
+ * goals/limits, but do not fetch an unchanged task list on capable hosts. */
+export function subscribeBoardTaskChanges(
+  machines: readonly RemoteMachine[],
+  listener: () => void,
+): () => void {
+  let disposed = false;
+  const releases: (() => void)[] = [];
+  for (const machine of machines) {
+    void machineCapabilities(machine)
+      .then((capabilities) => {
+        if (disposed || !capabilities.includes("machine.changes")) return;
+        let entry = watchedTasks.get(machine.id);
+        if (!entry) {
+          entry = {
+            count: 0,
+            dirty: true,
+            etag: "",
+            stop: () => {},
+            listeners: new Set(),
+          };
+          const current = entry;
+          entry.stop = subscribeRemoteMachineChannel(
+            machine.id,
+            () => ({ tasksKnown: current.etag }),
+            (changes) => {
+              if (
+                !changes.reset &&
+                (!changes.tasks || changes.tasks.etag === current.etag)
+              )
+                return;
+              if (changes.tasks) current.etag = changes.tasks.etag;
+              current.dirty = true;
+              for (const notify of current.listeners) {
+                try {
+                  notify();
+                } catch {
+                  /* other boards still receive invalidation */
+                }
+              }
+            },
+            () => {
+              current.dirty = true;
+              for (const notify of current.listeners) {
+                try {
+                  notify();
+                } catch {
+                  /* one failed board refresh cannot interrupt other boards */
+                }
+              }
+            },
+          );
+          watchedTasks.set(machine.id, entry);
+        }
+        entry.count++;
+        const notify = () => listener();
+        entry.listeners.add(notify);
+        const current = entry;
+        releases.push(() => {
+          current.listeners.delete(notify);
+          if (--current.count === 0) {
+            current.stop();
+            watchedTasks.delete(machine.id);
+          }
+        });
+      })
+      .catch(() => {});
+  }
+  return () => {
+    disposed = true;
+    for (const release of releases) release();
+  };
+}
 
 /** Each machine's tasks. A machine that does not answer keeps its last
  * successful list, flagged stale; `down` machines are not asked. */
-export function listBoardTaskResults(
+export async function listBoardTaskResults(
   machines: readonly RemoteMachine[],
   down: readonly RemoteMachine[] = [],
-): Promise<MachineResult<BoardTask>[]> {
-  return collectMachineResults(
+  force = false,
+): Promise<Array<MachineResult<BoardTask> & { cached?: boolean }>> {
+  const cachedMachines = new Set<string>();
+  const results = await collectMachineResults(
     lastBoardTasks,
     machines,
     async (machine) => {
-      const [tasks, projects, capabilities] = await Promise.all([
-        remoteRequest<HostTask[]>(machine.id, "tasks.list"),
-        machineProjects(machine),
-        machineCapabilities(machine).catch(() => [] as string[]),
-      ]);
-      return boardTasksFromHost(machine, projects, tasks).map((task) => ({
-        ...task,
-        reviewRecheckSupported: capabilities.includes("tasks.review-recheck"),
-      }));
+      const watch = watchedTasks.get(machine.id);
+      const cached = lastBoardTasks.get(machine.id);
+      if (!force && watch && !watch.dirty && cached) {
+        cachedMachines.add(machine.id);
+        return cached;
+      }
+      if (watch) watch.dirty = false;
+      try {
+        const [tasks, projects, capabilities] = await Promise.all([
+          remoteRequest<HostTask[]>(machine.id, "tasks.list"),
+          machineProjects(machine),
+          machineCapabilities(machine).catch(() => [] as string[]),
+        ]);
+        return boardTasksFromHost(machine, projects, tasks).map((task) => ({
+          ...task,
+          reviewRecheckSupported: capabilities.includes("tasks.review-recheck"),
+          blockedTakeoverSupported: capabilities.includes("tasks.blocked-takeover"),
+        }));
+      } catch (error) {
+        if (watch) watch.dirty = true;
+        throw error;
+      }
     },
     (task) => ({ ...task, stale: true }),
     down,
+  );
+  return results.map((result): MachineResult<BoardTask> & { cached?: boolean } =>
+    cachedMachines.has(result.machineId) ? { ...result, cached: true } : result,
   );
 }
 

@@ -137,6 +137,7 @@ type SessionUpsertPayload = {
 /** Only real chats belong in project history — blank tabs stay ephemeral. */
 export function shouldPersistSession(session: Session): boolean {
   return (
+    !session.historyPartial &&
     !session.historyLoading &&
     !session.inboxAsk &&
     !isRemoteProjectPath(session.cwd) &&

@@ -113,5 +113,43 @@ it("says the machine did not answer instead of loading forever", async () => {
   await act(async () => refuse(new Error("ssh: connect timed out")));
   await act(async () => {});
   expect(container.textContent).not.toContain("Loading sessions");
-  expect(container.textContent).toContain("Couldn’t reach MacBook. Trying again…");
+  expect(container.textContent).toContain("Couldn’t refresh sessions from MacBook");
+  expect(container.textContent).toContain("ssh: connect timed out");
+  expect(container.querySelector('[data-remote-data-state="error"]')).not.toBeNull();
+});
+
+const freshSession = {
+  id: "s1", projectId: "p1", revision: 1, status: "idle",
+  updatedAt: 1, title: "Current conversation", harness: "claude",
+};
+
+it("refreshes within the cache TTL, retains rows on failure and retries to a verified empty list", async () => {
+  await renderRemoteProject();
+  await act(async () => answer([freshSession]));
+  expect(container.querySelector('[data-remote-data-state="ready"]')).not.toBeNull();
+  const refreshButton = container.querySelector<HTMLButtonElement>('button[aria-label="Refresh sessions from MacBook"]')!;
+  await act(async () => refreshButton.click());
+  expect(container.querySelector('[data-remote-data-state="refreshing"]')).not.toBeNull();
+  expect(container.textContent).toContain("Current conversation");
+  expect(refreshButton.disabled).toBe(true);
+  await act(async () => refuse(new Error("permission denied reading sessions")));
+  expect(container.querySelector('[data-remote-data-state="error"]')).not.toBeNull();
+  expect(container.textContent).toContain("Showing last loaded data");
+  expect(container.textContent).toContain("Current conversation");
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Retry loading sessions from MacBook"]')!.click());
+  await act(async () => answer([]));
+  expect(container.querySelector('[data-remote-data-state="empty"]')).not.toBeNull();
+  expect(container.textContent).not.toContain("Current conversation");
+  expect(container.textContent).not.toContain("permission denied");
+});
+
+it("labels cached rows as unverified while the initial owner read is pending", async () => {
+  const project = rememberRemoteProject("env-mac", { id: "p1", cwd: "/Users/me/clinic", name: "clinic" });
+  localStorage.setItem(`monocode.remote-history.v2:${project.key}`, JSON.stringify([freshSession]));
+  await renderRemoteProject();
+  expect(container.textContent).toContain("Current conversation");
+  expect(container.querySelector('[data-remote-data-state="refreshing"]')).not.toBeNull();
+  expect(container.textContent).toContain("Showing last loaded data");
+  await act(async () => answer([freshSession]));
+  expect(container.querySelector('[data-remote-data-state="ready"]')).not.toBeNull();
 });

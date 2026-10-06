@@ -11,20 +11,24 @@ import type { Block, Session } from "../../sessions/model/session";
 import { SHELL_FOLLOW_UP_PROMPT } from "../../sessions/model/shellRun";
 import type { AgentModel } from "../../sessions/model/models";
 import {
+  resetHarnessModelOverlays,
   resetDisabledModels,
   saveModelEnabled,
 } from "../../sessions/model/models";
 import { rememberRemoteProject } from "../model/remoteProjects";
-import { preloadRemoteSession } from "./RemoteSession";
-import { rememberRemoteSession, remoteSessionFor } from "../model/connections";
+import { preloadRemoteSession, resetRemoteSessionCachesForTests } from "./RemoteSession";
+import { rememberRemoteSession, remoteSessionFor, resetRemoteSessionReadsForTests } from "../model/connections";
 import "../model/remoteCommands";
 import {
   notifyRemoteRecovered,
   resetRemoteHealth,
 } from "../model/remoteHealth";
-import { claimAutoContinue } from "../../sessions/model/autoContinue";
-import { forgetRemoteQueue } from "../model/useRemoteQueue";
+import { resetAutoContinueForTests } from "../../sessions/model/autoContinue";
+import { resetRemoteQueuesForTests } from "../model/useRemoteQueue";
+import { resetRemoteMachineChannelsForTests } from "../model/remoteMachineChannel";
+import { readRemotePageCache, writeRemotePageCache } from "../model/remotePageCache";
 import { watchKey, watchRun, watchedRun } from "../model/remoteTurnWatch";
+import { clearComposerDraft } from "../../sessions/model/draftCache";
 import type {
   HostCommand,
   HostDescriptor,
@@ -34,13 +38,20 @@ import type {
 } from "../model/protocol";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("../model/remotePageCache", () => ({
+  readRemotePageCache: vi.fn(),
+  writeRemotePageCache: vi.fn(),
+  deleteRemotePageCache: vi.fn(),
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
-vi.mock("../../sessions/ui/AgentTranscript", () => ({
+  vi.mock("../../sessions/ui/AgentTranscript", () => ({
   AgentTranscript: ({
     blocks,
     busy,
+    remoteHistoryHasMore,
+    onLoadRemoteHistory,
     onSendDraft,
     onRemoveDraft,
     onOpenFile,
@@ -55,11 +66,15 @@ vi.mock("../../sessions/ui/AgentTranscript", () => ({
   }) =>
     createElement(
       "ol",
-      { "aria-label": "Transcript", "data-busy": busy },
+      { "aria-label": "Transcript", "data-busy": busy, "data-history": String(!!remoteHistoryHasMore) },
       createElement("button", {
         "aria-label": "Open transcript file",
         onClick: () => onOpenFile?.("src/app.ts"),
       }),
+      remoteHistoryHasMore ? createElement("button", {
+        "aria-label": "Load earlier messages",
+        onClick: () => void onLoadRemoteHistory?.(),
+      }) : null,
       createElement("button", {
         "aria-label": "Open transcript diff",
         onClick: () => onOpenDiff?.("src/app.ts"),
@@ -131,6 +146,13 @@ let host: HostSession | undefined;
 let catalog: HostModelCatalog | Error;
 let providers: HostDescriptor["providers"];
 let harnessSwitchSupported = false;
+let lazyHistorySupported = false;
+let machineSessionDeleted = false;
+let machineSessionRevisionHint: number | undefined;
+let machineChangesFailure: string | undefined;
+let machineChangesReset = false;
+let historyReadDelay: Promise<void> | undefined;
+let tailReadDelay: Promise<void> | undefined;
 let commands: HostCommand[];
 let projectKey: string;
 let syncDelay: Promise<void> | undefined;
@@ -150,10 +172,27 @@ const unreachable =
   "Machine is unreachable. Check the host and SSH tunnel, then reconnect.";
 
 beforeEach(() => {
+  vi.mocked(invoke).mockReset();
+  vi.mocked(readRemotePageCache).mockReset().mockResolvedValue(undefined);
+  vi.mocked(writeRemotePageCache).mockReset().mockResolvedValue(undefined);
+  resetRemoteMachineChannelsForTests();
+  resetRemoteQueuesForTests();
+  resetAutoContinueForTests();
+  resetRemoteSessionCachesForTests();
+  resetRemoteSessionReadsForTests();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
+  clearComposerDraft("shell");
   resetDisabledModels();
+  resetHarnessModelOverlays();
   harnessSwitchSupported = false;
+  lazyHistorySupported = false;
+  machineSessionDeleted = false;
+  machineSessionRevisionHint = undefined;
+  machineChangesFailure = undefined;
+  machineChangesReset = false;
+  historyReadDelay = undefined;
+  tailReadDelay = undefined;
   localStorage.setItem("monocode.modelControls", "beside");
   commands = [];
   host = undefined;
@@ -168,8 +207,6 @@ beforeEach(() => {
   savedQueue = null;
   queueWrites = [];
   machineDown = undefined;
-  forgetRemoteQueue("host-session");
-  claimAutoContinue("shell");
   resetRemoteHealth();
   catalog = { models: { codex: [gpt] }, errors: {} };
   providers = ["codex"];
@@ -178,7 +215,6 @@ beforeEach(() => {
     name: "repo",
     cwd: "/home/me/repo",
   }).key;
-  vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async (command, input) => {
     if (command === "remote_machines") return [machine];
     if (command === "session_get_queue") return savedQueue;
@@ -212,9 +248,30 @@ beforeEach(() => {
           "sessions.plan",
           "sessions.draft",
           ...(harnessSwitchSupported ? ["sessions.harnessSwitch"] : []),
+          ...(lazyHistorySupported ? ["sessions.lazyHistory", "machine.changes"] : []),
           ...(shellSupported ? ["sessions.shell"] : []),
         ],
       };
+    if (method === "machine.changes") {
+      if (machineChangesFailure) {
+        const failure = machineChangesFailure;
+        machineChangesFailure = undefined;
+        throw new Error(failure);
+      }
+      const reset = machineChangesReset;
+      machineChangesReset = false;
+      const request = params as { sessions?: { sessionId: string; revision: number }[] };
+      return {
+        instanceId: "test-host",
+        reset,
+        sessions: machineSessionDeleted
+          ? (request.sessions ?? []).filter((entry) => entry.sessionId === "host-session").map((entry) => ({ sessionId: entry.sessionId, revision: entry.revision, deleted: true }))
+          : machineSessionRevisionHint === undefined
+            ? []
+            : (request.sessions ?? []).filter((entry) => entry.sessionId === "host-session").map((entry) => ({ sessionId: entry.sessionId, revision: machineSessionRevisionHint! })),
+        projects: [],
+      };
+    }
     if (method === "models.list") {
       if (catalog instanceof Error) throw catalog.message;
       return catalog;
@@ -302,7 +359,20 @@ beforeEach(() => {
     }
     if (method === "sessions.sync") {
       if (syncDelay) await syncDelay;
-      return { kind: "snapshot", value: host };
+      return {
+        kind: "snapshot",
+        value: params.partial && lazyHistorySupported
+          ? { ...host!, history: { revision: host!.revision, totalBlocks: host!.session.blocks.length, before: 1 } }
+          : host,
+      };
+    }
+    if (method === "sessions.page") {
+      const value = host!;
+      if (params.before !== undefined && historyReadDelay) await historyReadDelay;
+      if (params.before === undefined && tailReadDelay) await tailReadDelay;
+      return params.before === undefined
+        ? { sync: { kind: "snapshot", value }, before: 1, totalBlocks: 2, revision: value.revision }
+        : { sync: { kind: "snapshot", value: { ...value, session: { ...value.session, blocks: [{ id: "older", role: "assistant", text: "Earlier reply" }, ...value.session.blocks] } } }, totalBlocks: 2, revision: value.revision };
     }
     if (method === "attachments.upload")
       return { offset: (params as { size: number }).size };
@@ -321,8 +391,12 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
 });
-afterEach(() => {
-  act(() => root.unmount());
+afterEach(async () => {
+  await act(async () => root.unmount());
+  await settle();
+  resetRemoteMachineChannelsForTests();
+  resetRemoteQueuesForTests();
+  resetAutoContinueForTests();
   container.remove();
   document.body.innerHTML = "";
   vi.unstubAllGlobals();
@@ -470,6 +544,7 @@ async function settle() {
 }
 const byLabel = (prefix: string) =>
   container.querySelector<HTMLButtonElement>(`button[aria-label^="${prefix}"]`);
+const remoteDataPhase = () => container.querySelector("[data-remote-data-state]")?.getAttribute("data-remote-data-state");
 async function type(text: string) {
   const textarea = container.querySelector("textarea")!;
   await act(async () => {
@@ -1397,6 +1472,223 @@ function openExistingChat(patch: Partial<HostSession> = {}) {
   commands = [];
   rememberRemoteSession("shell", "host-session");
 }
+
+slow("keeps Send and the composer usable while an older remote page is loading", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  let release!: () => void;
+  historyReadDelay = new Promise<void>((resolve) => { release = resolve; });
+  await render();
+  const composer = container.querySelector("textarea")!;
+  await vi.waitFor(() => expect(vi.mocked(invoke).mock.calls.some((call) => {
+    const input = call[1] as { method?: string; params?: { before?: number } } | undefined;
+    return input?.method === "sessions.page" && input.params?.before === undefined;
+  })).toBe(true));
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="Transcript"]')?.getAttribute("data-history")).toBe("true"));
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Load earlier messages"]')!.click());
+  await vi.waitFor(() => expect(vi.mocked(invoke).mock.calls.some((call) => {
+    const input = call[1] as { method?: string; params?: { before?: number } } | undefined;
+    return input?.method === "sessions.page" && input.params?.before !== undefined;
+  })).toBe(true));
+  await type("message during history load");
+  await act(async () => byLabel("Send")!.click());
+  expect(commands.some((command) => command.type === "send" && command.text === "message during history load")).toBe(true);
+  expect(container.querySelector("textarea")).toBe(composer);
+  await settle();
+  expect(container.querySelector("ol[aria-label='Transcript']")?.textContent).toContain("message during history load");
+  release();
+  await settle();
+  expect(container.querySelector("ol[aria-label='Transcript']")?.textContent).toContain("message during history load");
+});
+
+it("does not poll transcript content for a hidden machine.changes session", async () => {
+  lazyHistorySupported = true;
+  await render(shell(), { visible: false });
+  expect(vi.mocked(invoke).mock.calls.some(([, input]) => {
+    const method = (input as { method?: string } | undefined)?.method;
+    return method === "sessions.sync" || method === "sessions.page";
+  })).toBe(false);
+});
+
+it("shows loading until the initial owner tail is verified", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  let release!: () => void;
+  tailReadDelay = new Promise<void>((resolve) => { release = resolve; });
+  await render();
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("loading"));
+  release();
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("ready"));
+  expect(container.querySelector('[data-remote-data-state] [title^="Last verified"]')).not.toBeNull();
+});
+
+it("keeps last loaded transcript visible on read failure and retries to verified empty", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  await render();
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("ready"));
+  machineDown = unreachable;
+  await act(async () => byLabel("Refresh conversation")!.click());
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("error"));
+  expect(container.textContent).toContain("Earlier reply");
+  expect(container.querySelector("[data-remote-data-state]")?.textContent).toContain("Showing last loaded data.");
+  machineDown = undefined;
+  host = { ...host!, revision: host!.revision + 1, session: { ...host!.session, blocks: [] } };
+  await act(async () => byLabel("Retry loading conversation")!.click());
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("empty"));
+  expect(container.textContent).not.toContain("Earlier reply");
+});
+
+it("refreshes without remounting the composer or clearing its draft", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  await render();
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("ready"));
+  await type("keep this unsent draft");
+  const composer = container.querySelector("textarea");
+  let release!: () => void;
+  syncDelay = new Promise<void>((resolve) => { release = resolve; });
+  await act(async () => byLabel("Refresh conversation")!.click());
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("refreshing"));
+  expect(container.querySelector("textarea")).toBe(composer);
+  expect(container.querySelector("textarea")!.value).toBe("keep this unsent draft");
+  release();
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("ready"));
+  expect(container.querySelector("textarea")).toBe(composer);
+  expect(container.querySelector("textarea")!.value).toBe("keep this unsent draft");
+});
+
+it("marks known revision updates refreshing and settles on the new owner snapshot", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  await render();
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("ready"));
+  let release!: () => void;
+  syncDelay = new Promise<void>((resolve) => { release = resolve; });
+  host = { ...host!, revision: host!.revision + 1, session: { ...host!.session, blocks: [...host!.session.blocks, { id: "update-user", role: "user", text: "Updated on host" }] } };
+  machineSessionRevisionHint = host!.revision;
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("refreshing"));
+  release();
+  await vi.waitFor(() => expect(container.textContent).toContain("Updated on host"));
+  expect(remoteDataPhase()).toBe("ready");
+});
+
+it("releases transcript demand and stops polling when the host deletes a session", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  await render();
+  await vi.waitFor(() => expect(container.querySelector('[aria-label="Transcript"]')?.getAttribute("data-history")).toBe("true"));
+  machineSessionDeleted = true;
+  await vi.waitFor(() => expect(container.textContent).toContain("This conversation was deleted on the host."));
+  await vi.waitFor(() => expect(vi.mocked(invoke).mock.calls.some((call) => {
+    const input = call[1] as { method?: string; params?: { sessions?: unknown[] } } | undefined;
+    return input?.method === "machine.changes" && input.params?.sessions?.length === 0;
+  })).toBe(true));
+  const contentReads = vi.mocked(invoke).mock.calls.filter((call) => {
+    const input = call[1] as { method?: string } | undefined;
+    return input?.method === "sessions.sync" || input?.method === "sessions.page";
+  }).length;
+  const sessionDemands = vi.mocked(invoke).mock.calls.filter((call) => {
+    const input = call[1] as { method?: string; params?: { sessions?: unknown[] } } | undefined;
+    return input?.method === "machine.changes" && (input.params?.sessions?.length ?? 0) > 0;
+  }).length;
+  Object.defineProperty(document, "hidden", { configurable: true, value: true });
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  await act(async () => notifyRemoteRecovered("env"));
+  Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+  await settle();
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(vi.mocked(invoke).mock.calls.filter((call) => {
+    const input = call[1] as { method?: string } | undefined;
+    return input?.method === "sessions.sync" || input?.method === "sessions.page";
+  })).toHaveLength(contentReads);
+  expect(vi.mocked(invoke).mock.calls.filter((call) => {
+    const input = call[1] as { method?: string; params?: { sessions?: unknown[] } } | undefined;
+    return input?.method === "machine.changes" && (input.params?.sessions?.length ?? 0) > 0;
+  })).toHaveLength(sessionDemands);
+});
+
+slow("uses the tail baseline when the control channel recovers with a reset", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  await render();
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("ready"));
+  const tailReads = () => vi.mocked(invoke).mock.calls.filter((call) => {
+    const input = call[1] as { method?: string; params?: { before?: number } } | undefined;
+    return input?.method === "sessions.page" && input.params?.before === undefined;
+  }).length;
+  const previousTailReads = tailReads();
+
+  await act(async () => {
+    machineChangesFailure = "control channel unavailable";
+    machineChangesReset = true;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  expect(remoteDataPhase()).toBe("stale");
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 7_500));
+  });
+  expect(tailReads()).toBeGreaterThan(previousTailReads);
+  expect(remoteDataPhase()).toBe("ready");
+});
+
+slow("does not start a content read when a recovered control channel reports deletion", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  await render();
+  await vi.waitFor(() => expect(remoteDataPhase()).toBe("ready"));
+  await act(async () => {
+    machineChangesFailure = "control channel unavailable";
+    machineSessionDeleted = true;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  expect(remoteDataPhase()).toBe("stale");
+  const contentReads = vi.mocked(invoke).mock.calls.filter((call) => {
+    const input = call[1] as { method?: string } | undefined;
+    return input?.method === "sessions.sync" || input?.method === "sessions.page";
+  }).length;
+
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 7_500));
+  });
+  await vi.waitFor(() => expect(container.textContent).toContain("This conversation was deleted on the host."));
+  await act(async () => await new Promise((resolve) => setTimeout(resolve, 150)));
+  expect(vi.mocked(invoke).mock.calls.filter((call) => {
+    const input = call[1] as { method?: string } | undefined;
+    return input?.method === "sessions.sync" || input?.method === "sessions.page";
+  })).toHaveLength(contentReads);
+});
+
+it("shows a saved tail offline but requires a fresh tail page before sending", async () => {
+  lazyHistorySupported = true;
+  openExistingChat();
+  machineDown = unreachable;
+  const cached = {
+    ...host!,
+    history: { revision: host!.revision, totalBlocks: 4, before: 3 },
+    session: { ...host!.session, blocks: [host!.session.blocks.at(-1)!] },
+  };
+  vi.mocked(readRemotePageCache).mockResolvedValue(cached as HostSession);
+  await render();
+  await vi.waitFor(() => expect(container.textContent).toContain("Earlier reply"));
+  expect(byLabel("Send")!.title).toContain("saved transcript preview");
+  await type("verified against host");
+  await act(async () => byLabel("Send")!.click());
+  expect(commands.some((command) => command.type === "send")).toBe(false);
+  expect(container.querySelector("textarea")!.value).toBe("verified against host");
+
+  machineDown = undefined;
+  await act(async () => notifyRemoteRecovered("env"));
+  await vi.waitFor(() => expect(vi.mocked(invoke).mock.calls.some((call) => {
+    const input = call[1] as { method?: string; params?: { before?: number } } | undefined;
+    return input?.method === "sessions.page" && input.params?.before === undefined;
+  })).toBe(true));
+  await vi.waitFor(() => expect(byLabel("Send")!.title).not.toContain("saved transcript preview"));
+  await act(async () => byLabel("Send")!.click());
+  await settle();
+  expect(commands.some((command) => command.type === "send" && command.text === "verified against host")).toBe(true);
+});
 const setHost = (patch: Partial<HostSession> & { busy?: boolean }) => {
   const { busy, ...rest } = patch;
   host = {

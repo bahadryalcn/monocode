@@ -44,6 +44,8 @@ export type HostWorktree = {
   missing: boolean;
 };
 export type HostSession = {
+  /** Client view is incomplete; never save this as an authoritative transcript. */
+  history?: { before?: number; revision: number; totalBlocks: number };
   /** Client-only: tail is visible while bounded history pages hydrate. */
   historyLoading?: boolean;
   session: Session;
@@ -102,6 +104,8 @@ export type SessionSync =
   | { kind: "snapshot"; value: HostSession }
   | {
       kind: "delta";
+      /** Only the client's loaded window and newly appended blocks are authoritative. */
+      partial?: true;
       base: number;
       value: Omit<HostSession, "session" | "blockRevisions"> & {
         session: Omit<Session, "blocks">;
@@ -133,6 +137,10 @@ export function applySessionSync(
   )
     throw new Error("Session sync base does not match");
   if (sync.kind === "unchanged") return known;
+  if (sync.partial && !known.history)
+    throw new Error("Partial session sync requires a history window");
+  if (known.history && !sync.partial)
+    throw new Error("Full delta cannot replace a partial history window");
   const blocks = new Map(
     known.session.blocks.map((block) => [block.id, block]),
   );
@@ -144,10 +152,51 @@ export function applySessionSync(
       blocks: sync.blockIds.map((id) => {
         const block = blocks.get(id);
         if (!block) throw new Error("Session sync is missing a block");
-        return block;
+        // The full-content endpoint pins the whole session revision, including
+        // status-only changes that did not replace this block's preview.
+        return block.remoteContent &&
+          block.remoteContent.revision !== sync.value.revision
+          ? {
+              ...block,
+              remoteContent: {
+                ...block.remoteContent,
+                revision: sync.value.revision,
+              },
+            }
+          : block;
       }),
     },
   };
+}
+/** Machine-level invalidations share one authenticated control lane. Revisions
+ * recover state through sessions.sync; notifications need no unbounded replay log. */
+export type MachineChangesRequest = {
+  /** Native per-window registration token, not a host identity. */
+  subscriptionId?: string;
+  tasksKnown?: string;
+  instanceId?: string;
+  sessions: { sessionId: string; revision: number }[];
+  projects: { projectId: string; known?: string }[];
+  waitMs?: number;
+};
+export type MachineChanges = {
+  tasks?: { etag: string };
+  instanceId: string;
+  reset: boolean;
+  sessions: { sessionId: string; revision: number; deleted?: boolean }[];
+  projects: {
+    projectId: string;
+    etag: string;
+    sessions?: HostSessionSummary[];
+    base?: string;
+    upserts?: HostSessionSummary[];
+    removed?: string[];
+  }[];
+};
+/** Owner, runner and project location are independent; tools never transfer ownership. */
+export type SessionReference = { environmentId: string; sessionId: string };
+export function sessionReferenceKey(reference: SessionReference): string {
+  return JSON.stringify([reference.environmentId, reference.sessionId]);
 }
 export type HostCommand =
   | {

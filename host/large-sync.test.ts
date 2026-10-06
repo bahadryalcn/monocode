@@ -8,7 +8,10 @@ import { HostStore } from "./store";
 import { createHostServer } from "./server";
 import type { SendTurnInput } from "../src/integrations/harness/core/types";
 import type { HostSession } from "../src/features/connections/model/protocol";
-import { loadRemoteSession } from "../src/features/connections/model/connections";
+import {
+  loadRemoteBlock,
+  loadRemoteSession,
+} from "../src/features/connections/model/connections";
 
 // The desktop's native client (src-tauri/src/remote.rs) rejects responses over
 // 16 MiB. This routes the real renderer sync code through the real host server
@@ -139,7 +142,7 @@ it(
           session: {
             ...created.session,
             blocks: [
-              ...Array.from({ length: 24 }, (_, index) => ({
+              ...Array.from({ length: 40 }, (_, index) => ({
                 id: `history-${index}`,
                 role: "assistant" as const,
                 text: text(600_000, `turn ${index}`),
@@ -161,11 +164,43 @@ it(
       DESKTOP_LIMIT * 2,
     );
 
-    const reopened = await loadRemoteSession("machine", s.sessionId);
-    expect(reopened).toEqual(visible(full));
+    const reopened = await loadRemoteSession(
+      "machine",
+      s.sessionId,
+      undefined,
+      { pages: true, partialHistory: true },
+    );
+    expect(reopened.revision).toBe(full.revision);
+    expect(reopened.history).toMatchObject({
+      revision: full.revision,
+      totalBlocks: 41,
+    });
+    expect(reopened.history?.before).toBeGreaterThan(0);
+    expect(reopened.session.blocks.map((block) => block.id)).toEqual(
+      full.session.blocks
+        .slice(reopened.history!.before)
+        .map((block) => block.id),
+    );
     expect(
-      desktop.methods.filter((m) => m === "sessions.syncChunk").length,
-    ).toBeGreaterThan(4);
+      reopened.session.blocks.every(
+        (block) => block.remoteContent?.revision === full.revision,
+      ),
+    ).toBe(true);
+    expect(reopened.session.blocks.at(-1)?.text.length).toBeLessThan(64 * 1024);
+    expect(
+      desktop.methods.filter(
+        (m) => m === "sessions.page" || m === "sessions.syncChunk",
+      ).length,
+    ).toBeGreaterThan(0);
+    expect(desktop.largest).toBeLessThanOrEqual(DESKTOP_LIMIT);
+
+    const fullBlock = await loadRemoteBlock(
+      "machine",
+      s.sessionId,
+      "huge",
+      reopened.revision,
+    );
+    expect(fullBlock?.text).toBe(full.session.blocks.at(-1)?.text);
     expect(desktop.largest).toBeLessThanOrEqual(DESKTOP_LIMIT);
 
     // A follow-up turn streams into the large session; only new blocks move.
@@ -183,8 +218,16 @@ it(
     await vi.waitFor(() =>
       expect(s.store.session(s.sessionId).status).toBe("idle"),
     );
-    const updated = await loadRemoteSession("machine", s.sessionId, reopened);
-    expect(updated).toEqual(visible(s.store.session(s.sessionId)));
+    const updated = await loadRemoteSession("machine", s.sessionId, reopened, {
+      partialHistory: true,
+    });
+    const latest = s.store.session(s.sessionId);
+    expect(updated.revision).toBe(latest.revision);
+    expect(updated.session.blocks.map((block) => block.id)).toEqual(
+      latest.session.blocks
+        .slice(updated.history?.before ?? 0)
+        .map((block) => block.id),
+    );
     expect(updated.session.blocks.at(-1)?.text).toBe("Summary");
     expect(desktop.methods).toEqual(["sessions.sync"]);
     expect(desktop.largest).toBeLessThan(64 * 1024);

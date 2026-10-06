@@ -259,6 +259,12 @@ export type SessionPaneProps = {
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
   transcriptPool?: TranscriptPool;
+  /** Remote history is fetched only when the reader reaches its loaded boundary. */
+  remoteHistoryHasMore?: boolean;
+  remoteHistoryLoading?: boolean;
+  remoteHistoryError?: string;
+  onLoadRemoteHistory?: () => Promise<number | void> | void;
+  onLoadRemoteBlock?: (blockId: string, revision: number) => Promise<void> | void;
 };
 
 type Props = SessionPaneProps & {
@@ -382,6 +388,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onNewTerminal,
   onPaneDragStart,
   transcriptPool,
+  remoteHistoryHasMore = false,
+  remoteHistoryLoading = false,
+  remoteHistoryError,
+  onLoadRemoteHistory,
+  onLoadRemoteBlock,
 }: Props) {
   const orchestrationRuns = useSyncExternalStore(
     orchestrator.subscribe,
@@ -1171,6 +1182,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   performanceTraceId={sessionPerformanceTrace(session.id)}
                   historyLoading={session.historyLoading}
                   historyLoadError={session.historyLoadError}
+                  remoteHistoryHasMore={remoteHistoryHasMore}
+                  remoteHistoryLoading={remoteHistoryLoading}
+                  remoteHistoryError={remoteHistoryError}
+                  onLoadRemoteHistory={onLoadRemoteHistory}
+                  onLoadRemoteBlock={onLoadRemoteBlock}
                   busy={!!session.busy}
                   visible={visible}
                   cwd={workCwd}

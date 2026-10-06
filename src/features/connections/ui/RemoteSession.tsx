@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { RemoteOutboxNotice } from "./RemoteOutboxNotice";
-import { useRemoteOutboxIssues } from "../model/remoteOutbox";
+import { RemoteDataStatus } from "./RemoteDataStatus";
+import type { RemoteDataState } from "../model/remoteDataState";
+import { remoteCommandNeedsVerification, useRemoteOutboxIssues } from "../model/remoteOutbox";
 import type { SessionPaneProps } from "../../sessions/ui/SessionPane";
 import type {
   Attachment,
@@ -14,6 +16,7 @@ import type {
 } from "../../sessions/model/session";
 import { uploadRemoteAttachments } from "../model/remoteAttachments";
 import { snapshotWeight } from "../model/snapshotWeight";
+import { readRemotePageCache, writeRemotePageCache } from "../model/remotePageCache";
 import { canApplyRemotePreview } from "../model/remotePreviewBinding";
 import { canCacheRemoteSnapshot, createRemoteHistoryGeneration } from "../model/remoteHistoryGeneration";
 import { beginSessionPerformanceTrace, sessionPerformanceTrace, startPerformanceSpan, recordPerformanceEvent } from "../../../shared/lib/performanceTrace";
@@ -21,6 +24,7 @@ import { temporaryWorktreeBranchName } from "../../source-control/model/worktree
 import type { AgentModel } from "../../sessions/model/models";
 import { isModelEnabled } from "../../sessions/model/models";
 import { remoteSessionPollDelay } from "../model/remotePollingPolicy";
+import { subscribeRemoteMachineChannel } from "../model/remoteMachineChannel";
 import {
   ModelSourceContext,
   type ModelSource,
@@ -37,6 +41,8 @@ import {
 import { loadResumeAtReset } from "../../settings/model/settings";
 import {
   clearPendingRemoteCommand,
+  loadRemoteBlock,
+  loadRemoteHistoryPage,
   loadRemoteSession,
   OPEN_CONNECTIONS_EVENT,
   pendingRemoteCommand,
@@ -49,6 +55,7 @@ import {
   remotePendingWorktree,
   remoteSessionFor,
   savePendingRemoteCommand,
+  sessionAccessForMachine,
   useRemoteMachines,
 } from "../model/connections";
 import {
@@ -59,6 +66,7 @@ import {
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import { sameQueuedModelTarget } from "../../sessions/model/messageQueue";
 import {
+  canEnqueueRemoteMessage,
   nextRemoteQueuedMessage,
   queueSessionFields,
   shouldQueueRemoteMessage,
@@ -133,11 +141,16 @@ const noop = () => {};
 const cachedSessionSnapshots = new Map<string, HostSession>();
 const cachedDescriptors = new Map<string, HostDescriptor>();
 const cachedCatalogs = new Map<string, HostModelCatalog>();
+function boundedSet<K, V>(cache: Map<K, V>, key: K, value: V, limit = 64) {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > limit) cache.delete(cache.keys().next().value!);
+}
 const snapshotKey = (machineId: string, sessionId: string) =>
   `${machineId}:${sessionId}`;
 const catalogKey = (machineId: string, projectId: string) =>
   JSON.stringify([machineId, projectId]);
-function rememberSessionSnapshot(key: string, snapshot: HostSession) {
+function rememberSessionSnapshot(key: string, snapshot: HostSession, environmentId?: string) {
   if (!canCacheRemoteSnapshot(snapshot)) return;
   cachedSessionSnapshots.delete(key);
   cachedSessionSnapshots.set(key, snapshot);
@@ -151,6 +164,14 @@ function rememberSessionSnapshot(key: string, snapshot: HostSession) {
         if (entry === value) cachedSessionSnapshots.delete(entryKey);
     }
   }
+  if (environmentId) void writeRemotePageCache({ environmentId, sessionId: snapshot.session.id }, snapshot);
+}
+
+/** Isolate UI harnesses that intentionally reuse machine/session identifiers. */
+export function resetRemoteSessionCachesForTests() {
+  cachedSessionSnapshots.clear();
+  cachedDescriptors.clear();
+  cachedCatalogs.clear();
 }
 
 /** Fetches a host conversation into the snapshot cache, so its tab opens with
@@ -161,7 +182,19 @@ export async function preloadRemoteSession(
 ): Promise<void> {
   const key = snapshotKey(machineId, sessionId);
   if (cachedSessionSnapshots.has(key)) return;
-  rememberSessionSnapshot(key, await loadRemoteSession(machineId, sessionId));
+  let host = cachedDescriptors.get(machineId);
+  if (!host) {
+    host = requireHostDescriptor(await remoteRequest<HostDescriptor>(machineId, "environment.describe", { supportedProviders: REMOTE_PROVIDERS }));
+    boundedSet(cachedDescriptors, machineId, host);
+  }
+  const lazyHistory = host.capabilities.includes("sessions.lazyHistory");
+  const pages = lazyHistory || host.capabilities.includes("sessions.pages");
+  const snapshot = await loadRemoteSession(machineId, sessionId, undefined, {
+    pages,
+    partialHistory: lazyHistory,
+    ...(pages ? { onPreviews: noop } : {}),
+  });
+  rememberSessionSnapshot(key, snapshot, host.environmentId);
 }
 
 /** A tab in a project on another machine. The host owns the session; this
@@ -258,18 +291,41 @@ function ConnectedRemoteSession({
   const [sessionId, setSessionId] = useState(() => remoteSessionFor(shell.id));
   const boundSession = useRef(sessionId);
   const bindingVersion = useRef(0);
+  const deletedHostBinding = useRef<string | undefined>(undefined);
+  const remoteBindingKey = JSON.stringify([machine.id, machine.environmentId, sessionId]);
+  const currentRemoteBindingKey = useRef(remoteBindingKey);
+  currentRemoteBindingKey.current = remoteBindingKey;
+  const boundOwner = useRef(`${machine.id}:${machine.environmentId}`);
   const deletingSession = useRef<string | undefined>(undefined);
   useEffect(() => {
     const changed = () => {
       const next = remoteSessionFor(shell.id);
+      const owner = `${machine.id}:${machine.environmentId}`;
+      if (owner !== boundOwner.current) {
+        boundOwner.current = owner;
+        deletedHostBinding.current = undefined;
+        setRemoteDeleted(false);
+      }
       if (next !== boundSession.current) {
         bindingVersion.current++;
+        deletedHostBinding.current = undefined;
+        historyPageRequest.current = null;
+        forceTailRead.current = true;
+        setPageCacheOnly(false);
+        setRemoteHistoryLoading(false);
         boundSession.current = next;
         setStarting(undefined);
         setUnseenSend(undefined);
         setChanges(undefined);
         applied.current = undefined;
         setError("");
+        contentRefreshInFlight.current = false;
+        const cached = next
+          ? cachedSessionSnapshots.get(snapshotKey(machine.id, next))
+          : undefined;
+        publishRemoteDataState(
+          cached ? { phase: "stale" } : next ? { phase: "loading" } : { phase: "empty" },
+        );
         setRemovingDraft(undefined);
         preparingRef.current = false;
         setSnapshot(
@@ -291,15 +347,65 @@ function ConnectedRemoteSession({
     window.addEventListener(REMOTE_HISTORY_CHANGE, changed);
     changed();
     return () => window.removeEventListener(REMOTE_HISTORY_CHANGE, changed);
-  }, [shell.id, machine.id]);
+  }, [shell.id, machine.id, machine.environmentId]);
   const [snapshot, setSnapshot] = useState<HostSession | undefined>(() =>
     sessionId
       ? cachedSessionSnapshots.get(snapshotKey(machine.id, sessionId))
       : undefined,
   );
+  const [pageCacheOnly, setPageCacheOnly] = useState(false);
+  const [remoteDeleted, setRemoteDeleted] = useState(false);
+  const [remoteDataState, setRemoteDataState] = useState<RemoteDataState>(() =>
+    !sessionId
+      ? { phase: "empty" }
+      : cachedSessionSnapshots.has(snapshotKey(machine.id, sessionId))
+        ? { phase: "stale" }
+        : { phase: "loading" },
+  );
+  const remoteDataStateRef = useRef(remoteDataState);
+  remoteDataStateRef.current = remoteDataState;
+  const contentRefreshInFlight = useRef(false);
+  const publishRemoteDataState = (next: RemoteDataState) => {
+    remoteDataStateRef.current = next;
+    setRemoteDataState(next);
+  };
   const snapshotRef = useRef(snapshot);
   snapshotRef.current = snapshot;
+  const [remoteHistoryLoading, setRemoteHistoryLoading] = useState(false);
+  const [remoteHistoryError, setRemoteHistoryError] = useState("");
+  const historyPageRequest = useRef<{ revision: number; before?: number; binding: number } | null>(null);
+  const forceTailRead = useRef(false);
+  const loadingRemoteBlocks = useRef(new Set<string>());
   const [refresh, setRefresh] = useState(0);
+  const beginOwnerVerification = () => {
+    contentRefreshInFlight.current = true;
+    const current = remoteDataStateRef.current;
+    publishRemoteDataState({
+      phase: snapshotRef.current || current.updatedAt ? "refreshing" : "loading",
+      updatedAt: current.updatedAt,
+    });
+  };
+  const refreshOwnerContent = () => {
+    if (deletedHostBinding.current === currentRemoteBindingKey.current || contentRefreshInFlight.current) return;
+    beginOwnerVerification();
+    setRefresh((value) => value + 1);
+  };
+  useEffect(() => {
+    if (!sessionId) return;
+    let current = true;
+    void readRemotePageCache({ environmentId: machine.environmentId, sessionId }).then((cached) => {
+      if (!current || !cached || snapshotRef.current || deletedHostBinding.current === currentRemoteBindingKey.current) return;
+      const saved = cached as HostSession;
+      // The disk projection has a clipped block window; invalidate any poll
+      // closure that may have captured an earlier in-memory baseline.
+      forceTailRead.current = true;
+      snapshotRef.current = saved;
+      setSnapshot(saved);
+      setPageCacheOnly(true);
+      publishRemoteDataState({ phase: "stale" });
+    });
+    return () => { current = false; };
+  }, [machine.environmentId, sessionId]);
   const [catalog, setCatalog] = useState<HostModelCatalog | undefined>(() =>
     cachedCatalogs.get(catalogKey(machine.id, project.projectId)),
   );
@@ -429,19 +535,25 @@ function ConnectedRemoteSession({
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout>;
+    let contentRetryTimer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribeChannel: (() => void) | undefined;
+    const bindingKey = remoteBindingKey;
+    let deletedOnHost = deletedHostBinding.current === bindingKey;
+    let controlChannelFailed = false;
     let failed = 0;
     let polling = false;
     const historyGeneration = createRemoteHistoryGeneration();
     const version = bindingVersion.current;
     const stale = () =>
       disposed ||
+      deletedHostBinding.current === bindingKey ||
       version !== bindingVersion.current ||
       (!!sessionId && deletingSession.current === sessionId);
     // Every request carries the expected host identity; describe again only
     // after a failure, when the host may have been replaced.
     let described = false;
     const poll = async () => {
-      if (disposed || polling) return;
+      if (disposed || deletedHostBinding.current === bindingKey || polling) return;
       polling = true;
       let active = false;
       try {
@@ -458,42 +570,154 @@ function ConnectedRemoteSession({
               "Host identity changed. Reconnect this machine before continuing.",
             );
           if (stale()) return;
-          cachedDescriptors.set(machine.id, host);
+          boundedSet(cachedDescriptors, machine.id, host);
           setDescriptor(host);
           described = true;
+          if (visible && !document.hidden && host.capabilities.includes("machine.changes") && sessionId && !unsubscribeChannel) {
+            unsubscribeChannel = subscribeRemoteMachineChannel(
+              machine.id,
+              () => ({ sessions: [{ sessionId, revision: snapshotRef.current?.revision ?? 0 }] }),
+              (changes) => {
+                if (stale()) return;
+                const recoveredControlChannel = controlChannelFailed;
+                if (controlChannelFailed) {
+                  controlChannelFailed = false;
+                }
+                const hint = changes.sessions.find((entry) => entry.sessionId === sessionId);
+                if (hint?.deleted) {
+                  deletedOnHost = true;
+                  deletedHostBinding.current = bindingKey;
+                  clearTimeout(timer);
+                  if (contentRetryTimer) clearTimeout(contentRetryTimer);
+                  unsubscribeChannel?.();
+                  unsubscribeChannel = undefined;
+                  historyPageRequest.current = null;
+                  setRemoteHistoryLoading(false);
+                  setRemoteDeleted(true);
+                  const currentData = remoteDataStateRef.current;
+                  publishRemoteDataState({
+                    phase: currentData.updatedAt ? "stale" : "error",
+                    updatedAt: currentData.updatedAt,
+                    error: "This conversation was deleted on the host.",
+                  });
+                  setError("This conversation was deleted on the host.");
+                  return;
+                }
+                if (changes.reset) {
+                  forceTailRead.current = true;
+                  historyPageRequest.current = null;
+                  snapshotRef.current = undefined;
+                  setRemoteHistoryLoading(false);
+                }
+                const ownerReadNeeded =
+                  recoveredControlChannel ||
+                  changes.reset ||
+                  (hint !== undefined && hint.revision !== snapshotRef.current?.revision);
+                if (ownerReadNeeded) {
+                  const currentData = remoteDataStateRef.current;
+                  if (currentData.phase !== "refreshing")
+                    publishRemoteDataState({
+                      phase: snapshotRef.current || currentData.updatedAt ? "refreshing" : "loading",
+                      updatedAt: currentData.updatedAt,
+                    });
+                  if (failed === 0) void poll();
+                  else if (!contentRetryTimer) contentRetryTimer = setTimeout(() => {
+                    contentRetryTimer = undefined;
+                    void poll();
+                  }, remoteSessionPollDelay(snapshotRef.current?.status === "running", visible, document.hidden, failed));
+                }
+              },
+              (reason) => {
+                if (stale()) return;
+                controlChannelFailed = true;
+                const currentData = remoteDataStateRef.current;
+                publishRemoteDataState({
+                  phase: currentData.updatedAt ? "stale" : "error",
+                  error: String(reason).replace(/^Error: /, ""),
+                  updatedAt: currentData.updatedAt,
+                });
+              },
+            );
+          }
+        }
+        if (
+          cachedDescriptors.get(machine.id)?.capabilities.includes("machine.changes") &&
+          (!visible || document.hidden)
+        ) {
+          // The machine channel carries control hints; background tabs do not
+          // need their own transcript-content polling loop.
+          setOnline(true);
+          reportRemoteMachineStatus(machine.id, true);
+          return;
         }
         const known = historyGeneration.known(
-          snapshotRef.current?.session.id === sessionId
+          !pageCacheOnly && !forceTailRead.current && snapshotRef.current?.session.id === sessionId
             ? snapshotRef.current
             : undefined);
-        const next = sessionId
+        let next = sessionId
           ? await loadRemoteSession(machine.id, sessionId, known, {
-              waitMs: visible && !document.hidden && cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.longPoll") ? 10_000 : 0,
-              pages: cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.pages"),
+              waitMs: !unsubscribeChannel && visible && !document.hidden && cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.longPoll") ? 10_000 : 0,
+              pages: cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.lazyHistory") || cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.pages"),
+              partialHistory: cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.lazyHistory"),
               isCurrent: () => !stale(),
-              onHistory: (history) => {
-                if (stale() || snapshotRef.current?.revision !== history.revision) return;
-                snapshotRef.current = history;
-                setSnapshot(history);
-                onSnapshot?.(shell.id, history);
-                rememberSessionSnapshot(snapshotKey(machine.id, sessionId), history);
-              },
               onHistoryError: (reason) => {
                 if (stale()) return;
                 // A changed revision restarts tail loading without overwriting
                 // the transcript that has already been displayed.
                 snapshotRef.current = undefined;
+                forceTailRead.current = true;
                 historyGeneration.failed();
                 setError(`History loading failed: ${String(reason)}. Retrying.`);
               },
               onPreviews: (preview) => {
-                if (stale() || !canApplyRemotePreview(snapshotRef.current, preview)) return;
-                rememberSessionSnapshot(snapshotKey(machine.id, sessionId), preview);
-                setSnapshot(preview);
+                const current = snapshotRef.current;
+                if (stale() || !canApplyRemotePreview(current, preview) || !current) return;
+                const previews = new Map(preview.session.blocks.map((block) => [block.id, block]));
+                const merged = {
+                  ...current,
+                  session: {
+                    ...current.session,
+                    blocks: current.session.blocks.map((block) => {
+                      const candidate = previews.get(block.id);
+                      if (!candidate) return block;
+                      const files = new Map((block.attachments ?? []).map((file) => [file.id, file]));
+                      for (const file of candidate.attachments ?? []) {
+                        const old = files.get(file.id);
+                        files.set(file.id, old?.data ? old : file);
+                      }
+                      return { ...block, attachments: files.size ? [...files.values()] : block.attachments, image: block.image?.data ? block.image : candidate.image ?? block.image };
+                    }),
+                  },
+                };
+                snapshotRef.current = merged;
+                rememberSessionSnapshot(snapshotKey(machine.id, sessionId), merged, machine.environmentId);
+                setSnapshot(merged);
+                onSnapshot?.(shell.id, merged);
               },
             })
           : undefined;
         if (stale()) return;
+        const latest = snapshotRef.current;
+        if (
+          !pageCacheOnly && known && next && latest && latest !== known &&
+          latest.session.id === sessionId
+        ) {
+          if (latest.revision === next.revision) {
+            // A page or full-block request expanded this same revision while
+            // the poll was in flight. Keep that wider snapshot, then continue
+            // through the normal scheduling path (legacy hosts have no hint
+            // channel to schedule the next content read).
+            next = latest;
+          } else {
+            setRefresh((value) => value + 1);
+            return;
+          }
+        }
+        if (historyPageRequest.current && next &&
+            next.revision !== historyPageRequest.current.revision) {
+          historyPageRequest.current = null;
+          setRemoteHistoryLoading(false);
+        }
         historyGeneration.loaded();
         if (next && next.projectId !== project.projectId)
           throw new Error("This session belongs to a different host project");
@@ -503,32 +727,55 @@ function ConnectedRemoteSession({
         if (failed) setCatalogRefresh((value) => value + 1);
         failed = 0;
         if (next && sessionId)
-          rememberSessionSnapshot(snapshotKey(machine.id, sessionId), next);
+          rememberSessionSnapshot(snapshotKey(machine.id, sessionId), next, machine.environmentId);
         setSnapshot(next);
         snapshotRef.current = next;
+        forceTailRead.current = false;
+        setPageCacheOnly(false);
+        setRemoteDeleted(false);
         if (next) recordPerformanceEvent("renderer-receive", { revision: next.revision, blocks: next.session.blocks.length }, sessionPerformanceTrace(shell.id));
         if (next) onSnapshot?.(shell.id, next);
+        const verifiedAt = next ? Date.now() : remoteDataStateRef.current.updatedAt;
+        publishRemoteDataState({
+          phase: next?.session.blocks.length ? "ready" : "empty",
+          ...(verifiedAt ? { updatedAt: verifiedAt } : {}),
+        });
         // A `!command` still running on the host changes the transcript too.
         active = !next?.historyLoading && (
           next?.status === "running" ||
           !!next?.session.blocks.some((block) => block.shell?.running));
       } catch (reason) {
         if (stale()) return;
+        const currentData = remoteDataStateRef.current;
+        publishRemoteDataState({
+          phase: "error",
+          error: String(reason).replace(/^Error: /, ""),
+          updatedAt: currentData.updatedAt,
+        });
         setOnline(false);
         reportRemoteMachineStatus(machine.id, false, reason);
         described = false;
         failed++;
       } finally {
         polling = false;
+        contentRefreshInFlight.current = false;
       }
-      if (!disposed)
+      if (
+        !disposed &&
+        !deletedOnHost &&
+        !unsubscribeChannel &&
+        !(cachedDescriptors.get(machine.id)?.capabilities.includes("machine.changes") && (!visible || document.hidden))
+      )
         timer = setTimeout(
           () => void poll(),
           active && visible && !document.hidden && failed === 0 && cachedDescriptors.get(machine.id)?.capabilities.includes("sessions.longPoll") ? 100 : remoteSessionPollDelay(active, visible, document.hidden, failed),
         );
     };
     const onVisibility = () => {
+      if (deletedHostBinding.current === bindingKey) return;
       clearTimeout(timer);
+      if (!document.hidden) beginOwnerVerification();
+      setRefresh((value) => value + 1);
       if (polling) return; // The current read schedules with the new visibility.
       if (!document.hidden) void poll();
       else
@@ -547,6 +794,8 @@ function ConnectedRemoteSession({
     return () => {
       disposed = true;
       clearTimeout(timer);
+      if (contentRetryTimer) clearTimeout(contentRetryTimer);
+      unsubscribeChannel?.();
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [
@@ -555,6 +804,7 @@ function ConnectedRemoteSession({
     project.projectId,
     sessionId,
     refresh,
+    pageCacheOnly,
     visible,
     onSnapshot,
   ]);
@@ -564,6 +814,8 @@ function ConnectedRemoteSession({
   useEffect(
     () =>
       subscribeRemoteRecovered(() => {
+        if (deletedHostBinding.current === currentRemoteBindingKey.current) return;
+        beginOwnerVerification();
         setRefresh((value) => value + 1);
         setCatalogRefresh((value) => value + 1);
       }),
@@ -578,7 +830,7 @@ function ConnectedRemoteSession({
     })
       .then((value) => {
         if (disposed) return;
-        cachedCatalogs.set(catalogKey(machine.id, project.projectId), value);
+          boundedSet(cachedCatalogs, catalogKey(machine.id, project.projectId), value);
         setCatalog(value);
         setCatalogError("");
       })
@@ -673,8 +925,9 @@ function ConnectedRemoteSession({
     command: HostCommand,
     optimistic?: OptimisticTurn,
     followup?: HostCommand,
+    recoveredReceipt?: CommandReceipt,
   ): Promise<CommandReceipt | undefined> => {
-    if (sendingRef.current) return undefined;
+    if (sendingRef.current || pageCacheOnly || remoteDeleted) return undefined;
     const version = bindingVersion.current;
     sendingRef.current = true;
     setSending(true);
@@ -697,24 +950,26 @@ function ConnectedRemoteSession({
     // Keep the original ID across disconnects and app restarts. An ambiguous
     // response is retried explicitly instead of silently sending a new prompt.
     try {
-      savePendingRemoteCommand(
-        project.key,
-        machine.environmentId,
-        command,
-        shell.id,
-        followup,
-      );
+      if (!recoveredReceipt)
+        savePendingRemoteCommand(
+          project.key,
+          machine.environmentId,
+          command,
+          shell.id,
+          followup,
+        );
       setPending(command);
       const traceId = sessionPerformanceTrace(shell.id);
-      const dispatchDone = startPerformanceSpan("dispatch", {}, traceId);
-      const receipt = await remoteRequest<CommandReceipt>(
-        machine.id,
-        "commands.dispatch",
-        command,
-        false,
-        true,
-      );
-      dispatchDone();
+      let receipt = recoveredReceipt;
+      if (!receipt) {
+        const dispatchDone = startPerformanceSpan("dispatch", {}, traceId);
+        try {
+          receipt = await sessionAccessForMachine(machine.id, false, true).dispatch(command);
+        } finally {
+          dispatchDone();
+        }
+      }
+      if (!receipt) throw new Error("The host did not confirm the request.");
       recordPerformanceEvent("host-ack", { revision: receipt.revision }, traceId);
       if (command.type === "create") {
         const next = pendingRemoteFollowup(
@@ -826,10 +1081,7 @@ function ConnectedRemoteSession({
     const version = bindingVersion.current;
     deletingSession.current = id;
     try {
-      await remoteRequest(machine.id, "sessions.delete", {
-        projectId: project.projectId,
-        sessionId: id,
-      });
+      await sessionAccessForMachine(machine.id, false, true).delete(id, project.projectId);
       cachedSessionSnapshots.delete(snapshotKey(machine.id, id));
       forgetRemoteQueue(id);
       if (!alive.current || version !== bindingVersion.current) return;
@@ -1148,18 +1400,12 @@ function ConnectedRemoteSession({
   const shellFollowUps = useRef(new Set<string>());
   const dispatchShell = (id: string, command: string) => {
     const commandId = crypto.randomUUID();
-    return remoteRequest<CommandReceipt>(
-      machine.id,
-      "commands.dispatch",
-      {
+    return sessionAccessForMachine(machine.id, false, true).dispatch({
         type: "shell",
         commandId,
         sessionId: id,
         line: command,
-      },
-      false,
-      true,
-    ).then(() => {
+      }).then(() => {
       shellFollowUps.current.add(commandId);
       if (alive.current) setRefresh((value) => value + 1);
     });
@@ -1232,7 +1478,7 @@ function ConnectedRemoteSession({
     asDraft = false,
     planBlockId?: string,
   ): boolean => {
-    if (snapshotRef.current?.historyLoading) return false;
+    if (pageCacheOnly || remoteDeleted || snapshotRef.current?.historyLoading) return false;
     beginSessionPerformanceTrace(shell.id);
     const shellCommand =
       asDraft || attachments.length || options?.draftBlockId || planBlockId
@@ -1250,7 +1496,7 @@ function ConnectedRemoteSession({
       // Before the saved queue is read, or without a session to key it by,
       // the composer keeps the message.
       if (!queue.loaded || !activeSessionId) return false;
-      queue.enqueue({
+      const queued = {
         id: crypto.randomUUID(),
         text,
         attachments,
@@ -1260,7 +1506,12 @@ function ConnectedRemoteSession({
           model: configuration.model,
           modelSettings: { ...configuration.settings },
         },
-      });
+      };
+      if (!canEnqueueRemoteMessage(queue.queue, queued)) {
+        setError("Remote queue is full. Send or remove queued messages before adding more.");
+        return false;
+      }
+      queue.enqueue(queued);
       return true;
     }
     if (
@@ -1302,7 +1553,7 @@ function ConnectedRemoteSession({
     session: queuedSession,
     loaded: queue.loaded,
     online,
-    canSend: connection.canSend && !snapshot?.historyLoading,
+    canSend: connection.canSend && !snapshot?.historyLoading && !pageCacheOnly && !remoteDeleted,
     working,
     changing: !!changes,
   });
@@ -1312,7 +1563,7 @@ function ConnectedRemoteSession({
   // Send the head of the queue once the turn is over and the machine is
   // reachable. A held queue loses nothing: it simply waits for both.
   useEffect(() => {
-    if (!nextQueued) return;
+    if (!nextQueued || pageCacheOnly || remoteDeleted) return;
     const target = nextQueued.modelTarget;
     if (
       target &&
@@ -1361,6 +1612,7 @@ function ConnectedRemoteSession({
     saved?.settings,
     providers,
     descriptor?.capabilities,
+    pageCacheOnly,
   ]);
 
   // After a restart or a reconnect: a run this app saw working that the host
@@ -1373,11 +1625,11 @@ function ConnectedRemoteSession({
     hostSessionId: hostSession?.id,
     status: hostSnapshot?.status,
     runId: hostSnapshot?.runId,
-    fresh: online,
+    fresh: online && !pageCacheOnly && !remoteDeleted,
     providerSessionId: hostSession?.providerSessionId,
     queueLoaded: queue.loaded,
     queuedCount: queue.queue.messages.length,
-    ready: online && connection.canSend && !busy && !working && !changes,
+    ready: online && !pageCacheOnly && !remoteDeleted && connection.canSend && !busy && !working && !changes,
     send: () => submit(CONTINUE_PROMPT, []),
   });
   const interruptedTurn = remoteTurnInterrupted({
@@ -1507,11 +1759,26 @@ function ConnectedRemoteSession({
   const catalogProblem = catalog?.errors[configuration.harness] ?? catalogError;
   const retryPending = async () => {
     if (!pending || sendingRef.current) return;
+    const risky = pending.type === "shell" || pending.type === "cancel" || pending.type === "approve" || pending.type === "answer";
+    const needsVerification = remoteCommandNeedsVerification(project.key, machine.environmentId, pending.commandId);
+    let recovered: CommandReceipt | null | undefined;
+    if (descriptor?.capabilities.includes("commands.status")) {
+      try {
+        recovered = await sessionAccessForMachine(machine.id, false, true).status(pending.commandId);
+      } catch (reason) {
+        setError(`Couldn’t check whether the host accepted this request: ${String(reason).replace(/^Error: /, "")}`);
+        return;
+      }
+    }
+    if ((recovered === null || recovered === undefined) && (risky || needsVerification)) {
+      setError("The host cannot confirm whether this request ran. Check the host before clearing it; it was kept for recovery.");
+      return;
+    }
     const version = bindingVersion.current;
     setStarting((current) =>
       current ? { ...current, failed: false } : current,
     );
-    const receipt = await run(pending);
+    const receipt = recovered ? await run(pending, undefined, undefined, recovered) : await run(pending);
     if (
       receipt &&
       pending.type === "create" &&
@@ -1617,7 +1884,7 @@ function ConnectedRemoteSession({
   };
 
   const stopTurn = () => {
-    if (hostSession?.busy && snapshot?.runId) {
+    if (!pageCacheOnly && hostSession?.busy && snapshot?.runId) {
       // What is queued waits for the user instead of sending as the turn ends.
       queue.pause();
       void run({
@@ -1704,6 +1971,82 @@ function ConnectedRemoteSession({
     project.key,
     machine.environmentId,
   );
+  const loadEarlierRemote = async (): Promise<number> => {
+    const current = snapshotRef.current;
+    if (!sessionId || !current?.history || historyPageRequest.current) return 0;
+    const binding = bindingVersion.current;
+    const request = { revision: current.revision, before: current.history.before, binding };
+    historyPageRequest.current = request;
+    const stillCurrent = () =>
+      alive.current &&
+      deletedHostBinding.current !== remoteBindingKey &&
+      historyPageRequest.current === request &&
+      bindingVersion.current === binding &&
+      boundSession.current === sessionId &&
+      snapshotRef.current?.revision === current.revision &&
+      snapshotRef.current?.history?.before === current.history?.before;
+    setRemoteHistoryLoading(true);
+    setRemoteHistoryError("");
+    try {
+      const next = await loadRemoteHistoryPage(
+        machine.id,
+        sessionId,
+        current,
+        stillCurrent,
+      );
+      if (!stillCurrent()) return 0;
+      if (!next) {
+        setRemoteHistoryError("The conversation changed while loading. Try again to continue from its current version.");
+        setRefresh((value) => value + 1);
+        return 0;
+      }
+      const added = Math.max(0, next.session.blocks.length - current.session.blocks.length);
+      snapshotRef.current = next;
+      setSnapshot(next);
+      onSnapshot?.(shell.id, next);
+      rememberSessionSnapshot(snapshotKey(machine.id, sessionId), next, machine.environmentId);
+      return added;
+    } catch (reason) {
+      if (alive.current && deletedHostBinding.current !== remoteBindingKey && bindingVersion.current === binding && historyPageRequest.current === request)
+        setRemoteHistoryError(`Couldn’t load earlier messages: ${String(reason).replace(/^Error: /, "")}`);
+      return 0;
+    } finally {
+      if (historyPageRequest.current === request) {
+        historyPageRequest.current = null;
+        if (alive.current && deletedHostBinding.current !== remoteBindingKey && bindingVersion.current === binding) setRemoteHistoryLoading(false);
+      }
+    }
+  };
+  const loadLargeRemoteBlock = async (blockId: string, revision: number) => {
+    const current = snapshotRef.current;
+    if (!sessionId || !current || current.revision !== revision || loadingRemoteBlocks.current.has(blockId)) return;
+    const binding = bindingVersion.current;
+    const ownerSessionId = current.session.id;
+    const stub = current.session.blocks.find((block) => block.id === blockId);
+    if (!stub?.remoteContent || stub.remoteContent.revision !== revision) return;
+    loadingRemoteBlocks.current.add(blockId);
+    try {
+      const full = await loadRemoteBlock(machine.id, sessionId, blockId, revision);
+      const latest = snapshotRef.current;
+      if (!alive.current || deletedHostBinding.current === remoteBindingKey || bindingVersion.current !== binding || boundSession.current !== sessionId ||
+          !full || !latest || latest.session.id !== ownerSessionId || latest.revision !== revision) return;
+      const next = {
+        ...latest,
+        session: {
+          ...latest.session,
+          blocks: latest.session.blocks.map((block) => block.id === blockId ? full : block),
+        },
+      };
+      snapshotRef.current = next;
+      setSnapshot(next);
+      onSnapshot?.(shell.id, next);
+    } catch (reason) {
+      if (alive.current && deletedHostBinding.current !== remoteBindingKey && bindingVersion.current === binding)
+        setRemoteHistoryError(`Couldn’t load full output: ${String(reason).replace(/^Error: /, "")}`);
+    } finally {
+      loadingRemoteBlocks.current.delete(blockId);
+    }
+  };
   const overrides: RemoteSessionOverrides = {
     session,
     remoteSession: true,
@@ -1714,7 +2057,16 @@ function ConnectedRemoteSession({
     },
     remoteSessionLoading: !!sessionId && !hostSession && !session.blocks.length,
     remoteSessionStarted: !!sessionId,
-    sendBlockedReason: snapshot?.historyLoading ? "Loading earlier messages…" : outboxIssues.length
+    remoteHistoryHasMore: snapshot?.history?.before !== undefined,
+    remoteHistoryLoading,
+    remoteHistoryError: remoteHistoryError || undefined,
+    onLoadRemoteHistory: loadEarlierRemote,
+    onLoadRemoteBlock: loadLargeRemoteBlock,
+    sendBlockedReason: remoteDeleted
+      ? "This conversation was deleted on the host."
+      : pageCacheOnly
+      ? "Showing a saved transcript preview. Reconnect to confirm the host before sending."
+      : snapshot?.historyLoading ? "Loading earlier messages…" : outboxIssues.length
       ? "An unfinished request needs recovery. Check the host and review the request above."
       : blocksSending(connection.status)
         ? needsSignIn(connection.status)
@@ -1818,6 +2170,12 @@ function ConnectedRemoteSession({
         {uploadProgress ? <div role="status" className="shrink-0 px-4 py-2 text-xs text-content/65">Uploading attachment: {Math.round(uploadProgress.size ? uploadProgress.offset / uploadProgress.size * 100 : 100)}%</div> : null}
         {snapshot?.historyLoading ? <div role="status" className="shrink-0 px-4 py-2 text-xs text-content/65">Loading earlier messages…</div> : null}
         <RemoteConnectionBanner cwd={project.key} stale={!!hostSession} />
+        <RemoteDataStatus
+          state={remoteDataState}
+          onRefresh={refreshOwnerContent}
+          label="conversation"
+          disabled={remoteDeleted}
+        />
         {online && hostSession && snapshot?.status === "running" ? (
           <div
             role="status"

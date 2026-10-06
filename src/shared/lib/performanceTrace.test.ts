@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { beginSessionPerformanceTrace, endSessionPerformanceTrace, sessionPerformanceTrace } from "./performanceTrace";
 import { clearPerformanceTrace, configurePerformanceTracing, createPerformanceTraceId, getPerformanceTrace, recordPerformanceEvent, startPerformanceSpan } from "./performanceTrace";
 describe("performance traces", () => {
+  it("keeps remote decode units distinct from wire bytes", () => {
+    clearPerformanceTrace();
+    configurePerformanceTracing({ enabled: true });
+    const end = startPerformanceSpan("remote-decode", { units: 12, payload: "private" } as never);
+    end();
+    expect(getPerformanceTrace()[0]?.metrics).toEqual({ units: 12 });
+    configurePerformanceTracing({ enabled: false });
+    clearPerformanceTrace();
+  });
   it("keeps session correlation private, bounded and resettable", () => {
     configurePerformanceTracing({ enabled: false });
     expect(beginSessionPerformanceTrace("secret-key")).toBeUndefined();

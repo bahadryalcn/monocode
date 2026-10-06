@@ -9,6 +9,7 @@ const pendingPrefix = (project: string, environment: string) =>
   `${PREFIX}${JSON.stringify([project, environment])}:`;
 type PendingEntry = {
   v?: 1;
+  savedAt?: number;
   command: HostCommand;
   shellId?: string;
   followup?: HostCommand;
@@ -124,6 +125,8 @@ function readPendingEntry(value: string, id: string): PendingEntry | undefined {
     if (!object(parsed)) return;
     const entry = "command" in parsed ? parsed : { command: parsed };
     if (entry.v !== undefined && entry.v !== 1) return;
+    if (entry.savedAt !== undefined && (typeof entry.savedAt !== "number" || !Number.isFinite(entry.savedAt) ||
+      entry.savedAt <= 0 || Date.now() - entry.savedAt >= 6 * 24 * 60 * 60 * 1000)) return;
     if (
       !validCommand(entry.command) ||
       entry.command.commandId !== id ||
@@ -290,6 +293,7 @@ export function savePendingRemoteCommand(
     );
   const entry: PendingEntry = {
     v: 1,
+    savedAt: readPendingEntry(localStorage.getItem(`${pendingPrefix(project, environment)}${command.commandId}`) ?? "", command.commandId)?.savedAt ?? Date.now(),
     command,
     shellId,
     followup:
@@ -297,6 +301,17 @@ export function savePendingRemoteCommand(
       pendingRemoteFollowup(project, environment, command.commandId),
   };
   const json = JSON.stringify(entry);
+  if (json.length * 2 > 2 * 1024 * 1024) throw new Error("Remote request is too large to save safely.");
+  let pendingBytes = 0;
+  let pendingCount = 0;
+  for (let index = 0; index < localStorage.length; index++) {
+    const key = localStorage.key(index);
+    if (!key?.startsWith(PREFIX) || key === `${pendingPrefix(project, environment)}${command.commandId}`) continue;
+    pendingCount++;
+    pendingBytes += (localStorage.getItem(key)?.length ?? 0) * 2;
+  }
+  if (pendingCount >= 100 || pendingBytes + json.length * 2 > 8 * 1024 * 1024)
+    throw new Error("Remote outbox is full. Recover pending requests before sending more.");
   if (!readPendingEntry(json, command.commandId))
     throw new Error("Cannot save an invalid remote request.");
   try {
@@ -310,6 +325,13 @@ export function savePendingRemoteCommand(
     );
   }
   changed();
+}
+
+/** Legacy entries have no retry age; a missing receipt is not proof that their
+ * external effect never happened. Keep them for explicit recovery. */
+export function remoteCommandNeedsVerification(project:string,environment:string,commandId:string):boolean {
+  const entry=readPendingEntry(localStorage.getItem(`${pendingPrefix(project,environment)}${commandId}`)??"",commandId);
+  return !entry?.savedAt;
 }
 export function clearPendingRemoteCommand(
   project: string,

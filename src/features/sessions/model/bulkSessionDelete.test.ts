@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   bulkDeleteConfirmMessage,
+  bulkDeleteOutcome,
   bulkDeleteSummary,
   deleteSessionsInBulk,
   splitRunningSessions,
@@ -8,9 +9,10 @@ import {
 
 describe("bulk session delete", () => {
   it("separates running conversations and drops duplicates", () => {
-    expect(
-      splitRunningSessions(["a", "b", "a", "c"], new Set(["b"])),
-    ).toEqual({ deletable: ["a", "c"], running: ["b"] });
+    expect(splitRunningSessions(["a", "b", "a", "c"], new Set(["b"]))).toEqual({
+      deletable: ["a", "c"],
+      running: ["b"],
+    });
   });
 
   it("keeps going after a failure and reports each outcome", async () => {
@@ -44,6 +46,29 @@ describe("bulk session delete", () => {
       },
     });
     expect(order).toEqual(["start a", "end a", "start b", "end b"]);
+  });
+
+  it("reports progress after each resolved result and names successful deletions", async () => {
+    const progress = vi.fn();
+    const result = await deleteSessionsInBulk(["a", "b", "c"], {
+      isRunning: (id) => id === "b",
+      deleteOne: async (id) => {
+        if (id === "c") throw new Error("disk full");
+      },
+      onProgress: progress,
+    });
+    expect(progress.mock.calls).toEqual([
+      [0, 3],
+      [1, 3],
+      [2, 3],
+      [3, 3],
+    ]);
+    expect(bulkDeleteOutcome(result)).toBe(
+      "1 conversation deleted. 1 running conversation was skipped. 1 conversation could not be deleted: disk full.",
+    );
+    expect(
+      bulkDeleteOutcome({ deleted: ["a", "b"], skipped: [], failed: [] }),
+    ).toBe("2 conversations deleted.");
   });
 
   it("words the confirmation for the count and the skipped ones", () => {

@@ -27,7 +27,12 @@ const MINUTE = 60_000;
 const SHELL_TEST_MS = 60_000;
 
 const git = (cwd: string, ...args: string[]) =>
-  execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" }).trim();
+  execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: "pipe",
+    windowsHide: true,
+  }).trim();
 
 function setup(verifyTimeoutMs?: number) {
   const directory = realpathSync.native(
@@ -219,7 +224,7 @@ describe("host tasks", () => {
     expect(store.session(started.sessionId!).session.title).toBe(
       "Ship the report",
     );
-    expect(turns[0].input.text).toBe("Write the weekly report");
+    expect(JSON.parse(turns[0].input.text).task.instructions.objective).toBe("Write the weekly report");
 
     turns[0].finish();
     await settled(started.sessionId!);
@@ -642,7 +647,7 @@ describe("host tasks", () => {
     await tasks.tick();
     await vi.waitFor(() => expect(turns).toHaveLength(1));
     expect(task().status).toBe("running");
-    expect(turns[0].input.text).toBe("Write the weekly report");
+    expect(JSON.parse(turns[0].input.text).task.instructions.objective).toBe("Write the weekly report");
   });
 
   it("refuses to start a task with an empty description", async () => {
@@ -1147,10 +1152,10 @@ describe("task verification", () => {
     expect(task("dependent").status).toBe("running");
   });
 
-  it("bounds automatic corrections across host scheduler recreation and resets on manual retry", async () => {
+  it("hands blocked work to one independent worker before asking for instructions", async () => {
     const { tasks, store, engine, clock, reviewing, task, finish } = setup();
     await reviewing({ goalId: "goal" });
-    for (let attempt = 1; attempt <= MAX_REPAIR_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt < MAX_REPAIR_ATTEMPTS; attempt++) {
       await finish(
         task().reviewer!.sessionId!,
         `VERDICT: FAIL - Missing item ${attempt}.`,
@@ -1171,13 +1176,95 @@ describe("task verification", () => {
     );
     expect(task()).toMatchObject({
       status: "blocked",
-      repairAttempts: MAX_REPAIR_ATTEMPTS,
+      repairAttempts: MAX_REPAIR_ATTEMPTS - 1,
+      reviewFailureCount: 3,
     });
+    const previousSession = task().sessionId;
+    expect(task().needsInput).toBeUndefined();
     await tasks.tick();
+    expect(task()).toMatchObject({ status: "running", blockedTakeover: { previousSessionId: previousSession } });
+    expect(task().sessionId).not.toBe(previousSession);
+    await finish(task().sessionId!);
+    await finish(task().reviewer!.sessionId!, "VERDICT: FAIL - Friday is still missing.");
+    expect(task().status).toBe("blocked");
+    expect(task().needsInput).toBe(true);
+    await new HostTasks(store, engine, () => clock.now).tick();
+    expect(task().status).toBe("blocked");
+    await expect(tasks.move("main", "queued")).rejects.toThrow("Update the task description");
+    expect(() => tasks.recheckReview("main")).toThrow("Update the task description");
+    tasks.save({ ...task(), status: undefined, title: "Renamed", prompt: `  ${task().prompt}  ` });
+    await expect(tasks.move("main", "queued")).rejects.toThrow("Update the task description");
+    tasks.save({ ...task(), status: undefined, prompt: "Include Friday; its figures are now in the supplied report." });
+    tasks.recoverGoalReview("main", "goal");
     expect(task().status).toBe("blocked");
     await tasks.move("main", "queued");
-    expect(task().repairAttempts).toBeUndefined();
+    expect(task().repairAttempts).toBe(0);
+    expect(task().reviewFailureCount).toBe(0);
+    expect(task().attemptHistory).toHaveLength(4);
     expect(task().retryFeedback).toContain("Friday is still missing.");
+  });
+
+  it("recovers the review budget from legacy history and holds an already queued retry", async () => {
+    const { tasks, store, input, task, turns } = setup();
+    const saved = tasks.save(input());
+    store.db.prepare("UPDATE tasks SET value=? WHERE id=?").run(JSON.stringify({
+      ...saved,
+      attemptHistory: Array.from({ length: 9 }, (_, index) => ({
+        attempt: 0, at: index, reviewerSessionId: `review-${index}`,
+        workerSummary: "Checks passed; device evidence unavailable.",
+        verdict: "fail", note: `Still missing device evidence ${index}.`, findings: [],
+      })),
+    }), "main");
+    await tasks.tick();
+    expect(task()).toMatchObject({ status: "blocked", needsInput: true });
+    expect(turns).toHaveLength(0);
+    await expect(tasks.move("main", "queued")).rejects.toThrow("Update the task description");
+    tasks.save({ ...task(), status: undefined, prompt: "Device is now connected; verify the retained implementation." });
+    await tasks.move("main", "queued");
+    await tasks.tick();
+    expect(task().status).toBe("running");
+    expect(turns).toHaveLength(1);
+  });
+
+  it("automatically takes over blocked work in its existing checkout and delivers after review", async () => {
+    const { reviewing, tasks, task, finish, turns, input, addRepo } = setup();
+    const repo = addRepo("takeover");
+    await reviewing({ projectId: repo.id, autoMerge: true });
+    await finish(task().reviewer!.sessionId!, '```json\n{"reviewNotes":[{"finding":"Need an alternative local check.","category":"external","suggestion":"Inspect available test tools."}]}\n```\nVERDICT: FAIL - Evidence missing.');
+    const blocked = task();
+    writeFileSync(join(blocked.worktreeCwd!, "retained.txt"), "keep this progress");
+    tasks.save(input({ id: "dependent", projectId: repo.id, dependsOn: ["main"] }));
+    tasks.limits.save({ maxRunningTasks: 1 });
+    await tasks.tick();
+    expect(task()).toMatchObject({ status: "running", worktreeCwd: blocked.worktreeCwd, branch: blocked.branch, harness: blocked.harness, model: blocked.model });
+    expect(task().sessionId).not.toBe(blocked.sessionId);
+    expect(readFileSync(join(blocked.worktreeCwd!, "retained.txt"), "utf8")).toBe("keep this progress");
+    expect(turns.at(-1)!.input.text).toContain("monocode.blocked-handoff.v1");
+    expect(turns.at(-1)!.input.text).toContain("Evidence missing.");
+    expect(task("dependent").status).toBe("queued");
+    await finish(task().sessionId!, "Used the available local acceptance tool and recorded results.");
+    expect(task().status).toBe("verifying");
+    await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+    expect(task()).toMatchObject({ status: "done", autoMerged: true });
+    expect(task("dependent").status).toBe("running");
+  }, SHELL_TEST_MS);
+
+  it("holds takeover for daily limits and respects cancelled goals", async () => {
+    const { reviewing, tasks, task, finish, store, clock } = setup();
+    await reviewing({ goalId: "goal" });
+    await finish(task().reviewer!.sessionId!, '```json\n{"reviewNotes":[{"finding":"Need device evidence.","category":"external","suggestion":"Provide a device for the required test."}]}\n```\nVERDICT: FAIL - Evidence missing.');
+    tasks.limits.save({ dailyAgentMinutes: 1, maxRunningTasks: 1 });
+    tasks.limits.record(clock.now - 2 * MINUTE, clock.now);
+    await tasks.tick();
+    expect(task().status).toBe("blocked");
+    tasks.limits.save({ dailyAgentMinutes: 0 });
+    store.db.exec("CREATE TABLE goals (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    store.db.prepare("INSERT INTO goals VALUES (?, ?)").run("goal", JSON.stringify({ status: "cancelled" }));
+    await tasks.tick();
+    expect(task().blockedTakeover).toBeUndefined();
+    store.db.prepare("UPDATE goals SET value=? WHERE id=?").run(JSON.stringify({ status: "running" }), "goal");
+    await tasks.tick();
+    expect(task().status).toBe("running");
   });
 
   it("stops unchanged findings after a correction and records both worker outcomes", async () => {
@@ -1207,8 +1294,9 @@ describe("task verification", () => {
     expect(
       new HostTasks(store, engine, () => clock.now).get("main")!.attemptHistory,
     ).toHaveLength(2);
-    await tasks.move("main", "queued");
-    expect(task().repairStop).toBeUndefined();
+    await tasks.move("main", "todo");
+    await expect(tasks.move("main", "queued")).rejects.toThrow("Update the task description");
+    expect(task().repairStop?.reason).toBe("no_progress");
   });
 
   it("does not retry external-only acceptance or release dependent work, but starts independent work", async () => {
@@ -1238,14 +1326,32 @@ describe("task verification", () => {
     );
     expect(task()).toMatchObject({ status: "running", repairAttempts: 1 });
     expect(task().repairStop).toBeUndefined();
-    const fixedId = task().reviewNotes!.find((note) => note.finding === "Reset is broken.")!.id;
+    const fixedId = task().reviewNotes!.find(
+      (note) => note.finding === "Reset is broken.",
+    )!.id;
     await finish(task().sessionId!, "Fixed reset and checked its behavior.");
-    await finish(task().reviewer!.sessionId!, '```json\n' + JSON.stringify({
-      reviewNotes: [{ finding: "TalkBack acceptance missing.", category: "external", suggestion: "Test on Android." }],
-      resolvedNoteIds: [fixedId],
-    }) + '\n```\nVERDICT: FAIL - TalkBack acceptance missing.');
-    expect(task()).toMatchObject({ status: "blocked", repairStop: { reason: "external" } });
-    expect(task().reviewNotes!.find((note) => note.id === fixedId)!.resolvedAt).toBeDefined();
+    await finish(
+      task().reviewer!.sessionId!,
+      "```json\n" +
+        JSON.stringify({
+          reviewNotes: [
+            {
+              finding: "TalkBack acceptance missing.",
+              category: "external",
+              suggestion: "Test on Android.",
+            },
+          ],
+          resolvedNoteIds: [fixedId],
+        }) +
+        "\n```\nVERDICT: FAIL - TalkBack acceptance missing.",
+    );
+    expect(task()).toMatchObject({
+      status: "blocked",
+      repairStop: { reason: "external" },
+    });
+    expect(
+      task().reviewNotes!.find((note) => note.id === fixedId)!.resolvedAt,
+    ).toBeDefined();
   });
 
   it("rechecks a failed review without another worker, even when the review still fails", async () => {
@@ -1257,6 +1363,7 @@ describe("task verification", () => {
     );
     const worker = task().sessionId;
     const before = turns.length;
+    tasks.save({ ...task(), status: undefined, prompt: `${task().prompt}\nFriday evidence is now available.` });
     tasks.recheckReview("main");
     await tasks.idle();
     expect(task().sessionId).toBe(worker);
@@ -1268,6 +1375,9 @@ describe("task verification", () => {
     );
     expect(task().status).toBe("blocked");
     expect(turns).toHaveLength(before + 1);
+    expect(task().needsInput).toBeUndefined();
+    expect(() => tasks.recheckReview("main")).toThrow("Automatic AI takeover is pending");
+    tasks.save({ ...task(), status: undefined, prompt: `${task().prompt}\nFriday's evidence is now available; inspect it.` });
     tasks.recheckReview("main");
     await tasks.idle();
     await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
@@ -1358,7 +1468,7 @@ describe("task verification", () => {
     await tasks.move("main", "queued");
     await tasks.tick();
     expect(turns.at(-1)!.input.text).toContain(
-      "Open review notes for this task",
+      "monocode.blocked-handoff.v1",
     );
     expect(turns.at(-1)!.input.text).toContain("Include the Friday totals.");
     await finish(task().sessionId!);
@@ -1369,6 +1479,7 @@ describe("task verification", () => {
     expect(task().reviewNotes).toHaveLength(1);
     expect(task().reviewNotes![0]).toMatchObject({ id, occurrences: 2 });
     expect(task().reviewNotes![0].sessionIds).toHaveLength(2);
+    tasks.save({ ...task(), status: undefined, prompt: `${task().prompt}\nFriday totals are in the new input.` });
     await tasks.move("main", "queued");
     await tasks.tick();
     await finish(task().sessionId!);
@@ -1607,12 +1718,12 @@ describe("merging without waiting for approval", () => {
     expect(task()).toMatchObject({ status: "done", autoMerged: true });
   });
 
-  it("leaves a task the reviewer fails blocked, unmerged", async () => {
+  it("corrects a task the reviewer fails while leaving it unmerged", async () => {
     const { reviewing, finish, task, addRepo } = setup();
     const repo = addRepo("repo");
     const verifying = await reviewing({ projectId: repo.id, autoMerge: true });
     await finish(verifying.reviewer!.sessionId!, "VERDICT: FAIL - missing");
-    expect(task().status).toBe("blocked");
+    expect(task()).toMatchObject({ status: "running", repairAttempts: 1 });
     expect(task().autoMerged).toBeUndefined();
   });
 
@@ -1693,6 +1804,306 @@ describe("merging without waiting for approval", () => {
     SHELL_TEST_MS,
   );
 
+  it("keeps owner-cancelled auto-merge review work stopped", async () => {
+    const { reviewing, task, finish, tasks, turns, advance } = setup();
+    await reviewing({ autoMerge: true });
+    await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+    await tasks.cancel(task().id, "Goal cancelled");
+    await advance();
+    expect(task()).toMatchObject({
+      status: "blocked",
+      error: "Goal cancelled",
+    });
+    expect(turns).toHaveLength(2);
+  });
+
+  it("does not recover legacy review cards belonging to a cancelled goal", async () => {
+    const { reviewing, task, finish, tasks, store, turns } = setup();
+    await reviewing({ autoMerge: true, goalId: "cancelled-owner" });
+    await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+    store.db.exec(
+      "CREATE TABLE goals (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    );
+    store.db
+      .prepare("INSERT INTO goals VALUES (?, ?)")
+      .run("cancelled-owner", JSON.stringify({ status: "cancelled" }));
+    const legacy = { ...task(), branch: "mc/retained", baseBranch: "main" };
+    store.db
+      .prepare("UPDATE tasks SET value=? WHERE id=?")
+      .run(JSON.stringify(legacy), legacy.id);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await tasks.tick();
+      expect(errors).not.toHaveBeenCalled();
+      expect(task().status).toBe("review");
+      expect(turns).toHaveLength(2);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it(
+    "recreates a missing committed task worktree and respects the persisted integration limit",
+    async () => {
+      const { run, task, finish, advance, tasks, store, turns, addRepo } =
+        setup();
+      const repo = addRepo("repo");
+      const started = await run({
+        projectId: repo.id,
+        autoMerge: true,
+        review: true,
+      });
+      writeFileSync(join(started.worktreeCwd!, "file.txt"), "task feature\n");
+      writeFileSync(join(repo.cwd, "file.txt"), "base feature\n");
+      git(repo.cwd, "commit", "-q", "-am", "base feature");
+      await finish(started.sessionId!);
+      await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+      git(repo.cwd, "worktree", "remove", "--", started.worktreeCwd!);
+      await advance();
+      expect(task().status).toBe("running");
+      expect(existsSync(task().worktreeCwd!)).toBe(true);
+      expect(
+        readFileSync(join(task().worktreeCwd!, "file.txt"), "utf8"),
+      ).toContain("task feature");
+      // Model another already-verified attempt at the integration ceiling.
+      await tasks.move(task().id, "blocked");
+      git(task().worktreeCwd!, "merge", "--abort");
+      const limited = {
+        ...task(),
+        status: "review",
+        verification: {
+          review: { verdict: "pass", note: "", sessionId: "reviewer" },
+        },
+        mergeRepair: { ...task().mergeRepair!, attempts: MAX_REPAIR_ATTEMPTS },
+        mergeRetry: undefined,
+      };
+      store.db
+        .prepare("UPDATE tasks SET value=? WHERE id=?")
+        .run(JSON.stringify(limited), limited.id);
+      const turnCount = turns.length;
+      await advance();
+      expect(task()).toMatchObject({
+        status: "blocked",
+        repairStop: { reason: "limit" },
+      });
+      expect(turns).toHaveLength(turnCount);
+      expect(existsSync(task().worktreeCwd!)).toBe(true);
+      expect(readFileSync(join(repo.cwd, "file.txt"), "utf8")).toBe(
+        "base feature\n",
+      );
+    },
+    SHELL_TEST_MS,
+  );
+
+  it("corrects manually created auto-merge tasks using structured findings without repeating the review transcript", async () => {
+    const { reviewing, finish, task, turns } = setup();
+    await reviewing({ autoMerge: true });
+    await finish(
+      task().reviewer!.sessionId!,
+      'Long review narrative that need not be repeated.\n```json\n{"reviewNotes":[{"finding":"Friday totals are missing.","suggestion":"Add Friday totals."}]}\n```\nVERDICT: FAIL - Friday totals are missing.',
+    );
+    expect(task()).toMatchObject({ status: "running", repairAttempts: 1 });
+    const prompt = turns.at(-1)!.input.text;
+    expect(prompt).toContain("Add Friday totals.");
+    expect(prompt).not.toContain("Long review narrative");
+  });
+
+  it(
+    "does not abort a merge the owner already has in progress",
+    async () => {
+      const { run, finish, task, addRepo, advance, turns } = setup();
+      const repo = addRepo("repo");
+      const started = await run({
+        projectId: repo.id,
+        autoMerge: true,
+        review: true,
+      });
+      git(repo.cwd, "checkout", "-q", "-b", "owner-change");
+      writeFileSync(join(repo.cwd, "file.txt"), "owner branch\n");
+      git(repo.cwd, "commit", "-q", "-am", "owner branch");
+      git(repo.cwd, "checkout", "-q", "main");
+      writeFileSync(join(repo.cwd, "file.txt"), "main branch\n");
+      git(repo.cwd, "commit", "-q", "-am", "main branch");
+      expect(() => git(repo.cwd, "merge", "owner-change")).toThrow();
+      const pending = git(repo.cwd, "rev-parse", "MERGE_HEAD");
+      const content = readFileSync(join(repo.cwd, "file.txt"), "utf8");
+      await finish(started.sessionId!);
+      await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+      await advance();
+      expect(task().status).toBe("review");
+      expect(task().mergeError).toContain("merge in progress");
+      expect(turns).toHaveLength(2);
+      expect(git(repo.cwd, "rev-parse", "MERGE_HEAD")).toBe(pending);
+      expect(readFileSync(join(repo.cwd, "file.txt"), "utf8")).toBe(content);
+    },
+    SHELL_TEST_MS,
+  );
+
+  it(
+    "automatically resolves integration in the retained checkout and releases dependencies only after review",
+    async () => {
+      const { run, finish, task, tasks, turns, advance, addRepo, input } =
+        setup();
+      const repo = addRepo("repo");
+      const started = await run({
+        projectId: repo.id,
+        autoMerge: true,
+        review: true,
+      });
+      writeFileSync(join(started.worktreeCwd!, "file.txt"), "task feature\n");
+      writeFileSync(join(started.worktreeCwd!, "task.txt"), "completed work\n");
+      writeFileSync(join(repo.cwd, "file.txt"), "base feature\n");
+      git(repo.cwd, "commit", "-q", "-am", "base update");
+      const baseHead = git(repo.cwd, "rev-parse", "HEAD");
+      tasks.save(
+        input({ id: "dependent", projectId: repo.id, dependsOn: [started.id] }),
+      );
+      await finish(started.sessionId!);
+      await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+      expect(task().status).toBe("review");
+      const retainedHead = git(started.worktreeCwd!, "rev-parse", "HEAD");
+      await advance();
+      expect(task()).toMatchObject({
+        status: "running",
+        branch: started.branch,
+        worktreeCwd: started.worktreeCwd,
+        mergeRepair: { baseHead, attempts: 1 },
+      });
+      expect(task("dependent").status).toBe("queued");
+      expect(git(repo.cwd, "rev-parse", "HEAD")).toBe(baseHead);
+      expect(git(started.worktreeCwd!, "rev-parse", "MERGE_HEAD")).toBe(
+        baseHead,
+      );
+      expect(turns.at(-1)!.input.text).toContain("Do not restart the task");
+      writeFileSync(
+        join(started.worktreeCwd!, "file.txt"),
+        "base feature\ntask feature\n",
+      );
+      git(started.worktreeCwd!, "add", "file.txt");
+      const repairSession = task().sessionId!;
+      await finish(repairSession);
+      expect(task().status).toBe("verifying");
+      expect(task("dependent").status).toBe("queued");
+      expect(
+        git(
+          started.worktreeCwd!,
+          "merge-base",
+          "--is-ancestor",
+          retainedHead,
+          "HEAD",
+        ),
+      ).toBe("");
+      await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+      expect(task()).toMatchObject({
+        status: "done",
+        merged: true,
+        autoMerged: true,
+      });
+      expect(task("dependent").status).toBe("running");
+      expect(readFileSync(join(repo.cwd, "file.txt"), "utf8")).toBe(
+        "base feature\ntask feature\n",
+      );
+      expect(readFileSync(join(repo.cwd, "task.txt"), "utf8")).toBe(
+        "completed work\n",
+      );
+    },
+    SHELL_TEST_MS,
+  );
+
+  it(
+    "retries dirty checkout delivery without a model and keeps backoff across restarts",
+    async () => {
+      const {
+        run,
+        finish,
+        task,
+        advance,
+        turns,
+        store,
+        engine,
+        clock,
+        addRepo,
+      } = setup();
+      const repo = addRepo("repo");
+      const started = await run({
+        projectId: repo.id,
+        autoMerge: true,
+        review: true,
+      });
+      writeFileSync(join(started.worktreeCwd!, "task.txt"), "task\n");
+      writeFileSync(join(repo.cwd, "file.txt"), "owner draft\n");
+      await finish(started.sessionId!);
+      await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+      await advance();
+      const retry = task().mergeRetry;
+      const turnCount = turns.length;
+      const restarted = new HostTasks(store, engine, () => clock.now);
+      await restarted.tick();
+      expect(task().mergeRetry).toEqual(retry);
+      expect(turns).toHaveLength(turnCount);
+      expect(readFileSync(join(repo.cwd, "file.txt"), "utf8")).toBe(
+        "owner draft\n",
+      );
+      git(repo.cwd, "commit", "-q", "-am", "save owner draft");
+      await restarted.tick();
+      expect(task()).toMatchObject({ status: "done", autoMerged: true });
+      expect(turns).toHaveLength(turnCount);
+      expect(readFileSync(join(repo.cwd, "task.txt"), "utf8")).toBe("task\n");
+    },
+    SHELL_TEST_MS,
+  );
+
+  it(
+    "never stages unresolved integration conflicts as a completed result",
+    async () => {
+      const { run, finish, task, advance, addRepo } = setup();
+      const repo = addRepo("repo");
+      const started = await run({
+        projectId: repo.id,
+        autoMerge: true,
+        review: true,
+      });
+      writeFileSync(join(started.worktreeCwd!, "file.txt"), "task\n");
+      writeFileSync(join(repo.cwd, "file.txt"), "owner\n");
+      git(repo.cwd, "commit", "-q", "-am", "owner");
+      await finish(started.sessionId!);
+      await finish(task().reviewer!.sessionId!, "VERDICT: PASS");
+      await advance();
+      const head = git(started.worktreeCwd!, "rev-parse", "HEAD");
+      await finish(task().sessionId!);
+      expect(task()).toMatchObject({ status: "queued", repairAttempts: 1 });
+      expect(task().retryFeedback).toContain("Unresolved merge conflicts");
+      expect(git(started.worktreeCwd!, "rev-parse", "HEAD")).toBe(head);
+      expect(
+        git(started.worktreeCwd!, "diff", "--name-only", "--diff-filter=U"),
+      ).toBe("file.txt");
+    },
+    SHELL_TEST_MS,
+  );
+
+  it(
+    "keeps the location of a worktree with post-review changes after delivery",
+    async () => {
+      const { review, tasks, task, addRepo } = setup();
+      const repo = addRepo("repo");
+      const reviewed = await review(
+        { projectId: repo.id },
+        { "task.txt": "task\n" },
+      );
+      writeFileSync(join(reviewed.worktreeCwd!, "draft.txt"), "later draft\n");
+      await tasks.move(reviewed.id, "done");
+      expect(task()).toMatchObject({
+        status: "done",
+        worktreeCwd: reviewed.worktreeCwd,
+      });
+      expect(task().cleanupError).toContain("Could not remove");
+      expect(
+        readFileSync(join(reviewed.worktreeCwd!, "draft.txt"), "utf8"),
+      ).toBe("later draft\n");
+    },
+    SHELL_TEST_MS,
+  );
+
   it("saves autoMerge, drops it when an edit turns it off, and rejects other values", () => {
     const { tasks, input } = setup();
     expect(tasks.save(input({ autoMerge: true }))).toMatchObject({
@@ -1727,7 +2138,7 @@ describe("host work limits", () => {
       { maxRunningTasks: 1.5 },
       { maxRunningTasks: "2" },
       { dailyAgentMinutes: -1 },
-      { dailyAgentMinutes: 1441 },
+      { dailyAgentMinutes: Number.MAX_SAFE_INTEGER + 1 },
       { dailyAgentMinutes: 2.5 },
     ])
       expect(() => tasks.limits.save(bad)).toThrow();
@@ -1736,9 +2147,9 @@ describe("host work limits", () => {
       maxRunningTasks: 8,
       dailyAgentMinutes: 0,
     });
-    expect(tasks.limits.save({ dailyAgentMinutes: 1440 })).toEqual({
+    expect(tasks.limits.save({ dailyAgentMinutes: 2880 })).toEqual({
       maxRunningTasks: 8,
-      dailyAgentMinutes: 1440,
+      dailyAgentMinutes: 2880,
     });
   });
 
@@ -1810,6 +2221,22 @@ describe("host work limits", () => {
     await tasks.tick();
     await vi.waitFor(() => expect(turns).toHaveLength(2));
     expect(task("b").status).toBe("running");
+  });
+
+  it("resumes queued work today when the daily limit is raised", async () => {
+    const { tasks, input, task, turns, clock, addProject } = setup();
+    tasks.limits.save({ dailyAgentMinutes: 720 });
+    tasks.limits.record(clock.now - 721 * MINUTE);
+    tasks.save(input({ id: "custom-limit", projectId: addProject("custom-limit").id }));
+    await tasks.tick();
+    expect(tasks.limits.reached()).toBe(true);
+    expect(task("custom-limit").status).toBe("queued");
+    expect(turns).toHaveLength(0);
+    tasks.limits.save({ dailyAgentMinutes: 2880 });
+    expect(tasks.limits.reached()).toBe(false);
+    await tasks.tick();
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    expect(task("custom-limit").status).toBe("running");
   });
 
   it("keeps the total and the settings across a host restart", async () => {

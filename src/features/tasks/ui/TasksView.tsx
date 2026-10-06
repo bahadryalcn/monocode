@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type ReactNode,
@@ -55,6 +56,8 @@ import {
 } from "../../automations/model/machineResults";
 import { useRefreshLoop } from "../../automations/model/refreshScheduler";
 import type { RemoteMachine } from "../../connections/model/protocol";
+import { RemoteDataStatus } from "../../connections/ui/RemoteDataStatus";
+import type { RemoteDataState } from "../../connections/model/remoteDataState";
 import { parseRemotePath } from "../../connections/model/remoteProjects";
 import { useLockSnapshot } from "../../group-lock/hooks/useGroupLock";
 import { isProjectLockedIn } from "../../group-lock/model/lockState";
@@ -88,12 +91,15 @@ import {
   TASK_COLUMNS,
   canEditTask,
   canMoveTask,
+  canTakeOverBlockedTask,
+  taskRequiresInstructions,
   hasUnmergedBranch,
   unfinishedDependencies,
   type TaskColumn,
   type TaskStatus,
   type TaskVerification,
 } from "../model/hostTasks";
+import { taskInstructionsMarkdown, taskInstructionsSummary } from "../model/taskInstructions";
 import {
   MAX_GOAL_PROJECTS,
   goalProgress,
@@ -119,6 +125,7 @@ import {
   deleteTask,
   draftFromTask,
   listBoardTaskResults,
+  subscribeBoardTaskChanges,
   missingMachinesNotice,
   moveTask,
   recheckTaskReview,
@@ -302,6 +309,10 @@ function TasksContent({
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
   const [loading, setLoading] = useState(true);
+  const [boardDataState, setBoardDataState] = useState<RemoteDataState>({
+    phase: "loading",
+  });
+  const forceBoardRefresh = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<TaskDraft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -396,6 +407,14 @@ function TasksContent({
   };
 
   const refreshBoard = useCallback(async (isCurrent: () => boolean) => {
+    const force = forceBoardRefresh.current;
+    forceBoardRefresh.current = false;
+    if (force) {
+      setBoardDataState((current) => ({
+        ...current,
+        phase: current.updatedAt ? "refreshing" : "loading",
+      }));
+    }
     try {
       const [reach, goalHosts, todoHosts, stewardHosts, limitHosts] =
         await Promise.all([
@@ -414,7 +433,7 @@ function TasksContent({
       setLimitCapable(limitHosts);
       const [taskResults, goalResults, stewardResults, limitResults] =
         await Promise.all([
-          listBoardTaskResults(capable, reach.unreachableMachines),
+          listBoardTaskResults(capable, reach.unreachableMachines, force),
           listBoardGoalResults(goalHosts, reach.unreachableMachines),
           listBoardStewardResults(stewardHosts, reach.unreachableMachines),
           listMachineLimits(
@@ -443,16 +462,59 @@ function TasksContent({
       setStewards(stewardResults.flatMap((result) => result.data));
       setLimits(limitResults);
       setNow(Date.now());
-    } catch {
-      // A board that cannot be read keeps what it shows.
+      const boardResults = [...taskResults, ...goalResults, ...stewardResults];
+      const failedResults = boardResults.filter((result) => result.status === "error");
+      const refreshProblems = [
+        ...failedResults.map(
+          (result) => `${result.machineName}: ${result.error ?? "request failed"}`,
+        ),
+        ...reach.outdated.map((name) => `${name}: update MonoCode Host to refresh its board`),
+      ];
+      const error = refreshProblems.length
+        ? `Some machine data could not be refreshed: ${refreshProblems.join("; ")}`
+        : undefined;
+      const freshTaskRead = taskResults.some(
+        (result) => result.status === "ok" && !result.cached,
+      );
+      setBoardDataState((current) => ({
+        phase: error
+          ? current.updatedAt
+            ? "stale"
+            : "error"
+          : taskResults.every((result) => result.data.length === 0) &&
+              goalResults.every((result) => result.data.length === 0) &&
+              stewardResults.every((result) => result.data.length === 0)
+            ? "empty"
+            : "ready",
+        updatedAt: error || !freshTaskRead ? current.updatedAt : Date.now(),
+        error,
+      }));
+    } catch (reason) {
+      if (!isCurrent()) return;
+      setBoardDataState((current) => ({
+        phase: "error",
+        updatedAt: current.updatedAt,
+        error: reason instanceof Error ? reason.message : String(reason),
+      }));
     } finally {
       if (isCurrent()) setLoading(false);
     }
   }, []);
 
-  // The host reports no changes, so the board is polled while this view is
-  // open; refreshes never overlap and a superseded one is dropped.
+  // Shared host metadata invalidates task lists; the bounded periodic refresh
+  // still updates goals/limits and supports older hosts. Reads never overlap.
   const refresh = useRefreshLoop(refreshBoard, 15_000);
+  const retryBoard = () => {
+    forceBoardRefresh.current = true;
+    void refresh();
+  };
+  const taskSubscriptionKey = JSON.stringify(
+    machines.map(machine => [machine.id, machine.environmentId]).sort(),
+  );
+  useEffect(
+    () => subscribeBoardTaskChanges(machines, refresh),
+    [taskSubscriptionKey, refresh],
+  );
 
   const beginCreate = () => {
     const project =
@@ -807,6 +869,11 @@ function TasksContent({
           New task
         </button>
       </div>
+      <RemoteDataStatus
+        state={boardDataState}
+        onRefresh={retryBoard}
+        label="task board"
+      />
       {error ? (
         <div className="mx-4 mt-4 flex shrink-0 items-start gap-2 rounded-lg border border-red-400/20 bg-red-400/8 px-3 py-2 text-[12px] text-red-300">
           <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
@@ -1052,7 +1119,7 @@ function TaskCard({
   onOpen: () => void;
 } & TaskActionHandlers) {
   const model = resolveModel(task.harness, task.model);
-  const description = task.prompt.trim();
+  const description = taskInstructionsSummary(task.prompt);
   const unread = unreadReviewNotes(task.reviewNotes);
   return (
     // A click anywhere on the card but its buttons opens the detail panel.
@@ -1090,7 +1157,7 @@ function TaskCard({
         </p>
       ) : null}
       <h3
-        title={task.prompt}
+        title={description}
         className="line-clamp-2 text-[13px] font-semibold leading-snug text-content"
       >
         {task.title}
@@ -1147,7 +1214,7 @@ function TaskCard({
           Verifying
         </p>
       ) : null}
-      {task.needsInput ? (
+      {task.needsInput || taskRequiresInstructions(task) ? (
         <p className="mt-1.5 inline-flex h-5 items-center rounded-full bg-amber-500/12 px-2 text-[11px] font-medium text-amber-400">
           Needs input
         </p>
@@ -1251,7 +1318,7 @@ function TaskActions({
           </CardAction>
         )
       ) : null}
-      {can("queued") ? (
+      {can("queued") && !taskRequiresInstructions(task) && !canTakeOverBlockedTask(task) ? (
         <CardAction
           label={
             task.status === "todo"
@@ -1270,7 +1337,7 @@ function TaskActions({
           )}
         </CardAction>
       ) : null}
-      {task.status === "blocked" && task.reviewRecheckSupported && task.verification?.review?.verdict === "fail" && task.sessionId ? (
+      {task.status === "blocked" && !taskRequiresInstructions(task) && !canTakeOverBlockedTask(task) && task.reviewRecheckSupported && task.verification?.review?.verdict === "fail" && task.sessionId ? (
         <CardAction label="Recheck review" disabled={busy} onClick={onRecheckReview}>
           <RefreshCw className="size-3" />
         </CardAction>
@@ -1295,7 +1362,7 @@ function TaskActions({
         </CardAction>
       ) : null}
       {canEditTask(task.status) ? (
-        <CardAction label="Edit" disabled={busy} onClick={onEdit}>
+        <CardAction label={taskRequiresInstructions(task) ? "Update instructions" : "Edit"} disabled={busy} onClick={onEdit}>
           <Pencil className="size-3" />
         </CardAction>
       ) : null}
@@ -1410,7 +1477,7 @@ function TaskDetail({
         <span className="inline-flex h-5 items-center rounded-full bg-content/8 px-2 text-[11px] font-medium text-content/70">
           {STATUS_LABELS[task.status]}
         </span>
-        {task.needsInput ? (
+        {task.needsInput || taskRequiresInstructions(task) ? (
           <span className="inline-flex h-5 items-center rounded-full bg-amber-500/12 px-2 text-[11px] font-medium text-amber-400">
             Needs input
           </span>
@@ -1484,7 +1551,7 @@ function TaskDetail({
             </div>
             <div data-task-detail-description className="text-[13px] text-content/80">
               {description ? (
-                <AgentMarkdown text={task.prompt} allowRemoteMedia={false} />
+                <AgentMarkdown text={taskInstructionsMarkdown(task.prompt)} allowRemoteMedia={false} />
               ) : (
                 <p className="text-content/45">No description.</p>
               )}
@@ -2116,6 +2183,48 @@ function SummaryPanel({
   );
 }
 
+function CustomDailyLimit({
+  entry,
+  onChange,
+}: {
+  entry: MachineLimits;
+  onChange: (machineId: string, settings: Partial<HostSettings>) => void;
+}) {
+  const [hours, setHours] = useState(String(entry.dailyAgentMinutes / 60));
+  useEffect(() => {
+    setHours(String(entry.dailyAgentMinutes / 60));
+  }, [entry.dailyAgentMinutes]);
+  const minutes = Math.round(Number(hours) * 60);
+  const valid = hours.trim() !== "" && Number(hours) >= 0 && Number.isSafeInteger(minutes);
+  return (
+    <form
+      aria-label={`Custom daily agent time on ${entry.machineName}`}
+      className="flex items-center gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (valid) onChange(entry.machineId, { dailyAgentMinutes: minutes });
+      }}
+    >
+      <label className="flex items-center gap-2">
+        Hours
+        <input
+          type="number"
+          min="0"
+          step="any"
+          aria-label={`Daily agent hours on ${entry.machineName}`}
+          value={hours}
+          onChange={(event) => setHours(event.target.value)}
+          className="w-24 rounded border border-content/15 bg-content/5 px-2 py-1 text-content outline-none focus:border-content/40"
+        />
+      </label>
+      <button type="submit" disabled={!valid} className={ACTION_OUTLINE}>
+        Save
+      </button>
+      <span className="text-[11px] text-content/40">0 = no limit</span>
+    </form>
+  );
+}
+
 function LimitsPanel({
   limits,
   onChange,
@@ -2173,6 +2282,7 @@ function LimitsPanel({
               }
             />
           </span>
+          <CustomDailyLimit entry={entry} onChange={onChange} />
           <span className="tabular-nums text-content/50">
             Used today: {formatAgentMinutes(entry.usedMinutes)}
           </span>

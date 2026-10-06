@@ -42,6 +42,7 @@ import {
   notifyDirsChanged,
   peekDir,
   refreshDir,
+  verifiedDirAt,
   saveExpanded,
   saveSelected,
   announceDirListings,
@@ -61,6 +62,8 @@ import {
   useRemoteLoadFailure,
 } from "../../connections/model/remoteHealth";
 import { RemoteLoadError } from "../../connections/ui/RemoteLoadError";
+import { RemoteDataStatus } from "../../connections/ui/RemoteDataStatus";
+import type { RemoteDataState } from "../../connections/model/remoteDataState";
 import { dragPointToClient } from "../../../shared/lib/dragPoint";
 import {
   basename,
@@ -298,6 +301,11 @@ export const FileTree = memo(function FileTree({
     peekDir(cwd),
   );
   const [error, setError] = useState<string | null>(null);
+  const [rootRefreshing, setRootRefreshing] = useState(false);
+  const [rootUpdatedAt, setRootUpdatedAt] = useState<number>();
+  const rootStatePath = useRef(cwd);
+  const rootRefreshRequest = useRef(0);
+  useEffect(() => () => { rootRefreshRequest.current++; }, []);
   const [creating, setCreating] = useState<Creating | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [clip, setClip] = useState<Clip | null>(null);
@@ -882,29 +890,91 @@ export const FileTree = memo(function FileTree({
   }, [cwd]);
 
   useEffect(() => {
+    const sameRoot = rootStatePath.current === cwd;
+    rootStatePath.current = cwd;
+    if (!sameRoot) {
+      rootRefreshRequest.current++;
+      setRootRefreshing(false);
+      setRootUpdatedAt(undefined);
+      setError(null);
+    }
     const hit = peekDir(cwd);
     if (hit) {
       setChildren(hit);
+      setRootUpdatedAt(verifiedDirAt(cwd));
       setError(null);
       return;
     }
     let cancelled = false;
-    setChildren(null);
-    setError(null);
+    const owner = cwd;
+    const request = rootRefreshRequest.current;
+    if (!sameRoot) {
+      setChildren(null);
+    }
     void listCachedDir(cwd)
       .then((entries) => {
-        if (!cancelled) setChildren(entries);
+        if (!cancelled && request === rootRefreshRequest.current && owner === rootStatePath.current) {
+          setChildren(entries);
+          setRootUpdatedAt(Date.now());
+        }
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
+        if (!cancelled && request === rootRefreshRequest.current && owner === rootStatePath.current) {
           setError(err instanceof Error ? err.message : String(err));
-          setChildren([]);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [cwd, rootListing]);
+
+  const refreshRoot = () => {
+    if (rootRefreshing) return;
+    const owner = cwd;
+    const request = ++rootRefreshRequest.current;
+    const previous = children ?? peekDir(cwd);
+    setRootRefreshing(true);
+    setError(null);
+    void refreshDir(cwd)
+      .then((entries) => {
+        if (request !== rootRefreshRequest.current || owner !== rootStatePath.current) return;
+        setChildren(entries);
+        setError(null);
+        setRootUpdatedAt(Date.now());
+        announceDirListings();
+      })
+      .catch((err: unknown) => {
+        if (request !== rootRefreshRequest.current || owner !== rootStatePath.current) return;
+        setChildren(previous);
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (request === rootRefreshRequest.current && owner === rootStatePath.current) {
+          setRootRefreshing(false);
+        }
+      });
+  };
+
+  const rootError = error ?? connectionFailure?.message;
+  const rootDataState: RemoteDataState = {
+    phase: rootRefreshing
+      ? children === null
+        ? "loading"
+        : "refreshing"
+      : rootError
+        ? children === null
+          ? "error"
+          : "stale"
+        : children === null
+          ? "loading"
+          : rootUpdatedAt === undefined
+            ? "stale"
+            : children.length
+              ? "ready"
+              : "empty",
+    error: rootError,
+    updatedAt: rootUpdatedAt,
+  };
 
   const latestActions = useRef<TreeActions>(null as unknown as TreeActions);
   latestActions.current = {
@@ -1047,11 +1117,12 @@ export const FileTree = memo(function FileTree({
             </p>
           ) : null}
           {connectionFailure ? (
-            <RemoteLoadError
-              cwd={cwd}
-              failure={connectionFailure}
-              stale={!!children?.length}
-            />
+          <RemoteLoadError
+            cwd={cwd}
+            failure={connectionFailure}
+            stale={children !== null}
+            onRetry={refreshRoot}
+          />
           ) : null}
           {rootOpen ? (
             <div
@@ -1063,8 +1134,9 @@ export const FileTree = memo(function FileTree({
                 parent={cwd}
                 depth={0}
                 entries={children}
-                loading={children === null && !error && !connectionFailure}
-                error={connectionFailure ? null : error}
+                remoteState={rootDataState}
+                statusLabel="files"
+                onRefresh={refreshRoot}
               />
             </div>
           ) : null}
@@ -1127,14 +1199,16 @@ function TreeChildren({
   parent,
   depth,
   entries,
-  loading,
-  error,
+  remoteState,
+  statusLabel,
+  onRefresh,
 }: {
   parent: string;
   depth: number;
   entries: FsEntry[] | null;
-  loading: boolean;
-  error: string | null;
+  remoteState: RemoteDataState;
+  statusLabel: string;
+  onRefresh: () => void;
 }) {
   const ctx = useTreeState();
   const actions = useTreeActions();
@@ -1191,17 +1265,12 @@ function TreeChildren({
 
   return (
     <>
-      {error ? (
-        <p className="truncate pr-2 text-[12px] text-content/50" style={pad}>
-          {error}
-        </p>
-      ) : null}
+      <RemoteDataStatus
+        state={remoteState}
+        label={statusLabel}
+        onRefresh={onRefresh}
+      />
       {show && ctx.creating?.isDir ? row : null}
-      {loading && !error ? (
-        <p className="pr-2 text-[12px] text-content/50" style={pad}>
-          …
-        </p>
-      ) : null}
       {folders.map(renderNode)}
       {show && ctx.creating && !ctx.creating.isDir ? row : null}
       {files.map(renderNode)}
@@ -1262,6 +1331,18 @@ const TreeNode = memo(function TreeNode({
     entry.isDir ? peekDir(entry.path) : null,
   );
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<number>();
+  const manualRefresh = useRef(false);
+  const mounted = useRef(true);
+  const childRefreshRequest = useRef(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      childRefreshRequest.current++;
+    };
+  }, []);
   // Only an open folder watches the cache, and only for its own listing: a
   // change elsewhere leaves this snapshot's identity (and this node) alone.
   const watching = entry.isDir && open;
@@ -1271,31 +1352,82 @@ const TreeNode = memo(function TreeNode({
     () => (watching ? peekDir(entry.path) : null),
   );
   const children = cached ?? loaded;
-  const error = cached ? null : loadError;
   const gitColor = gitStatus ? GIT_STATUS_COLOR[gitStatus] : undefined;
 
   useEffect(() => {
-    if (!entry.isDir || !open || cached) return;
-    setLoaded(null);
-    setLoadError(null);
+    if (!entry.isDir || !open || cached || manualRefresh.current) return;
     let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
     void listCachedDir(entry.path)
       .then((entries) => {
         if (!cancelled) {
           setLoaded(entries);
           setLoadError(null);
+          setUpdatedAt(Date.now());
         }
       })
       .catch((err: unknown) => {
         if (!cancelled) {
           setLoadError(err instanceof Error ? err.message : String(err));
-          setLoaded([]);
         }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
   }, [entry.isDir, entry.path, open, cached]);
+
+  const refreshChildren = () => {
+    if (!entry.isDir || manualRefresh.current) return;
+    const owner = entry.path;
+    const request = ++childRefreshRequest.current;
+    const previous = children ?? peekDir(owner);
+    manualRefresh.current = true;
+    setLoading(true);
+    setLoadError(null);
+    void refreshDir(owner)
+      .then((entries) => {
+        if (!mounted.current || request !== childRefreshRequest.current || owner !== entry.path) return;
+        setLoaded(entries);
+        setLoadError(null);
+        setUpdatedAt(Date.now());
+        announceDirListings();
+      })
+      .catch((err: unknown) => {
+        if (!mounted.current || request !== childRefreshRequest.current || owner !== entry.path) return;
+        setLoaded(previous);
+        setLoadError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!mounted.current || request !== childRefreshRequest.current || owner !== entry.path) return;
+        manualRefresh.current = false;
+        setLoading(false);
+      });
+  };
+
+  const effectiveUpdatedAt = verifiedDirAt(entry.path) ?? updatedAt;
+  const remoteState: RemoteDataState = {
+    phase: loading
+      ? children === null
+        ? "loading"
+        : "refreshing"
+      : loadError
+        ? children === null
+          ? "error"
+          : "stale"
+        : children === null
+          ? "loading"
+          : effectiveUpdatedAt === undefined
+            ? "stale"
+            : children.length
+              ? "ready"
+              : "empty",
+    error: loadError ?? undefined,
+    updatedAt: effectiveUpdatedAt,
+  };
 
   const onClick = () => {
     if (consumeFileClick()) return;
@@ -1367,8 +1499,9 @@ const TreeNode = memo(function TreeNode({
           parent={entry.path}
           depth={depth + 1}
           entries={children}
-          loading={children === null && !error}
-          error={error}
+          remoteState={remoteState}
+          statusLabel={`files in ${basename(entry.path)}`}
+          onRefresh={refreshChildren}
         />
       ) : null}
     </div>

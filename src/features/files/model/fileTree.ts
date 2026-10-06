@@ -11,6 +11,7 @@ import { joinPath, parentPath, pathKey } from "../../../shared/lib/paths";
 const expandedByProject = new Map<string, Set<string>>();
 const selectedByProject = new Map<string, string | null>();
 const dirs = new Map<string, FsEntry[]>();
+const verifiedListings = new WeakMap<FsEntry[], number>();
 const listeners = new Set<
   (roots?: readonly string[], listingsChanged?: readonly string[]) => void
 >();
@@ -81,6 +82,12 @@ export function peekDir(path: string): FsEntry[] | null {
   return dirs.get(path) ?? null;
 }
 
+/** Time of the last successful owner read for the currently cached listing. */
+export function verifiedDirAt(path: string): number | undefined {
+  const listing = dirs.get(path);
+  return listing ? verifiedListings.get(listing) : undefined;
+}
+
 export function listCachedDir(path: string): Promise<FsEntry[]> {
   const hit = dirs.get(path);
   if (hit) return Promise.resolve(hit);
@@ -96,12 +103,12 @@ function readDir(path: string, previous?: FsEntry[]): Promise<FsEntry[]> {
     .then(
       (entries) => {
         if (dirEpochs.get(path) === epoch) {
-          dirs.set(
-            path,
+          const cached =
             previous && JSON.stringify(previous) === JSON.stringify(entries)
               ? previous
-              : entries,
-          );
+              : entries;
+          dirs.set(path, cached);
+          verifiedListings.set(cached, Date.now());
         }
       if (dirEpochs.get(path) === epoch) reportRemoteConnection(path, "files");
         return entries;

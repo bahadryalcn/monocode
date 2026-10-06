@@ -12,6 +12,7 @@ import {
   HOST_PROTOCOL_VERSION,
   type HostModelCatalog,
   type HostSession,
+  type HostSessionSummary,
   type RemoteProvider,
   type SessionSync,
 } from "../src/features/connections/model/protocol";
@@ -23,12 +24,17 @@ import { HostStewards } from "./stewards";
 import { DesktopSessions } from "./desktopSessions";
 import { branchCache } from "./git-actions";
 import { withOverlay } from "./desktopLive";
-import { writeAttachmentChunk, readAttachmentChunk, attachmentUploadStatus } from "./attachments";
+import {
+  writeAttachmentChunk,
+  readAttachmentChunk,
+  attachmentUploadStatus,
+} from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
 import { SyncTransfers } from "./sync-transfer";
 import { RevisionWaits } from "./revisionWait";
-import { TranscriptPages } from "./transcriptPage";
+import { TranscriptPages, partialSessionSync } from "./transcriptPage";
+import { RemoteChanges } from "./remoteChanges";
 import { syncPull, syncPush } from "./sync";
 import type { SyncOp } from "../src/features/sync/model/syncProtocol";
 import { browseHostDirectories } from "./browse";
@@ -255,8 +261,19 @@ export function createHostServer(
       ...snapshot,
       revision: Math.max(snapshot.revision, overlay?.changedAt ?? 0),
       ...(snapshot.status === "running" ? { runId: DESKTOP_RUN_ID } : {}),
-      ...(snapshot.blockRevisions ? { blockRevisions: { ...snapshot.blockRevisions,
-        ...Object.fromEntries((overlay?.pending ?? []).map((block) => [block.id, overlay?.changedAt ?? snapshot.revision])) } } : {}),
+      ...(snapshot.blockRevisions
+        ? {
+            blockRevisions: {
+              ...snapshot.blockRevisions,
+              ...Object.fromEntries(
+                (overlay?.pending ?? []).map((block) => [
+                  block.id,
+                  overlay?.changedAt ?? snapshot.revision,
+                ]),
+              ),
+            },
+          }
+        : {}),
       session: withOverlay(snapshot.session, overlay),
     };
   };
@@ -280,7 +297,10 @@ export function createHostServer(
       const json = new Map<string, string>();
       for (const block of view.session.blocks) {
         const persisted = view.blockRevisions?.[block.id];
-        const text = persisted !== undefined ? `revision:${persisted}` : JSON.stringify(block);
+        const text =
+          persisted !== undefined
+            ? `revision:${persisted}`
+            : JSON.stringify(block);
         json.set(block.id, text);
         revs.set(
           block.id,
@@ -294,13 +314,20 @@ export function createHostServer(
         first: entry?.first ?? view.revision,
         revs,
         json,
-        bytes: [...json].reduce((sum, [blockId, text]) => sum + (blockId.length + text.length) * 2 + 64, 0),
+        bytes: [...json].reduce(
+          (sum, [blockId, text]) =>
+            sum + (blockId.length + text.length) * 2 + 64,
+          0,
+        ),
       };
       views.delete(id);
       views.set(id, entry);
       if (views.size > MAX_DESKTOP_VIEWS)
         views.delete(views.keys().next().value!);
-      let bytes = [...views.values()].reduce((sum, view) => sum + view.bytes, 0);
+      let bytes = [...views.values()].reduce(
+        (sum, view) => sum + view.bytes,
+        0,
+      );
       while (bytes > 64 * 1024 * 1024 && views.size) {
         const key = views.keys().next().value!;
         bytes -= views.get(key)!.bytes;
@@ -344,6 +371,7 @@ export function createHostServer(
   const transfers = new SyncTransfers();
   const revisionWaits = new RevisionWaits();
   const transcriptPages = new TranscriptPages();
+  const remoteChanges = new RemoteChanges();
   const workspace = new WorkspaceCommands(engine.store, (projectId, action) =>
     engine.withIdleProject(projectId, action),
   );
@@ -392,6 +420,101 @@ export function createHostServer(
       catalogs.set(cwd, { binaries, probed: Date.now(), catalog });
     }
     return catalog;
+  };
+  const projectSessionList = async (projectId: string) => {
+    const project = engine.store.project(projectId);
+    const local = desktop.list(project.cwd, projectId, providers);
+    const stamps = new Map(local.map((session) => [session.id, session]));
+    for (const adopted of engine.store.adopted()) {
+      const stamp = stamps.get(adopted.id);
+      if (adopted.projectId === projectId && stamp)
+        catchUp(adopted.id, {
+          updatedAt: stamp.updatedAt,
+          running: stamp.status === "running",
+        });
+    }
+    const own = engine.store
+      .summaries(projectId)
+      .map((session) =>
+        session.status !== "running" &&
+        stamps.get(session.id)?.status === "running"
+          ? { ...session, status: "running" as const }
+          : session,
+      );
+    const known = new Set(own.map((session) => session.id));
+    const summaries = [
+      ...own,
+      ...local.filter((session) => !known.has(session.id)),
+    ].sort((a, b) => b.updatedAt - a.updatedAt);
+    const paths = [
+      ...new Set(summaries.map((session) => session.cwd ?? project.cwd)),
+    ];
+    const branches = new Map(
+      await Promise.all(
+        paths.map(async (cwd) => [cwd, await branchCache.get(cwd)] as const),
+      ),
+    );
+    const list = summaries.map((session) => ({
+      ...session,
+      repo: project.name,
+      branch: branches.get(session.cwd ?? project.cwd) || undefined,
+      worktreeCwd:
+        session.cwd && session.cwd !== project.cwd ? session.cwd : undefined,
+    }));
+    return {
+      list,
+      etag: createHash("sha256")
+        .update(JSON.stringify(list))
+        .digest("base64url"),
+    };
+  };
+  const projectChangeCache = new Map<
+    string,
+    {
+      version: number;
+      refreshed: number;
+      value: { etag: string; sessions: HostSessionSummary[] };
+    }
+  >();
+  let taskChangeCache: { refreshed: number; etag: string } | undefined;
+  const taskChangeEtag = async () => {
+    if (taskChangeCache && Date.now() - taskChangeCache.refreshed < 1_000)
+      return taskChangeCache.etag;
+    const summaries = tasks.list().map((task) => ({
+      id: task.id,
+      status: task.status,
+      updatedAt: task.updatedAt,
+      sessionId: task.sessionId,
+      runId: task.runId,
+      error:
+        typeof task.error === "string" ? task.error.slice(0, 512) : undefined,
+    }));
+    const etag = createHash("sha256")
+      .update(JSON.stringify(summaries))
+      .digest("base64url");
+    taskChangeCache = { refreshed: Date.now(), etag };
+    return etag;
+  };
+  const projectChangeSnapshot = async (projectId: string) => {
+    const now = Date.now();
+    const version = engine.store.changeVersion;
+    const cached = projectChangeCache.get(projectId);
+    if (
+      cached &&
+      now - cached.refreshed < 1_000 &&
+      (cached.version === version || now - cached.refreshed < 250)
+    )
+      return cached.value;
+    const { list, etag } = await projectSessionList(projectId);
+    const value = { etag, sessions: list };
+    projectChangeCache.set(projectId, {
+      version: engine.store.changeVersion,
+      refreshed: now,
+      value,
+    });
+    while (projectChangeCache.size > 32)
+      projectChangeCache.delete(projectChangeCache.keys().next().value!);
+    return value;
   };
   const server = createServer(
     { requestTimeout: 20_000, headersTimeout: 10_000, maxHeaderSize: 8192 },
@@ -474,6 +597,10 @@ export function createHostServer(
                 "sessions.createFirstTurn",
                 "sessions.pages",
                 "sessions.longPoll",
+                "sessions.lazyHistory",
+                "sessions.block",
+                "machine.changes",
+                "commands.status",
                 "sessions.harnessSwitch",
                 "projects.browse",
                 "models.list",
@@ -513,6 +640,7 @@ export function createHostServer(
                 "tasks.todo",
                 "tasks.notes",
                 "tasks.review-recheck",
+                "tasks.blocked-takeover",
                 "goals",
                 "stewards",
                 "host.settings",
@@ -544,65 +672,63 @@ export function createHostServer(
             break;
           case "sessions.list": {
             const projectId = String(params.projectId ?? "");
-            const project = engine.store.project(projectId);
-            const local = desktop.list(project.cwd, projectId, providers);
-            const stamps = new Map(
-              local.map((session) => [session.id, session]),
-            );
-            for (const adopted of engine.store.adopted()) {
-              const stamp = stamps.get(adopted.id);
-              if (adopted.projectId === projectId && stamp)
-                catchUp(adopted.id, {
-                  updatedAt: stamp.updatedAt,
-                  running: stamp.status === "running",
-                });
-            }
-            // An adopted session the desktop app is running a turn in.
-            const own = engine.store
-              .summaries(projectId)
-              .map((session) =>
-                session.status !== "running" &&
-                stamps.get(session.id)?.status === "running"
-                  ? { ...session, status: "running" as const }
-                  : session,
-              );
-            const known = new Set(own.map((session) => session.id));
-            const summaries = [
-              ...own,
-              ...local.filter((session) => !known.has(session.id)),
-            ].sort((a, b) => b.updatedAt - a.updatedAt);
-            const paths = [
-              ...new Set(
-                summaries.map((session) => session.cwd ?? project.cwd),
-              ),
-            ];
-            const branches = new Map(
-              await Promise.all(
-                paths.map(
-                  async (cwd) => [cwd, await branchCache.get(cwd)] as const,
-                ),
-              ),
-            );
-            const list = summaries.map((session) => ({
-              ...session,
-              repo: project.name,
-              branch: branches.get(session.cwd ?? project.cwd) || undefined,
-              worktreeCwd:
-                session.cwd && session.cwd !== project.cwd
-                  ? session.cwd
-                  : undefined,
-            }));
+            const { list, etag } = await projectSessionList(projectId);
             // A client that sends `known` can take "unchanged" instead of the
             // array. Clients that omit it keep getting the plain array.
             if (typeof params.known === "string") {
-              const etag = createHash("sha256")
-                .update(JSON.stringify(list))
-                .digest("base64url");
               result =
                 params.known === etag
                   ? { unchanged: true, etag }
                   : { etag, sessions: list };
             } else result = list;
+            break;
+          }
+          case "machine.changes": {
+            result = await remoteChanges.read(
+              {
+                instanceId:
+                  typeof params.instanceId === "string"
+                    ? params.instanceId
+                    : undefined,
+                sessions: Array.isArray(params.sessions)
+                  ? (params.sessions as {
+                      sessionId: string;
+                      revision: number;
+                    }[])
+                  : [],
+                projects: Array.isArray(params.projects)
+                  ? (params.projects as { projectId: string; known?: string }[])
+                  : [],
+                tasksKnown:
+                  typeof params.tasksKnown === "string"
+                    ? params.tasksKnown
+                    : undefined,
+                waitMs: Number(params.waitMs),
+              },
+              (sessionId) => {
+                const host = engine.store.sessionStateMetadata(sessionId);
+                const stamp = desktop.stamp(sessionId);
+                if (
+                  host &&
+                  (!host.desktop ||
+                    !stamp ||
+                    !stamp.running ||
+                    host.status === "running")
+                )
+                  return host.revision;
+                if (!host && !stamp) return undefined;
+                const overlay = desktop.live.overlay(sessionId);
+                return Math.max(
+                  stamp?.updatedAt ?? host?.revision ?? 0,
+                  overlay?.changedAt ?? 0,
+                );
+              },
+              projectChangeSnapshot,
+              () => response.destroyed || !engine.store.authenticated(token),
+              taskChangeEtag,
+            );
+            if (!engine.store.authenticated(token))
+              throw new Error("Device authorization was revoked");
             break;
           }
           case "sessions.update": {
@@ -674,10 +800,25 @@ export function createHostServer(
           case "sessions.page": {
             const sessionId = String(params.sessionId ?? "");
             const watch = desktopWatch(sessionId);
-            const page = transcriptPages.page(() => (watch && desktopView(sessionId, watch.projectId)) ?? engine.store.session(sessionId), sessionId,
+            const page = transcriptPages.page(
+              () =>
+                (watch && desktopView(sessionId, watch.projectId)) ??
+                engine.store.session(sessionId),
+              sessionId,
               params.before === undefined ? undefined : Number(params.before),
-              params.revision === undefined ? undefined : Number(params.revision));
-            result = { ...page, value: undefined, sync: transfers.respond(sessionId, { kind: "snapshot", value: page.value }) };
+              params.revision === undefined
+                ? undefined
+                : Number(params.revision),
+              params.preview === true,
+            );
+            result = {
+              ...page,
+              value: undefined,
+              sync: transfers.respond(sessionId, {
+                kind: "snapshot",
+                value: page.value,
+              }),
+            };
             break;
           }
           case "sessions.sync": {
@@ -685,14 +826,25 @@ export function createHostServer(
             const revision = Number.isSafeInteger(params.revision)
               ? Number(params.revision)
               : undefined;
-            if (revision !== undefined && Number.isFinite(params.waitMs) && Number(params.waitMs) > 0) {
+            if (
+              revision !== undefined &&
+              Number.isFinite(params.waitMs) &&
+              Number(params.waitMs) > 0
+            ) {
               await revisionWaits.wait(
-                () => desktopWatch(sessionId)?.revision ?? engine.store.session(sessionId).revision,
-                revision, Number(params.waitMs), () => response.destroyed || !engine.store.authenticated(token),
+                () =>
+                  desktopWatch(sessionId)?.revision ??
+                  engine.store.session(sessionId).revision,
+                revision,
+                Number(params.waitMs),
+                () => response.destroyed || !engine.store.authenticated(token),
               );
-              if (!engine.store.authenticated(token)) throw new Error("Device authorization was revoked");
+              if (!engine.store.authenticated(token))
+                throw new Error("Device authorization was revoked");
             }
             const watch = desktopWatch(sessionId);
+            let current: HostSession | undefined;
+            let sync: SessionSync;
             if (watch) {
               // Watching a desktop turn polls fast; skip the transcript read
               // while the desktop copy hasn't changed.
@@ -702,18 +854,59 @@ export function createHostServer(
               }
               const view = desktopView(sessionId, watch.projectId);
               if (view) {
-                result = transfers.respond(
-                  sessionId,
-                  desktopSync(view, revision),
+                current = view;
+                sync = desktopSync(view, revision);
+              } else {
+                catchUp(sessionId);
+                current = engine.store.session(sessionId);
+                sync = engine.store.sync(sessionId, revision);
+              }
+            } else {
+              catchUp(sessionId);
+              current = engine.store.session(sessionId);
+              sync = engine.store.sync(sessionId, revision);
+            }
+            if (params.partial === true) {
+              const rawIds = params.loadedBlockIds ?? [];
+              if (
+                !Array.isArray(rawIds) ||
+                rawIds.length > 32768 ||
+                rawIds.some(
+                  (id) => typeof id !== "string" || !id || id.length > 512,
+                )
+              )
+                throw new Error("Invalid loaded block IDs");
+              if (sync.kind !== "unchanged") {
+                const partial = partialSessionSync(
+                  sync,
+                  current!,
+                  rawIds as string[],
                 );
-                break;
+                if (partial) sync = partial;
+                else {
+                  const page = transcriptPages.page(
+                    () => current!,
+                    sessionId,
+                    undefined,
+                    undefined,
+                    true,
+                  );
+                  sync = { kind: "snapshot", value: page.value };
+                }
               }
             }
-            catchUp(sessionId);
-            result = transfers.respond(
-              sessionId,
-              engine.store.sync(sessionId, revision),
-            );
+            result = transfers.respond(sessionId, sync!);
+            break;
+          }
+          case "commands.status": {
+            const commandId = params.commandId;
+            if (
+              typeof commandId !== "string" ||
+              !commandId ||
+              commandId.length > 200
+            )
+              throw new Error("Invalid command ID");
+            result = engine.store.receiptStatus(commandId) ?? null;
             break;
           }
           case "sessions.desktopLive":
@@ -729,6 +922,38 @@ export function createHostServer(
               Number(params.offset),
             );
             break;
+          case "sessions.block": {
+            const sessionId = String(params.sessionId ?? "");
+            const blockId = String(params.blockId ?? "");
+            if (
+              !blockId ||
+              blockId.length > 512 ||
+              !Number.isSafeInteger(params.revision)
+            )
+              throw new Error("Invalid transcript block request");
+            const watch = desktopWatch(sessionId);
+            const value =
+              (watch && desktopView(sessionId, watch.projectId)) ??
+              engine.store.session(sessionId);
+            if (value.revision !== params.revision)
+              throw new Error("Transcript changed; reload history");
+            const block = value.session.blocks.find(
+              (entry) => entry.id === blockId,
+            );
+            if (!block) throw new Error("Transcript block no longer exists");
+            result = transfers.respond(sessionId, {
+              kind: "snapshot",
+              value: {
+                ...value,
+                session: { ...value.session, blocks: [block] },
+                history: {
+                  revision: value.revision,
+                  totalBlocks: value.session.blocks.length,
+                },
+              },
+            });
+            break;
+          }
           case "sessions.get": {
             const id = String(params.sessionId ?? "");
             const watch = desktopWatch(id);
@@ -836,7 +1061,10 @@ export function createHostServer(
             result = tasks.recheckReview(String(params.taskId ?? ""));
             break;
           case "tasks.notes.read":
-            result = tasks.readNotes(String(params.taskId ?? ""), params.noteIds);
+            result = tasks.readNotes(
+              String(params.taskId ?? ""),
+              params.noteIds,
+            );
             break;
           case "tasks.notes.resolve":
             result = tasks.resolveNote(

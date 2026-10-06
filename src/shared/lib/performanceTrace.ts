@@ -1,9 +1,9 @@
 /** Local opt-in diagnostics. Never accepts content, paths or application IDs. */
-export type PerformanceStage = "startup" | "checkpoint" | "project-location" | "send-prepare" | "dispatch" | "host-ack" | "provider-first-event" | "renderer-receive" | "first-paint" | "last-paint" | "session-load" | "session-save" | "remote-sync" | "attachment-upload" | "attachment-preview" | "markdown-render" | "composer-resize" | "turn-grouping";
-export type PerformanceMetrics = Partial<Record<"bytes" | "blocks" | "sessions" | "items" | "revision" | "backlog" | "cacheHit" | "phase" | "correlationId" | "checkpointWaitMs" | "gitMs" | "diskMs", number>>;
+export type PerformanceStage = "startup" | "checkpoint" | "project-location" | "send-prepare" | "dispatch" | "host-ack" | "provider-first-event" | "renderer-receive" | "first-paint" | "last-paint" | "session-load" | "session-save" | "remote-sync" | "attachment-upload" | "attachment-preview" | "markdown-render" | "composer-resize" | "turn-grouping" | "remote-control" | "remote-list" | "remote-tail" | "remote-history" | "remote-decode" | "remote-apply";
+export type PerformanceMetrics = Partial<Record<"bytes" | "units" | "blocks" | "sessions" | "items" | "revision" | "backlog" | "cacheHit" | "phase" | "correlationId" | "checkpointWaitMs" | "gitMs" | "diskMs", number>>;
 export type PerformanceTraceRecord = { stage: PerformanceStage; at: number; duration?: number; traceId?: string; metrics: PerformanceMetrics };
-const metricKeys = new Set(["bytes", "blocks", "sessions", "items", "revision", "backlog", "cacheHit", "phase", "correlationId", "checkpointWaitMs", "gitMs", "diskMs"]);
-const stages = new Set<string>(["startup", "checkpoint", "project-location", "send-prepare", "dispatch", "host-ack", "provider-first-event", "renderer-receive", "first-paint", "last-paint", "session-load", "session-save", "remote-sync", "attachment-upload", "attachment-preview", "markdown-render", "composer-resize", "turn-grouping"]);
+const metricKeys = new Set(["bytes", "units", "blocks", "sessions", "items", "revision", "backlog", "cacheHit", "phase", "correlationId", "checkpointWaitMs", "gitMs", "diskMs"]);
+const stages = new Set<string>(["startup", "checkpoint", "project-location", "send-prepare", "dispatch", "host-ack", "provider-first-event", "renderer-receive", "first-paint", "last-paint", "session-load", "session-save", "remote-sync", "attachment-upload", "attachment-preview", "markdown-render", "composer-resize", "turn-grouping", "remote-control", "remote-list", "remote-tail", "remote-history", "remote-decode", "remote-apply"]);
 let enabled = false;
 let capacity = 2048;
 let records: PerformanceTraceRecord[] = [];

@@ -601,8 +601,86 @@ describe("sidebar session bulk actions", () => {
       ["session-3"],
     ]);
     expect(props.onDeleteSession).not.toHaveBeenCalled();
-    expect(document.querySelector('[role="status"]')?.textContent).toBe(
-      "1 running conversation was skipped. 1 conversation could not be deleted: disk full.",
+    expect(
+      container
+        .querySelector("[data-session-delete-status]")
+        ?.getAttribute("role"),
+    ).toBe("alert");
+    expect(
+      container.querySelector("[data-session-delete-status]")?.textContent,
+    ).toContain(
+      "1 conversation deleted. 1 running conversation was skipped. 1 conversation could not be deleted: disk full.",
+    );
+    expect(selectedIds()).toEqual(["session-1", "session-2"]);
+  });
+
+  it("shows progress for a slow deletion, prevents repeats, then confirms success and empty state", async () => {
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
+    props.busySessionIds = new Set();
+    props.onDeleteSession = vi.fn();
+    let finish!: (value: boolean) => void;
+    const delayed = new Promise<boolean>((resolve) => {
+      finish = resolve;
+    });
+    props.onDeleteSessionNow = vi.fn(async (id: string) => {
+      if (id === "session-1") await delayed;
+      props = {
+        ...props,
+        sessions: props.sessions.filter((session) => session.id !== id),
+      };
+      render();
+      return true;
+    });
+    act(() => render());
+    clickCard("session-1", { ctrlKey: true });
+    clickCard("session-3", { shiftKey: true });
+    await act(async () => barButton("Delete selected").click());
+    expect(container.textContent).toContain(
+      "Deleting conversations… 0/3 completed",
+    );
+    expect(barButton("Deleting… selected").disabled).toBe(true);
+    await act(async () => {
+      pressKey(document.body, "Delete");
+    });
+    expect(props.onDeleteSessionNow).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finish(true);
+    });
+    expect(container.textContent).not.toContain("Deleting conversations…");
+    expect(
+      container.querySelector("[data-session-delete-status]")?.textContent,
+    ).toContain("3 conversations deleted.");
+    expect(container.textContent).toContain(
+      "Sessions you start will show up here",
+    );
+    expect(selectedIds()).toEqual([]);
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[aria-label="Dismiss deletion result"]',
+        )!
+        .click(),
+    );
+    expect(container.querySelector("[data-session-delete-status]")).toBeNull();
+  });
+
+  it("shows local loading and load failure before empty state", async () => {
+    props = { ...props, sessions: [], pending: true };
+    act(() => render());
+    expect(container.textContent).toContain("Loading conversations…");
+    expect(container.textContent).not.toContain(
+      "Sessions you start will show up here",
+    );
+    props = { ...props, pending: false, status: "error" };
+    act(() => render());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Couldn’t load sessions",
+    );
+    expect(container.textContent).not.toContain(
+      "Sessions you start will show up here",
     );
   });
 

@@ -10,6 +10,7 @@ import {
   saveExpanded,
   subscribeDirListings,
   subscribeDirsChanged,
+  verifiedDirAt,
   windowEntries,
 } from "./fileTree";
 
@@ -63,6 +64,34 @@ describe("fileTree cache", () => {
       await expect(pending).rejects.toThrow("unreachable");
       expect(peekDir(remote)).toBeNull();
     } finally { forgetDir(remote); }
+  });
+
+  it("updates verification time after successful reads without advancing it on failure", async () => {
+    vi.useFakeTimers();
+    const remote = "remote://env/home/verification-project";
+    try {
+      listDir.mockResolvedValueOnce([entry("verified.ts")]);
+      const initial = await listCachedDir(remote);
+      const verifiedAt = verifiedDirAt(remote);
+      expect(verifiedAt).toBe(Date.now());
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      listDir.mockResolvedValueOnce([entry("verified.ts")]);
+      await refreshDir(remote);
+      expect(peekDir(remote)).toBe(initial);
+      expect(verifiedDirAt(remote)).toBe(Date.now());
+      expect(verifiedDirAt(remote)).toBeGreaterThan(verifiedAt!);
+
+      const successfulReadAt = verifiedDirAt(remote);
+      await vi.advanceTimersByTimeAsync(1_000);
+      listDir.mockRejectedValueOnce(new Error("Machine is unreachable. Check the host and SSH tunnel, then reconnect."));
+      await expect(refreshDir(remote)).rejects.toThrow("unreachable");
+      expect(peekDir(remote)).toBe(initial);
+      expect(verifiedDirAt(remote)).toBe(successfulReadAt);
+    } finally {
+      forgetDir(remote);
+      vi.useRealTimers();
+    }
   });
   it("drops collapsed descendants and refreshes only visible folders", async () => {
     const folder = `${root}/folder`;

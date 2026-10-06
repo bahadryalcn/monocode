@@ -46,7 +46,8 @@ function plannerPrompt(
     "Do not use plan mode or ask for approval; write the plan in your reply.",
     "Keep tasks proportional to the work. Reuse existing project contracts rather than requiring every worker to rediscover the project or read whole manuals. Request focused verification, separate development checks from release gates, and distinguish implemented deliverables from acceptance requiring unavailable devices or credentials. Never assign an absolute working folder or assume the integration branch is named main.",
     'End your reply with a fenced ```json block of exactly this shape, with each "project" copied exactly from the list above:',
-    '{"tasks":[{"key":"short-id","project":"<project path from the list>","title":"...","prompt":"self-contained instructions for an agent working only in that project","dependsOn":["other-key"]}]}',
+    '{"tasks":[{"key":"short-id","project":"<project path from the list>","title":"...","prompt":{"schema":"monocode.task.v1","objective":"clear outcome","deliverables":["concrete output"],"acceptance":["observable completion condition"],"constraints":["scope boundary"],"verification":["focused check and expected result"]},"dependsOn":["other-key"]}]}',
+    "Write concise, self-contained task briefs in the owner's language. Keep each condition in its matching field, do not repeat boilerplate, and do not require unavailable physical devices or credentials unless the owner explicitly requires them.",
   ].join("\n");
 }
 

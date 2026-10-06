@@ -27,6 +27,11 @@ import { normalizeProjectPath } from "../../projects/model/recents";
 import { pathKey } from "../../../shared/lib/paths";
 import { parseRemotePath, remotePath } from "../../connections/model/remoteProjects";
 import {
+  cachedRemoteSessionSummary,
+  rememberRemoteSession,
+  remoteSessionFor,
+} from "../../connections/model/connections";
+import {
   reconcileProjectReturn,
   type ProjectReturnMemory,
 } from "../../projects/model/projectReturn";
@@ -51,6 +56,8 @@ export type WorkspaceSessionStub = {
   title: string;
   providerSessionId?: string;
   providerAccountId?: string;
+  /** Host conversation identity; the local shell ID is a different ID. */
+  remoteSessionId?: string;
   branch?: string;
   worktreeCwd?: string;
   worktreeRemoved?: boolean;
@@ -285,6 +292,9 @@ export function hydrateWorkspaceSnapshot(
     if (existing) return existing;
     const record = loaded.get(id);
     const stub = stubs.get(id);
+    if (stub?.remoteSessionId && parseRemotePath(stub.cwd) && !remoteSessionFor(id)) {
+      rememberRemoteSession(id, stub.remoteSessionId);
+    }
     const base = record ?? (stub ? sessionFromStub(stub) : null);
     if (!base || base.inboxAsk) return null;
     const next = interruptedIds.has(id)
@@ -350,14 +360,17 @@ export function hydrateWorkspaceSnapshot(
 
 function sessionStub(session: Session): WorkspaceSessionStub | null {
   if (!session.id) return null;
+  const remoteSessionId = parseRemotePath(session.cwd) ? remoteSessionFor(session.id) : undefined;
+  const remote = remoteSessionId ? cachedRemoteSessionSummary(session.cwd, remoteSessionId) : undefined;
   return {
     id: session.id,
     cwd: session.cwd || "~",
-    harness: session.harness,
+    harness: remote?.harness ?? session.harness,
     model: session.model,
     modelSettings: { ...session.modelSettings },
     runtimeMode: session.runtimeMode,
-    title: session.title,
+    title: remote?.title || session.title,
+    ...(remoteSessionId ? { remoteSessionId } : {}),
     ...(session.inboxAsk ? { inboxAsk: session.inboxAsk } : {}),
     ...(session.providerSessionId
       ? { providerSessionId: session.providerSessionId }
@@ -428,6 +441,10 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
     modelSettings,
     runtimeMode,
     title: typeof value.title === "string" ? value.title : "",
+    ...(parseRemotePath(typeof value.cwd === "string" ? value.cwd : "") &&
+    typeof value.remoteSessionId === "string" && value.remoteSessionId.trim()
+      ? { remoteSessionId: value.remoteSessionId.trim() }
+      : {}),
     ...(value.inboxAsk && typeof value.inboxAsk === "object"
       ? { inboxAsk: value.inboxAsk as InboxAskContext }
       : {}),
