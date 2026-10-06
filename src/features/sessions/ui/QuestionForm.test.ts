@@ -69,6 +69,24 @@ function keyDown(target: Element, key: string) {
 }
 
 describe("QuestionForm keyboard navigation", () => {
+  it("revisits an answer and sends its edited selection while preserving later answers", () => {
+    const onReply = vi.fn();
+    const questions = prompt();
+    questions.questions.push({ ...questions.questions[0], id: "second", prompt: "Second colour" });
+    act(() => root.render(createElement(QuestionForm, { prompt: questions, onReply })));
+    const button = (label: string) => [...container.querySelectorAll<HTMLButtonElement>("button")].find((el) => el.textContent?.trim() === label)!;
+    expect(button("Back")).toBeUndefined();
+    act(() => button("Red").click());
+    act(() => button("Continue").click());
+    act(() => button("Blue").click());
+    act(() => button("Back").click());
+    expect(button("Red").getAttribute("aria-pressed")).toBe("true");
+    act(() => button("Green").click());
+    act(() => button("Continue").click());
+    expect(button("Blue").getAttribute("aria-pressed")).toBe("true");
+    act(() => button("Continue").click());
+    expect(onReply).toHaveBeenCalledWith(7, { kind: "answered", answers: { colour: ["green"], second: ["blue"] } });
+  });
   it("moves the highlighted option with arrow keys and selects it with Enter", () => {
     const onReply = vi.fn();
     const options = renderQuestion(onReply);

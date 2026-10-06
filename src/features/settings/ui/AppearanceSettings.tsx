@@ -47,7 +47,11 @@ import {
 } from "./settingsControls";
 import { type AppearanceSettings } from "./useAppearanceSettings";
 
-export function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
+export function AppearancePage({
+  appearance,
+}: {
+  appearance: AppearanceSettings;
+}) {
   const percent = Math.round(appearance.opacity * 100);
   const mainPercent = Math.round(appearance.mainOpacity * 100);
   const glassDisabled = useColorScheme() === "light";
@@ -72,6 +76,22 @@ export function AppearancePage({ appearance }: { appearance: AppearanceSettings 
               { value: "light", label: "Light" },
             ]}
             onChange={appearance.onThemePreference}
+          />
+        </Row>
+        <Row
+          id="diff-colors"
+          label="Diff colors"
+          description="Colors for added and removed lines. Colorblind and High contrast use blue and orange; High contrast adds stronger tints."
+        >
+          <Segmented
+            label="Diff colors"
+            value={appearance.diffPalette}
+            options={[
+              { value: "default", label: "Default" },
+              { value: "colorblind", label: "Colorblind" },
+              { value: "high-contrast", label: "High contrast" },
+            ]}
+            onChange={appearance.onDiffPalette}
           />
         </Row>
         <Row

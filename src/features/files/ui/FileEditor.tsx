@@ -112,7 +112,11 @@ export function FileEditor({
       setOpeningChrome(false);
     }
   };
-  const [mode, setMode] = useMarkdownMode(path);
+  // Review tabs keep their own preference and expose the diff gutter by default.
+  const [mode, setMode] = useMarkdownMode(
+    showDiff ? `review:${path}` : path,
+    showDiff ? "source" : "preview",
+  );
   const sourceNavigationToken = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (

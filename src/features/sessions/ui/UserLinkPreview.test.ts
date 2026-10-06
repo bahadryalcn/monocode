@@ -30,12 +30,12 @@ vi.mock("../../inbox/model/githubTasks", () => ({
     headRefName: "link-chips",
     reviewDecision: "",
   })),
-  peekGithubWorkItem: () => null,
-  peekGithubWorkItemDetails: () => null,
+  peekGithubWorkItem: vi.fn(() => null),
+  peekGithubWorkItemDetails: vi.fn(() => null),
 }));
 
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { githubWorkItem, githubWorkItemDetails } from "../../inbox/model/githubTasks";
+import { githubWorkItem, githubWorkItemDetails, peekGithubWorkItem, peekGithubWorkItemDetails } from "../../inbox/model/githubTasks";
 import type { UserLink } from "../model/linkPreview";
 import { UserLinkPreview } from "./UserLinkPreview";
 
@@ -65,6 +65,15 @@ afterEach(() => {
 });
 
 describe("GitHub work item link preview", () => {
+  it("uses the current project scope for cached GitHub previews", async () => {
+    act(() => root.render(createElement(UserLinkPreview, { link, cwd: "/project-b" })));
+    expect(peekGithubWorkItem).toHaveBeenCalledWith("acme/widgets", "pr", 73, "/project-b");
+    expect(peekGithubWorkItemDetails).toHaveBeenCalledWith("acme/widgets", "pr", 73, "/project-b");
+    const chip = container.querySelector<HTMLAnchorElement>('[data-github-work-item-chip="pr"]')!;
+    await act(async () => chip.focus());
+    expect(githubWorkItem).toHaveBeenCalledWith("/project-b", "acme/widgets", "pr", 73);
+    expect(githubWorkItemDetails).toHaveBeenCalledWith("/project-b", "acme/widgets", "pr", 73);
+  });
   it("loads a rich keyboard-accessible popover when the chip receives focus", async () => {
     act(() =>
       root.render(

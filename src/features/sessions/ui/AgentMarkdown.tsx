@@ -622,6 +622,7 @@ function DirectionalBlock({ dir, ...props }: BlockProps) {
 export const AgentMarkdown = memo(function AgentMarkdown({
   text,
   streaming,
+  revealOnMount,
   className,
   cwd,
   onOpenFile,
@@ -630,6 +631,8 @@ export const AgentMarkdown = memo(function AgentMarkdown({
 }: {
   text: string;
   streaming?: boolean;
+  /** Pace newly arrived output; saved or reopened output opts out. */
+  revealOnMount?: boolean;
   className?: string;
   cwd?: string;
   onOpenFile?: OpenFileFn;
@@ -709,7 +712,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
     [cwd],
   );
   const remoteMedia = !!allowRemoteMedia;
-  const paced = usePacedText(text, !!streaming);
+  const paced = usePacedText(text, !!streaming, revealOnMount);
   const submissionTraceId = useContext(PerformanceTraceContext);
   const paintTrace = useRef<string | null>(null);
   const firstPaintRecorded = useRef(false);

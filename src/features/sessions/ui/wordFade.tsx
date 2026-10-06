@@ -55,18 +55,22 @@ function isSpace(code: number): boolean {
 }
 
 /**
- * The part of `text` to show right now. Text that is already there when the
- * component mounts, or that changes while nothing is streaming, shows at
- * once; only what streams in is paced. Completion immediately reveals all
- * remaining text. `revealing` stays true while active text is catching up.
+ * Pace arriving output from its first chunk; callers opening saved output
+ * opt out of mount reveal. Completion of an active stream remains immediate.
+ * Newly completed replies may opt into a bounded mount reveal. Hidden views,
+ * reduced motion, low-latency preference and large backlogs bypass pacing.
  */
 export function usePacedText(
   text: string,
   streaming: boolean,
+  revealOnMount = streaming,
 ): { text: string; revealing: boolean } {
   const visible = usePresentationVisible();
-  const shown = useRef(text.length);
-  const pacing = useRef(streaming);
+  const shown = useRef(revealOnMount ? 0 : text.length);
+  const pacing = useRef(streaming || revealOnMount);
+  const mountReveal = useRef(revealOnMount && !streaming);
+  const latest = useRef({ text, streaming });
+  latest.current = { text, streaming };
   const backlogSince = useRef<number | null>(null);
   const [direct, setDirect] = useState(false);
   useEffect(() => {
@@ -82,21 +86,26 @@ export function usePacedText(
   if (streaming) pacing.current = true;
   if (!pacing.current) shown.current = text.length;
   shown.current = Math.min(shown.current, text.length);
-  if (!visible || direct || !streaming || text.length - shown.current > REVEAL_MAX_BACKLOG) shown.current = text.length;
+  if (!visible || direct || (!streaming && !mountReveal.current) || text.length - shown.current > REVEAL_MAX_BACKLOG) shown.current = text.length;
   const behind = shown.current < text.length;
 
   useEffect(() => {
     if (!pacing.current) return;
     if (!behind) {
       backlogSince.current = null;
-      if (!streaming) pacing.current = false;
+      if (!streaming) {
+        pacing.current = false;
+        mountReveal.current = false;
+      }
       return;
     }
     let position = shown.current;
     let last = performance.now();
     backlogSince.current ??= last;
-    let hold = 0;
+    let heldText = "";
+    let heldAt = 0;
     let frame = requestAnimationFrame(function tick(now) {
+      const { text, streaming } = latest.current;
       if (now - (backlogSince.current ?? now) >= REVEAL_MAX_LAG_MS) {
         shown.current = text.length;
         backlogSince.current = null;
@@ -115,20 +124,22 @@ export function usePacedText(
       }
       // Once the reveal has run into the end of what has arrived there is
       // nothing to do until more does, which restarts this.
-      if (position < text.length) frame = requestAnimationFrame(tick);
-      else if (shown.current < text.length) {
-        hold = window.setTimeout(() => {
+      if (position >= text.length && shown.current < text.length) {
+        if (heldText !== text) {
+          heldText = text;
+          heldAt = now;
+        }
+        if (now - heldAt >= REVEAL_HOLD_MS) {
           shown.current = text.length;
           backlogSince.current = null;
           rerender();
-        }, REVEAL_HOLD_MS);
+        }
       }
+      if (shown.current < text.length) frame = requestAnimationFrame(tick);
     });
-    return () => {
-      cancelAnimationFrame(frame);
-      window.clearTimeout(hold);
-    };
-  }, [text, streaming, behind]);
+    return () => cancelAnimationFrame(frame);
+    // New chunks change the target without restarting the reveal clock.
+  }, [streaming, behind, visible, direct]);
 
   return {
     text: behind ? text.slice(0, shown.current) : text,

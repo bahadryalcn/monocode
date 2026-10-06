@@ -55,6 +55,26 @@ function stages() {
   );
 }
 
+it("paces a newly arrived reply completed before its first paint", () => {
+  const head: Block[] = [{ id: "user", role: "user", text: "Explain" }];
+  render(head);
+  const reply = "A newly completed answer with enough words for a bounded reveal.";
+  act(() => root.render(createElement(AgentTranscript, { blocks: [...head, { id: "reply", role: "assistant", text: reply }], busy: false })));
+  expect(container.querySelector(".agent-markdown")?.textContent).toBe("");
+  act(() => vi.advanceTimersByTime(2_000));
+  expect(container.querySelector(".agent-markdown")?.textContent).toBe(reply);
+});
+
+it("shows saved and newly reopened output immediately", () => {
+  const head: Block[] = [{ id: "user", role: "user", text: "Explain" }];
+  const reply: Block = { id: "reply", role: "assistant", text: "An already saved answer." };
+  render([...head, reply]);
+  expect(container.querySelector(".agent-markdown")?.textContent).toBe(reply.text);
+  act(() => root.render(createElement(AgentTranscript, { blocks: head, visible: false })));
+  act(() => root.render(createElement(AgentTranscript, { blocks: [...head, { ...reply, text: "Output received while hidden." }], visible: true })));
+  expect(container.querySelector(".agent-markdown")?.textContent).toBe("Output received while hidden.");
+});
+
 it("paces a burst of tool calls so each enters after the one before it", () => {
   const head: Block[] = [
     { id: "user", role: "user", text: "Review the diff" },

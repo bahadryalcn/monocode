@@ -1106,7 +1106,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
         />
         <div
           ref={transcriptScope}
-          className="@container relative min-h-0 flex-1"
+          className={`@container relative min-h-0 flex-1${dockComposer ? " transcript-composer-fade" : ""}`}
         >
           {visible && focused && !session.inboxAsk ? (
             <LinkedWorkItemUpdateNotice

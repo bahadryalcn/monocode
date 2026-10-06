@@ -27,6 +27,13 @@ function summary(id: string, cwd: string, updatedAt = 1): SessionSummary {
 }
 
 describe("historyWithLiveSessions", () => {
+  it("overlays live titles and work-item changes without rewriting persisted metadata", () => {
+    const session = { ...newSession("codex", "/tmp/project-a"), id: "live", title: "New live title", busy: true, linkedWorkItem: { kind: "pr" as const, repo: "owner/repo", number: 4, url: "https://example.com/pr/4" } };
+    const stored = { ...summary("live", session.cwd, 100), pinned: true, archived: false };
+    const rows = historyWithLiveSessions([stored], [session], session.cwd);
+    expect(rows[0]).toMatchObject({ title: "New live title", linkedWorkItem: session.linkedWorkItem, updatedAt: 100, pinned: true, archived: false });
+    expect(stored.title).toBe("cursor · live");
+  });
   const run: OrchestrationRun = {
     version: 1,
     leadId: "lead",

@@ -75,6 +75,16 @@ export function ModelFlyout({
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
+  // Popover measures its initially hidden frame during layout. Focus only
+  // after that measurement, when the browser can focus the visible input.
+  useEffect(() => {
+    if (!autoFocusSearch) return;
+    const frame = requestAnimationFrame(() => {
+      searchRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [autoFocusSearch, searchRef]);
+
   const onSearchKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -188,7 +198,6 @@ export function ModelFlyout({
             value={query}
             placeholder="Search models"
             aria-label="Search models"
-            autoFocus={autoFocusSearch}
             className="min-w-0 flex-1 bg-transparent text-[13px] text-content outline-none placeholder:text-content/40"
             onChange={(event) => onQuery(event.target.value)}
             onKeyDown={onSearchKey}

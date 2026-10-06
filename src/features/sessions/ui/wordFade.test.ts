@@ -61,6 +61,33 @@ describe("paced streaming", () => {
     return container.textContent ?? "";
   }
 
+  it("paces the first streaming chunk on mount", () => {
+    render(reply, true);
+    expect(shown()).toBe("");
+    act(() => vi.advanceTimersByTime(100));
+    expect(shown().length).toBeGreaterThan(0);
+    expect(shown().length).toBeLessThan(reply.length);
+  });
+
+  it("continues revealing while chunks arrive faster than one animation frame", () => {
+    render("", true);
+    let incoming = "";
+    for (let index = 0; index < 40; index++) {
+      incoming += "word ";
+      render(incoming, true);
+      act(() => vi.advanceTimersByTime(4));
+    }
+    expect(shown().length).toBeGreaterThan(0);
+    expect(shown().length).toBeLessThan(incoming.trim().length);
+  });
+
+  it("paces a newly completed mount when explicitly requested", () => {
+    act(() => root.render(createElement(AgentMarkdown, { text: reply, streaming: false, revealOnMount: true })));
+    expect(shown()).toBe("");
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(shown()).toBe(reply);
+  });
+
   function fading() {
     return !!container.querySelector(".agent-markdown.word-fading");
   }

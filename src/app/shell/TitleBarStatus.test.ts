@@ -129,3 +129,27 @@ it.each([true, false])(
     expect(onToggleSidebar).not.toHaveBeenCalled();
   },
 );
+
+
+it.each([true, false])("keeps search/new fallback only while session sidebar is closed (open: %s)", (sessionSidebarOpen) => {
+  const onNew = vi.fn();
+  const onGoToFile = vi.fn();
+  act(() => root.render(createElement(TitleBar, {
+    tabs: [tab("active")], activeId: "active", cwd: "/project",
+    projectRailOpen: false, sessionSidebarOpen,
+    onToggleSidebar: vi.fn(), onNew, onGoToFile,
+    onSelect: vi.fn(), onClose: vi.fn(), onCloseMany: vi.fn(), onReorder: vi.fn(),
+  })));
+  const search = container.querySelector<HTMLButtonElement>('button[aria-label^="Go to File"]');
+  const create = container.querySelector<HTMLButtonElement>('button[aria-label^="New session"]');
+  if (sessionSidebarOpen) {
+    expect(search).toBeNull();
+    expect(create).toBeNull();
+  } else {
+    expect(search).not.toBeNull();
+    expect(create).not.toBeNull();
+    act(() => { search!.click(); create!.click(); });
+    expect(onGoToFile).toHaveBeenCalledOnce();
+    expect(onNew).toHaveBeenCalledOnce();
+  }
+});

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   githubPrDiff,
+  GITHUB_WORK_ITEM_FRESH_MS,
   githubWorkItemDetails,
   githubWorkItemThread,
   peekGithubPrDiff,
@@ -44,7 +45,9 @@ import {
   type AzureDevOpsWorkItemThread,
 } from "../model/azureDevOps";
 
-export function useInboxDetailData(item: InboxItem, revision: number, tab: "summary" | "code" | "checks", fullFile: boolean) {
+export function useInboxDetailData(item: InboxItem, revision: number, tab: "summary" | "code" | "checks", fullFile: boolean, panel = false) {
+  const maxAgeMs = panel && revision === 0 ? GITHUB_WORK_ITEM_FRESH_MS : undefined;
+  const diffWanted = tab === "code" || (panel && tab === "summary");
   const linear = item.provider === "linear";
   const jira = item.provider === "jira";
   const tracker = linear || jira;
@@ -75,14 +78,14 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
               item.number,
             )
           : githubKind
-            ? peekGithubWorkItemDetails(item.repo, githubKind, item.number)
+            ? peekGithubWorkItemDetails(item.repo, githubKind, item.number, item.projectPath)
             : null;
   const cachedDiff = isPr
     ? gitlab
       ? peekGitlabMrDiff(item.repo, item.number)
       : azuredevops
         ? peekAzureDevOpsMrDiff(item.repo, item.number)
-        : peekGithubPrDiff(item.repo, item.number)
+        : peekGithubPrDiff(item.repo, item.number, false, item.projectPath)
     : null;
   const cachedThread = linear
     ? peekLinearIssueThread(item.id ?? "")
@@ -97,7 +100,7 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
               item.number,
             )
           : githubKind
-            ? peekGithubWorkItemThread(item.repo, githubKind, item.number)
+            ? peekGithubWorkItemThread(item.repo, githubKind, item.number, item.projectPath)
             : null;
   const [details, setDetails] = useState<GithubWorkItemDetails | null>(cached);
   const [loading, setLoading] = useState(cached == null);
@@ -130,7 +133,7 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
                 item.number,
               )
             : githubKind
-              ? peekGithubWorkItemDetails(item.repo, githubKind, item.number)
+              ? peekGithubWorkItemDetails(item.repo, githubKind, item.number, item.projectPath)
               : null;
     if (cachedDetails) {
       setDetails(cachedDetails);
@@ -163,6 +166,7 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
                 item.repo,
                 githubKind,
                 item.number,
+                { maxAgeMs },
               )
             : Promise.reject(new Error("Unknown inbox item"));
     void pending
@@ -194,6 +198,7 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
     jiraKey,
     linear,
     revision,
+    maxAgeMs,
   ]);
 
   useEffect(() => {
@@ -328,6 +333,7 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
       item.repo,
       githubKind,
       item.number,
+      item.projectPath,
     );
     if (cachedThread) {
       setThread(cachedThread);
@@ -343,6 +349,7 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
       item.repo,
       githubKind,
       item.number,
+      { maxAgeMs },
     )
       .then((next) => {
         if (cancelled) return;
@@ -372,16 +379,17 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
     jiraKey,
     linear,
     revision,
+    maxAgeMs,
   ]);
 
   useEffect(() => {
-    if (!isPr || tab !== "code") return;
+    if (!isPr || !diffWanted) return;
     let cancelled = false;
     const cachedDiff = gitlab
       ? peekGitlabMrDiff(item.repo, item.number)
       : azuredevops
         ? peekAzureDevOpsMrDiff(item.repo, item.number)
-        : peekGithubPrDiff(item.repo, item.number, fullFile);
+        : peekGithubPrDiff(item.repo, item.number, fullFile, item.projectPath);
     if (cachedDiff) {
       setPrDiff(cachedDiff);
       setDiffLoading(false);
@@ -397,6 +405,7 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
         ? azureDevOpsMrDiff(item.repo, item.number)
         : githubPrDiff(item.projectPath, item.repo, item.number, {
             fullContext: fullFile,
+            maxAgeMs,
           });
     void pending
       .then((next) => {
@@ -424,7 +433,8 @@ export function useInboxDetailData(item: InboxItem, revision: number, tab: "summ
     item.projectPath,
     item.repo,
     revision,
-    tab,
+    maxAgeMs,
+    diffWanted,
   ]);
 
   return { linear, jira, tracker, jiraKey, gitlab, azuredevops, isPr, githubKind, gitlabKind, azureDevOpsKind, details, loading, error, prDiff, diffLoading, diffError, thread, setThread, threadLoading, threadError };

@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Block } from "../model/session";
 import { AgentTranscript } from "./AgentTranscript";
+import { REVEAL_MAX_LAG_MS } from "./wordFade";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -26,6 +27,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 function tool(id: string): Block {
@@ -85,6 +87,7 @@ describe("assistant messages remain visible around folded work", () => {
   );
 
   it("retains earlier updates when more Codex messages and tools arrive", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", "performance"] });
     const user: Block = {
       id: "u",
       role: "user",
@@ -115,6 +118,9 @@ describe("assistant messages remain visible around folded work", () => {
           createElement(AgentTranscript, { blocks, busy, harness: "codex" }),
         ),
       );
+      // Newly arriving prose reveals at a bounded pace. This test checks
+      // retention and fold placement once the reveal has reached its text.
+      act(() => vi.advanceTimersByTime(REVEAL_MAX_LAG_MS + 32));
       const texts = Array.from(
         container.querySelectorAll(".agent-markdown"),
         (el) => el.textContent,

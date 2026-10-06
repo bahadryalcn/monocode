@@ -6,6 +6,11 @@ import {
   applyChatBackgroundEmptyOpacity,
   applyChatBackgroundSessionOpacity,
   applyChatBackgroundScope,
+  applyDiffPalette,
+  loadDiffPalette,
+  saveDiffPalette,
+  DIFF_PALETTE_DEFAULT,
+  type DiffPalette,
   applyAccentColor,
   applyBodyGlass,
   applySidebarBlur,
@@ -122,6 +127,7 @@ export function useAppearanceSettings(
   const [chatBackgroundBlur, setChatBackgroundBlur] = useState(
     loadChatBackgroundBlur,
   );
+  const [diffPalette, setDiffPalette] = useState<DiffPalette>(loadDiffPalette);
   const [chatBackgroundScope, setChatBackgroundScope] =
     useState<ChatBackgroundScope>(loadChatBackgroundScope);
   const [newThreadBackgroundEffect, setBackgroundEffect] =
@@ -247,6 +253,12 @@ export function useAppearanceSettings(
     setChatBackgroundBlur(next);
   }, []);
 
+  const onDiffPalette = useCallback((next: DiffPalette) => {
+    applyDiffPalette(next);
+    saveDiffPalette(next);
+    setDiffPalette(next);
+  }, []);
+
   const onChatBackgroundScope = useCallback((next: ChatBackgroundScope) => {
     applyChatBackgroundScope(next);
     saveChatBackgroundScope(next);
@@ -293,6 +305,7 @@ export function useAppearanceSettings(
       Math.round(CHAT_BACKGROUND_SESSION_OPACITY_DEFAULT * 100),
     );
     onChatBackgroundScope(CHAT_BACKGROUND_SCOPE_DEFAULT);
+    onDiffPalette(DIFF_PALETTE_DEFAULT);
     onChatBackgroundBlur(CHAT_BACKGROUND_BLUR_DEFAULT);
     onNewThreadBackgroundEffect(NEW_THREAD_BACKGROUND_EFFECT_DEFAULT);
     if (chatBackgroundPath) void onClearChatBackground();
@@ -305,6 +318,7 @@ export function useAppearanceSettings(
     onChatBackgroundEmptyOpacity,
     onChatBackgroundSessionOpacity,
     onChatBackgroundScope,
+    onDiffPalette,
     onChatBackgroundBlur,
     onNewThreadBackgroundEffect,
     onClearChatBackground,
@@ -334,6 +348,7 @@ export function useAppearanceSettings(
     chatBackgroundEmptyOpacity,
     chatBackgroundSessionOpacity,
     chatBackgroundScope,
+    diffPalette,
     chatBackgroundBlur,
     newThreadBackgroundEffect,
     chatBackgroundBusy,
@@ -354,6 +369,7 @@ export function useAppearanceSettings(
     onChatBackgroundEmptyOpacity,
     onChatBackgroundSessionOpacity,
     onChatBackgroundScope,
+    onDiffPalette,
     onChatBackgroundBlur,
     onNewThreadBackgroundEffect,
     onUiScale,

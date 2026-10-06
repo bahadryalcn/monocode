@@ -22,6 +22,10 @@ imported from community pull requests build on that shared work; imported
 contributions remain credited to their original authors. See [CREDITS.md](CREDITS.md)
 for attribution, contributor links and third-party acknowledgements.
 
+[![Upstream contributors](https://img.shields.io/github/contributors/hardbeat920/monocode)](https://github.com/hardbeat920/monocode/graphs/contributors)
+
+[View all upstream contributors](https://github.com/hardbeat920/monocode/graphs/contributors). Contributor artwork is available through [contrib.rocks](https://contrib.rocks).
+
 The original [MIT license](LICENSE) and copyright notice are preserved.
 Fork modifications use the same license. This repository and its packages are
 independent of the upstream project's official releases.

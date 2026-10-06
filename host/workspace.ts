@@ -873,7 +873,7 @@ export async function hostGitAction(
           ? ["add", "--", path]
           : hasHead
             ? ["restore", "--staged", "--", path]
-            : ["rm", "--cached", "-f", "--", path],
+            : ["rm", "--cached", "-r", "-f", "--", path],
       );
       return;
     }

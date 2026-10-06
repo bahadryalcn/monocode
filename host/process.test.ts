@@ -79,3 +79,50 @@ it.runIf(process.platform !== "win32")(
     }
   },
 );
+
+
+it.each(["@earendil-works/pi-coding-agent", "@mariozechner/pi-coding-agent"])(
+  "launches the supported Pi npm shim for %s without a shell",
+  async (name) => {
+    const directory = mkdtempSync(join(tmpdir(), "monocode-pi-npm-"));
+    const launcher = join(directory, "pi.cmd");
+    const packageRoot = join(directory, "node_modules", name);
+    const entry = join(packageRoot, "dist/cli.js");
+    mkdirSync(join(entry, ".."), { recursive: true });
+    writeFileSync(launcher, "@echo wrapper must not execute");
+    writeFileSync(entry, "// thin launcher");
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name, bin: { pi: "dist/cli.js" } }));
+    try {
+      expect(await providerLaunch(launcher, ["--mode", "rpc"], "win32")).toEqual({
+        command: process.execPath, args: [entry, "--mode", "rpc"],
+      });
+      writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name, bin: { pi: "../../../outside.js" } }));
+      await expect(providerLaunch(launcher, [], "win32")).rejects.toThrow("Missing Pi");
+      writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "unrelated", bin: { pi: "dist/cli.js" } }));
+      await expect(providerLaunch(launcher, [], "win32")).rejects.toThrow("Missing Pi");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it.runIf(process.platform !== "win32")("recognizes a thin Pi npm symlink by its package manifest", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "monocode-pi-identity-"));
+  const packageRoot = join(directory, "package");
+  const entry = join(packageRoot, "dist/cli.js");
+  const candidate = join(directory, "pi");
+  mkdirSync(join(entry, ".."), { recursive: true });
+  writeFileSync(entry, "#!/usr/bin/env node\n// thin stub\n");
+  chmodSync(entry, 0o755);
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent" }));
+  symlinkSync(entry, candidate);
+  vi.stubEnv("PATH", directory);
+  try {
+    expect(await resolveProvider("pi")).toBe(candidate);
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "unrelated" }));
+    await expect(resolveProvider("pi")).rejects.toThrow("not installed");
+  } finally {
+    vi.unstubAllEnvs();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -115,6 +115,10 @@ def status():
     return {component: read_json(base / (component+'.json')) if (base / (component+'.json')).exists()
             else {'state': 'not scheduled by this pipeline'} for component in ('host', 'app')}
 
+def install_job_active(record):
+    # Completed helpers can leave a PID later reused by an unrelated process.
+    return record.get('state') not in ('installed', 'failed') and alive(record.get('pid'))
+
 def stage(name, command, workspace, env, release, timings):
     print(f'[{sys.platform}] {name}', flush=True)
     started = time.monotonic()
@@ -146,7 +150,7 @@ def queue_install(release):
                 continue
             except (OSError, RuntimeError):
                 pass
-        if alive(old.get('pid')):
+        if install_job_active(old):
             if old.get('id') != manifest['id']:
                 raise RuntimeError(f'{component} updater already running for another package; see {record}')
             results[component] = str(record)
@@ -184,7 +188,7 @@ def worker(request):
     if legacy:
         raise RuntimeError('Previous ad-hoc updater still running (PID '+','.join(legacy)+'); finish it before starting this pipeline')
     for component, old in status().items():
-        if alive(old.get('pid')) and old.get('id') != request['id']:
+        if install_job_active(old) and old.get('id') != request['id']:
             raise RuntimeError(f'{component} has a pending package; see --status before starting another update')
     if request.get('installOnly'):
         # Reuse the immutable package with current installation bug fixes.

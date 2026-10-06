@@ -674,6 +674,36 @@ function ChangedFiles({
     }
   };
 
+  const runFolder = async (relative: string, action: "stage" | "unstage") => {
+    const queue = fileActions.current;
+    if (busy && queue.size === 0) return;
+    queue.size += 1;
+    queue.paths.push(
+      ...files
+        .filter((file) => file.relative.startsWith(`${relative}/`))
+        .map((file) => file.path),
+    );
+    setBusy(`folder:${action}:${relative}`);
+    setPending(ACTION_LABEL[action]);
+    // Share the existing index mutation queue with single-file actions.
+    const task = queue.tail.then(async () => {
+      try {
+        if (action === "stage") await gitStageFile(cwd, relative);
+        else await gitUnstageFile(cwd, relative);
+      } catch (error) {
+        fail(error);
+      }
+    });
+    queue.tail = task;
+    await task;
+    queue.size -= 1;
+    if (queue.size > 0) return;
+    // Also refresh after failure: Git may have partially changed the index.
+    onMutated(queue.paths.splice(0), "index");
+    setBusy(null);
+    setPending(null);
+  };
+
   const generate = async () => {
     if (!canGenerate || generateAbortRef.current) return;
     const controller = new AbortController();
@@ -1127,6 +1157,7 @@ function ChangedFiles({
                   busy={busy}
                   onOpenFile={onOpenFile}
                   onAction={run}
+                  onFolderAction={runFolder}
                 />
               </FileSection>
             ) : null}
@@ -1168,6 +1199,7 @@ function ChangedFiles({
                   busy={busy}
                   onOpenFile={onOpenFile}
                   onAction={run}
+                  onFolderAction={runFolder}
                 />
               </FileSection>
             ) : null}
@@ -1521,6 +1553,7 @@ type ChangeRowProps = {
     file: GitChangedFile,
     action: "stage" | "unstage" | "discard",
   ) => void;
+  onFolderAction: (relative: string, action: "stage" | "unstage") => void;
 };
 
 export function ChangeList({ files, view, ...rest }: ChangeRowProps) {
@@ -1535,7 +1568,7 @@ export function ChangeList({ files, view, ...rest }: ChangeRowProps) {
           key={`${rest.kind}:${file.relative}`}
           file={file}
           active={isActive(file, rest.selected, rest.selectedKind, rest.kind)}
-          busy={rest.busy === file.relative}
+          busy={rest.busy === file.relative || !!rest.busy?.startsWith("folder:")}
           kind={rest.kind}
           onOpenFile={rest.onOpenFile}
           onAction={rest.onAction}
@@ -1554,6 +1587,7 @@ function ChangeDirChildren({
   busy,
   onOpenFile,
   onAction,
+  onFolderAction,
 }: Omit<ChangeRowProps, "files" | "view"> & {
   dir: ChangeDir;
   depth: number;
@@ -1571,6 +1605,7 @@ function ChangeDirChildren({
           busy={busy}
           onOpenFile={onOpenFile}
           onAction={onAction}
+          onFolderAction={onFolderAction}
         />
       ))}
       {dir.files.map((file) => (
@@ -1578,7 +1613,7 @@ function ChangeDirChildren({
           key={`${kind}:${file.relative}`}
           file={file}
           active={isActive(file, selected, selectedKind, kind)}
-          busy={busy === file.relative}
+          busy={busy === file.relative || !!busy?.startsWith("folder:")}
           kind={kind}
           depth={depth}
           onOpenFile={onOpenFile}
@@ -1607,25 +1642,47 @@ function ChangeDirRow({
   };
   return (
     <li>
-      <button
-        type="button"
-        title={dir.path}
-        aria-expanded={open}
-        onClick={toggle}
+      <div
         style={{ paddingLeft: 8 + depth * 12 }}
-        className="flex h-7 w-full items-center gap-1.5 pr-2 text-left leading-none text-content hover:bg-content/5"
+        className="group flex h-7 w-full items-center gap-1 pr-2 leading-none text-content hover:bg-content/5"
       >
-        <span className="grid size-4 shrink-0 place-items-center text-content/50">
-          {open ? (
-            <ChevronDown className="size-3.5" strokeWidth={1.75} />
-          ) : (
-            <ChevronRight className="size-3.5" strokeWidth={1.75} />
-          )}
-        </span>
-        <FileTypeIcon name={dir.name} isDir isOpen={open} size={16} />
-        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
-          {dir.name}
-        </span>
+        <button
+          type="button"
+          title={dir.path}
+          aria-expanded={open}
+          onClick={toggle}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+        >
+          <span className="grid size-4 shrink-0 place-items-center text-content/50">
+            {open ? (
+              <ChevronDown className="size-3.5" strokeWidth={1.75} />
+            ) : (
+              <ChevronRight className="size-3.5" strokeWidth={1.75} />
+            )}
+          </span>
+          <FileTypeIcon name={dir.name} isDir isOpen={open} size={16} />
+          <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+            {dir.name}
+          </span>
+        </button>
+        <div className="hidden shrink-0 items-center group-focus-within:flex group-hover:flex">
+          <IconAction
+            title={`${kind === "staged" ? "Unstage" : "Stage"} Changes in ${dir.path}`}
+            disabled={rest.busy !== null}
+            onClick={() =>
+              rest.onFolderAction(
+                dir.path,
+                kind === "staged" ? "unstage" : "stage",
+              )
+            }
+          >
+            {kind === "staged" ? (
+              <Minus className="size-3.5" strokeWidth={1.75} />
+            ) : (
+              <Plus className="size-3.5" strokeWidth={1.75} />
+            )}
+          </IconAction>
+        </div>
         <span
           className={`grid w-3.5 shrink-0 place-items-center ${
             dir.status ? statusColor(dir.status) : "text-content/40"
@@ -1634,7 +1691,7 @@ function ChangeDirRow({
         >
           <span className="size-1.5 rounded-full bg-current" />
         </span>
-      </button>
+      </div>
       {open ? (
         <ul>
           <ChangeDirChildren
@@ -1853,8 +1910,8 @@ function statusLetter(status: string): string {
 
 function statusColor(status: string): string {
   if (status === "untracked") return "text-sky-400";
-  if (status === "added") return "text-emerald-400";
-  if (status === "deleted") return "text-red-400";
+  if (status === "added") return "text-diff-add-fg";
+  if (status === "deleted") return "text-diff-del-fg";
   return "text-amber-400";
 }
 

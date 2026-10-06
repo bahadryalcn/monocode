@@ -219,10 +219,59 @@ const repositoriesByPath = new Map<string, string[]>();
 const workItemByKey = new Map<string, GithubWorkItem>();
 const workItemInflight = new Map<string, Promise<GithubWorkItem>>();
 const detailsByKey = new Map<string, GithubWorkItemDetails>();
+const detailsInflight = new Map<string, Promise<GithubWorkItemDetails>>();
 const threadByKey = new Map<string, GithubWorkItemThread>();
 const threadInflight = new Map<string, Promise<GithubWorkItemThread>>();
 const prDiffByKey = new Map<string, GithubPrDiff>();
 const prDiffInflight = new Map<string, Promise<GithubPrDiff>>();
+
+export const GITHUB_WORK_ITEM_FRESH_MS = INBOX_CACHE_FRESH_MS;
+const itemScopes = new Map<string, { scope: string }>();
+function ensureItemScope(cwd: string, repo: string, kind: GithubTaskKind, number: number) {
+  const key = detailsCacheKey(repo, kind, number);
+  const scope = normalizeProjectPath(cwd);
+  // An evicted scope is unknown too; never reuse data whose owner is lost.
+  const hasDiff = [false, true].some((fullContext) => {
+    const diffKey = prDiffCacheKey(repo, number, fullContext);
+    return prDiffByKey.has(diffKey) || prDiffInflight.has(diffKey);
+  });
+  const owner = itemScopes.get(key);
+  if (owner?.scope !== scope && (itemScopes.has(key) || workItemByKey.has(key) || detailsByKey.has(key) || threadByKey.has(key) || workItemInflight.has(key) || detailsInflight.has(key) || threadInflight.has(key) || hasDiff)) invalidateGithubWorkItem(repo, kind, number);
+  itemScopes.delete(key); itemScopes.set(key, owner?.scope === scope ? owner : { scope });
+  while (itemScopes.size > 128) itemScopes.delete(itemScopes.keys().next().value!);
+}
+function scopeMatches(key: string, cwd?: string) {
+  return cwd == null || itemScopes.get(key)?.scope === normalizeProjectPath(cwd);
+}
+const fetchedAt = new Map<string, number>();
+const ITEM_CACHE_LIMIT = 128;
+function freshEnough(key: string, maxAgeMs?: number) {
+  const at = fetchedAt.get(key);
+  return maxAgeMs != null && at != null && Date.now() - at < maxAgeMs;
+}
+function remember<T>(cache: Map<string, T>, key: string, value: T, namespace: string) {
+  cache.delete(key);
+  cache.set(key, value);
+  fetchedAt.set(`${namespace}:${key}`, Date.now());
+  while (cache.size > ITEM_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value!;
+    cache.delete(oldest);
+    fetchedAt.delete(`${namespace}:${oldest}`);
+  }
+}
+function invalidateGithubWorkItem(repo: string, kind: GithubTaskKind, number: number) {
+  const key = detailsCacheKey(repo, kind, number);
+  workItemByKey.delete(key); workItemInflight.delete(key);
+  fetchedAt.delete(`item:${key}`);
+  detailsByKey.delete(key); detailsInflight.delete(key);
+  threadByKey.delete(key); threadInflight.delete(key);
+  fetchedAt.delete(`details:${key}`); fetchedAt.delete(`thread:${key}`);
+  for (const full of [false, true]) {
+    const diffKey = prDiffCacheKey(repo, number, full);
+    prDiffByKey.delete(diffKey); prDiffInflight.delete(diffKey);
+    fetchedAt.delete(`diff:${diffKey}`);
+  }
+}
 
 export function clearInboxCache() {
   inboxCacheGeneration += 1;
@@ -235,6 +284,9 @@ export function clearInboxCache() {
   workItemByKey.clear();
   workItemInflight.clear();
   detailsByKey.clear();
+  detailsInflight.clear();
+  fetchedAt.clear();
+  itemScopes.clear();
   threadByKey.clear();
   threadInflight.clear();
   prDiffByKey.clear();
@@ -352,7 +404,9 @@ export function peekGithubWorkItem(
   repo: string,
   kind: GithubTaskKind,
   number: number,
+  cwd?: string,
 ): GithubWorkItem | null {
+  if (!scopeMatches(workItemLookupKey(repo, kind, number), cwd)) return null;
   return workItemByKey.get(workItemLookupKey(repo, kind, number)) ?? null;
 }
 
@@ -362,11 +416,14 @@ export function githubWorkItem(
   repo: string,
   kind: GithubTaskKind,
   number: number,
-  options?: { force?: boolean },
+  options?: { force?: boolean; maxAgeMs?: number },
 ): Promise<GithubWorkItem> {
+  ensureItemScope(cwd, repo, kind, number);
+  const generation = inboxCacheGeneration;
   const key = workItemLookupKey(repo, kind, number);
   const cached = workItemByKey.get(key);
-  if (cached && !options?.force) return Promise.resolve(cached);
+  if (cached && !options?.force && (options?.maxAgeMs == null || freshEnough(`item:${key}`, options.maxAgeMs))) return Promise.resolve(cached);
+  if (options?.force) workItemInflight.delete(key);
   const pending = workItemInflight.get(key);
   if (pending) return pending;
   const promise = invoke<GithubWorkItem>("git_github_work_item", {
@@ -376,7 +433,7 @@ export function githubWorkItem(
     number,
   })
     .then((item) => {
-      workItemByKey.set(key, item);
+      if (generation === inboxCacheGeneration && workItemInflight.get(key) === promise) remember(workItemByKey, key, item, "item");
       return item;
     })
     .finally(() => {
@@ -462,29 +519,40 @@ export function peekGithubWorkItemDetails(
   repo: string,
   kind: GithubTaskKind,
   number: number,
+  cwd?: string,
 ): GithubWorkItemDetails | null {
+  if (!scopeMatches(detailsCacheKey(repo, kind, number), cwd)) return null;
   return detailsByKey.get(detailsCacheKey(repo, kind, number)) ?? null;
 }
 
 export async function githubWorkItemDetails(
-  cwd: string,
-  repo: string,
-  kind: GithubTaskKind,
-  number: number,
+  cwd: string, repo: string, kind: GithubTaskKind, number: number,
+  options?: { maxAgeMs?: number; force?: boolean },
 ): Promise<GithubWorkItemDetails> {
-  const details = await invoke<GithubWorkItemDetails>(
-    "git_github_work_item_details",
-    { cwd, repo, kind, number },
-  );
-  detailsByKey.set(detailsCacheKey(repo, kind, number), details);
-  return details;
+  ensureItemScope(cwd, repo, kind, number);
+  const key = detailsCacheKey(repo, kind, number);
+  if (options?.force) { detailsByKey.delete(key); detailsInflight.delete(key); }
+  const cached = detailsByKey.get(key);
+  if (!options?.force && cached && freshEnough(`details:${key}`, options?.maxAgeMs)) return cached;
+  const pending = detailsInflight.get(key);
+  if (pending) return pending;
+  const generation = inboxCacheGeneration;
+  const promise = invoke<GithubWorkItemDetails>("git_github_work_item_details", { cwd, repo, kind, number })
+    .then((details) => {
+      if (generation === inboxCacheGeneration && detailsInflight.get(key) === promise) remember(detailsByKey, key, details, "details");
+      return details;
+    }).finally(() => { if (detailsInflight.get(key) === promise) detailsInflight.delete(key); });
+  detailsInflight.set(key, promise);
+  return promise;
 }
 
 export function peekGithubWorkItemThread(
   repo: string,
   kind: GithubTaskKind,
   number: number,
+  cwd?: string,
 ): GithubWorkItemThread | null {
+  if (!scopeMatches(detailsCacheKey(repo, kind, number), cwd)) return null;
   return threadByKey.get(detailsCacheKey(repo, kind, number)) ?? null;
 }
 
@@ -493,13 +561,17 @@ export async function githubWorkItemThread(
   repo: string,
   kind: GithubTaskKind,
   number: number,
-  options?: { force?: boolean },
+  options?: { force?: boolean; maxAgeMs?: number },
 ): Promise<GithubWorkItemThread> {
+  ensureItemScope(cwd, repo, kind, number);
   const key = detailsCacheKey(repo, kind, number);
   if (options?.force) {
     threadByKey.delete(key);
     threadInflight.delete(key);
   }
+  const cached = threadByKey.get(key);
+  if (!options?.force && cached && freshEnough(`thread:${key}`, options?.maxAgeMs)) return cached;
+  const generation = inboxCacheGeneration;
   const pending = threadInflight.get(key);
   if (pending) return pending;
   const promise = invoke<GithubWorkItemThread>("git_github_work_item_thread", {
@@ -509,7 +581,7 @@ export async function githubWorkItemThread(
     number,
   })
     .then((thread) => {
-      threadByKey.set(key, thread);
+      if (generation === inboxCacheGeneration && threadInflight.get(key) === promise) remember(threadByKey, key, thread, "thread");
       return thread;
     })
     .finally(() => {
@@ -527,6 +599,9 @@ export async function githubWorkItemComment(
   body: string,
   options?: { inReplyTo?: string },
 ): Promise<string> {
+  ensureItemScope(cwd, repo, kind, number);
+  const generation = inboxCacheGeneration;
+  const owner = itemScopes.get(detailsCacheKey(repo, kind, number));
   const url = await invoke<string>("git_github_work_item_comment", {
     cwd,
     repo,
@@ -535,9 +610,7 @@ export async function githubWorkItemComment(
     body: body.trim(),
     inReplyTo: options?.inReplyTo?.trim() ?? "",
   });
-  const key = detailsCacheKey(repo, kind, number);
-  threadByKey.delete(key);
-  threadInflight.delete(key);
+  if (generation === inboxCacheGeneration && itemScopes.get(detailsCacheKey(repo, kind, number)) === owner) invalidateGithubWorkItem(repo, kind, number);
   recordInboxSelfActivity({ provider: "github", kind, number, repo });
   return url;
 }
@@ -549,14 +622,19 @@ export async function githubPrAction(
   number: number,
   action: GithubPrAction,
 ): Promise<GithubWorkItem> {
+  ensureItemScope(cwd, repo, "pr", number);
+  const generation = inboxCacheGeneration;
+  const owner = itemScopes.get(detailsCacheKey(repo, "pr", number));
   const item = await invoke<GithubWorkItem>("git_github_pr_action", {
     cwd,
     repo,
     number,
     action,
   });
+  if (generation !== inboxCacheGeneration || itemScopes.get(detailsCacheKey(repo, "pr", number)) !== owner) return item;
+  invalidateGithubWorkItem(repo, "pr", number);
   const key = workItemLookupKey(repo, "pr", number);
-  workItemByKey.set(key, item);
+  remember(workItemByKey, key, item, "item");
   if (inboxListCache) {
     inboxListCache = {
       ...inboxListCache,
@@ -649,7 +727,9 @@ export function peekGithubPrDiff(
   repo: string,
   number: number,
   fullContext = false,
+  cwd?: string,
 ): GithubPrDiff | null {
+  if (!scopeMatches(detailsCacheKey(repo, "pr", number), cwd)) return null;
   return prDiffByKey.get(prDiffCacheKey(repo, number, fullContext)) ?? null;
 }
 
@@ -657,10 +737,15 @@ export async function githubPrDiff(
   cwd: string,
   repo: string,
   number: number,
-  options?: { fullContext?: boolean },
+  options?: { fullContext?: boolean; maxAgeMs?: number; force?: boolean },
 ): Promise<GithubPrDiff> {
+  ensureItemScope(cwd, repo, "pr", number);
   const fullContext = options?.fullContext === true;
   const key = prDiffCacheKey(repo, number, fullContext);
+  if (options?.force) { prDiffByKey.delete(key); prDiffInflight.delete(key); }
+  const cached = prDiffByKey.get(key);
+  if (!options?.force && cached && freshEnough(`diff:${key}`, options?.maxAgeMs)) return cached;
+  const generation = inboxCacheGeneration;
   const pending = prDiffInflight.get(key);
   if (pending) return pending;
   const promise = invoke<GithubPrDiff>("git_github_pr_diff", {
@@ -670,7 +755,7 @@ export async function githubPrDiff(
     fullContext,
   })
     .then((diff) => {
-      prDiffByKey.set(key, diff);
+      if (generation === inboxCacheGeneration && prDiffInflight.get(key) === promise) remember(prDiffByKey, key, diff, "diff");
       return diff;
     })
     .finally(() => {
@@ -678,6 +763,16 @@ export async function githubPrDiff(
     });
   prDiffInflight.set(key, promise);
   return promise;
+}
+
+/** Warm linked-panel data; failures remain retryable when the panel opens. */
+export function prefetchGithubWorkItem(cwd: string, target: { repo: string; kind: GithubTaskKind; number: number }) {
+  const { repo, kind, number } = target;
+  const options = { maxAgeMs: GITHUB_WORK_ITEM_FRESH_MS };
+  void githubWorkItem(cwd, repo, kind, number, options).catch(() => undefined);
+  void githubWorkItemDetails(cwd, repo, kind, number, options).catch(() => undefined);
+  void githubWorkItemThread(cwd, repo, kind, number, options).catch(() => undefined);
+  if (kind === "pr") void githubPrDiff(cwd, repo, number, options).catch(() => undefined);
 }
 
 export async function listInboxItems(

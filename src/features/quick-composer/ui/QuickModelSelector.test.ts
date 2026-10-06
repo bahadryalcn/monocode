@@ -51,7 +51,6 @@ let root: Root;
 const onChange = vi.fn();
 const onSettingsChange = vi.fn();
 const onClose = vi.fn();
-const onRuntimeModeChange = vi.fn();
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -70,8 +69,6 @@ beforeEach(() => {
         availableHarnesses: ["claude", "grok"],
         onChange,
         onSettingsChange,
-        runtimeMode: "supervised",
-        onRuntimeModeChange,
         onClose,
       }),
     ),
@@ -178,8 +175,6 @@ it("resets reasoning and fast mode to saved user defaults", () => {
         availableHarnesses: ["claude", "grok"],
         onChange,
         onSettingsChange,
-        runtimeMode: "supervised",
-        onRuntimeModeChange,
         onClose,
       }),
     ),
@@ -203,15 +198,7 @@ it("resets reasoning and fast mode to saved user defaults", () => {
   });
 });
 
-it("selects permissions beside the model settings without closing or taking initial search focus", () => {
-  const search = container.querySelector('[aria-label="Search models"]');
-  expect(document.activeElement).toBe(search);
-  const permissions = container.querySelector(
-    '[role="listbox"][aria-label="Permissions"]',
-  )!;
-  const fullAccess =
-    permissions.querySelectorAll<HTMLButtonElement>('[role="option"]')[3];
-  act(() => fullAccess.click());
-  expect(onRuntimeModeChange).toHaveBeenCalledWith("full-access");
-  expect(onClose).not.toHaveBeenCalled();
+it("keeps permissions outside the model picker and focuses model search", () => {
+  expect(document.activeElement).toBe(container.querySelector('[aria-label="Search models"]'));
+  expect(container.querySelector('[aria-label="Permissions"]')).toBeNull();
 });

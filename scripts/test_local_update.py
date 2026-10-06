@@ -10,11 +10,24 @@ import time
 import unittest
 from unittest.mock import patch
 
-from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, finish_build, host_key
+from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, finish_build, host_key, install_job_active
 from local_update_lib import backup, count, safe_child, write_json, read_json, alive, digest, windows_binary_digest
 from local_install import wait_idle, stop_windows_host
 
 class LocalUpdateTests(unittest.TestCase):
+    def test_terminal_install_job_does_not_block_on_reused_pid(self):
+        with patch('local_update.alive', return_value=True) as liveness:
+            for state in ('installed', 'failed'):
+                self.assertFalse(install_job_active({'state': state, 'pid': 123}))
+            liveness.assert_not_called()
+
+    def test_unfinished_install_job_preserves_process_guard(self):
+        with patch('local_update.alive', return_value=True):
+            for state in ('launching', 'starting', 'waiting', 'installing', None):
+                self.assertTrue(install_job_active({'state': state, 'pid': 123}))
+        with patch('local_update.alive', return_value=False):
+            self.assertFalse(install_job_active({'state': 'installing', 'pid': 123}))
+
     def test_shared_provider_edit_invalidates_host_cache(self):
         files = {'host/cli.ts': b'entry',
                  'src/integrations/harness/providers/codex/codex.ts': b'old'}

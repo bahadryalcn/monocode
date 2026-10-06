@@ -29,6 +29,8 @@ vi.mock("../../../platform/tauri/fs", () => ({
   basename: (path: string) => path.split("/").pop(),
   subscribeGitChanged: () => () => {},
   gitBranches: async () => null,
+  saveGeneratedImage: vi.fn(),
+  deleteGeneratedImages: vi.fn(),
 }));
 vi.mock("./useQuickPickerMotion", () => ({ useQuickPickerMotion: () => {} }));
 vi.mock("./QuickProjectIcon", () => ({
@@ -128,6 +130,19 @@ it("retains attachments for retry if starting the session fails", async () => {
     container.querySelector('button[aria-label="Open image.png full screen"]'),
   ).not.toBeNull();
   expect(button("Start").disabled).toBe(false);
+});
+
+it("selects permissions separately and sends them with the existing attachments", async () => {
+  await attach();
+  act(() => button("Permissions").click());
+  const menu = container.querySelector('[role="listbox"][aria-label="Permissions"]')!;
+  expect(document.activeElement).toBe(menu);
+  act(() => menu.querySelectorAll<HTMLButtonElement>('[role="option"]')[3].click());
+  expect(container.querySelector('[role="listbox"][aria-label="Permissions"]')).toBeNull();
+  await act(async () => button("Start").click());
+  expect(invoke).toHaveBeenCalledWith("quick_composer_submit", {
+    request: expect.objectContaining({ runtimeMode: "full-access", attachments: [expect.objectContaining({ path: "/tmp/image.png" })] }),
+  });
 });
 
 it("references an attachment in the prompt and drops the token with the chip", async () => {

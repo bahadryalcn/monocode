@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { UsageFooter } from "./UsageFooter";
+import { saveShowRemainingUsage } from "../../features/settings/model/displayPrefs";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 let container: HTMLDivElement;
@@ -18,6 +19,7 @@ const quota = (percent: number) => ({
 });
 
 beforeEach(() => {
+  saveShowRemainingUsage(false);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -66,6 +68,14 @@ it("renders Pi-owned quotas without fetching another CLI account", async () => {
   expect(document.body.textContent).not.toContain("Switch");
   expect(document.body.textContent).not.toContain("Add account");
   expect(document.body.textContent).not.toContain("Sign in");
+});
+
+it("updates Pi quota chips when remaining usage is selected", async () => {
+  await show("pi:anthropic/claude-sonnet-4-6");
+  expect(container.textContent).toContain("24%");
+  act(() => saveShowRemainingUsage(true));
+  expect(container.textContent).toContain("76%");
+  expect(container.querySelector<HTMLButtonElement>('[aria-label="Pi · Anthropic usage details"]')?.title).toContain("76% remaining");
 });
 
 it("clears old usage on provider changes and ignores late responses", async () => {

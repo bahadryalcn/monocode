@@ -34,6 +34,7 @@ import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
 import {
   githubStatus,
   githubWorkItem,
+  GITHUB_WORK_ITEM_FRESH_MS,
   gitlabAttentionLabel,
   inboxItemKey,
   inboxItemRef,
@@ -41,6 +42,7 @@ import {
   inboxProjectsForRail,
   listInboxItems,
   peekGithubWorkItem,
+  prefetchGithubWorkItem,
   peekInboxList,
   formatRelativeTime,
   type InboxItem,
@@ -561,7 +563,7 @@ export function InboxView({
       return;
     }
     let cancelled = false;
-    void githubWorkItem(cwd, target.repo, target.kind, target.number)
+    void githubWorkItem(cwd, target.repo, target.kind, target.number, { maxAgeMs: GITHUB_WORK_ITEM_FRESH_MS })
       .then((item) => {
         if (cancelled) return;
         setTargetItem({
@@ -1054,6 +1056,7 @@ export function LinkedWorkItemPanel({
     target.repo,
     target.kind,
     target.number,
+    cwd,
   );
   const [item, setItem] = useState<InboxItem | null>(() =>
     cachedItem ? { ...cachedItem, projectPath: cwd, provider: "github" } : null,
@@ -1081,13 +1084,13 @@ export function LinkedWorkItemPanel({
 
   useEffect(() => {
     let cancelled = false;
-    const cached = peekGithubWorkItem(target.repo, target.kind, target.number);
+    const cached = peekGithubWorkItem(target.repo, target.kind, target.number, cwd);
     setItem(
       cached ? { ...cached, projectPath: cwd, provider: "github" } : null,
     );
     setError(null);
     setLoading(cached == null);
-    void githubWorkItem(cwd, target.repo, target.kind, target.number)
+    void githubWorkItem(cwd, target.repo, target.kind, target.number, { maxAgeMs: GITHUB_WORK_ITEM_FRESH_MS })
       .then((next) => {
         if (cancelled) return;
         setItem({ ...next, projectPath: cwd, provider: "github" });
@@ -1126,7 +1129,7 @@ export function LinkedWorkItemPanel({
       inert={!visible || undefined}
       data-linked-work-item-panel
       className={`@container/linked relative min-h-0 max-w-full shrink-0 flex-col border-l border-stroke text-content max-[950px]:absolute max-[950px]:inset-y-0 max-[950px]:right-0 max-[950px]:z-30 max-[950px]:shadow-2xl ${
-        visible ? "flex" : "hidden"
+        visible ? "flex linked-work-item-enter" : "hidden"
       }`}
     >
       <div
@@ -1286,6 +1289,8 @@ function InboxCard({
         item,
       )}: ${item.title}${attentionLabel ? `, ${attentionLabel}` : ""}${unseen ? ", new" : ""}${relatedSessionCount > 0 ? `, ${relatedSessionCount} related ${relatedSessionCount === 1 ? "thread" : "threads"}` : ""}`}
       onClick={onSelect}
+      onMouseEnter={() => { if (item.provider === "github" && (item.kind === "pr" || item.kind === "issue")) prefetchGithubWorkItem(item.projectPath, { repo: item.repo, kind: item.kind, number: item.number }); }}
+      onFocus={() => { if (item.provider === "github" && (item.kind === "pr" || item.kind === "issue")) prefetchGithubWorkItem(item.projectPath, { repo: item.repo, kind: item.kind, number: item.number }); }}
       className={`flex w-full flex-col rounded-md border px-2.5 py-2 text-left ${
         active
           ? "border-transparent bg-selection text-content"

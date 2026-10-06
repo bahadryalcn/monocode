@@ -133,6 +133,17 @@ function inputText(input: HTMLInputElement, value: string) {
 }
 
 describe("model picker", () => {
+  it("focuses a visible model search after its first frame", async () => {
+    setHarnessModels("cursor", [{ id: "cursor:focus", harness: "cursor", name: "Focus model", nativeId: "focus", settings: [] }]);
+    act(() => root.render(createElement(ModelPicker, { harness: "cursor", model: "cursor:focus", values: {}, onChange: vi.fn(), onSettingsChange: vi.fn() })));
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!.click());
+    const models = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.startsWith("Model"))!;
+    hover(models);
+    await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search models"]');
+    expect(search).not.toBeNull();
+    expect(document.activeElement).toBe(search);
+  });
   it("filters a host catalog and reacts when model settings change", () => {
     const models = [
       { id: "claude:opus-4-6", name: "Opus", harness: "claude" as const },

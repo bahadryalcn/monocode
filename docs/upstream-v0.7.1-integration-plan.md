@@ -1,14 +1,14 @@
 # Upstream v0.7.1 uyarlama planı
 
 Tarih: 2026-10-06
-Durum: Plan hazır; uygulama, test çalıştırma ve kurulum yapılmadı.
+Durum: U01–U30 kaynak uyarlaması tamamlandı; yerel test sonuçları ve açık gerçek cihaz kabulü [uygulama kaydında](upstream-v0.7.1-integration-evidence.md). Kurulum yapılmadı.
 
 ## Amaç ve karşılaştırma tabanı
 
 v0.7.1'deki bütün kullanıcı davranışlarını değerlendirmek; eksikleri mevcut MonoCode mimarisine uyarlamak, bizde eşdeğer veya daha güçlü olan çözümleri korumak. Başarı ölçütü upstream kodunun kopyalanması değil, davranış kapsamının tamamlanması ve mevcut özelliklerin korunmasıdır.
 
 - Upstream: [v0.7.1](https://github.com/hardbeat920/monocode/releases/tag/v0.7.1), commit `807c70e0d56fad77a83e98dad12cef0e4f3ef460`.
-- Yerel başlangıç HEAD: `e78d881eef8d695434798d4480eb3dce4d452619`.
+- Plan karşılaştırma HEAD'i: `e78d881eef8d695434798d4480eb3dce4d452619`; uygulama başlangıcında yeniden doğrulanan temiz HEAD: `29b57cd82e8af4dc40bb7b7f5a4690b2dbf75546`.
 - Yerel `package.json`: `0.9.1`, paket yöneticisi `pnpm@12.8.2`.
 - Karşılaştırma mevcut staged, unstaged ve untracked çalışmaları da kapsar. HEAD tek başına güncel ürün tabanı değildir. Uygulama başlangıcında ilgili dosyalar yeniden okunmalıdır.
 - Commit geçmişinde bir upstream commit'inin bulunmaması, davranışın eksik olduğunun kanıtı değildir. İlk incelemedeki farklı satırlar yalnızca aday bulmak içindir; nihai karar kaynak, mevcut testler ve davranış üzerinden verilir.
@@ -29,7 +29,7 @@ Her madde üç sonuçtan biriyle kapanır: **koru**, **uyarla**, **ekle**. Koru 
 
 ## Tam kapsam matrisi
 
-Aşağıdaki kararlar uygulama başlangıcında tekrar doğrulanacak önerilerdir. Aynı commit birden fazla davranış içerdiğinde yalnızca ihtiyaç duyulan bölümü alınır.
+Aşağıdaki tablo özgün kapsam ve kabul ölçütlerini korur. Uygulama sırasında doğrulanan son kararlar ve kanıtlar [uygulama kaydındadır](upstream-v0.7.1-integration-evidence.md). Aynı commit birden fazla davranış içerdiğinde yalnızca ihtiyaç duyulan bölümü alınmıştır.
 
 | ID / aşama | Davranış ve upstream referansı | Önerilen karar / korunacak yerel davranış | Kabul ölçütü |
 |---|---|---|---|

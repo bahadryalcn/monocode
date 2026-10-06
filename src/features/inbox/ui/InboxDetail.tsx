@@ -58,14 +58,17 @@ import {
   ACTION_PANEL_HEADER,
   ACTION_GHOST,
 } from "./InboxPresentation";
+import { InboxDescriptionSummary, InboxPrChangesGlance } from "./InboxPrOverview";
 import { useInboxDetailData } from "./useInboxDetailData";
 
 export function InboxDetailTab({
   label,
+  count,
   selected,
   onSelect,
 }: {
   label: string;
+  count?: number;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -73,6 +76,7 @@ export function InboxDetailTab({
     <button
       type="button"
       role="tab"
+      aria-label={label}
       aria-selected={selected}
       onClick={onSelect}
       className={`relative flex h-9 items-center text-[12px] leading-none ${
@@ -80,6 +84,7 @@ export function InboxDetailTab({
       }`}
     >
       {label}
+      {count != null ? <span className="ml-1.5 rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] tabular-nums text-content/60">{count}</span> : null}
       {selected ? (
         <span className="absolute inset-x-0 bottom-0 h-0.5 bg-content" />
       ) : null}
@@ -122,10 +127,11 @@ export function InboxDetail({
 }) {
   const detailLock = useLockOverscroll<HTMLDivElement>();
   const panel = mode === "panel";
+  const [diffFocusPath, setDiffFocusPath] = useState<string | undefined>();
   const [tab, setTab] = useState<"summary" | "code" | "checks">("summary");
   const [diffMode, setDiffMode] = useState<"hunks" | "full">("hunks");
   const fullFile = inboxShowsFullFileDiff(item) && diffMode === "full";
-  const { linear, jira, tracker, jiraKey, gitlab, azuredevops, isPr, githubKind, gitlabKind, azureDevOpsKind, details, loading, error, prDiff, diffLoading, diffError, thread, setThread, threadLoading, threadError } = useInboxDetailData(item, revision, tab, fullFile);
+  const { linear, jira, tracker, jiraKey, gitlab, azuredevops, isPr, githubKind, gitlabKind, azureDevOpsKind, details, loading, error, prDiff, diffLoading, diffError, thread, setThread, threadLoading, threadError } = useInboxDetailData(item, revision, tab, fullFile, panel);
   const externalActionLabel =
     item.kind === "pr"
       ? gitlab
@@ -590,8 +596,9 @@ export function InboxDetail({
                   />
                   <InboxDetailTab
                     label="Code"
+                    count={panel ? prDiff?.files.length : undefined}
                     selected={tab === "code"}
-                    onSelect={() => setTab("code")}
+                    onSelect={() => { setDiffFocusPath(undefined); setTab("code"); }}
                   />
                   {prChecksOverall ? (
                     <PrChecksTab
@@ -648,7 +655,7 @@ export function InboxDetail({
         >
           <div
             className={`mx-auto flex w-full max-w-5xl flex-col ${
-              panel ? "gap-4 px-4 py-4" : "gap-5 px-8 py-5"
+              panel ? "linked-work-item-content-enter gap-6 px-4 py-5" : "gap-5 px-8 py-5"
             }`}
           >
             {item.labels.length > 0 ? (
@@ -673,6 +680,7 @@ export function InboxDetail({
                   key={`${item.projectPath}:${item.number}:${revision}:${diffMode}`}
                   diff={prDiff}
                   fullFile={fullFile}
+                  focusPath={diffFocusPath}
                 />
               ) : (
                 <p className="text-[13px] text-content/45">No file changes</p>
@@ -713,7 +721,7 @@ export function InboxDetail({
               <p className="text-[13px] text-content/50">{error}</p>
             ) : (
               <>
-                {details?.body.trim() ? (
+                {panel ? (<InboxDescriptionSummary body={details?.body ?? ""} cwd={markdownCwd} />) : details?.body.trim() ? (
                   <AgentMarkdown
                     text={details.body}
                     cwd={markdownCwd}
@@ -722,6 +730,7 @@ export function InboxDetail({
                 ) : (
                   <p className="text-[13px] text-content/45">No description</p>
                 )}
+                {panel && isPr ? (<InboxPrChangesGlance diff={prDiff} loading={diffLoading} error={diffError} onOpenFile={(path) => { setDiffFocusPath(path); setTab("code"); }} />) : null}
                 <InboxComments
                   thread={thread}
                   loading={threadLoading}

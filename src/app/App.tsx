@@ -1556,6 +1556,7 @@ function Workspace({
     () =>
       preloadNavigationWhenIdle([
         InboxView.preload,
+        LinkedWorkItemPanel.preload,
         AutomationsView.preload,
         TasksView.preload,
         listAutomations,
@@ -7508,6 +7509,8 @@ function Workspace({
           : undefined;
       if (shellCommand) return runSessionShell(sessionId, shellCommand);
       if (editedResends.isActive(sessionId)) return false;
+      // Apply received output and terminal state before reading the next turn.
+      flushHarnessEvents();
       const controlError = orchestrator.submissionError(
         sessionId,
         options?.managed,
@@ -10738,6 +10741,7 @@ function Workspace({
         }).catch(console.error);
       },
       steer: async (id, text) => {
+        flushHarnessEvents();
         const session = sessionsRef.current.find((entry) => entry.id === id);
         if (!session) throw new Error("This agent is no longer available");
         if (!session.busy)

@@ -187,11 +187,19 @@ export function historyWithLiveSessions(
       const stored = rows[storedIndex];
       const draft = !!sessionDraftBlock(session);
       const automationId = session.automationId || stored.automationId;
-      if (!!stored.draft !== draft || stored.automationId !== automationId) {
+      const linkedWorkItem = session.linkedWorkItem ?? stored.linkedWorkItem;
+      if (
+        !!stored.draft !== draft ||
+        stored.automationId !== automationId ||
+        stored.title !== session.title ||
+        stored.linkedWorkItem !== linkedWorkItem
+      ) {
         rows[storedIndex] = {
           ...stored,
+          title: session.title,
           draft: draft || undefined,
           ...(automationId ? { automationId } : {}),
+          ...(linkedWorkItem ? { linkedWorkItem } : {}),
         };
       }
       continue;

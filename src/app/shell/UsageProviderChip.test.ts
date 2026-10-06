@@ -89,6 +89,19 @@ function button(label: string): HTMLButtonElement {
 }
 
 describe("UsageProviderChip", () => {
+  it("updates the chip, tooltip and open cards when the usage preference changes", async () => {
+    act(() => { saveShowRemainingUsage(false); root.render(createElement(UsageProviderChip, { limits: codexLimits(), now })); });
+    const trigger = button("Codex usage details");
+    expect(trigger.textContent).toContain("81%");
+    expect(trigger.title).toContain("81% used");
+    await act(async () => trigger.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("81% used");
+    act(() => saveShowRemainingUsage(true));
+    expect(trigger.textContent).toContain("19%");
+    expect(trigger.title).toContain("19% remaining");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("19% remaining");
+  });
+
   it("offers the provider-owned login flow for an expired Claude session", async () => {
     const limits: ProviderRateLimits = {
       provider: "claude",

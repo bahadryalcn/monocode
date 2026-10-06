@@ -94,7 +94,7 @@ import {
   OPEN_SUBAGENT_EVENT,
   requestViewSubagent,
 } from "./subagentFocus";
-import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
+import { innerScrollerTakes, useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { useStableCallback } from "../../../shared/hooks/useStableCallback";
 import { useTranscriptLayout } from "../hooks/useTranscriptLayout";
 import { useTranscriptAnchor } from "../hooks/useTranscriptAnchor";
@@ -307,6 +307,13 @@ function AgentTranscriptComponent({
   const prependHeight = useRef<number | null>(null);
   const wasVisible = useRef(false);
   const [scrollerEl, setScrollerEl] = useState<HTMLDivElement | null>(null);
+  const seenOutput = useRef<Set<string> | null>(null);
+  if (!seenOutput.current) seenOutput.current = new Set(blocks.filter((block) => block.text).map((block) => block.id));
+  useLayoutEffect(() => {
+    // Keep only the loaded page's ids: paging must not create an unbounded cache.
+    seenOutput.current!.clear();
+    for (const block of blocks) if (block.text) seenOutput.current!.add(block.id);
+  }, [blocks]);
   const [visibleTurnCount, setVisibleTurnCount] = useState(FIRST_PAINT_TURNS);
   // Turns whose folded work the reader has opened, by turn id.
   const [openWork, setOpenWork] = useState<Record<string, boolean>>({});
@@ -388,14 +395,16 @@ function AgentTranscriptComponent({
         el.scrollTop < previous.top;
       // Scrolling up inside the bottom margin is the reader leaving. Pinning
       // again here would snap each streamed chunk back down under the wheel.
-      const leaving =
-        scrolledUp ||
-        (!stickToBottom.current && distance > distanceFromBottom.current);
+      const layoutChanged = !!previous && previous.el === el && (
+        previous.height !== el.scrollHeight || previous.viewport !== el.clientHeight
+      );
+      const clamped = !!previous && scrollClampedToBottom(el, previous.top);
+      const leaving = scrolledUp || (!stickToBottom.current && distance > distanceFromBottom.current);
       const near = stickToBottom.current
         ? !scrolledUp
-        : isNearBottom(el) &&
+        : !layoutChanged && !clamped && isNearBottom(el) &&
           !leaving &&
-          (distance <= 0 || (!!previous && el.scrollTop > previous.top));
+          !!previous && el.scrollTop > previous.top;
       stickToBottom.current = near;
       distanceFromBottom.current = distance;
       rememberScroll(el);
@@ -440,8 +449,11 @@ function AgentTranscriptComponent({
   useEffect(() => {
     if (!visible || !scrollerEl) return;
     syncPinned(scrollerEl);
-    const onScroll = () => syncPinned(scrollerEl);
+    const onScroll = () => {
+      if (scrollerEl.isConnected && scrollerEl.clientHeight > 0) syncPinned(scrollerEl);
+    };
     const onWheel = (e: WheelEvent) => {
+      if (innerScrollerTakes(scrollerEl, e)) return;
       if (e.deltaY < 0) {
         stickToBottom.current = false;
         setShowJump(true);
@@ -542,7 +554,7 @@ function AgentTranscriptComponent({
     return () => observer.disconnect();
   }, [rememberScroll, scrollerEl, setShowJump, visible]);
 
-  useTurnScrollAnchor(scrollerEl, visible, stickToBottom);
+  useTurnScrollAnchor(scrollerEl, visible, stickToBottom, rememberScroll);
 
   const previousTurns = useRef<Block[][]>([]);
   const turns = groupTurnsStable(blocks, managed, previousTurns.current);
@@ -745,7 +757,7 @@ function AgentTranscriptComponent({
       ref={setScroller}
       className="agent-transcript h-full overflow-y-auto overscroll-none [overflow-anchor:none] font-mono text-[13px] leading-5"
     >
-      <div className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-1 pb-8">
+      <div data-transcript-content className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-1 pb-8">
         {historyLoading ? <div role="status" className="px-4 py-3 font-sans text-xs text-content/60">Loading earlier messages…</div> : null}
         {historyLoadError ? <div role="alert" className="px-4 py-3 font-sans text-xs text-danger">{historyLoadError}</div> : null}
         {remoteHistoryError ? <div role="alert" className="px-4 py-2 font-sans text-xs text-danger">{remoteHistoryError}</div> : null}
@@ -771,6 +783,8 @@ function AgentTranscriptComponent({
             <Turn
               key={turnId}
               turn={turn}
+              seenOutput={seenOutput.current!}
+              allowMountReveal={visible && wasVisible.current && !historyLoading && !remoteHistoryLoading}
               managed={managed}
               settled={settled}
               live={live}
@@ -844,6 +858,8 @@ export const AgentTranscript = memo(
 
 type TurnProps = {
   turn: Block[];
+  seenOutput: ReadonlySet<string>;
+  allowMountReveal: boolean;
   managed: boolean;
   settled: boolean;
   live: boolean;
@@ -894,6 +910,8 @@ type TurnProps = {
  */
 const Turn = memo(function Turn({
   turn,
+  seenOutput,
+  allowMountReveal,
   managed,
   settled,
   live,
@@ -1051,6 +1069,7 @@ const Turn = memo(function Turn({
       ) : null}
       <TranscriptBlock
         block={item.block}
+        revealOnMount={allowMountReveal && isLastTurn && !seenOutput.has(item.block.id)}
         layout={transcriptLayout}
         visible={item.block.role === "user" ? visible : undefined}
         stickyIndex={turnNumber}
@@ -1693,6 +1712,7 @@ function EditLastTurnButton({
 
 const TranscriptBlock = memo(function TranscriptBlock({
   block,
+  revealOnMount,
   layout,
   visible,
   stickyIndex,
@@ -1716,6 +1736,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
 }: {
   block: Block;
   layout: TranscriptLayout;
+  revealOnMount?: boolean;
   visible?: boolean;
   stickyIndex: number;
   /** True when something already sits directly above this in the turn. */
@@ -1860,6 +1881,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
       <AgentMarkdown
         text={block.text}
         streaming={block.streaming}
+        revealOnMount={revealOnMount}
         cwd={cwd}
         onOpenFile={onOpenFile}
       />
@@ -2449,6 +2471,7 @@ function useTurnScrollAnchor(
   el: HTMLDivElement | null,
   enabled: boolean,
   stickToBottom: RefObject<boolean>,
+  onAdjust: (el: HTMLElement) => void,
 ) {
   useLayoutEffect(() => {
     const inner = el?.firstElementChild;
@@ -2459,7 +2482,11 @@ function useTurnScrollAnchor(
       if (!el.isConnected) return;
       const viewportTop = el.getBoundingClientRect().top;
       let shift = 0;
-      for (const entry of entries) {
+      let precedingDelta = 0;
+      const byTurn = new Map(entries.map((entry) => [entry.target, entry]));
+      for (const turn of inner.children) {
+        const entry = byTurn.get(turn);
+        if (!entry) continue;
         const height =
           entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
         const previous = heights.get(entry.target);
@@ -2467,10 +2494,14 @@ function useTurnScrollAnchor(
         if (previous === undefined || stickToBottom.current) continue;
         // Only turns that sat wholly above the view. A turn the reader is
         // looking at grows downward from where they are reading.
-        const top = entry.target.getBoundingClientRect().top;
+        const top = entry.target.getBoundingClientRect().top - precedingDelta;
         if (top + previous <= viewportTop) shift += height - previous;
+        precedingDelta += height - previous;
       }
-      if (shift) el.scrollTop += shift;
+      if (shift) {
+        el.scrollTop += shift;
+        onAdjust(el);
+      }
     });
     let observed = new WeakSet<Element>();
     const observeTurns = () => {
@@ -2496,7 +2527,7 @@ function useTurnScrollAnchor(
       mutations.disconnect();
       resize.disconnect();
     };
-  }, [el, enabled, stickToBottom]);
+  }, [el, enabled, stickToBottom, onAdjust]);
 }
 
 /**
@@ -2510,6 +2541,7 @@ function useLivePhaseScroll(
   steps: Block[],
 ) {
   const stickToBottom = useRef(true);
+  const lastScrollTop = useRef(0);
   const wasEnabled = useRef(false);
 
   useLayoutEffect(() => {
@@ -2523,22 +2555,24 @@ function useLivePhaseScroll(
     }
     if (!el || !stickToBottom.current) return;
     el.scrollTop = el.scrollHeight;
+    lastScrollTop.current = el.scrollTop;
   }, [el, enabled, steps]);
 
   useEffect(() => {
     if (!el || !enabled) return;
 
     const pin = () => {
-      if (stickToBottom.current) el.scrollTop = el.scrollHeight;
-    };
-    let lastDistance = 0;
-    const onScroll = () => {
-      // Only a scroll toward the end re-pins; one leaving it must not.
-      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-      if (isNearBottom(el) && distance <= lastDistance) {
-        stickToBottom.current = true;
+      if (stickToBottom.current) {
+        el.scrollTop = el.scrollHeight;
+        lastScrollTop.current = el.scrollTop;
       }
-      lastDistance = distance;
+    };
+    const onScroll = () => {
+      const movement = el.scrollTop - lastScrollTop.current;
+      if (movement !== 0 && !scrollClampedToBottom(el, lastScrollTop.current)) {
+        stickToBottom.current = movement > 0 && isNearBottom(el);
+      }
+      lastScrollTop.current = el.scrollTop;
     };
     const onWheel = (e: WheelEvent) => {
       if (!nestedScrollAbsorbsWheel(el, e.deltaY)) return;
@@ -4223,6 +4257,11 @@ function riseIntoAnchor(scroller: HTMLElement | null, blockId: string) {
 
 function isNearBottom(el: HTMLElement): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+function scrollClampedToBottom(el: HTMLElement, previousTop: number): boolean {
+  const bottom = Math.max(0, el.scrollHeight - el.clientHeight);
+  return previousTop > bottom && Math.abs(el.scrollTop - bottom) < 1;
 }
 
 function pinToBottom(el: HTMLElement | null) {

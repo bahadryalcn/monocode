@@ -3365,6 +3365,7 @@ fn git_unstage_file_for(root: &Path, relative: &str) -> Result<(), String> {
                 "--literal-pathspecs",
                 "rm",
                 "--cached",
+                "-r",
                 "-f",
                 "--",
                 &relative,
@@ -9250,6 +9251,104 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.0.join("b.txt")).unwrap(), "b\n");
         std::fs::write(dir.0.join(".git/index"), "broken").unwrap();
         assert!(git_unstage_all_for(&dir.0).is_err());
+    }
+
+    #[test]
+    fn git_unstage_literal_directory_before_first_commit_keeps_sibling() {
+        let dir = tmp("git-unborn-literal-directory");
+        if !git(&dir.0, &["init"]) {
+            return;
+        }
+        for folder in ["src[1]", "src1"] {
+            std::fs::create_dir_all(dir.0.join(folder).join("nested")).unwrap();
+            std::fs::write(dir.0.join(folder).join("nested/a.txt"), "keep\n").unwrap();
+        }
+        git_stage_file_for(&dir.0, "src[1]").unwrap();
+        assert_eq!(
+            git_stdout(&dir.0, &["ls-files"]).unwrap().trim(),
+            "src[1]/nested/a.txt"
+        );
+        git_stage_file_for(&dir.0, "src1").unwrap();
+        git_unstage_file_for(&dir.0, "src[1]").unwrap();
+        assert_eq!(
+            git_stdout(&dir.0, &["ls-files"]).unwrap().trim(),
+            "src1/nested/a.txt"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("src[1]/nested/a.txt")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    #[test]
+    fn git_stage_and_unstage_directory() {
+        let dir = tmp("git-stage-directory");
+        std::fs::create_dir_all(dir.0.join("src/nested")).unwrap();
+        std::fs::create_dir_all(dir.0.join("src-other")).unwrap();
+        if !init_git_commit(
+            &dir.0,
+            &[
+                ("src/app.ts", "before\n"),
+                ("src/nested/deleted.ts", "delete me\n"),
+                ("src-other/app.ts", "before\n"),
+                ("ready.txt", "before\n"),
+                (".gitignore", "src/ignored.txt\n"),
+            ],
+        ) {
+            return;
+        }
+        std::fs::write(dir.0.join("src/app.ts"), "after\n").unwrap();
+        std::fs::remove_dir_all(dir.0.join("src/nested")).unwrap();
+        std::fs::create_dir_all(dir.0.join("src/added")).unwrap();
+        std::fs::write(dir.0.join("src/added/new.ts"), "new\n").unwrap();
+        std::fs::write(dir.0.join("src/ignored.txt"), "ignored\n").unwrap();
+        std::fs::write(dir.0.join("src-other/app.ts"), "outside\n").unwrap();
+        std::fs::write(dir.0.join("ready.txt"), "ready\n").unwrap();
+        git_stage_file_for(&dir.0, "ready.txt").unwrap();
+
+        git_stage_file_for(&dir.0, "src").unwrap();
+        let index = git_diff_index_for(&dir.0);
+        assert_eq!(index.files.len(), 5);
+        for file in &index.files {
+            let in_folder = file.relative.starts_with("src/");
+            assert_eq!(file.staged, in_folder || file.relative == "ready.txt");
+            assert_eq!(file.unstaged, file.relative == "src-other/app.ts");
+        }
+
+        git_unstage_file_for(&dir.0, "src").unwrap();
+        let index = git_diff_index_for(&dir.0);
+        assert_eq!(index.files.len(), 5);
+        for file in &index.files {
+            assert_eq!(file.staged, file.relative == "ready.txt");
+            assert_eq!(file.unstaged, file.relative != "ready.txt");
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.0.join("src/app.ts")).unwrap(),
+            "after\n"
+        );
+        assert!(!dir.0.join("src/nested").exists());
+    }
+
+    #[test]
+    fn git_stage_and_unstage_deleted_directory() {
+        let dir = tmp("git-stage-deleted-directory");
+        std::fs::create_dir_all(dir.0.join("deleted/nested")).unwrap();
+        if !init_git_commit(&dir.0, &[("deleted/nested/file.ts", "before\n")]) {
+            return;
+        }
+        std::fs::remove_dir_all(dir.0.join("deleted")).unwrap();
+        git_stage_file_for(&dir.0, "deleted").unwrap();
+        let index = git_diff_index_for(&dir.0);
+        assert_eq!(index.files.len(), 1);
+        assert!(index.files[0].staged);
+        assert!(!index.files[0].unstaged);
+
+        git_unstage_file_for(&dir.0, "deleted").unwrap();
+        let index = git_diff_index_for(&dir.0);
+        assert_eq!(index.files.len(), 1);
+        assert!(!index.files[0].staged);
+        assert!(index.files[0].unstaged);
+        assert!(!dir.0.join("deleted").exists());
     }
 
     #[test]

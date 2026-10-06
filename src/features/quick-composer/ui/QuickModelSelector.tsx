@@ -1,5 +1,4 @@
 import "./QuickModelSelector.css";
-import { QuickPermissions } from "./QuickPermissions";
 import {
   useEffect,
   useId,
@@ -30,8 +29,6 @@ import {
   HARNESSES,
   HARNESS_TITLE,
   type HarnessId,
-  type RuntimeMode,
-  unavailableRuntimeModes,
 } from "../../sessions/model/session";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 import {
@@ -46,8 +43,6 @@ type Props = {
   onChange: (model: AgentModel) => void;
   onSettingsChange: (values: Record<string, string>) => void;
   onClose: () => void;
-  runtimeMode: RuntimeMode;
-  onRuntimeModeChange: (mode: RuntimeMode) => void;
 };
 
 /** Inline model browser: providers share the full width above search/results. */
@@ -58,8 +53,6 @@ export function QuickModelSelector({
   onChange,
   onSettingsChange,
   onClose,
-  runtimeMode,
-  onRuntimeModeChange,
 }: Props) {
   const catalogVersion = useSyncExternalStore(
     subscribeModels,
@@ -429,20 +422,7 @@ export function QuickModelSelector({
             </div>
           ) : null}
         </div>
-        {model.harness !== "fx" ? (
-          <aside className="flex min-h-0 w-1/2 shrink-0 flex-col border-l border-stroke">
-            <h3 className="flex h-10 shrink-0 items-center border-b border-stroke px-4 text-[12px] font-medium text-content/55">
-              Permissions
-            </h3>
-            <QuickPermissions
-              embedded
-              value={runtimeMode}
-              unavailable={unavailableRuntimeModes(model.harness)}
-              onChange={onRuntimeModeChange}
-              onClose={onClose}
-            />
-          </aside>
-        ) : null}
+
       </div>
     </section>
   );

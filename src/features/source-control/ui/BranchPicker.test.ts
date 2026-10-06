@@ -4,6 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../../../platform/tauri/fs", () => ({
+  saveGeneratedImage: vi.fn(),
+  deleteGeneratedImages: vi.fn(async () => {}),
   gitBranches: vi.fn(async () => ({
     current: "main",
     detached: false,

@@ -38,6 +38,7 @@ import {
 import { useTabCloseMotion } from "../../features/workspace/hooks/useTabCloseMotion";
 import { TabWidthMotion } from "./ClosingTab";
 import { FileTypeIcon } from "../../features/files/ui/FileTypeIcon";
+import { TabLabel } from "../../shared/ui/TabLabel";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
 import { getName } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -412,15 +413,15 @@ function TitleTabItem({
         {/* Keep two-line tabs compact while leaving room for descenders. */}
         <span className="flex min-w-0 flex-1 flex-col justify-center">
           <span className="flex min-w-0 items-center gap-1">
-            <span
-              className={`min-w-0 truncate leading-tight ${tab.previewFileId ? "italic" : ""} ${
+            <TabLabel
+              className={`leading-tight ${tab.previewFileId ? "italic" : ""} ${
                 meta
                   ? "text-[13px] @min-[11rem]:text-[10px] @min-[11rem]:font-medium"
                   : "text-[13px]"
               }`}
             >
               {headline}
-            </span>
+            </TabLabel>
             {tab.pendingWindowMove || tab.movingWindow ? (
               <span
                 className="shrink-0 text-accent"
@@ -447,9 +448,9 @@ function TitleTabItem({
             ) : null}
           </span>
           {meta ? (
-            <span className="hidden min-w-0 truncate text-[10px] leading-tight text-content/45 @min-[11rem]:block">
+            <TabLabel className="hidden text-[10px] leading-tight text-content/45 @min-[11rem]:block">
               {meta}
-            </span>
+            </TabLabel>
           ) : null}
         </span>
       </button>
@@ -1066,7 +1067,7 @@ function TitleBarComponent({
     (projectless &&
       railClosed &&
       Boolean(onOpenInbox || onOpenNotes || onOpenSettings)) ||
-    (railClosed && !projectless);
+    (!sessionSidebarOpen && !projectless);
   const showLayoutControl = Boolean(layout) && !projectless;
   const trailingControls =
     showTrailingActions || showLayoutControl || !IS_MAC ? (
@@ -1109,7 +1110,7 @@ function TitleBarComponent({
                 <StickyNote className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             ) : null}
-            {railClosed && !projectless ? (
+            {!sessionSidebarOpen && !projectless ? (
               <>
                 <IconButton label={`Go to File (${MOD}P)`} onClick={onGoToFile}>
                   <Search className="size-3.5" strokeWidth={1.75} />

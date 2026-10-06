@@ -114,8 +114,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "mcp",
     group: "agents",
     label: "MCP",
-    description: "Find MCP servers across providers and manage their connections.",
-    keywords: "tools servers connections oauth authenticate login claude codex cursor opencode",
+    description:
+      "Find MCP servers across providers and manage their connections.",
+    keywords:
+      "tools servers connections oauth authenticate login claude codex cursor opencode",
   },
   {
     id: "skills",
@@ -185,7 +187,8 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     id: "terminal-default-profile",
     section: "terminal",
     label: "Default terminal profile",
-    keywords: "shell bash git bash powershell pwsh cmd wsl zsh default ! command",
+    keywords:
+      "shell bash git bash powershell pwsh cmd wsl zsh default ! command",
   },
   {
     id: "group-lock-password",
@@ -321,6 +324,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "appearance",
     label: "Accent color",
     keywords: "highlight bubble send button tint",
+  },
+  {
+    id: "diff-colors",
+    section: "appearance",
+    label: "Diff colors",
+    keywords:
+      "colorblind color blind accessibility added removed red green blue orange high contrast changes",
   },
   {
     id: "hue",
@@ -1044,7 +1054,8 @@ export function saveRemoteAutoReconnect(value: boolean): void {
 export function subscribeRemoteAutoReconnect(onChange: () => void): () => void {
   if (typeof window === "undefined") return () => {};
   const onStorage = (event: StorageEvent) => {
-    if (event.key === REMOTE_AUTO_RECONNECT_KEY || event.key === null) onChange();
+    if (event.key === REMOTE_AUTO_RECONNECT_KEY || event.key === null)
+      onChange();
   };
   window.addEventListener(REMOTE_AUTO_RECONNECT_CHANGE_EVENT, onChange);
   window.addEventListener("storage", onStorage);

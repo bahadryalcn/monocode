@@ -6,6 +6,26 @@ function field(scrollHeight: number, height = "") {
 }
 
 describe("resizeComposer", () => {
+  it("holds occupied space during auto measurement and restores the wrapper", () => {
+    const wrapper = { style: { minHeight: "20px" }, offsetHeight: 180 };
+    const style = { height: "160px" };
+    let measuring = false;
+    const el = {
+      style,
+      parentElement: wrapper,
+      get scrollHeight() {
+        if (style.height === "auto") {
+          measuring = true;
+          expect(wrapper.style.minHeight).toBe("180px");
+        }
+        return 72;
+      },
+    };
+    resizeComposer(el);
+    expect(measuring).toBe(true);
+    expect(style.height).toBe("72px");
+    expect(wrapper.style.minHeight).toBe("20px");
+  });
   it("grows the field to fit the draft", () => {
     const el = field(88);
     resizeComposer(el);
