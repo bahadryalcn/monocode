@@ -10,6 +10,7 @@ import type { Session } from "../../features/sessions/model/session";
 import {
   collectWindowTransfer,
   mergeWindowTransfer,
+  removeWindowTransfer,
   restoreTransferredDrafts,
 } from "./windowTransfer";
 import {
@@ -32,7 +33,78 @@ function session(id: string, cwd: string): Session {
   };
 }
 
+describe("cross-window title strip placement", () => {
+  it.each(["before", "after"] as const)("inserts incoming tabs %s the previewed title target", (position) => {
+    const left = newTab("left");
+    const right = newTab("right");
+    const moved = newTab("moved");
+    const incoming = {
+      tabs: [moved], sessions: [session("moved", "/repo")], activeTabId: moved.id,
+      projectCwd: "/repo", dirtyFileIds: [],
+    };
+    const merged = mergeWindowTransfer([left, right], [session("left", "/repo"), session("right", "/repo")], [], incoming,
+      null, { targetTabId: right.id, position });
+    expect(merged.tabs.map((tab) => tab.id)).toEqual(position === "before" ? [left.id, moved.id, right.id] : [left.id, right.id, moved.id]);
+    expect(merged.activeTabId).toBe(moved.id);
+    expect(merged.tabs.find((tab) => tab.id === moved.id)?.layout).toEqual(moved.layout);
+  });
+});
+
 describe("collectWindowTransfer", () => {
+  it.each(["right", "center"] as const)(
+    "docks into a destination pane at %s and rolls back safely",
+    (edge) => {
+      const existing = newTab("existing");
+      const moving = newTab("moving");
+      const incoming = collectWindowTransfer(
+        [moving],
+        [session("moving", "/p")],
+        [moving.id],
+        moving.id,
+        new Set(),
+        "/p",
+      )!;
+      const merged = mergeWindowTransfer(
+        [existing],
+        [session("existing", "/p")],
+        [],
+        incoming,
+        { id: "existing", edge },
+      );
+      expect(merged.tabs).toHaveLength(1);
+      expect(merged.activeTabId).toBe(existing.id);
+      expect(merged.tabs[0].focusedId).toBe("moving");
+      const editedDestination = {
+        ...merged.tabs[0],
+        groupLabel: "preserve destination edit",
+      };
+      const rolledBack = removeWindowTransfer([editedDestination], incoming);
+      expect(rolledBack).toHaveLength(1);
+      expect(rolledBack[0].layout).toEqual(existing.layout);
+      expect(rolledBack[0].groupLabel).toBe("preserve destination edit");
+      expect(rolledBack[0].focusedId).toBe("existing");
+    },
+  );
+
+  it("keeps incoming tabs when the drop target has disappeared", () => {
+    const existing = newTab("existing");
+    const moving = newTab("moving");
+    const incoming = collectWindowTransfer(
+      [moving],
+      [session("moving", "/p")],
+      [moving.id],
+      moving.id,
+      new Set(),
+      "/p",
+    )!;
+    const merged = mergeWindowTransfer([existing], [], [], incoming, {
+      id: "closed-pane",
+      edge: "right",
+    });
+    expect(merged.tabs).toEqual([existing, moving]);
+    expect(merged.activeTabId).toBe(moving.id);
+  });
+
   it("reattaches a tab while retaining the destination's tabs and drafts", () => {
     const existing = newTab("existing");
     const moved = newTab("moved");

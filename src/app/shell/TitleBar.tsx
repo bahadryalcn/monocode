@@ -47,6 +47,7 @@ import {
   isPointerOutsideWindow,
   popOutPosition,
 } from "../model/windowTransferPopout";
+import { beginWindowTabDrag } from "../model/windowDragPreview";
 import { WindowControls } from "./WindowControls";
 import { IS_MAC, IS_WIN, MOD, SHIFT } from "../../platform/tauri/platform";
 import type { RecentProject } from "../../features/projects/model/recents";
@@ -114,6 +115,8 @@ export type Tab = {
 };
 
 type Props = {
+  detached?: boolean;
+  onReturnToMain?: () => void;
   tabs: Tab[];
   activeId: string;
   cwd: string;
@@ -669,6 +672,8 @@ export function OverlayNav({
 }
 
 function TitleBarComponent({
+  detached = false,
+  onReturnToMain,
   tabs,
   activeId,
   cwd,
@@ -740,11 +745,17 @@ function TitleBarComponent({
     },
     [tabs],
   );
+  const nativeTabDrag = useRef<ReturnType<typeof beginWindowTabDrag> | undefined>(undefined);
+  useEffect(() => () => nativeTabDrag.current?.finish(), []);
   const externalTabDrop = useMemo<ReorderExternalDrop<string> | undefined>(
     () =>
       onPlaceOnPane || onMoveToNewWindow
         ? {
             onMove: (tabId, event) => {
+              if (onMoveToNewWindow && popOutTab(tabId)) {
+                nativeTabDrag.current ??= beginWindowTabDrag(tabId);
+                nativeTabDrag.current.move(event);
+              }
               if (
                 onMoveToNewWindow &&
                 popOutTab(tabId) &&
@@ -781,7 +792,7 @@ function TitleBarComponent({
               if (
                 over &&
                 tabId === activeId &&
-                tabs.find((tab) => tab.id === tabId)?.focusedPaneId === over.id
+                tabs.find((tab) => tab.id === tabId)?.focusedPaneId === over.id && over.edge === "center"
               ) {
                 setExternalPaneDrop(null);
                 return true;
@@ -791,7 +802,10 @@ function TitleBarComponent({
                 overId: over?.id ?? null,
                 edge: over?.edge ?? "left",
               });
-              if (over) setDropFeedback("move", event, `Place ${over.edge}`);
+              if (over) setDropFeedback("move", event,
+                tabId === activeId && tabs.find((tab) => tab.id === tabId)?.focusedPaneId === over.id
+                  ? `Split ${over.edge} with a new session`
+                  : over.edge === "center" ? "Add as pane tab" : `Place ${over.edge}`);
               return over != null || !overStrip;
             },
             onDrop: (tabId, event) => {
@@ -822,13 +836,17 @@ function TitleBarComponent({
               if (!over) return !overStrip;
               if (
                 tabId === activeId &&
-                tabs.find((tab) => tab.id === tabId)?.focusedPaneId === over.id
+                tabs.find((tab) => tab.id === tabId)?.focusedPaneId === over.id && over.edge === "center"
               )
                 return true;
               onPlaceOnPane(tabId, over.id, over.edge);
               return true;
             },
-            onEnd: () => setExternalPaneDrop(null),
+            onEnd: () => {
+              nativeTabDrag.current?.finish();
+              nativeTabDrag.current = undefined;
+              setExternalPaneDrop(null);
+            },
           }
         : undefined,
     [activeId, tabs, onPlaceOnPane, onMoveToNewWindow, popOutTab],
@@ -1068,7 +1086,7 @@ function TitleBarComponent({
       railClosed &&
       Boolean(onOpenInbox || onOpenNotes || onOpenSettings)) ||
     (!sessionSidebarOpen && !projectless);
-  const showLayoutControl = Boolean(layout) && !projectless;
+  const showLayoutControl = Boolean(layout);
   const trailingControls =
     showTrailingActions || showLayoutControl || !IS_MAC ? (
       <div className="flex h-full shrink-0 items-stretch">
@@ -1078,9 +1096,11 @@ function TitleBarComponent({
             className="flex items-center pl-1 pr-1"
             data-layout-control
           >
-            <IconButton
-              label="Layout"
-              active={layoutMenu != null}
+            <button
+              type="button"
+              aria-label="Layout"
+              title="Split and arrange panes"
+              className={`flex h-7 items-center gap-1.5 rounded px-2 text-xs ${layoutMenu != null ? "bg-content/10 text-content" : "text-content/60 hover:bg-content/10 hover:text-content"}`}
               onClick={() => {
                 if (layoutMenu) {
                   setLayoutMenu(null);
@@ -1095,7 +1115,8 @@ function TitleBarComponent({
               }}
             >
               <SplitSquare className="size-3.5" strokeWidth={1.75} />
-            </IconButton>
+              {!layout?.canArrange ? <span>Layout</span> : null}
+            </button>
           </div>
         ) : null}
         {showTrailingActions ? (
@@ -1302,6 +1323,13 @@ function TitleBarComponent({
               {systemTitle}
             </span>
           </div>
+        ) : null}
+        {detached && onReturnToMain ? (
+          <button type="button" onClick={onReturnToMain}
+            className="my-1 shrink-0 rounded px-3 text-xs text-content/70 hover:bg-content/10 hover:text-content"
+            title="Return all sessions to the main window; running responses finish before moving">
+            Return to main window
+          </button>
         ) : null}
         {trailingControls}
       </div>

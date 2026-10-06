@@ -1,7 +1,10 @@
 import {
   leafIds,
+  closeLeaf,
+  type PaneEdge,
   type WorkspaceTab,
 } from "../../features/workspace/model/layout";
+import { applyPlaceTabOnPane } from "../../features/workspace/model/workspaceTabGroups";
 import type { ProjectTerminalDock } from "../../features/projects/model/projectTerminal";
 import type { Session } from "../../features/sessions/model/session";
 import {
@@ -19,6 +22,8 @@ export type WindowTransferPayload = {
   dirtyFileIds: string[];
   projectTerminals?: ProjectTerminalDock[];
   composerDrafts?: Record<string, ReturnType<typeof composerDraftOf>>;
+  /** Logical coordinates in the receiving webview, supplied by native hit testing. */
+  dropPoint?: { x: number; y: number };
 };
 
 /** Receiving a tab must preserve the destination's existing conversations. */
@@ -27,6 +32,8 @@ export function mergeWindowTransfer(
   sessions: Session[],
   projectTerminals: ProjectTerminalDock[],
   incoming: WindowTransferPayload,
+  target?: { id: string; edge: PaneEdge } | null,
+  titleTarget?: { targetTabId: string; position: "before" | "after" } | null,
 ) {
   const paneIds = new Set(tabs.flatMap((tab) => leafIds(tab.layout)));
   if (
@@ -43,8 +50,31 @@ export function mergeWindowTransfer(
       "This conversation is already open in the destination window.",
     );
   }
+  let mergedTabs = [...tabs, ...incoming.tabs];
+  let activeTabId = incoming.activeTabId;
+  const titleIndex = titleTarget ? tabs.findIndex((tab) => tab.id === titleTarget.targetTabId) : -1;
+  if (titleTarget && titleIndex >= 0) {
+    const at = titleIndex + (titleTarget.position === "after" ? 1 : 0);
+    mergedTabs = [...tabs.slice(0, at), ...incoming.tabs, ...tabs.slice(at)];
+  } else if (target && paneIds.has(target.id)) {
+    for (const tab of incoming.tabs) {
+      const placed = applyPlaceTabOnPane({
+        tabs: mergedTabs,
+        sessions: [...sessions, ...incoming.sessions],
+        sourceTabId: tab.id,
+        targetId: target.id,
+        edge: target.edge,
+        replaceTarget: false,
+      });
+      if (placed) {
+        mergedTabs = placed.tabs;
+        activeTabId = placed.activeTabId;
+      }
+    }
+  }
   return {
-    tabs: [...tabs, ...incoming.tabs],
+    tabs: mergedTabs,
+    activeTabId,
     sessions: [...sessions, ...incoming.sessions],
     projectTerminals: [
       ...projectTerminals,
@@ -56,6 +86,37 @@ export function mergeWindowTransfer(
       ),
     ],
   };
+}
+
+/** Undo an unacknowledged docking without discarding destination edits. */
+export function removeWindowTransfer(
+  tabs: WorkspaceTab[],
+  incoming: WindowTransferPayload,
+): WorkspaceTab[] {
+  const incomingTabIds = new Set(incoming.tabs.map((tab) => tab.id));
+  const incomingPaneIds = incoming.tabs.flatMap((tab) => leafIds(tab.layout));
+  return tabs
+    .filter((tab) => !incomingTabIds.has(tab.id))
+    .flatMap((tab) => {
+      let remaining: WorkspaceTab | null = tab;
+      for (const id of incomingPaneIds) {
+        if (remaining && leafIds(remaining.layout).includes(id))
+          remaining = closeLeaf(remaining, id);
+      }
+      return remaining
+        ? [
+            {
+              ...remaining,
+              editorPanes: remaining.editorPanes.filter(
+                (pane) => !incomingPaneIds.includes(pane.id),
+              ),
+              terminalPanes: remaining.terminalPanes?.filter(
+                (pane) => !incomingPaneIds.includes(pane.id),
+              ),
+            },
+          ]
+        : [];
+    });
 }
 
 export function restoreTransferredDrafts(payload: WindowTransferPayload): void {

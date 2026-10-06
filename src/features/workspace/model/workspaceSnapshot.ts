@@ -504,9 +504,12 @@ function sanitizeLayout(raw: unknown): LayoutNode | null {
   if (!raw || typeof raw !== "object") return null;
   const value = raw as Record<string, unknown>;
   if (value.type === "leaf") {
-    return typeof value.id === "string" && value.id
-      ? { type: "leaf", id: value.id }
-      : null;
+    if (typeof value.id !== "string" || !value.id) return null;
+    const tabIds = Array.isArray(value.tabIds)
+      ? [...new Set(value.tabIds.filter((id): id is string => typeof id === "string" && !!id))]
+      : [];
+    if (tabIds.length && !tabIds.includes(value.id)) tabIds.unshift(value.id);
+    return { type: "leaf", id: value.id, ...(tabIds.length > 1 ? { tabIds } : {}) };
   }
   if (value.type !== "split" || typeof value.id !== "string" || !value.id) {
     return null;

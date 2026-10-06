@@ -1,6 +1,7 @@
 import type { ExplorerMenuItem } from "../../features/files/ui/ExplorerMenu";
 import {
   LAYOUT_PRESETS,
+  suggestedPaneCount,
   type LayoutPreset,
 } from "../../features/workspace/model/layoutPresets";
 
@@ -70,10 +71,10 @@ export function buildLayoutMenuItems({
       kind: "item",
       id: layoutPresetMenuId(preset.id),
       label: preset.label,
-      description: withDescriptions ? preset.description : undefined,
+      description: withDescriptions ? canArrange ? preset.description : `Create ${suggestedPaneCount(preset.id)} panes, keeping the current session` : undefined,
       checked: canArrange && current === preset.id,
-      disabled: !canArrange,
-      title: canArrange ? preset.description : LAYOUT_NEEDS_SPLIT_HINT,
+      disabled: !canArrange && preset.id === "equalize",
+      title: canArrange ? preset.description : preset.id === "equalize" ? LAYOUT_NEEDS_SPLIT_HINT : `Create ${suggestedPaneCount(preset.id)} panes, keeping the current session`,
     });
   }
   return items;

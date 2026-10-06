@@ -84,17 +84,18 @@ export function planTabMoveRemainder(
 export type WindowMovePosition = {
   x: number;
   y: number;
+  targetWindowLabel?: string;
   clientX?: number;
   clientY?: number;
 };
 
 /** Tabs waiting for a running response to finish before moving windows. */
-export type PendingWindowMoves = Record<string, WindowMovePosition | null>;
+export type PendingWindowMoves = Record<string, Partial<WindowMovePosition> | null>;
 
 export function queueWindowMoves(
   pending: PendingWindowMoves,
   tabIds: string[],
-  position?: WindowMovePosition,
+  position?: Partial<WindowMovePosition>,
 ): PendingWindowMoves {
   const next = { ...pending };
   for (const id of tabIds) next[id] = position ?? null;

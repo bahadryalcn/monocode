@@ -97,6 +97,19 @@ function getNullTitleTabDrop(): TitleTabDrop | null {
   return null;
 }
 
+/** Share native cross-window previews with the exact same local docking overlays. */
+export function applyWindowDragPreview(token: string, x: number, y: number) {
+  const title = titleTabDropFromPoint(x, y);
+  const pane = title ? null : paneDropFromPoint(x, y);
+  setExternalTitleTabDrop(title ? { fromId: token, ...title } : null);
+  setExternalPaneDrop(pane ? { fromId: token, overId: pane.id, edge: pane.edge } : null);
+}
+
+export function clearWindowDragPreview(token?: string) {
+  if (drop?.fromId.startsWith("window:") && (!token || drop.fromId === token)) setExternalPaneDrop(null);
+  if (titleTabDrop?.fromId.startsWith("window:") && (!token || titleTabDrop.fromId === token)) setExternalTitleTabDrop(null);
+}
+
 export function paneDropFromPoint(
   x: number,
   y: number,

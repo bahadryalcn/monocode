@@ -647,6 +647,8 @@ pub fn run() {
             window_transfer::window_transfer_ready,
             window_transfer::reject_window_transfer,
             window_transfer::move_window_tabs,
+            window_transfer::preview_window_tab_drag,
+            window_transfer::clear_window_tab_drag,
             chat_background::save_chat_background,
             chat_background::remove_chat_background,
             chat_background::save_project_chat_background,

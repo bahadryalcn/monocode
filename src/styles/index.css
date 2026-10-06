@@ -1739,6 +1739,8 @@ header[data-tauri-drag-region] [data-tab-draggable="true"] [data-no-drag] * {
 }
 
 html.is-grabbing body *,
+html.is-grabbing header[data-tauri-drag-region] [data-tauri-drag-region="false"],
+html.is-grabbing header[data-tauri-drag-region] [data-tauri-drag-region="false"] *,
 html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable],
 html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
   cursor: var(--workspace-drag-cursor, grabbing) !important;

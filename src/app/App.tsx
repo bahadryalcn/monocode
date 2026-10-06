@@ -68,6 +68,9 @@ import {
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useWindowLiveAgents, focusWindowLiveAgent, listenForWindowLiveAgent } from "./model/useWindowLiveAgents";
+import { useWindowDragPreview } from "./model/useWindowDragPreview";
+import { DetachedWorkingBar } from "./shell/DetachedWorkingBar";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { appName } from "../shared/lib/appName";
@@ -237,8 +240,11 @@ import {
   resetTabToSession,
   replaceLeafId,
   setSplitRatio,
+  selectPaneTab,
+  layoutLeaves,
   siblingLeafId,
   splitPane,
+  splitPaneAtSelfEdge,
   surfacePanes,
   updateTerminalTab,
   withSurfacePanes,
@@ -282,9 +288,11 @@ import {
 import {
   collectWindowTransfer,
   mergeWindowTransfer,
+  removeWindowTransfer,
   restoreTransferredDrafts,
   type WindowTransferPayload,
 } from "./model/windowTransfer";
+import { paneDropFromPoint, titleTabDropFromPoint, clearWindowDragPreview } from "../features/workspace/model/paneDrop";
 import {
   busySessionsInTabs,
   dropWindowMoves,
@@ -461,7 +469,8 @@ import {
   focusedWorkspaceTabCwd,
 } from "../features/workspace/model/workspaceTabGroups";
 import {
-  arrangeLayout,
+  arrangeSuggestedLayout,
+  suggestedPaneCount,
   detectLayoutPreset,
   type LayoutPreset,
 } from "../features/workspace/model/layoutPresets";
@@ -2122,15 +2131,11 @@ function Workspace({
 
   const nextLiveAgents = useMemo(
     () =>
-      liveAgentsEnabled
-        ? [
+      [
             ...liveAgentsFromSessions(sessions, unseenFinishedIds),
             ...remoteLiveAgents(unopenedRemote, remoteUnseenFinishedIds),
-          ].filter((agent) => !isProjectLockedIn(lockSnapshot, agent.cwd))
-        : [],
+          ],
     [
-      liveAgentsEnabled,
-      lockSnapshot,
       sessions,
       unseenFinishedIds,
       unopenedRemote,
@@ -2141,7 +2146,13 @@ function Workspace({
   if (!liveAgentsEqual(liveAgentsRef.current, nextLiveAgents)) {
     liveAgentsRef.current = nextLiveAgents;
   }
-  const liveAgents = liveAgentsRef.current;
+  const ownedLiveSessionKeys = useMemo(() => Object.fromEntries(sessions.map((session) =>
+    [session.id, remoteSessionFor(session.id) ?? session.id],
+  )), [sessions]);
+  const windowLiveAgents = useWindowLiveAgents(liveAgentsRef.current, ownedLiveSessionKeys);
+  const liveAgents = useMemo(() => liveAgentsEnabled
+    ? windowLiveAgents.filter((agent) => !isProjectLockedIn(lockSnapshot, agent.cwd))
+    : [], [windowLiveAgents, lockSnapshot, liveAgentsEnabled]);
 
   const hiddenApprovalToasts = useMemo(
     () => hiddenApprovalNotices(sessions, activeTabId, tabs, composerFocused),
@@ -2230,7 +2241,7 @@ function Workspace({
         const toTray = loadCloseToTray();
         if (hasInFlightSessions(sessionsRef.current)) {
           flushHarnessEvents();
-          if (!toTray && !IS_MAC) {
+          if (!windowTransfer && !toTray && !IS_MAC) {
             void closeBusyWindow();
             return;
           }
@@ -2260,7 +2271,7 @@ function Workspace({
       releaseQuit();
       unlistenClose?.();
     };
-  }, [flushHarnessEvents, readProjectReturnMemory]);
+  }, [flushHarnessEvents, readProjectReturnMemory, windowTransfer]);
 
   const refreshHistory = useCallback(async (cwd: string) => {
     if (!cwd || cwd === "~") return;
@@ -2585,11 +2596,11 @@ function Workspace({
 
       if (reason === "workspace") setActiveTabIdState(id);
       else setActiveTabId(id);
-      if (tab && nextFocusedId && nextFocusedId !== tab.focusedId) {
+      if (tab && nextFocusedId) {
         setTabs((prev) =>
           prev.map((entry) =>
             entry.id === id
-              ? { ...entry, focusedId: nextFocusedId, diffFocused: false }
+              ? { ...entry, layout: selectPaneTab(entry.layout, nextFocusedId), focusedId: nextFocusedId, diffFocused: false }
               : entry,
           ),
         );
@@ -2597,7 +2608,7 @@ function Workspace({
 
       if (tab) {
         const focusedTab = nextFocusedId
-          ? { ...tab, focusedId: nextFocusedId }
+          ? { ...tab, layout: selectPaneTab(tab.layout, nextFocusedId), focusedId: nextFocusedId }
           : tab;
         followProject(focusedWorkspaceTabCwd(focusedTab, sessionsRef.current));
       }
@@ -2960,22 +2971,30 @@ function Workspace({
     [activeTab],
   );
   const canArrangeActiveTab = activeTab
-    ? leafIds(activeTab.layout).length >= 2
+    ? layoutLeaves(activeTab.layout).length >= 2
     : false;
 
   /** Rearranges every pane of the active tab (chats, files, terminals alike). */
   const onArrangeActiveTab = useCallback(
     (preset: LayoutPreset) => {
-      if (!activeTab || leafIds(activeTab.layout).length < 2) return;
-      setTabs((prev) =>
-        prev.map((t) =>
-          t.id === activeTab.id
-            ? { ...t, layout: arrangeLayout(t.layout, preset, t.focusedId) }
-            : t,
-        ),
-      );
+      if (!activeTab) return;
+      const current = tabsRef.current.find((tab) => tab.id === activeTab.id);
+      if (!current) return;
+      const emptySessions = layoutLeaves(current.layout).length === 1
+        ? Array.from({ length: suggestedPaneCount(preset) - 1 }, () => newDefaultSession(
+            sessionDefaults?.cwd ?? projectCwd, sessionDefaults?.runtimeMode,
+          )) : [];
+      const next = tabsRef.current.map((tab) => tab.id === current.id ? {
+        ...tab, layout: arrangeSuggestedLayout(tab.layout, preset, emptySessions.map((session) => session.id), tab.focusedId),
+      } : tab);
+      if (emptySessions.length) {
+        sessionsRef.current = [...sessionsRef.current, ...emptySessions];
+        setSessions(sessionsRef.current);
+      }
+      tabsRef.current = next;
+      setTabs(next);
     },
-    [activeTab],
+    [activeTab, projectCwd, sessionDefaults?.cwd, sessionDefaults?.runtimeMode],
   );
 
   const focusProjectTerminal = useCallback(() => {
@@ -3585,6 +3604,7 @@ function Workspace({
   );
 
   const [movingWindows, setMovingWindows] = useState<Set<string>>(new Set());
+  useWindowDragPreview();
   const [pendingWindowMoves, setPendingWindowMoves] =
     useState<PendingWindowMoves>({});
 
@@ -3606,10 +3626,12 @@ function Workspace({
             sessionsRef.current,
             projectTerminalsRef.current,
             incoming,
+            incoming.dropPoint ? paneDropFromPoint(incoming.dropPoint.x, incoming.dropPoint.y) : null,
+            incoming.dropPoint ? titleTabDropFromPoint(incoming.dropPoint.x, incoming.dropPoint.y) : null,
           );
+          clearWindowDragPreview();
           const priorActive = activeTabIdRef.current;
           const priorCwd = projectCwdRef.current;
-          const incomingTabIds = new Set(incoming.tabs.map((tab) => tab.id));
           const incomingSessionIds = new Set(
             incoming.sessions.map((session) => session.id),
           );
@@ -3633,14 +3655,14 @@ function Workspace({
             setTabs(merged.tabs);
             setProjectTerminals(merged.projectTerminals);
             setProjectCwd(incoming.projectCwd);
-            activateTab(incoming.activeTabId);
+            activateTab(merged.activeTabId);
           });
           rollback = () => {
             for (const id of incomingSessionIds)
               skipForgetSessionIds.current.add(id);
             flushSync(() => {
               setTabs((prev) =>
-                prev.filter((tab) => !incomingTabIds.has(tab.id)),
+                removeWindowTransfer(prev, incoming),
               );
               setSessions((prev) =>
                 prev.filter((session) => !incomingSessionIds.has(session.id)),
@@ -3648,7 +3670,7 @@ function Workspace({
               setProjectTerminals((prev) =>
                 prev.filter((dock) => !addedDockIds.has(dock.pane.id)),
               );
-              if (incomingTabIds.has(activeTabIdRef.current)) {
+              if (activeTabIdRef.current === merged.activeTabId) {
                 setProjectCwd(priorCwd);
                 activateTab(priorActive);
               }
@@ -3663,6 +3685,7 @@ function Workspace({
             transferId,
             reason: String(error),
           }).catch(console.error);
+          clearWindowDragPreview();
         }
       },
     );
@@ -3680,6 +3703,7 @@ function Workspace({
       tabIds: string[],
       opts?: {
         position?: { x: number; y: number; clientX?: number; clientY?: number };
+        targetWindowLabel?: string;
       },
     ) => {
       const movingTabs = tabsRef.current.filter((tab) =>
@@ -3708,8 +3732,10 @@ function Workspace({
       }
       // A shell cannot change windows: the source would kill the pty its
       // twin in the new window just respawned under the same id.
-      if (filesInWorkspaceTabs(movingTabs).some((file) => file.terminal))
+      if (filesInWorkspaceTabs(movingTabs).some((file) => file.terminal)) {
+        void message("Close terminal tabs before moving this workspace to another window.", { title: "Move tab" });
         return;
+      }
       // A running turn lives in this window's harness listeners, so the
       // move waits until it finishes rather than dropping the stream.
       if (
@@ -3717,7 +3743,7 @@ function Workspace({
           .length > 0
       ) {
         setPendingWindowMoves((prev) =>
-          queueWindowMoves(prev, movingIds, opts?.position),
+          queueWindowMoves(prev, movingIds, { ...opts?.position, targetWindowLabel: opts?.targetWindowLabel }),
         );
         return;
       }
@@ -3737,12 +3763,8 @@ function Workspace({
             )
             .map((file) => file.id),
         );
-        if (
-          dirtyIds.size > 0 &&
-          !(await confirmDiscardUnsaved(
-            "Unsaved changes do not move to the new window. Move anyway?",
-          ))
-        ) {
+        if (dirtyIds.size > 0) {
+          void message("Save the unsaved files before moving this tab to another window.", { title: "Move tab" });
           return;
         }
 
@@ -3778,6 +3800,7 @@ function Workspace({
         try {
           const outcome = await invoke<string>("move_window_tabs", {
             transfer: JSON.stringify(payload),
+            targetWindowLabel: opts?.targetWindowLabel ?? null,
             x: opts?.position?.x ?? null,
             y: opts?.position?.y ?? null,
             clientX: opts?.position?.clientX ?? null,
@@ -3885,7 +3908,10 @@ function Workspace({
     setPendingWindowMoves((prev) => dropWindowMoves(prev, [...ready, ...gone]));
     for (const id of ready) {
       void onMoveTabsToNewWindow([id], {
-        position: pendingWindowMoves[id] ?? undefined,
+        position: pendingWindowMoves[id]?.x !== undefined && pendingWindowMoves[id]?.y !== undefined
+          ? pendingWindowMoves[id] as { x: number; y: number; clientX?: number; clientY?: number }
+          : undefined,
+        targetWindowLabel: pendingWindowMoves[id]?.targetWindowLabel,
       });
     }
   }, [pendingWindowMoves, tabs, sessions, onMoveTabsToNewWindow]);
@@ -4443,7 +4469,7 @@ function Workspace({
       setTabs((prev) =>
         prev.map((t) =>
           t.id === activeTabId
-            ? { ...t, focusedId: paneId, diffFocused: false }
+            ? { ...t, layout: selectPaneTab(t.layout, paneId), focusedId: paneId, diffFocused: false }
             : t,
         ),
       );
@@ -4615,6 +4641,21 @@ function Workspace({
 
   const onMovePane = useCallback(
     (fromId: string, toId: string, edge: PaneEdge) => {
+      if (fromId === toId) {
+        if (edge === "center") return;
+        const source = tabsRef.current.find((tab) => leafIds(tab.layout).includes(fromId));
+        if (!source) return;
+        const currentSession = sessionsRef.current.find((session) => session.id === fromId);
+        const empty = newDefaultSession(currentSession?.cwd ?? projectCwdRef.current, currentSession?.runtimeMode);
+        const next = tabsRef.current.map((tab) => tab.id === source.id ? {
+          ...tab, layout: splitPaneAtSelfEdge(tab.layout, fromId, edge, empty.id), focusedId: fromId,
+        } : tab);
+        sessionsRef.current = [...sessionsRef.current, empty];
+        tabsRef.current = next;
+        setSessions(sessionsRef.current);
+        setTabs(next);
+        return;
+      }
       setTabs((prev) =>
         prev.map((tab) => {
           return leafIds(tab.layout).includes(fromId)
@@ -4658,6 +4699,10 @@ function Workspace({
       );
       if (!source || movingTabIds.current.has(source.id)) return;
       const surface = findSurfacePane(source, paneId);
+      if (surface && surfacePanes(source, surface.kind).find((pane) => pane.id === paneId)?.files.some((file) => dirtyFilesRef.current.has(file.id))) {
+        void message("Save the unsaved files before moving this pane to another window.", { title: "Move pane" });
+        return;
+      }
       if (
         surface &&
         surfacePanes(source, surface.kind)
@@ -4699,12 +4744,12 @@ function Workspace({
       setActiveTabId(tab.id);
       setTabs((prev) =>
         prev.map((entry) =>
-          entry.id === tab.id ? { ...entry, focusedId: sessionId } : entry,
+          entry.id === tab.id ? { ...entry, layout: selectPaneTab(entry.layout, sessionId), focusedId: sessionId } : entry,
         ),
       );
       followProject(
         focusedWorkspaceTabCwd(
-          { ...tab, focusedId: sessionId },
+          { ...tab, layout: selectPaneTab(tab.layout, sessionId), focusedId: sessionId },
           sessionsRef.current,
         ),
       );
@@ -5386,17 +5431,22 @@ function Workspace({
 
   const onPlaceTabOnPane = useCallback(
     (sourceTabId: string, targetId: string, edge: PaneEdge) => {
+      const sourceTab = tabsRef.current.find((tab) => tab.id === sourceTabId);
       const targetTab = tabsRef.current.find((tab) =>
         leafIds(tab.layout).includes(targetId),
       );
       if (!targetTab) return;
       if (targetTab.id === sourceTabId) {
-        if (targetTab.focusedId !== targetId) {
+        if (targetTab.focusedId !== targetId || edge !== "center") {
           onMovePane(targetTab.focusedId, targetId, edge);
         }
         return;
       }
 
+      if (sourceTab && filesInWorkspaceTabs([sourceTab]).some((file) => dirtyFilesRef.current.has(file.id))) {
+        void message("Save the unsaved files before moving this tab to another workspace tab.", { title: "Arrange workspace" });
+        return;
+      }
       const blankTarget = sessionsRef.current.find(
         (session) => session.id === targetId && isBlankSession(session),
       );
@@ -7226,7 +7276,7 @@ function Workspace({
         const found = findSurfacePane(tab, paneId);
         if (!found) return tab;
         return withSurfacePanes(
-          { ...tab, focusedId: paneId },
+          { ...tab, layout: selectPaneTab(tab.layout, paneId), focusedId: paneId },
           found.kind,
           surfacePanes(tab, found.kind).map((pane) =>
             pane.id === paneId ? { ...pane, activeFileId: fileId } : pane,
@@ -11222,6 +11272,14 @@ function Workspace({
 
   const onSelectLiveAgent = useCallback(
     (sessionId: string) => {
+      const elsewhere = liveAgents.find((agent) => agent.id === sessionId && agent.ownerWindowLabel);
+      if (elsewhere) {
+        void focusWindowLiveAgent(elsewhere).catch((error) => {
+          void message(String(error), { title: "Open conversation window" });
+        });
+        return;
+      }
+
       setSearchViewOpen(false);
       setInboxViewOpen(false);
       setNotesViewOpen(false);
@@ -11234,8 +11292,18 @@ function Workspace({
         onSelectRemoteSession(remote.project, sessionId);
       } else onOpenApprovalSession(sessionId);
     },
-    [dismissRemoteFinished, onOpenApprovalSession, onSelectRemoteSession],
+    [dismissRemoteFinished, onOpenApprovalSession, onSelectRemoteSession, liveAgents],
   );
+
+  useEffect(() => {
+    let disposed = false;
+    let release: (() => void) | undefined;
+    void listenForWindowLiveAgent(onOpenApprovalSession).then((unlisten) => {
+      if (disposed) unlisten();
+      else release = unlisten;
+    }).catch(() => {});
+    return () => { disposed = true; release?.(); };
+  }, [onOpenApprovalSession]);
 
   // Sessions for the rail's "Last sessions". Kept referentially stable so the
   // rail only refetches when a title or status really changed.
@@ -12556,7 +12624,8 @@ function Workspace({
     notesViewOpen ||
     automationsViewOpen;
   const compactProjectRail = collapsedProjectRailMode === "compact";
-  const compactRailActive = compactProjectRail && !projectRailOpen;
+  const detachedSessionWindow = Boolean(windowTransfer);
+  const compactRailActive = !detachedSessionWindow && compactProjectRail && !projectRailOpen;
   const compactTitleBar = IS_MAC && compactRailActive && !chromeSurfaceOpen;
   const layoutControl = useMemo(
     () => ({
@@ -12569,11 +12638,13 @@ function Workspace({
   );
   const workspaceTitleBar = (
     <TitleBar
+      detached={detachedSessionWindow}
+      onReturnToMain={detachedSessionWindow ? () => void onMoveTabsToNewWindow(tabsRef.current.map((tab) => tab.id), { targetWindowLabel: "main" }) : undefined}
       tabs={titleTabs}
       activeId={activeTabId}
       cwd={sidebarCwd}
-      projectRailOpen={projectRailOpen}
-      sessionSidebarOpen={sessionSidebarOpen}
+      projectRailOpen={!detachedSessionWindow && projectRailOpen}
+      sessionSidebarOpen={!detachedSessionWindow && sessionSidebarOpen}
       compactRail={compactTitleBar}
       canGoBack={tabVisitNav.canBack}
       canGoForward={tabVisitNav.canForward}
@@ -12612,8 +12683,11 @@ function Workspace({
           }`}
         >
           {compactTitleBar ? workspaceTitleBar : null}
+          {detachedSessionWindow && liveAgents.length > 0 ? (
+            <DetachedWorkingBar agents={liveAgents} onSelectAgent={onSelectLiveAgent} />
+          ) : null}
           <div className="flex min-h-0 min-w-0 flex-1">
-            <Sidebar
+            {!detachedSessionWindow ? <Sidebar
               cwd={sidebarCwd}
               gitCwd={gitCwd}
               worktreeTabStats={worktreeTabStats}
@@ -12729,7 +12803,7 @@ function Workspace({
               updateNotice={updateNotice}
               onOpenWhatsNew={onOpenWhatsNew}
               onDismissUpdate={onDismissUpdate}
-            />
+            /> : null}
 
             <div className="body-glass flex min-h-0 min-w-0 flex-1 flex-col">
               <div
@@ -13095,7 +13169,7 @@ function Workspace({
                 canStopHarnessBackgroundWork(active.harness) &&
                 sessionHasBackgroundWork(active)
               }
-              arrangeLayout={canArrangeActiveTab}
+              arrangeLayout={Boolean(activeTab)}
               onOpenFile={onOpenFile}
               onRunAction={(id) => {
                 const layoutPreset = id.startsWith(LAYOUT_ACTION_PREFIX)

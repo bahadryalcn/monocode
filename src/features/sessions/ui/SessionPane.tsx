@@ -1050,7 +1050,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           <OpusWelcome key={modelWelcome.run} onDone={dismissModelWelcome} />
         )
       ) : null}
-      {inSplit ? (
+      {inSplit || onPaneDragStart ? (
         <div
           className={`flex h-9 shrink-0 touch-none items-center gap-1.5 border-b border-stroke px-2 select-none ${
             onPaneDragStart ? "cursor-grab active:cursor-grabbing" : ""

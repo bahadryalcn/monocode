@@ -9,6 +9,8 @@ import {
 } from "./session";
 
 export type LiveAgent = {
+  /** Set only for a summary owned by another app window. */
+  ownerWindowLabel?: string;
   id: string;
   cwd: string;
   title: string;

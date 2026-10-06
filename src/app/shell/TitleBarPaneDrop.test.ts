@@ -209,15 +209,6 @@ describe("title tab pane drops", () => {
       expect(titleItems[index].dataset.tabDraggable).toBe("true");
       pointer(titleButtons[index], "pointerdown", index * 100 + 50, 16);
       pointer(window, "pointermove", 390, 200);
-      if (source === "self") {
-        expect(document.body.style.cursor).toBe("not-allowed");
-        expect(getExternalPaneDrop()).toBeNull();
-        pointer(window, "pointerup", 390, 200);
-        expect(onPlaceOnPane).not.toHaveBeenCalled();
-        expect(document.querySelector(".pointer-drop-hint")).toBeNull();
-        pane.remove();
-        return;
-      }
       expect(document.body.style.cursor).toBe("move");
       expect(getExternalPaneDrop()).toMatchObject({
         fromId: draggedId,

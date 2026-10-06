@@ -24,15 +24,16 @@ describe("layout menu", () => {
     ]);
   });
 
-  it("disables presets with a hint for a single pane but keeps splits", () => {
+  it("offers layout creation for a single pane and disables only equalizing", () => {
     const items = buildLayoutMenuItems({ current: null, canArrange: false });
     for (const item of items) {
       if (item.kind !== "item") continue;
-      if (layoutPresetFromMenuId(item.id)) {
+      if (layoutPresetFromMenuId(item.id) === "equalize") {
         expect(item.disabled).toBe(true);
         expect(item.title).toBe(LAYOUT_NEEDS_SPLIT_HINT);
       } else {
         expect(item.disabled).toBeFalsy();
+        if (layoutPresetFromMenuId(item.id)) expect(item.title).toMatch(/Create [234] panes/);
       }
     }
   });

@@ -18,6 +18,7 @@ import {
   popOutPosition,
   type WindowMovePosition,
 } from "../../../app/model/windowTransferPopout";
+import { beginWindowTabDrag } from "../../../app/model/windowDragPreview";
 import {
   paneDropFromPoint,
   setExternalTitleTabDrop,
@@ -336,6 +337,11 @@ function PaneTreeComponent({
 
   const tree = draft ?? layout;
   const leaves = layoutLeaves(tree);
+  // Keep inactive group members mounted: editors retain unsaved buffers and
+  // sessions retain their composer and streaming subscriptions.
+  const renderLeaves = leaves.flatMap((pane) =>
+    (pane.tabIds ?? [pane.id]).map((id) => ({ ...pane, id, hidden: id !== pane.id })),
+  );
   const sashes = layoutSashes(tree);
   const inSplit = leaves.length > 1;
 
@@ -388,6 +394,7 @@ function PaneTreeComponent({
       const startX = event.clientX;
       const startY = event.clientY;
       let active = false;
+      let windowDrag: ReturnType<typeof beginWindowTabDrag> | undefined;
       const canPopOut = () =>
         Boolean(onPopOutPaneRef.current) &&
         !dragContents.current.editorPanes
@@ -400,6 +407,13 @@ function PaneTreeComponent({
       let screenY = event.screenY;
       handle.setPointerCapture(pointerId);
       const restoreSelection = suppressTextSelection();
+      const dropTarget = (x: number, y: number) => {
+        const over = paneDropFromPoint(x, y);
+        if (over?.id !== fromId) return over;
+        const group = layoutLeaves(layoutRef.current).find((pane) => pane.id === fromId);
+        const sibling = group?.tabIds?.find((id) => id !== fromId);
+        return sibling ? { ...over, id: sibling } : over;
+      };
 
       const onMove = (ev: PointerEvent) => {
         if (ev.pointerId !== pointerId) return;
@@ -420,6 +434,10 @@ function PaneTreeComponent({
           setPaneDrag({ fromId, overId: null, edge: "left" });
         }
         const titleTab = titleTabDropFromPoint(ev.clientX, ev.clientY);
+        if (canPopOut()) {
+          windowDrag ??= beginWindowTabDrag(fromId);
+          windowDrag.move(ev);
+        }
         setExternalTitleTabDrop(titleTab ? { fromId, ...titleTab } : null);
         if (
           canPopOut() &&
@@ -447,8 +465,8 @@ function PaneTreeComponent({
           setPaneDrag({ fromId, overId: null, edge: "left" });
           return;
         }
-        const over = paneDropFromPoint(ev.clientX, ev.clientY);
-        if (!over || over.id === fromId) {
+        const over = dropTarget(ev.clientX, ev.clientY);
+        if (!over || (over.id === fromId && over.edge === "center")) {
           setDropFeedback("blocked", ev);
           setPaneDrag({
             fromId,
@@ -458,7 +476,7 @@ function PaneTreeComponent({
           return;
         }
         setPaneDrag({ fromId, overId: over.id, edge: over.edge });
-        setDropFeedback("move", ev, `Place ${over.edge}`);
+        setDropFeedback("move", ev, over.id === fromId ? `Split ${over.edge} with a new session` : over.edge === "center" ? "Add as pane tab" : `Place ${over.edge}`);
       };
 
       const onUp = (ev: PointerEvent) => {
@@ -474,6 +492,7 @@ function PaneTreeComponent({
       };
 
       function finish(commit: boolean) {
+        windowDrag?.finish();
         cancelPaneDrag.current = null;
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
@@ -514,8 +533,8 @@ function PaneTreeComponent({
           );
           return;
         }
-        const over = paneDropFromPoint(lastX, lastY);
-        if (over && over.id !== fromId) {
+        const over = dropTarget(lastX, lastY);
+        if (over && (over.id !== fromId || over.edge !== "center")) {
           onMovePaneRef.current(fromId, over.id, over.edge);
         }
       }
@@ -531,11 +550,11 @@ function PaneTreeComponent({
 
   return (
     <div ref={treeRef} className="relative h-full min-h-0 min-w-0">
-      {leaves.map((leaf) => {
+      {renderLeaves.map((leaf) => {
         const editorPane = editorPanes.find((pane) => pane.id === leaf.id);
         const session = sessions.find((entry) => entry.id === leaf.id);
         const dragging = drop?.fromId === leaf.id;
-        const onPaneDragStart = inSplit ? paneDragStartFor(leaf.id) : undefined;
+        const onPaneDragStart = paneDragStartFor(leaf.id);
         const backgroundStyle = {
           "--chat-background-left": `${(-leaf.rect.x / leaf.rect.w) * 100}%`,
           "--chat-background-top": `${(-leaf.rect.y / leaf.rect.h) * 100}%`,
@@ -545,7 +564,7 @@ function PaneTreeComponent({
         return (
           <div
             key={leaf.id}
-            data-pane-id={leaf.id}
+            data-pane-id={leaf.hidden ? undefined : leaf.id}
             className={`absolute flex min-h-0 min-w-0 flex-col overflow-hidden ${dragging ? "opacity-40" : ""}`}
             // The new pane focuses its composer or editor while it is still
             // offscreen, and focus scrolls this clip box to reveal it, which
@@ -557,6 +576,7 @@ function PaneTreeComponent({
               event.currentTarget.scrollTop = 0;
             }}
             style={{
+              display: leaf.hidden ? "none" : undefined,
               left: `${leaf.rect.x * 100}%`,
               top: `${leaf.rect.y * 100}%`,
               width: `${leaf.rect.w * 100}%`,
@@ -564,7 +584,19 @@ function PaneTreeComponent({
               ...backgroundStyle,
             }}
           >
-            {drop && drop.overId === leaf.id && drop.fromId !== leaf.id ? (
+            {leaf.tabIds && leaf.tabIds.length > 1 ? (
+              <div role="tablist" aria-label="Pane sessions" className="flex shrink-0 overflow-x-auto border-b border-stroke bg-surface">
+                {leaf.tabIds.map((id) => (
+                  <button key={id} type="button" role="tab" aria-selected={id === leaf.id}
+                    className={`max-w-48 shrink-0 truncate border-r border-stroke px-3 py-1.5 text-xs ${id === leaf.id ? "bg-accent/15 text-content" : "text-content/60"}`}
+                    onClick={() => onFocus(id)} onPointerDown={paneDragStartFor(id)}
+                    title={sessions.find((entry) => entry.id === id)?.title || "Session"}>
+                    {sessions.find((entry) => entry.id === id)?.title || editorPanes.find((pane) => pane.id === id)?.files[0]?.path.split(/[\\/]/).pop() || "Session"}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {drop && !leaf.hidden && (drop.overId === leaf.id || leaf.tabIds?.includes(drop.overId ?? "")) && (drop.fromId !== leaf.id || drop.edge !== "center" || (leaf.tabIds?.length ?? 0) > 1) ? (
               <PaneDropHint edge={drop.edge} />
             ) : null}
             <div
@@ -579,7 +611,7 @@ function PaneTreeComponent({
                 <FilePane
                   pane={editorPane}
                   focused={focusedId === editorPane.id}
-                  showTabs={inSplit || editorPane.files.length > 1}
+                  showTabs={inSplit || editorPane.files.length > 1 || Boolean(onPaneDragStart)}
                   dirtyFileIds={dirtyFileIds}
                   fileErrorCounts={fileErrorCounts}
                   sessions={sessions}
@@ -612,7 +644,7 @@ function PaneTreeComponent({
                         sessionWorkCwd(session),
                       ),
                   )}
-                  visible={visible}
+                  visible={visible && !leaf.hidden}
                   focused={focusedId === session.id}
                   addToChatTarget={addToChatSessionId === session.id}
                   inSplit={inSplit}
@@ -720,6 +752,11 @@ function paneEnterFrom({ rect, axis }: LayoutLeaf): PaneEnterFrom {
 }
 
 function PaneDropHint({ edge }: { edge: PaneEdge }) {
+  if (edge === "center") return (
+    <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded border-2 border-accent bg-accent/15">
+      <span className="rounded bg-surface px-3 py-2 text-xs text-content">Add as pane tab</span>
+    </div>
+  );
   const wash =
     edge === "left"
       ? "absolute inset-y-0 left-0 w-1/2 bg-accent/15"

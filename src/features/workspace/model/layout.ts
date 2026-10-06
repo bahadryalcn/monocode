@@ -23,7 +23,7 @@ export type SplitDir = "right" | "down";
 export type FocusDir = "left" | "right" | "up" | "down";
 
 export type LayoutNode =
-  | { type: "leaf"; id: string }
+  | { type: "leaf"; id: string; tabIds?: string[] }
   | {
       type: "split";
       id: string;
@@ -110,6 +110,23 @@ const MIN_SIZE = 0.08;
 
 export function leaf(sessionId: string): LayoutNode {
   return { type: "leaf", id: sessionId };
+}
+
+/** Select one member of a local pane tab group, preserving every other pane. */
+export function selectPaneTab(node: LayoutNode, paneId: string): LayoutNode {
+  if (node.type === "leaf") {
+    return node.tabIds?.includes(paneId) ? { ...node, id: paneId } : node;
+  }
+  return { ...node, children: node.children.map((child) => selectPaneTab(child, paneId)) };
+}
+
+function groupAt(node: LayoutNode, targetId: string, incoming: LayoutNode): LayoutNode {
+  if (node.type === "leaf") {
+    if (!leafIds(node).includes(targetId)) return node;
+    const tabIds = [...new Set([...leafIds(node), ...leafIds(incoming)])];
+    return { type: "leaf", id: firstLeafId(incoming), tabIds };
+  }
+  return { ...node, children: node.children.map((child) => groupAt(child, targetId, incoming)) };
 }
 
 export function newTab(sessionId: string): WorkspaceTab {
@@ -873,6 +890,16 @@ export function splitPane(
   return splitPaneRelative(node, focusedId, dir, newSessionId, false);
 }
 
+/** Keep the dragged content at its chosen edge, filling the other side with a new pane. */
+export function splitPaneAtSelfEdge(
+  node: LayoutNode, paneId: string, edge: PaneEdge, newPaneId: string,
+): LayoutNode {
+  if (edge === "center" || !leafIds(node).includes(paneId)) return node;
+  const horizontal = edge === "left" || edge === "right";
+  return splitPaneRelative(node, paneId, horizontal ? "right" : "down", newPaneId,
+    edge === "right" || edge === "bottom");
+}
+
 function splitPaneRelative(
   node: LayoutNode,
   focusedId: string,
@@ -881,7 +908,7 @@ function splitPaneRelative(
   before: boolean,
 ): LayoutNode {
   if (node.type === "leaf") {
-    if (node.id !== focusedId) return node;
+    if (!leafIds(node).includes(focusedId)) return node;
     return {
       type: "split",
       id: crypto.randomUUID(),
@@ -894,7 +921,7 @@ function splitPaneRelative(
   }
 
   const direct = node.children.findIndex(
-    (child) => child.type === "leaf" && child.id === focusedId,
+    (child) => child.type === "leaf" && leafIds(child).includes(focusedId),
   );
 
   if (direct >= 0) {
@@ -941,7 +968,9 @@ export function replaceLeafId(
 ): LayoutNode {
   if (fromId === toId) return node;
   if (node.type === "leaf") {
-    return node.id === fromId ? leaf(toId) : node;
+    if (!leafIds(node).includes(fromId)) return node;
+    return { ...node, id: node.id === fromId ? toId : node.id,
+      ...(node.tabIds ? { tabIds: node.tabIds.map((id) => id === fromId ? toId : id) } : {}) };
   }
   return {
     ...node,
@@ -954,7 +983,13 @@ export function removePane(
   node: LayoutNode,
   sessionId: string,
 ): LayoutNode | null {
-  if (node.type === "leaf") return node.id === sessionId ? null : node;
+  if (node.type === "leaf") {
+    if (!leafIds(node).includes(sessionId)) return node;
+    const remaining = leafIds(node).filter((id) => id !== sessionId);
+    if (!remaining.length) return null;
+    const id = node.id === sessionId ? remaining[0] : node.id;
+    return remaining.length === 1 ? leaf(id) : { type: "leaf", id, tabIds: remaining };
+  }
 
   const kept: { child: LayoutNode; size: number }[] = [];
   for (let i = 0; i < node.children.length; i++) {
@@ -1037,7 +1072,7 @@ export function splitSizesAtBoundary(
 }
 
 export function leafIds(node: LayoutNode): string[] {
-  if (node.type === "leaf") return [node.id];
+  if (node.type === "leaf") return node.tabIds ?? [node.id];
   return node.children.flatMap(leafIds);
 }
 
@@ -1049,6 +1084,7 @@ export type LayoutRect = { x: number; y: number; w: number; h: number };
 
 export type LayoutLeaf = {
   id: string;
+  tabIds?: string[];
   rect: LayoutRect;
   axis: "x" | "y";
 };
@@ -1067,7 +1103,7 @@ export function layoutLeaves(
   parentDir?: SplitDir,
 ): LayoutLeaf[] {
   const axis = parentDir === "down" ? "y" : "x";
-  if (node.type === "leaf") return [{ id: node.id, rect, axis }];
+  if (node.type === "leaf") return [{ id: node.id, tabIds: node.tabIds, rect, axis }];
   const row = node.dir === "right";
   let offset = 0;
   const out: LayoutLeaf[] = [];
@@ -1169,7 +1205,11 @@ export function siblingLeafId(
   node: LayoutNode,
   sessionId: string,
 ): string | null {
-  if (node.type === "leaf") return null;
+  if (node.type === "leaf") return leafIds(node).includes(sessionId)
+    ? leafIds(node).find((id) => id !== sessionId) ?? null
+    : null;
+  const group = node.children.find((child) => child.type === "leaf" && child.tabIds?.includes(sessionId));
+  if (group) return leafIds(group).find((id) => id !== sessionId) ?? null;
   const index = node.children.findIndex(
     (child) => child.type === "leaf" && child.id === sessionId,
   );
@@ -1185,7 +1225,7 @@ export function siblingLeafId(
 }
 
 export type PanePlace = "before" | "after";
-export type PaneEdge = "left" | "right" | "top" | "bottom";
+export type PaneEdge = "left" | "right" | "top" | "bottom" | "center";
 
 type SplitNode = Extract<LayoutNode, { type: "split" }>;
 
@@ -1196,6 +1236,7 @@ export function paneEdgeFromPoint(
 ): PaneEdge {
   const nx = rect.width <= 0 ? 0 : (x - rect.left) / rect.width - 0.5;
   const ny = rect.height <= 0 ? 0 : (y - rect.top) / rect.height - 0.5;
+  if (rect.width > 0 && rect.height > 0 && Math.abs(nx) < 0.25 && Math.abs(ny) < 0.25) return "center";
   if (Math.abs(nx) > Math.abs(ny)) return nx < 0 ? "left" : "right";
   return ny < 0 ? "top" : "bottom";
 }
@@ -1214,7 +1255,7 @@ function leafParent(
   if (node.type === "leaf") return null;
   for (let i = 0; i < node.children.length; i++) {
     const child = node.children[i];
-    if (child.type === "leaf" && child.id === leafId) {
+    if (child.type === "leaf" && leafIds(child).includes(leafId)) {
       return { parentId: node.id, index: i, dir: node.dir };
     }
     const found = leafParent(child, leafId);
@@ -1271,7 +1312,9 @@ function extractLeaf(
   leaf: Extract<LayoutNode, { type: "leaf" }>;
 } | null {
   if (node.type === "leaf") {
-    return node.id === leafId ? { tree: null, leaf: node } : null;
+    return leafIds(node).includes(leafId)
+      ? { tree: removePane(node, leafId), leaf: { type: "leaf", id: leafId } }
+      : null;
   }
 
   const children: LayoutNode[] = [];
@@ -1310,7 +1353,7 @@ function insertBeside(
   if (node.type === "leaf") return node;
 
   const index = node.children.findIndex(
-    (child) => child.type === "leaf" && child.id === targetId,
+    (child) => child.type === "leaf" && leafIds(child).includes(targetId),
   );
   if (index >= 0) {
     const insertAt = place === "before" ? index : index + 1;
@@ -1339,7 +1382,7 @@ function wrapBeside(
   place: PanePlace,
 ): LayoutNode {
   if (node.type === "leaf") {
-    if (node.id !== targetId) return node;
+    if (!leafIds(node).includes(targetId)) return node;
     return {
       type: "split",
       id: crypto.randomUUID(),
@@ -1369,6 +1412,11 @@ export function movePane(
   edge: PaneEdge,
 ): LayoutNode {
   if (fromId === toId) return node;
+  if (edge === "center" || layoutLeaves(node).some((pane) => pane.tabIds?.includes(fromId))) {
+    const extracted = extractLeaf(node, fromId);
+    if (!extracted?.tree || !leafIds(extracted.tree).includes(toId)) return node;
+    return placeLayout(extracted.tree, extracted.leaf, toId, edge);
+  }
   const fromAt = leafParent(node, fromId);
   const toAt = leafParent(node, toId);
   if (!fromAt || !toAt) return node;
@@ -1421,6 +1469,8 @@ export function placeLayout(
 ): LayoutNode {
   if (!leafIds(node).includes(toId)) return node;
 
+  if (edge === "center") return groupAt(node, toId, incoming);
+
   const { dir, place } = edgeSplit(edge);
   const targetAt = leafParent(node, toId);
   if (targetAt?.dir === dir) {
@@ -1435,7 +1485,11 @@ export function replacePaneWithLayout(
   targetId: string,
   incoming: LayoutNode,
 ): LayoutNode {
-  if (node.type === "leaf") return node.id === targetId ? incoming : node;
+  if (node.type === "leaf") {
+    if (!leafIds(node).includes(targetId)) return node;
+    const remaining = removePane(node, targetId);
+    return remaining ? groupAt(remaining, firstLeafId(remaining), incoming) : incoming;
+  }
   return {
     ...node,
     children: node.children.map((child) =>

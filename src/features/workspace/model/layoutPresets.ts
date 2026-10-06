@@ -1,4 +1,4 @@
-import { leaf, leafIds, type LayoutNode, type SplitDir } from "./layout";
+import { leaf, layoutLeaves, splitPane, type LayoutNode, type SplitDir } from "./layout";
 
 /**
  * One-click arrangements for the panes of a tab. Every preset rebuilds the
@@ -13,6 +13,23 @@ export type LayoutPreset =
   | "main-left"
   | "main-top"
   | "equalize";
+
+export function suggestedPaneCount(preset: LayoutPreset): number {
+  return preset === "grid" ? 4 : preset === "main-left" || preset === "main-top" ? 3 : preset === "equalize" ? 1 : 2;
+}
+
+/** A single-pane suggestion creates space to work; existing arrangements only rearrange. */
+export function arrangeSuggestedLayout(node: LayoutNode, preset: LayoutPreset, emptyPaneIds: string[], focusedId: string): LayoutNode {
+  let next = node;
+  if (layoutLeaves(node).length === 1) {
+    let anchorId = focusedId;
+    for (const id of emptyPaneIds.slice(0, suggestedPaneCount(preset) - 1)) {
+      next = splitPane(next, anchorId, "right", id);
+      anchorId = id;
+    }
+  }
+  return arrangeLayout(next, preset, focusedId);
+}
 
 export const LAYOUT_PRESETS: {
   id: LayoutPreset;
@@ -133,7 +150,17 @@ export function arrangeLayout(
 ): LayoutNode {
   if (node.type === "leaf") return node;
   if (preset === "equalize") return equalizeNode(node);
-  return buildLayout(leafIds(node), preset, focusedId, node.id);
+  const panes = layoutLeaves(node);
+  const activeFocus = panes.find((pane) => pane.tabIds?.includes(focusedId ?? ""))?.id ?? focusedId;
+  const arranged = buildLayout(panes.map((pane) => pane.id), preset, activeFocus, node.id);
+  const restoreGroups = (next: LayoutNode): LayoutNode => {
+    if (next.type === "leaf") {
+      const pane = panes.find((pane) => pane.id === next.id);
+      return pane?.tabIds ? { ...next, tabIds: pane.tabIds } : next;
+    }
+    return { ...next, children: next.children.map(restoreGroups) };
+  };
+  return restoreGroups(arranged);
 }
 
 /** Fresh layout for several sessions opened at once. */
@@ -167,7 +194,7 @@ function isFlat(node: LayoutNode, dir: SplitDir): node is SplitNode {
 function isGrid(node: LayoutNode): boolean {
   if (node.type !== "split" || node.dir !== "down") return false;
   if (!isEqual(node.sizes)) return false;
-  const total = leafIds(node).length;
+  const total = layoutLeaves(node).length;
   const cols = Math.ceil(Math.sqrt(total));
   if (node.children.length !== Math.ceil(total / cols)) return false;
   return node.children.every((row, index) => {

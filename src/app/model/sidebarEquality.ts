@@ -87,7 +87,8 @@ export function liveAgentsEqual(
         agent.startedAt === other.startedAt &&
         agent.durationMs === other.durationMs &&
         agent.needsApproval === other.needsApproval &&
-        agent.done === other.done
+        agent.done === other.done &&
+        agent.ownerWindowLabel === other.ownerWindowLabel
       );
     })
   );

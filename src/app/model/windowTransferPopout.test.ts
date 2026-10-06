@@ -26,6 +26,13 @@ function session(id: string, cwd: string, busy = false): Session {
 }
 
 describe("isPointerOutsideWindow", () => {
+  it("retains an explicit return destination while work is queued", () => {
+    const queued = queueWindowMoves({}, ["tab"], { targetWindowLabel: "main" });
+    expect(queued.tab).toEqual({ targetWindowLabel: "main" });
+    const tabs = [{ ...newTab("running"), id: "tab" }];
+    expect(settlePendingWindowMoves(queued, tabs, [session("running", "/p", true)]).ready).toEqual([]);
+    expect(settlePendingWindowMoves(queued, tabs, [session("running", "/p")]).ready).toEqual(["tab"]);
+  });
   it("ignores the title bar interior and a small overshoot", () => {
     expect(isPointerOutsideWindow(400, 10, 800, 600)).toBe(false);
     expect(isPointerOutsideWindow(-3, 10, 800, 600)).toBe(false);
