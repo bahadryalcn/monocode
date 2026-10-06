@@ -120,6 +120,7 @@ import {
   type ConflictRow,
 } from "../model/conflictSection";
 import { useConflictActions } from "../hooks/useConflictActions";
+import { gitPanelRuntime, useGitPanelState } from "../model/gitPanelState";
 import { useLegacyConflictStatus } from "../hooks/useLegacyConflictStatus";
 import { appName } from "../../../shared/lib/appName";
 import { confirmNative, confirmDiscardFile } from "../model/gitConfirmation";
@@ -142,19 +143,19 @@ const collapsedDirs = new Set<string>();
 const indexByCwd = new Map<string, GitDiffIndex>();
 const prByCwd = new Map<string, GitPr | null>();
 
-/** Set while this panel announces its own change, which it reloads itself. */
-let announcingOwnChange = false;
+/** Observations already contain a fresh index; mutations need a new read. */
+let announcingObservedChange = false;
 
 function announceGitChange(
   cwd: string,
   scope: GitChangeScope,
   hint: GitChangeHint = {},
 ) {
-  announcingOwnChange = true;
+  announcingObservedChange = hint.observed === true;
   try {
     notifyGitChangedWith(cwd, scope, hint);
   } finally {
-    announcingOwnChange = false;
+    announcingObservedChange = false;
   }
 }
 
@@ -173,8 +174,6 @@ function busyLabel(busy: string): string {
   if (busy in ACTION_LABEL) return ACTION_LABEL[busy as IndexAction];
   return "Working…";
 }
-
-type AmendTarget = { branch: string | null; head: string | null };
 
 type Props = {
   cwd: string;
@@ -220,10 +219,10 @@ export function GitChangesPanel({
   const changesRef = useRef<ChangesActions | null>(null);
   // Shared across the header and the changed-files list so no two Git
   // mutations ever run against the same checkout at once.
-  const [busy, setBusy] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useGitPanelState(cwd, "busy");
+  const [status, setStatus] = useGitPanelState(cwd, "status");
   // The step a running action is on ("Pushing…"), shown beside the spinner.
-  const [pending, setPending] = useState<string | null>(null);
+  const [pending, setPending] = useGitPanelState(cwd, "pending");
   const [graphHeight, setGraphHeight] = useState(loadGraphPanelHeight);
   const [graphExpanded, setGraphExpanded] = useState(graphOpen);
 
@@ -231,7 +230,7 @@ export function GitChangesPanel({
     if (!status) return;
     const timer = window.setTimeout(() => setStatus(null), 4000);
     return () => window.clearTimeout(timer);
-  }, [status]);
+  }, [status, setStatus]);
 
   const canFetch = gitActions && Boolean(index?.remote);
   const [autoFetch, setAutoFetch] = useState(loadAutoFetch);
@@ -460,17 +459,14 @@ function ChangedFiles({
   const failure = useRemoteLoadFailure(cwd, "changes");
   const menuRef = useRef<HTMLDivElement>(null);
   const messageRef = useRef<HTMLTextAreaElement>(null);
-  const generateAbortRef = useRef<AbortController | null>(null);
+  const runtime = gitPanelRuntime(cwd);
+  const generateAbortRef = runtime.generateAbort;
   // Generating reads the changes without touching the index, so it does not
   // take `busy` and files can be staged while it runs.
-  const [generating, setGenerating] = useState(false);
-  const fileActions = useRef({
-    tail: Promise.resolve(),
-    size: 0,
-    paths: [] as string[],
-  });
-  const [message, setMessage] = useState("");
-  const [amendTarget, setAmendTarget] = useState<AmendTarget | null>(null);
+  const [generating, setGenerating] = useGitPanelState(cwd, "generating");
+  const fileActions = runtime.fileActions;
+  const [message, setMessage] = useGitPanelState(cwd, "message");
+  const [amendTarget, setAmendTarget] = useGitPanelState(cwd, "amendTarget");
   const amend = amendTarget !== null;
   const [menuOpen, setMenuOpen] = useState(false);
   const [stagedExpanded, setStagedExpanded] = useState(stagedOpen);
@@ -530,7 +526,7 @@ function ChangedFiles({
     (files.length > 0 || amend) && !committing && !generating;
 
   useEffect(() => {
-    if (!amendTarget) return;
+    if (!amendTarget || !index) return;
     if (
       amendTarget.branch === index?.branch &&
       amendTarget.head === index?.head
@@ -549,17 +545,6 @@ function ChangedFiles({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [message, enabled]);
-
-  useEffect(
-    () => () => {
-      if (generateAbortRef.current) {
-        generateAbortRef.current.abort();
-        generateAbortRef.current = null;
-        setGenerating(false);
-      }
-    },
-    [cwd],
-  );
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -1568,7 +1553,9 @@ export function ChangeList({ files, view, ...rest }: ChangeRowProps) {
           key={`${rest.kind}:${file.relative}`}
           file={file}
           active={isActive(file, rest.selected, rest.selectedKind, rest.kind)}
-          busy={rest.busy === file.relative || !!rest.busy?.startsWith("folder:")}
+          busy={
+            rest.busy === file.relative || !!rest.busy?.startsWith("folder:")
+          }
           kind={rest.kind}
           onOpenFile={rest.onOpenFile}
           onAction={rest.onAction}
@@ -2036,7 +2023,13 @@ function useDiffIndex(
     document.addEventListener("visibilitychange", onResume);
     const unsubGit = subscribeGitChanged(
       () => {
-        if (!announcingOwnChange) onResume();
+        if (!announcingObservedChange) {
+          // A mutation can finish in a panel that has already unmounted.
+          // Release this mounted panel's optimistic hold and refresh it too.
+          holdRef.current = false;
+          announcedRef.current = true;
+          onResume();
+        }
       },
       { cwd },
     );

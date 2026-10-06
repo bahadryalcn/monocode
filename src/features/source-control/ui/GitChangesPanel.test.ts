@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetGitIndexStore } from "../model/gitIndexStore";
+import { resetGitPanelState } from "../model/gitPanelState";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
@@ -19,7 +20,11 @@ vi.mock("../../../platform/tauri/fs", () => ({
   gitConflicts: vi.fn(async () => []),
   gitOperationStatus: vi.fn(async () => ({ operation: null, conflicts: [] })),
   gitStashList: vi.fn(async () => []),
-  gitBranches: vi.fn(async () => ({ current: "main", detached: false, branches: [] })),
+  gitBranches: vi.fn(async () => ({
+    current: "main",
+    detached: false,
+    branches: [],
+  })),
   gitRemotes: vi.fn(async () => []),
   gitTags: vi.fn(async () => []),
   gitPrStatus: vi.fn(async () => null),
@@ -37,7 +42,7 @@ vi.mock("../../../platform/tauri/fs", () => ({
   gitPrCreate: vi.fn(async () => ""),
   gitRangeContext: vi.fn(),
   notifyGitChanged: vi.fn(),
-  subscribeGitChanged: () => () => {},
+  subscribeGitChanged: vi.fn(() => () => {}),
   basename: (path: string) => path.split("/").pop() ?? path,
 }));
 
@@ -66,6 +71,7 @@ import {
   gitStageFile,
   gitUnstageFile,
   notifyGitChanged,
+  subscribeGitChanged,
 } from "../../../platform/tauri/fs";
 import {
   generateCommitMessage,
@@ -98,6 +104,7 @@ let root: Root;
 beforeEach(() => {
   vi.useFakeTimers();
   resetGitIndexStore();
+  resetGitPanelState();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -111,7 +118,8 @@ beforeEach(() => {
   vi.mocked(generateCommitMessage).mockReset();
   vi.mocked(gitStageFile).mockReset().mockResolvedValue(undefined);
   vi.mocked(gitUnstageFile).mockReset().mockResolvedValue(undefined);
-  vi.mocked(notifyGitChanged).mockClear();
+  vi.mocked(notifyGitChanged).mockReset();
+  vi.mocked(subscribeGitChanged).mockImplementation(() => () => {});
   invalidateWatchedFiles.mockReset();
   container = document.createElement("div");
   document.body.append(container);
@@ -200,6 +208,7 @@ async function renderPanel(cwd = "/repo") {
   act(() =>
     root.render(
       createElement(GitChangesPanel, {
+        key: cwd,
         cwd,
         enabled: true,
         onOpenFile: vi.fn(),
@@ -239,7 +248,9 @@ describe("GitChangesPanel action feedback", () => {
 
   it("moves a file to Staged Changes before git has answered", async () => {
     const cwd = "/repo-feedback";
-    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [changed(false)] }));
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ files: [changed(false)] }),
+    );
     let finishStage!: () => void;
     vi.mocked(gitStageFile).mockImplementationOnce(
       () => new Promise<void>((resolve) => (finishStage = resolve)),
@@ -258,7 +269,9 @@ describe("GitChangesPanel action feedback", () => {
     expect(statusText()).toBe("Staging…");
     expect(container.querySelector('[aria-label="Working"]')).not.toBeNull();
 
-    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [changed(true)] }));
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ files: [changed(true)] }),
+    );
     await act(async () => finishStage());
     await act(async () => {});
     expect(sections()).toEqual(["Staged Changes"]);
@@ -270,7 +283,11 @@ describe("GitChangesPanel action feedback", () => {
 
   it("stages files one after another while the message stays editable and a message is generated", async () => {
     const cwd = "/repo-feedback-queue";
-    const other = { ...changed(false), path: `${cwd}/other.ts`, relative: "other.ts" };
+    const other = {
+      ...changed(false),
+      path: `${cwd}/other.ts`,
+      relative: "other.ts",
+    };
     vi.mocked(gitDiffIndex).mockResolvedValue(
       index({ files: [changed(false), other] }),
     );
@@ -319,7 +336,9 @@ describe("GitChangesPanel action feedback", () => {
     expect(statusText()).toBe("Staging…");
 
     vi.mocked(gitDiffIndex).mockResolvedValue(
-      index({ files: [changed(true), { ...other, staged: true, unstaged: false }] }),
+      index({
+        files: [changed(true), { ...other, staged: true, unstaged: false }],
+      }),
     );
     await act(async () => finish[1]());
     await act(async () => {});
@@ -332,8 +351,12 @@ describe("GitChangesPanel action feedback", () => {
 
   it("puts the file back when staging fails", async () => {
     const cwd = "/repo-feedback-failed";
-    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [changed(false)] }));
-    vi.mocked(gitStageFile).mockRejectedValueOnce(new Error("index.lock exists"));
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ files: [changed(false)] }),
+    );
+    vi.mocked(gitStageFile).mockRejectedValueOnce(
+      new Error("index.lock exists"),
+    );
     vi.stubGlobal("alert", vi.fn());
     await renderPanel(cwd);
 
@@ -349,7 +372,9 @@ describe("GitChangesPanel action feedback", () => {
 
   it("names the step on the commit button while it runs", async () => {
     const cwd = "/repo-feedback-commit";
-    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [changed(true)] }));
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ files: [changed(true)] }),
+    );
     let finishCommit!: () => void;
     vi.mocked(gitCommit).mockImplementationOnce(
       () => new Promise<void>((resolve) => (finishCommit = resolve)),
@@ -429,6 +454,215 @@ describe("GitChangesPanel action feedback", () => {
   });
 });
 
+describe("GitChangesPanel navigation", () => {
+  const cwd = "/repo-navigation";
+  const changedIndex = () =>
+    index({
+      remote: "origin",
+      upstream: "origin/feature/pull",
+      files: [
+        {
+          path: `${cwd}/change.ts`,
+          relative: "change.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          staged: true,
+          unstaged: false,
+        },
+      ],
+    });
+  const click = async (label: string) => {
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!
+        .click(),
+    );
+  };
+  const typeMessage = async (text: string) => {
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!.call(textarea, text);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  const status = () =>
+    container.querySelector('header [role="status"]')?.textContent;
+
+  beforeEach(() => vi.mocked(gitDiffIndex).mockResolvedValue(changedIndex()));
+
+  it("keeps generation running across project switches and delivers to its original project", async () => {
+    let finish!: (text: string) => void;
+    vi.mocked(generateCommitMessage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await renderPanel(cwd);
+    await click("Generate commit message");
+    const signal = vi.mocked(generateCommitMessage).mock.calls[0][2];
+    await renderPanel("/other-navigation");
+    expect(signal?.aborted).toBe(false);
+    expect(
+      container.querySelector(
+        '[aria-label="Cancel commit message generation"]',
+      ),
+    ).toBeNull();
+    await typeMessage("Other draft");
+    await renderPanel(cwd);
+    expect(
+      container.querySelector(
+        '[aria-label="Cancel commit message generation"]',
+      ),
+    ).not.toBeNull();
+    await renderPanel("/other-navigation");
+    await act(async () => finish("Generated for original project"));
+    expect(container.querySelector("textarea")?.value).toBe("Other draft");
+    await renderPanel(cwd);
+    expect(container.querySelector("textarea")?.value).toBe(
+      "Generated for original project",
+    );
+    expect(generateCommitMessage).toHaveBeenCalledTimes(1);
+    expect(
+      container.querySelector(
+        '[aria-label="Cancel commit message generation"]',
+      ),
+    ).toBeNull();
+  });
+
+  it("allows cancellation after remount and ignores the cancelled result", async () => {
+    let finish!: (text: string) => void;
+    vi.mocked(generateCommitMessage)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValueOnce("Replacement");
+    await renderPanel(cwd);
+    await click("Generate commit message");
+    const signal = vi.mocked(generateCommitMessage).mock.calls[0][2];
+    await act(async () => root.render(null));
+    expect(signal?.aborted).toBe(false);
+    await renderPanel(cwd);
+    await click("Cancel commit message generation");
+    expect(signal?.aborted).toBe(true);
+    await click("Generate commit message");
+    await act(async () => finish("Cancelled result"));
+    expect(container.querySelector("textarea")?.value).toBe("Replacement");
+  });
+
+  it("restores a draft after leaving the Changes page", async () => {
+    await renderPanel(cwd);
+    await typeMessage("Unfinished draft");
+    await act(async () => root.render(null));
+    await renderPanel(cwd);
+    expect(container.querySelector("textarea")?.value).toBe("Unfinished draft");
+  });
+
+  it("keeps commit and push locked across remounts and clears the original draft on completion", async () => {
+    let finishCommit!: () => void;
+    let finishPush!: () => void;
+    vi.mocked(gitCommit).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishCommit = resolve;
+        }),
+    );
+    vi.mocked(gitPush).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPush = resolve;
+        }),
+    );
+    await renderPanel(cwd);
+    await typeMessage("Commit draft");
+    await click("Commit options");
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+        .find((item) => item.textContent?.trim() === "Commit & Push")!
+        .click(),
+    );
+    await renderPanel("/other-navigation");
+    expect(status()).toBeUndefined();
+    await typeMessage("Other draft");
+    await renderPanel(cwd);
+    expect(status()).toBe("Committing…");
+    expect(container.querySelector("textarea")?.disabled).toBe(true);
+    await act(async () => finishCommit());
+    expect(status()).toBe("Pushing…");
+    expect(container.querySelector("textarea")?.value).toBe("");
+    await renderPanel("/other-navigation");
+    await act(async () => finishPush());
+    expect(container.querySelector("textarea")?.value).toBe("Other draft");
+    await renderPanel(cwd);
+    expect(status()).toBeUndefined();
+    expect(gitCommit).toHaveBeenCalledWith(cwd, "Commit draft", false, false);
+    expect(gitPush).toHaveBeenCalledWith(cwd);
+  });
+
+  it("restores pull feedback and unlocks on completion", async () => {
+    let finish!: () => void;
+    vi.mocked(gitPull).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await renderPanel(cwd);
+    const pull = await openBranchMenu();
+    await act(async () => pull.click());
+    await renderPanel("/other-navigation");
+    await renderPanel(cwd);
+    expect(status()).toBe("Pulling…");
+    await act(async () => finish());
+    expect(status()).toBe("Pull complete");
+    expect((await openBranchMenu()).disabled).toBe(false);
+    expect(gitPull).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes the remounted panel when the original commit finishes", async () => {
+    const listeners = new Set<() => void>();
+    vi.mocked(subscribeGitChanged).mockImplementation((listener, filter) => {
+      if (filter?.cwd !== cwd) return () => {};
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    });
+    vi.mocked(notifyGitChanged).mockImplementation(() => {
+      listeners.forEach((listener) => listener());
+    });
+    let finish!: () => void;
+    vi.mocked(gitCommit).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await renderPanel(cwd);
+    await typeMessage("Commit draft");
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent?.trim() === "Commit")!
+        .click(),
+    );
+    await renderPanel("/other-navigation");
+    await renderPanel(cwd);
+    expect(container.textContent).toContain("Staged Changes");
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ ahead: 1 }));
+    await act(async () => finish());
+    expect(container.textContent).not.toContain("Staged Changes");
+    expect(container.textContent).toContain("1 unpushed commit");
+    expect(status()).toBeUndefined();
+  });
+});
+
 describe("GitChangesPanel pull action", () => {
   it("disables Pull when the branch has no upstream", async () => {
     vi.mocked(gitDiffIndex).mockResolvedValue(
@@ -496,9 +730,9 @@ describe("GitChangesPanel actions menu", () => {
       "Stash",
       "Tags",
     ]);
-    const checkout = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
-      (item) => item.textContent === "Checkout to…",
-    );
+    const checkout = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ].find((item) => item.textContent === "Checkout to…");
     expect(checkout?.disabled).toBe(false);
   });
 
@@ -509,14 +743,14 @@ describe("GitChangesPanel actions menu", () => {
     await renderPanel();
     await openBranchMenu();
 
-    const group = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
-      (item) => item.textContent === "Pull, Push",
-    )!;
+    const group = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ].find((item) => item.textContent === "Pull, Push")!;
     await act(async () => group.click());
     await act(async () => {});
-    const rebase = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(
-      (item) => item.textContent === "Pull (Rebase)",
-    )!;
+    const rebase = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    ].find((item) => item.textContent === "Pull (Rebase)")!;
     expect(rebase.disabled).toBe(false);
 
     await act(async () => {
