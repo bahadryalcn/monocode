@@ -3,6 +3,13 @@ import { useEffect, useState, type ReactNode } from "react";
 export type MarkdownViewMode = "preview" | "source";
 
 const remembered = new Map<string, MarkdownViewMode>();
+const listeners = new Map<string, Set<(mode: MarkdownViewMode) => void>>();
+
+/** Select a view before opening a file, or update an already mounted viewer. */
+export function setMarkdownViewMode(key: string, mode: MarkdownViewMode) {
+  remembered.set(key, mode);
+  listeners.get(key)?.forEach((listener) => listener(mode));
+}
 
 export function useMarkdownMode(
   key: string,
@@ -14,13 +21,19 @@ export function useMarkdownMode(
 
   useEffect(() => {
     setMode(remembered.get(key) ?? fallback);
+    const subscribers = listeners.get(key) ?? new Set();
+    subscribers.add(setMode);
+    listeners.set(key, subscribers);
+    return () => {
+      subscribers.delete(setMode);
+      if (subscribers.size === 0) listeners.delete(key);
+    };
   }, [key, fallback]);
 
   return [
     mode,
     (next) => {
-      remembered.set(key, next);
-      setMode(next);
+      setMarkdownViewMode(key, next);
     },
   ];
 }

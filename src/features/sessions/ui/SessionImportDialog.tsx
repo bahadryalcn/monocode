@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   discoverImportableSessions,
@@ -654,7 +655,7 @@ function DoneView({
       <ul className="flex flex-col gap-1 text-[12px] text-content/70">
         <li>{plural(summary.imported, "conversation")} imported.</li>
         {summary.skipped > 0 ? (
-          <li>{summary.skipped} already in MonoCode, skipped.</li>
+          <li>{summary.skipped} already in {PRODUCT_IDENTITY.displayName}, skipped.</li>
         ) : null}
         {summary.projects > 0 ? (
           <li>

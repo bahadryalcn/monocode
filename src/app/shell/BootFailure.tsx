@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 
 /** Must stay independent of App so a failed App chunk can still recover. */
 export function BootFailure({
@@ -14,7 +15,9 @@ export function BootFailure({
   return (
     <main className="grid h-dvh place-items-center bg-background-base p-6 text-content">
       <section role="alert" className="w-full max-w-md space-y-4">
-        <h1 className="text-xl font-medium">MonoCode couldn’t start</h1>
+        <h1 className="text-xl font-medium">
+          {PRODUCT_IDENTITY.displayName} couldn’t start
+        </h1>
         <p className="text-sm text-content/75">
           Your saved workspace is still available. Reload the app to try again.
         </p>

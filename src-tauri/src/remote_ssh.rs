@@ -32,7 +32,7 @@ pub struct SshTarget {
 pub fn dial_order(target: &SshTarget) -> Vec<SshTarget> {
     let primary = SshTarget {
         alternate: None,
-        host_key_alias: None,
+        host_key_alias: target.host_key_alias.clone(),
         ..target.clone()
     };
     let Some(alternate) = target
@@ -80,7 +80,10 @@ fn known_host_key_name(primary: &SshTarget) -> Option<String> {
 }
 
 /// Accepts an empty alternate as none; otherwise it must be a valid target too.
-pub fn validate_alternate(alternate: Option<&str>, port: Option<u16>) -> Result<Option<String>, String> {
+pub fn validate_alternate(
+    alternate: Option<&str>,
+    port: Option<u16>,
+) -> Result<Option<String>, String> {
     match alternate.map(str::trim).filter(|value| !value.is_empty()) {
         None => Ok(None),
         Some(value) => validate_target(value, port).map(Some),
@@ -138,7 +141,7 @@ impl Job {
             inner: Mutex::new(JobData {
                 view: JobView {
                     id: uuid::Uuid::new_v4().to_string(),
-                    message: "Connecting to SSH and setting up MonoCode Host…".into(),
+                    message: "Connecting to SSH and setting up imc Host…".into(),
                     prompt: None,
                     done: false,
                     error: None,
@@ -343,19 +346,42 @@ pub fn detect_platform(
     target: &SshTarget,
     job: &Arc<Job>,
     askpass: &Askpass,
-) -> Result<HostPlatform, String> {
+) -> Result<(HostPlatform, SshTarget), String> {
     job.message("Checking the remote machine…");
-    let dialed = dial_order(target).remove(0);
-    let target = &dialed;
-    let output = run_remote_command(
-        target,
-        String::new(),
-        job,
-        askpass,
-        command(target, true),
-        PLATFORM_PROBE,
-    )?;
-    parse_platform(&output)
+    detect_platform_from_dials(dial_order(target), job, |dial| {
+        run_remote_command(
+            dial,
+            String::new(),
+            job,
+            askpass,
+            command(dial, true),
+            PLATFORM_PROBE,
+        )
+        .and_then(|output| parse_platform(&output))
+    })
+}
+
+fn detect_platform_from_dials(
+    dials: Vec<SshTarget>,
+    job: &Arc<Job>,
+    mut probe: impl FnMut(&SshTarget) -> Result<HostPlatform, String>,
+) -> Result<(HostPlatform, SshTarget), String> {
+    let mut failure = String::new();
+    for dial in dials {
+        if job.cancelled.load(Ordering::Relaxed) {
+            return Err("Connection cancelled".into());
+        }
+        match probe(&dial) {
+            Ok(platform) => return Ok((platform, dial)),
+            Err(error) => {
+                if job.cancelled.load(Ordering::Relaxed) {
+                    return Err(error);
+                }
+                failure = error;
+            }
+        }
+    }
+    Err(failure)
 }
 
 fn powershell_encoded(script: &str) -> String {
@@ -483,16 +509,18 @@ pub fn bootstrap_script(platform: HostPlatform) -> String {
 
 fn bootstrap_script_from_template(platform: HostPlatform, template: &str) -> String {
     let version = env!("CARGO_PKG_VERSION");
-    let url = format!("https://github.com/bahadryalcn/monocode/releases/download/v{version}");
+    // Independent host packages must be configured explicitly at build time.
+    // Never install an upstream host into imc's isolated data/service paths.
+    let url = option_env!("IMECE_HOST_RELEASE_URL").unwrap_or("");
     match platform {
         // include_str! preserves checkout line endings, including Windows CRLF.
         HostPlatform::Unix => template
             .replace("\r\n", "\n")
             .replace("@@VERSION@@", &shell_quote(version))
-            .replace("@@RELEASE@@", &shell_quote(&url)),
+            .replace("@@RELEASE@@", &shell_quote(url)),
         HostPlatform::Windows => template
             .replace("@@VERSION@@", &powershell_quote(version))
-            .replace("@@RELEASE@@", &powershell_quote(&url))
+            .replace("@@RELEASE@@", &powershell_quote(url))
             .replace("@@ACL@@", include_str!("../../host/windows-acl.ps1")),
     }
 }
@@ -501,18 +529,18 @@ pub fn upgrade_script(platform: HostPlatform, port: u16) -> String {
     let script = bootstrap_script(platform);
     match platform {
         HostPlatform::Unix => {
-            format!("MONOCODE_HOST_FORCE_UPGRADE=1\nMONOCODE_HOST_PORT={port}\n{script}")
+            format!("IMECE_HOST_FORCE_UPGRADE=1\nIMECE_HOST_PORT={port}\n{script}")
         }
         HostPlatform::Windows => format!(
-            "$env:MONOCODE_HOST_FORCE_UPGRADE = '1'\n$env:MONOCODE_HOST_PORT = '{port}'\n{script}"
+            "$env:IMECE_HOST_FORCE_UPGRADE = '1'\n$env:IMECE_HOST_PORT = '{port}'\n{script}"
         ),
     }
 }
 
 pub fn pairing_script(platform: HostPlatform, name: &str) -> String {
     match platform {
-        HostPlatform::Unix => format!("set -eu\n\"$HOME/.monocode-host/bin/monocode-host\" pair --name {} --json\n", shell_quote(name)),
-        HostPlatform::Windows => format!("$ErrorActionPreference = 'Stop'\n$base = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.monocode-host'\n$runtime = [IO.File]::ReadAllText((Join-Path $base 'runtime-path')).Trim()\n& (Join-Path $runtime 'node.exe') (Join-Path $runtime 'host.mjs') pair --name {} --json\nif ($LASTEXITCODE -ne 0) {{ throw 'Host pairing failed.' }}\n", powershell_quote(name)),
+        HostPlatform::Unix => format!("set -eu\n\"$HOME/.imece-host/bin/imece-host\" pair --name {} --json\n", shell_quote(name)),
+        HostPlatform::Windows => format!("$ErrorActionPreference = 'Stop'\n$base = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.imece-host'\n$runtime = [IO.File]::ReadAllText((Join-Path $base 'runtime-path')).Trim()\n& (Join-Path $runtime 'node.exe') (Join-Path $runtime 'host.mjs') pair --name {} --json\nif ($LASTEXITCODE -ne 0) {{ throw 'Host pairing failed.' }}\n", powershell_quote(name)),
     }
 }
 
@@ -1033,14 +1061,62 @@ pub fn device_name() -> String {
         .take(80)
         .collect();
     if name.is_empty() {
-        "MonoCode desktop".into()
+        "imc desktop".into()
     } else {
-        format!("MonoCode on {name}")
+        format!("imc on {name}")
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn setup_falls_back_after_ssh_failure_and_keeps_the_selected_host_key() {
+        let primary = SshTarget {
+            target: "me@home".into(),
+            port: None,
+            remote_port: 3774,
+            alternate: None,
+            host_key_alias: None,
+        };
+        let alternate = SshTarget {
+            target: "me@tailnet".into(),
+            host_key_alias: Some("home".into()),
+            ..primary.clone()
+        };
+        let mut attempted = Vec::new();
+        let (platform, selected) =
+            detect_platform_from_dials(vec![primary, alternate], &Job::new(), |dial| {
+                attempted.push(dial.target.clone());
+                if dial.target == "me@home" {
+                    Err("SSH connection refused".into())
+                } else {
+                    Ok(HostPlatform::Unix)
+                }
+            })
+            .unwrap();
+        assert_eq!(attempted, ["me@home", "me@tailnet"]);
+        assert_eq!(platform, HostPlatform::Unix);
+        let script_dial = dial_order(&selected).remove(0);
+        assert_eq!(script_dial.target, "me@tailnet");
+        assert_eq!(script_dial.host_key_alias.as_deref(), Some("home"));
+    }
+
+    #[test]
+    fn cancelled_setup_does_not_try_another_address() {
+        let job = Job::new();
+        job.cancel();
+        let target = SshTarget {
+            target: "me@home".into(),
+            port: None,
+            remote_port: 3774,
+            alternate: None,
+            host_key_alias: None,
+        };
+        let result = detect_platform_from_dials(vec![target], &job, |_| {
+            panic!("cancelled setup must not connect")
+        });
+        assert_eq!(result.unwrap_err(), "Connection cancelled");
+    }
     use super::*;
 
     #[test]
@@ -1396,7 +1472,10 @@ mod tests {
         };
         let order = dial_order(&target);
         assert_eq!(
-            order.iter().map(|dial| dial.target.as_str()).collect::<Vec<_>>(),
+            order
+                .iter()
+                .map(|dial| dial.target.as_str())
+                .collect::<Vec<_>>(),
             ["me@127.0.0.1", "me@nowhere.invalid"]
         );
         // The other address checks the host key filed for the saved one.
@@ -1408,9 +1487,15 @@ mod tests {
         let order = dial_order(&target);
         assert_eq!(order[0].target, "me@nowhere.invalid");
 
-        let single = SshTarget { alternate: None, ..target.clone() };
+        let single = SshTarget {
+            alternate: None,
+            ..target.clone()
+        };
         assert_eq!(dial_order(&single).len(), 1);
-        let blank = SshTarget { alternate: Some("  ".into()), ..target };
+        let blank = SshTarget {
+            alternate: Some("  ".into()),
+            ..target
+        };
         assert_eq!(dial_order(&blank).len(), 1);
     }
 
@@ -1483,18 +1568,21 @@ mod tests {
     #[test]
     fn bootstrap_is_versioned_and_only_explicit_upgrade_restarts_the_host() {
         let script = bootstrap_script(HostPlatform::Unix);
+        assert!(script.contains("BASE=\"$HOME/.imece-host\""));
+        assert!(script.contains("ENTRY=\"$BASE/bin/imece-host\""));
+        assert!(script.contains("IMECE_HOST_PORT:-3775"));
+        assert!(script.contains("imc host distribution is not configured"));
+        assert!(!script.contains("github.com/bahadryalcn/monocode"));
         assert!(!script.contains('\r'));
         assert!(!script.contains("@@"));
         assert!(script.contains("--proto '=https'"));
         assert!(script.contains("checksum mismatch"));
         assert!(script.contains("\"$FORCE_UPGRADE\" = 1"));
         assert!(script.contains("service uninstall"));
-        assert!(
-            upgrade_script(HostPlatform::Unix, 3774).starts_with("MONOCODE_HOST_FORCE_UPGRADE=1")
-        );
+        assert!(upgrade_script(HostPlatform::Unix, 3774).starts_with("IMECE_HOST_FORCE_UPGRADE=1"));
         assert!(!upgrade_script(HostPlatform::Unix, 3774).contains('\r'));
         assert!(upgrade_script(HostPlatform::Windows, 3774)
-            .starts_with("$env:MONOCODE_HOST_FORCE_UPGRADE = '1'"));
+            .starts_with("$env:IMECE_HOST_FORCE_UPGRADE = '1'"));
     }
     #[test]
     fn remote_platform_probe_handles_cmd_powershell_and_unix() {
@@ -1569,7 +1657,7 @@ mod tests {
     #[test]
     fn device_names_are_bounded_single_lines() {
         let name = device_name();
-        assert!(name.starts_with("MonoCode"));
+        assert!(name.starts_with("imc"));
         assert!(name.chars().count() <= 100);
         assert!(!name.chars().any(char::is_control));
     }

@@ -1,12 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MonoCode",
-  "identifier": "com.monocode.desktop.fork",
+  "productName": "imc",
+  "mainBinaryName": "imc",
+  "identifier": "com.imece.desktop",
   "app": {
     "windows": [
       {
         "label": "main",
-        "title": "MonoCode",
+        "title": "imc",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
@@ -20,14 +21,12 @@
     ]
   },
   "bundle": {
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdGOUY3M0UyQzlBRDI3NUMKUldSY0o2M0o0bk9mZjJobmpSb1dJWkk1YlI5azVYTW1lTEtqSEFCUk9rOTNWYUZJblJ6TTE2bDAK",
-      "endpoints": [
-        "https://github.com/bahadryalcn/monocode/releases/latest/download/latest.json"
-      ]
+      "pubkey": "",
+      "endpoints": []
     }
   }
 }

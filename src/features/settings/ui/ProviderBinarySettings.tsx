@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   ExternalLink,
   FolderOpen,
@@ -60,8 +61,10 @@ export function binaryInspectionError(
 
 export function ProviderBinaryControl({
   provider,
+  showLabel = false,
 }: {
   provider: ConfigurableBinaryProvider;
+  showLabel?: boolean;
 }) {
   const root = useRef<HTMLSpanElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -182,13 +185,14 @@ export function ProviderBinaryControl({
           setOpen((value) => !value);
           setEditing(false);
         }}
-        className={`grid size-6 place-items-center rounded hover:bg-content/10 focus-visible:outline-2 focus-visible:outline-accent ${
+        className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded hover:bg-content/10 focus-visible:outline-2 focus-visible:outline-accent ${showLabel ? "px-2 py-1 text-[11px]" : "size-6"} ${
           restartRequired
             ? "text-amber-300"
             : "text-content/35 hover:text-content"
         }`}
       >
         <FolderOpen className="size-3.5" strokeWidth={1.75} />
+        {showLabel ? "CLI setup" : null}
       </button>
       {open ? (
         <Popover
@@ -263,7 +267,7 @@ export function ProviderBinaryControl({
               />
               <p className="mt-1.5 text-[10px] text-content/40">
                 Enter the absolute path to the CLI executable. Changes apply
-                after restarting MonoCode.
+                after restarting {PRODUCT_IDENTITY.displayName}.
               </p>
               {error ? (
                 <span

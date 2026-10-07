@@ -337,7 +337,7 @@ pub fn remote_connect(
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
-        return Err("Enter the device token issued by monocode-host pair".into());
+        return Err("Enter the device token issued by imece-host pair".into());
     }
     let descriptor = rpc(&endpoint, &token, None, "environment.describe", json!({}))?;
     if descriptor.get("protocolVersion").and_then(Value::as_u64) != Some(1) {
@@ -729,7 +729,7 @@ fn merge_known_machine(
         new.port = previous.port.or(new.port);
         machine.endpoint = format!("ssh://{}", new.target);
     } else {
-        new.alternate = previous.alternate.clone();
+        new.alternate = new.alternate.clone().or_else(|| previous.alternate.clone());
     }
     if !named {
         machine.name = old.name.clone();
@@ -767,10 +767,10 @@ fn start_ssh_job(
             let mut target = target;
             let mut machine = if let Some(mut existing) = existing {
                 if upgrade {
-                    let platform = remote_ssh::detect_platform(&target, &job, &askpass)?;
+                    let (platform, dial) = remote_ssh::detect_platform(&target, &job, &askpass)?;
                     job.message("Updating MonoCode Host on the machine…");
                     let output = remote_ssh::run_script(
-                        &target,
+                        &dial,
                         platform,
                         remote_ssh::upgrade_script(platform, target.remote_port),
                         &job,
@@ -790,10 +790,10 @@ fn start_ssh_job(
                 }
                 existing
             } else {
-                let platform = remote_ssh::detect_platform(&target, &job, &askpass)?;
+                let (platform, dial) = remote_ssh::detect_platform(&target, &job, &askpass)?;
                 job.message("Installing or starting MonoCode Host…");
                 let output = remote_ssh::run_script(
-                    &target,
+                    &dial,
                     platform,
                     remote_ssh::bootstrap_script(platform),
                     &job,
@@ -809,7 +809,7 @@ fn start_ssh_job(
                     .ok_or("Host did not report a valid port")?;
                 job.message("Pairing this desktop with the host…");
                 let pair = remote_ssh::run_script(
-                    &target,
+                    &dial,
                     platform,
                     remote_ssh::pairing_script(platform, &remote_ssh::device_name()),
                     &job,
@@ -924,15 +924,18 @@ pub fn remote_ssh_begin(
     target: String,
     name: String,
     port: Option<u16>,
+    alternate: Option<String>,
 ) -> Result<String, String> {
     let target = remote_ssh::validate_target(&target, port)?;
+    let alternate = remote_ssh::validate_alternate(alternate.as_deref(), port)?
+        .filter(|alternate| *alternate != target);
     start_ssh_job(
         app,
         SshTarget {
             target,
             port,
             remote_port: 3774,
-            alternate: None,
+            alternate,
             host_key_alias: None,
         },
         name.trim().chars().take(100).collect(),
@@ -1289,6 +1292,16 @@ mod tests {
         merge_known_machine(&mut again, &old, false, false);
         assert_eq!(again.id, "a");
         assert_eq!(again.ssh.unwrap().target, "me@moved");
+    }
+
+    #[test]
+    fn adding_with_an_explicit_alternate_keeps_it() {
+        let old = saved("a", "me@home");
+        let mut added = saved("fresh-id", "me@home");
+        added.ssh.as_mut().unwrap().alternate = Some("me@tailnet".into());
+        merge_known_machine(&mut added, &old, true, false);
+        assert_eq!(added.id, "a");
+        assert_eq!(added.ssh.unwrap().alternate.as_deref(), Some("me@tailnet"));
     }
 
     #[test]

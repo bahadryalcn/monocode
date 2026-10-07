@@ -1,5 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { formatFileSize, isImagePath, sniffImageMime } from "./filePreview";
+import {
+  canPreviewFile,
+  formatFileSize,
+  isImagePath,
+  sniffImageMime,
+} from "./filePreview";
+
+it.each([
+  "md",
+  "MDX",
+  "markdown",
+  "html",
+  "HTM",
+  "svg",
+  "png",
+  "jpeg",
+  "webp",
+  "pdf",
+  "docx",
+  "xlsx",
+])("supports %s preview", (extension) => {
+  expect(canPreviewFile(`/repo/file.${extension}`)).toBe(true);
+});
+it.each(["/repo/app.ts", "/repo/LICENSE", "/repo/page.html/source.js"])(
+  "does not advertise unsupported preview: %s",
+  (path) => {
+    expect(canPreviewFile(path)).toBe(false);
+  },
+);
 
 function bytes(...values: number[]): Uint8Array {
   return new Uint8Array(values);
@@ -23,9 +51,9 @@ describe("isImagePath", () => {
 
 describe("sniffImageMime", () => {
   it("identifies each supported format by magic number", () => {
-    expect(sniffImageMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a))).toBe(
-      "image/png",
-    );
+    expect(
+      sniffImageMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)),
+    ).toBe("image/png");
     expect(sniffImageMime(bytes(0xff, 0xd8, 0xff, 0xe0))).toBe("image/jpeg");
     expect(sniffImageMime(bytes(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))).toBe(
       "image/gif",

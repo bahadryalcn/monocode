@@ -1,0 +1,137 @@
+/* Keep the CLI overview together instead of splitting labels from controls. */
+.imece-settings-workbench .imece-settings-form > #setting-agent-clis {
+  display: block;
+}
+.imece-settings-workbench
+  .imece-settings-form
+  > #setting-agent-clis
+  > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px;
+  padding-bottom: 18px;
+}
+#setting-agent-clis > div:last-child {
+  container-type: inline-size;
+  overflow: visible;
+}
+.provider-cli-scope {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.provider-cli-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.provider-cli-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 16px;
+  border: 1px solid var(--color-stroke);
+  border-radius: 10px;
+  background: color-mix(
+    in srgb,
+    var(--color-content) 3%,
+    var(--color-background-base)
+  );
+}
+.provider-cli-card[data-default] {
+  border-color: color-mix(
+    in srgb,
+    var(--color-accent) 45%,
+    var(--color-stroke)
+  );
+}
+#setting-agent-clis :is(button, summary):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+.provider-cli-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.provider-cli-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+  margin-top: 20px;
+  margin-bottom: 18px;
+}
+.provider-cli-field {
+  min-width: 0;
+}
+.provider-cli-field:first-child:nth-last-child(2) {
+  grid-column: span 2;
+}
+.provider-cli-field > span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--color-content) 60%, transparent);
+}
+.provider-cli-field > div {
+  max-width: none;
+}
+.provider-cli-field > div > button {
+  width: 100%;
+  justify-content: space-between;
+}
+.provider-cli-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-stroke);
+}
+.provider-cli-card[data-default] .provider-cli-footer > button:disabled {
+  color: var(--color-content);
+  opacity: 0.8;
+}
+.provider-cli-install {
+  margin-top: 12px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--color-content) 60%, transparent);
+}
+.provider-cli-install > summary {
+  width: fit-content;
+  cursor: pointer;
+}
+.provider-cli-install > summary:hover {
+  color: var(--color-content);
+}
+.provider-cli-install > summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+.provider-cli-install > p {
+  margin-top: 8px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+@container (max-width: 850px) {
+  .provider-cli-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@container (max-width: 430px) {
+  .provider-cli-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .provider-cli-field:first-child:nth-last-child(2) {
+    grid-column: auto;
+  }
+  .provider-cli-card {
+    padding: 12px;
+  }
+}

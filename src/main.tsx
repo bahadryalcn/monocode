@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "./shared/lib/productIdentity";
 import React, { useLayoutEffect } from "react";
 import ReactDOM from "react-dom/client";
 import { listen } from "@tauri-apps/api/event";
@@ -123,7 +124,7 @@ const appRoot = ReactDOM.createRoot(
 appRoot.render(
   <BootGate transferred={false}>
     <div role="status" aria-live="polite" style={{ height: "100vh", display: "grid", placeContent: "center", gap: 12, textAlign: "center" }}>
-      <strong>MonoCode</strong>
+      <strong>{PRODUCT_IDENTITY.displayName}</strong>
       <span>Restoring your workspace and saved drafts...</span>
       <button type="button" onClick={() => window.location.reload()}>Retry loading</button>
     </div>

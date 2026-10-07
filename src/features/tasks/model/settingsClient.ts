@@ -17,8 +17,8 @@ export type MachineLimits = HostSettingsState & {
 
 /** Machines whose host keeps work limits, this computer's included. Older
  * hosts are not among them. */
-export function settingsMachines(): Promise<RemoteMachine[]> {
-  return backgroundMachines(HOST_SETTINGS);
+export function settingsMachines(fresh = false): Promise<RemoteMachine[]> {
+  return backgroundMachines(HOST_SETTINGS, fresh);
 }
 
 function machineLimits(

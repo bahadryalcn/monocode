@@ -42,7 +42,7 @@ export function SettingsSearch({
   const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActive((index) => Math.min(results.length - 1, index + 1));
+      setActive((index) => Math.max(0, Math.min(results.length - 1, index + 1)));
       return;
     }
     if (event.key === "ArrowUp") {
@@ -70,6 +70,8 @@ export function SettingsSearch({
           aria-label="Search settings"
           aria-expanded={open}
           aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={open && results[active] ? `${listId}-result-${active}` : undefined}
           spellCheck={false}
           autoComplete="off"
           className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
@@ -115,6 +117,7 @@ export function SettingsSearch({
                 key={`${result.section}:${result.settingId ?? "*"}`}
                 type="button"
                 role="option"
+                id={`${listId}-result-${index}`}
                 aria-selected={index === active}
                 onMouseDown={(event) => event.preventDefault()}
                 onMouseEnter={() => setActive(index)}

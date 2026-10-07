@@ -15,6 +15,7 @@ import { prettyCwd } from "../../../shared/lib/paths";
 import type { WorkspaceMode } from "../../sessions/model/session";
 import {
   Check,
+  ChevronDown,
   ChevronRight,
   Folder,
   FolderTree,
@@ -69,7 +70,9 @@ export function WorkspacePicker({
   onOpenChange,
   popoverSide = "top",
   initialPicker,
+  alignBase = "inline",
 }: {
+  alignBase?: "inline" | "end";
   initialPicker?: "workspace" | "base";
   cwd: string;
   mode: WorkspaceMode;
@@ -115,17 +118,25 @@ export function WorkspacePicker({
         popoverSide={popoverSide}
       />
       {mode === "worktree" ? (
-        <WorktreeBasePicker
-          initialOpen={initialPicker === "base"}
-          branches={branches?.branches ?? []}
-          selected={effectiveBase}
-          loading={!settled}
-          enabled={enabled && !!branches}
-          onChange={onBaseChange}
-          onClose={onClose}
-          onOpenChange={reportBase}
-          popoverSide={popoverSide}
-        />
+        <div
+          className={
+            alignBase === "end"
+              ? "ml-auto flex min-w-0 justify-end"
+              : "flex min-w-0"
+          }
+        >
+          <WorktreeBasePicker
+            initialOpen={initialPicker === "base"}
+            branches={branches?.branches ?? []}
+            selected={effectiveBase}
+            loading={!settled}
+            enabled={enabled && !!branches}
+            onChange={onBaseChange}
+            onClose={onClose}
+            onOpenChange={reportBase}
+            popoverSide={popoverSide}
+          />
+        </div>
       ) : null}
     </>
   );
@@ -283,10 +294,11 @@ function WorkspaceModePicker({
             }
             setOpen(true);
           }}
-          className="-ml-1.5 flex h-6 min-w-0 max-w-48 items-center gap-1.5 rounded-md px-1.5 text-[12px] text-content/55 hover:bg-content/8 hover:text-content aria-expanded:bg-content/8 aria-expanded:text-content disabled:opacity-40 disabled:hover:bg-transparent active:scale-[0.97]"
+          className="-ml-1.5 flex h-6 min-w-0 max-w-48 items-center gap-1.5 rounded-md bg-content/5 px-1.5 text-[12px] text-content/65 hover:bg-content/8 hover:text-content aria-expanded:bg-content/8 aria-expanded:text-content focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 disabled:hover:bg-transparent active:scale-[0.97]"
         >
           <Icon className="size-3.5 shrink-0" />
           <span className="truncate">{label}</span>
+          <ChevronDown className="size-3 shrink-0 text-content/40" />
         </button>
       ) : null}
       {open ? (

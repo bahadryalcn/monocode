@@ -1,8 +1,10 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { ArrowDownCircle, Loader, RefreshCw } from "../../../shared/ui/icons";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { OPEN_SESSION_IMPORT_EVENT } from "../../sessions/import/importModel";
+import { OPEN_ONBOARDING_EVENT } from "../../onboarding/model/onboarding";
 
 import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 
@@ -191,7 +193,7 @@ export function GeneralPage({
     <>
       <Group
         title="Alerts"
-        description="How MonoCode reaches you while you are looking somewhere else."
+        description={`How ${PRODUCT_IDENTITY.displayName} reaches you while you are looking somewhere else.`}
       >
         <Row
           id="sounds"
@@ -207,7 +209,7 @@ export function GeneralPage({
         <Row
           id="notifications"
           label="Notifications"
-          description="Notify when a reminder is due, or when an agent finishes or needs input in another session or while MonoCode is in the background. Click the notification to open that session."
+          description={`Notify when a reminder is due, or when an agent finishes or needs input in another session or while ${PRODUCT_IDENTITY.displayName} is in the background. Click the notification to open that session.`}
         >
           {notificationsEnabled && notificationPermission === "denied" ? (
             <NotificationsBlocked />
@@ -314,7 +316,7 @@ export function GeneralPage({
           <Row
             id="quick-composer"
             label="Quick composer"
-            description={`Press ${quickComposerShortcutLabel(loadQuickComposerShortcut())} in any app to float a prompt over it and start a session without switching to MonoCode. Change the shortcut in Keybindings. Return starts it in the background; ⌘Return starts it and brings the session forward.`}
+            description={`Press ${quickComposerShortcutLabel(loadQuickComposerShortcut())} in any app to float a prompt over it and start a session without switching to ${PRODUCT_IDENTITY.displayName}. Change the shortcut in Keybindings. Return starts it in the background; ⌘Return starts it and brings the session forward.`}
           >
             {quickComposerError ? (
               <span className="text-[12px] text-content/45">
@@ -369,16 +371,22 @@ export function GeneralPage({
                 : "Prevent idle sleep during agent work, and optionally after the last agent finishes. Automatic screen locking remains available. On GNOME, choosing Sleep may be blocked while this is active."
           }
         >
+          <Toggle
+            label="Prevent sleep while agents work"
+            on={keepAwake}
+            onChange={onKeepAwake}
+          />
+        </Row>
+        <Row
+          label="After agents finish"
+          description="Choose when this computer can sleep again after the last agent finishes."
+        >
           <Select
             label="Stay awake after an agent ends"
             value={keepAwakeHoldAfter}
             options={[...KEEP_AWAKE_HOLD_AFTER]}
             onChange={onKeepAwakeHoldAfter}
-          />
-          <Toggle
-            label="Prevent sleep while agents work"
-            on={keepAwake}
-            onChange={onKeepAwake}
+            disabled={!keepAwake}
           />
         </Row>
         <Row
@@ -402,7 +410,7 @@ export function GeneralPage({
       <Group
         id="import-history"
         title="Import history"
-        description="Bring conversations you had in the Claude Code and Codex terminals into MonoCode."
+        description={`Bring conversations you had in the Claude Code and Codex terminals into ${PRODUCT_IDENTITY.displayName}.`}
       >
         <Row
           label="Claude Code and Codex sessions"
@@ -414,6 +422,14 @@ export function GeneralPage({
             }
           >
             Import…
+          </SecondaryButton>
+        </Row>
+      </Group>
+
+      <Group title="Setup" description="Connect computers, set up agents, and choose your projects.">
+        <Row label="Getting started" description="Reopen the setup guide at any time.">
+          <SecondaryButton onClick={() => window.dispatchEvent(new Event(OPEN_ONBOARDING_EVENT))}>
+            Open setup…
           </SecondaryButton>
         </Row>
       </Group>
@@ -478,7 +494,7 @@ export function UpdateRow({
               ? "You're on the latest version."
               : snapshot.phase === "error"
                 ? (snapshot.error ?? "Update check failed.")
-                : "MonoCode updates itself from the release feed.";
+                : `${PRODUCT_IDENTITY.displayName} updates itself from the release feed.`;
 
   return (
     <Row

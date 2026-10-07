@@ -12,6 +12,7 @@ import { Check, ChevronRight } from "../../../shared/ui/icons";
 import { Popover } from "../../../shared/ui/Popover";
 
 type MenuAction = {
+  icon?: ReactNode;
   kind: "item";
   id: string;
   label: string;
@@ -255,6 +256,7 @@ export function ExplorerMenu({
                 : "text-content hover:bg-content/5"
         }`}
       >
+        {item.icon ? <span className="flex size-4 shrink-0 items-center justify-center">{item.icon}</span> : null}
         <span className="min-w-0 flex-1">
           <span className="block truncate">{item.label}</span>
           {item.description ? (

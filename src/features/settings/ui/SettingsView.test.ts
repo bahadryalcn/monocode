@@ -127,6 +127,78 @@ afterEach(async () => {
 });
 
 describe("settings pages", () => {
+  it("applies visual theme cards and preserves custom palettes", async () => {
+    localStorage.setItem("monocode.themeHue", "123");
+    localStorage.setItem("monocode.themeSaturation", "31");
+    await render("appearance");
+    expect(container.textContent).toContain("Your custom colors are active");
+    expect(container.querySelectorAll('.appearance-palette[aria-pressed="true"]')).toHaveLength(0);
+    const ocean = Array.from(container.querySelectorAll<HTMLButtonElement>(".appearance-palette")).find(button => button.textContent?.includes("Tide"))!;
+    await act(async () => ocean.click());
+    expect(localStorage.getItem("monocode.themeHue")).toBe("205");
+    expect(localStorage.getItem("monocode.accentColor")).toBe("#65b4db");
+    expect(ocean.getAttribute("aria-pressed")).toBe("true");
+    expect(container.querySelector("#appearance-advanced")?.hasAttribute("hidden")).toBe(true);
+  });
+
+  it("persists typography and restores the appearance defaults", async () => {
+    await render("appearance");
+    const trigger = container.querySelector<HTMLButtonElement>('[data-setting-id="interface-font"] [aria-haspopup="listbox"]')!;
+    await act(async () => trigger.click());
+    const option = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find(node => node.textContent === "Verdana")!;
+    await act(async () => option.click());
+    expect(document.documentElement.style.getPropertyValue("--font-sans")).toBe('"Verdana", sans-serif');
+    await render("chat");
+    await render("appearance");
+    expect(container.querySelector('[data-setting-id="interface-font"] [aria-haspopup="listbox"]')?.getAttribute("aria-label")).toBe("Interface font: Verdana");
+    const reset = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(node => node.textContent?.includes("Restore defaults"))!;
+    await act(async () => reset.click());
+    expect(document.documentElement.style.getPropertyValue("--font-sans")).toBe("");
+    expect(JSON.parse(localStorage.getItem("monocode.appearancePreferences.v1")!).interfaceFont).toBe("System");
+  });
+
+  it("exposes every category in a horizontal tab navigation with a linked content panel", async () => {
+    await render("general");
+    const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    expect(tabs.map(tab => tab.textContent?.trim())).toEqual(SETTINGS_SECTIONS.map(section => section.label));
+    const selected = tabs.find(tab => tab.getAttribute("aria-selected") === "true")!;
+    expect(selected.textContent?.trim()).toBe("General");
+    expect(selected.tabIndex).toBe(0);
+    expect(tabs.filter(tab => tab.tabIndex === 0)).toHaveLength(1);
+    const panel = container.querySelector('[role="tabpanel"]')!;
+    expect(panel.id).toBe(selected.getAttribute("aria-controls"));
+    expect(panel.getAttribute("aria-labelledby")).toBe(selected.id);
+    expect(container.querySelector('.imece-settings-toolbar [aria-label="Search settings"]')).not.toBeNull();
+    const appearance = tabs.find(tab => tab.textContent?.trim() === "Appearance")!;
+    await act(async () => appearance.click());
+    expect(onSelectSection).toHaveBeenCalledWith("appearance");
+  });
+
+  it("navigates category tabs with arrows and boundary keys while retaining focus", async () => {
+    await render("general");
+    const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    tabs[0]!.focus();
+    await act(async () => tabs[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    expect(onSelectSection).toHaveBeenLastCalledWith("connections");
+    expect(document.activeElement).toBe(tabs[1]);
+    await act(async () => tabs[1]!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
+    expect(onSelectSection).toHaveBeenLastCalledWith(SETTINGS_SECTIONS.at(-1)!.id);
+    expect(document.activeElement).toBe(tabs.at(-1));
+    await act(async () => tabs.at(-1)!.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })));
+    expect(onSelectSection).toHaveBeenLastCalledWith("general");
+    expect(document.activeElement).toBe(tabs[0]);
+  });
+
+  it("returns to the workspace from its back button without invoking category changes", async () => {
+    const onClose = vi.fn();
+    await render("general", { onClose });
+    const back = container.querySelector<HTMLButtonElement>('[aria-label="Back to workspace"]')!;
+    expect(back.getAttribute("data-tauri-drag-region")).toBe("false");
+    await act(async () => back.click());
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onSelectSection).not.toHaveBeenCalled();
+  });
+
   it("shows the off-by-default sleep setting with Linux lock guidance", async () => {
     await render("general");
     const toggle = container.querySelector<HTMLButtonElement>(
@@ -149,12 +221,12 @@ describe("settings pages", () => {
     const hold = container.querySelector<HTMLButtonElement>(
       '[aria-label="Stay awake after an agent ends: When it ends"]',
     )!;
-    expect(hold.closest(".settings-row")).toBe(toggle.closest(".settings-row"));
-    expect(
-      hold.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).not.toBe(0);
+    expect(hold.closest(".settings-row")).not.toBe(toggle.closest(".settings-row"));
+    expect(hold.closest(".settings-row")?.textContent).toContain("After agents finish");
+    expect(hold.disabled).toBe(true);
 
     await act(async () => toggle.click());
+    expect(hold.disabled).toBe(false);
     expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect(localStorage.getItem("monocode.keepAwakeWhileAgentsWork")).toBe("1");
 
@@ -1059,9 +1131,9 @@ describe("settings search", () => {
 
   it("finds a setting that lives on another page", async () => {
     await render("general");
-    await type("pacman");
+    await type("coffeehouse");
     expect(options().map((item) => item.textContent)).toEqual([
-      "Empty session gamesChat",
+      "Village coffeehouseChat",
     ]);
 
     await act(async () => options()[0]!.click());
@@ -1342,7 +1414,7 @@ describe("providers scope inheritance", () => {
     await act(async () => trigger.click());
     const option = Array.from(
       document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
-    ).find((node) => node.textContent?.trim() === label);
+    ).find((node) => node.querySelector(".truncate")?.textContent?.trim() === label);
     expect(option).toBeTruthy();
     await act(async () => option!.click());
   }
@@ -1363,7 +1435,7 @@ describe("providers scope inheritance", () => {
     // A project with no overrides shows the inherited global default provider.
     const claudeRow = container
       .querySelector('[aria-label^="Claude Code model"]')!
-      .closest(".settings-row")!;
+      .closest(".provider-cli-card")!;
     const claudeDefault = Array.from(
       claudeRow.querySelectorAll<HTMLButtonElement>("button"),
     ).find((node) => node.textContent?.trim() === "Default");
@@ -1384,7 +1456,7 @@ describe("providers scope inheritance", () => {
     // Global precedence: the project toggle cannot turn a globally hidden
     // provider back on, so it is locked and explained.
     expect(cursorToggle.hasAttribute("disabled")).toBe(true);
-    expect(cursorToggle.closest(".settings-row")?.textContent).toContain(
+    expect(cursorToggle.closest(".provider-cli-card")?.textContent).toContain(
       "Hidden globally",
     );
   });

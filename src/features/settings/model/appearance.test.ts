@@ -34,6 +34,9 @@ import {
   resolveColorScheme,
   THEME_PREFERENCE_DEFAULT,
   THEME_DARK_LIGHTNESS_DEFAULT,
+  loadThemeHue,
+  loadThemeSaturation,
+  migrateWorkbenchPalette,
   NEW_THREAD_BACKGROUND_EFFECT_DEFAULT,
   loadProjectRailWidth,
   saveProjectRailWidth,
@@ -90,9 +93,38 @@ describe("accent color setting", () => {
     localStorage.removeItem(ACCENT_COLOR_KEY);
   });
 
-  it("defaults to the original neutral appearance", () => {
-    expect(ACCENT_COLOR_DEFAULT).toBeNull();
-    expect(loadAccentColor()).toBeNull();
+  it("defaults to a restrained cool-gray accent", () => {
+    expect(ACCENT_COLOR_DEFAULT).toBe("#A3ACB8");
+    expect(loadAccentColor()).toBe(ACCENT_COLOR_DEFAULT);
+  });
+
+  it("migrates the previous shipped palette while preserving custom colors", () => {
+    localStorage.setItem("monocode.themeHue", "330");
+    localStorage.setItem("monocode.themeSaturation", "10");
+    localStorage.setItem(THEME_DARK_LIGHTNESS_KEY, "9");
+    localStorage.setItem(ACCENT_COLOR_KEY, "#B39963");
+    migrateWorkbenchPalette();
+    expect(loadThemeHue()).toBe(216);
+    expect(loadThemeSaturation()).toBe(24);
+    expect(loadThemeDarkLightness()).toBe(4);
+    expect(loadAccentColor()).toBe(ACCENT_COLOR_DEFAULT);
+
+    // After migration an explicit choice matching the former palette stays put.
+    localStorage.setItem("monocode.themeHue", "330");
+    localStorage.setItem(ACCENT_COLOR_KEY, "#B39963");
+    expect(loadThemeHue()).toBe(330);
+    expect(loadAccentColor()).toBe("#b39963");
+  });
+
+  it("does not replace a personalized tint or accent during migration", () => {
+    localStorage.setItem("monocode.themeHue", "270");
+    localStorage.setItem("monocode.themeSaturation", "10");
+    localStorage.setItem(THEME_DARK_LIGHTNESS_KEY, "9");
+    localStorage.setItem(ACCENT_COLOR_KEY, "#778899");
+    expect(loadThemeHue()).toBe(270);
+    expect(loadThemeSaturation()).toBe(10);
+    expect(loadThemeDarkLightness()).toBe(9);
+    expect(loadAccentColor()).toBe("#778899");
   });
 
   it("persists normalized hex colors and clears default or invalid values", () => {
@@ -105,7 +137,7 @@ describe("accent color setting", () => {
 
     saveAccentColor("tomato");
     expect(localStorage.getItem(ACCENT_COLOR_KEY)).toBeNull();
-    expect(loadAccentColor()).toBeNull();
+    expect(loadAccentColor()).toBe(ACCENT_COLOR_DEFAULT);
   });
 });
 
@@ -345,8 +377,8 @@ describe("dark theme lightness setting", () => {
   });
 
   it("defaults to the existing dark background lightness", () => {
-    expect(THEME_DARK_LIGHTNESS_DEFAULT).toBe(9);
-    expect(loadThemeDarkLightness()).toBe(9);
+    expect(THEME_DARK_LIGHTNESS_DEFAULT).toBe(4);
+    expect(loadThemeDarkLightness()).toBe(4);
   });
 
   it("persists true black and clamps overly light values", () => {

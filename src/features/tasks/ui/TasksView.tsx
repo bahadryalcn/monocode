@@ -1,3 +1,5 @@
+import { invalidateMachineSnapshot } from "../../automations/model/machineSnapshot";
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   useCallback,
   useEffect,
@@ -410,6 +412,7 @@ function TasksContent({
     const force = forceBoardRefresh.current;
     forceBoardRefresh.current = false;
     if (force) {
+      invalidateMachineSnapshot();
       setBoardDataState((current) => ({
         ...current,
         phase: current.updatedAt ? "refreshing" : "loading",
@@ -418,11 +421,11 @@ function TasksContent({
     try {
       const [reach, goalHosts, todoHosts, stewardHosts, limitHosts] =
         await Promise.all([
-          probeTaskMachines(),
-          goalMachines(),
-          todoMachines(),
-          stewardMachines(),
-          settingsMachines(),
+          probeTaskMachines(force),
+          goalMachines(force),
+          todoMachines(force),
+          stewardMachines(force),
+          settingsMachines(force),
         ]);
       if (!isCurrent()) return;
       const capable = reach.capable;
@@ -465,10 +468,13 @@ function TasksContent({
       const boardResults = [...taskResults, ...goalResults, ...stewardResults];
       const failedResults = boardResults.filter((result) => result.status === "error");
       const refreshProblems = [
-        ...failedResults.map(
-          (result) => `${result.machineName}: ${result.error ?? "request failed"}`,
+        ...new Set(
+          failedResults.map(
+            (result) =>
+              `${result.machineName}: ${reach.unreachableErrors?.[result.machineId] ?? result.error ?? "request failed"}`,
+          ),
         ),
-        ...reach.outdated.map((name) => `${name}: update MonoCode Host to refresh its board`),
+        ...reach.outdated.map((name) => `${name}: update ${PRODUCT_IDENTITY.displayName} Host to refresh its board`),
       ];
       const error = refreshProblems.length
         ? `Some machine data could not be refreshed: ${refreshProblems.join("; ")}`
@@ -783,14 +789,22 @@ function TasksContent({
   }, [loading, selected, selectedKey]);
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
+    <div className="imece-tasks flex min-h-0 min-w-0 flex-1 flex-col text-content">
+      <header className="imece-workspace-heading">
+        <div className="imece-heading-mark" aria-hidden="true"><DashboardSquare className="size-6" /></div>
+        <div className="min-w-0 flex-1">
+          <h1>Work in motion</h1>
+          <p>Follow an idea from its first step to a reviewed result.</p>
+        </div>
+        <div className="imece-heading-count"><strong>{visibleTasks.length}</strong><span>tasks</span></div>
+      </header>
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stroke px-3">
         <span className="min-w-0 flex-1 truncate text-[12px] text-content/45">
           {machines.length > 0
             ? "Each task runs on its project’s machine, with this app open or closed."
             : loading
               ? "Looking for machines…"
-              : "No connected machine has a task board. Connect one, or update its MonoCode Host."}
+              : `No connected machine has a task board. Connect one, or update its ${PRODUCT_IDENTITY.displayName} Host.`}
         </span>
         {newReviewNotes > 0 ? (
           <span data-new-review-notes className="shrink-0 text-[11px] text-amber-400">
@@ -1034,7 +1048,7 @@ function TasksContent({
                   key={status}
                   aria-label={COLUMN_LABELS[status]}
                   data-task-column={status}
-                  className="flex min-h-0 min-w-0 flex-col rounded-md border border-content/10 bg-content/3"
+                  className="imece-task-column flex min-h-0 min-w-0 flex-col rounded-md border border-content/10 bg-content/3"
                 >
                   <h2 className="flex h-9 shrink-0 items-center gap-2 px-3 text-[12px] font-medium text-content/60">
                     {COLUMN_LABELS[status]}

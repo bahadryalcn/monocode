@@ -100,7 +100,7 @@ describe("MonoCode CLI disclosure", () => {
     expect(row?.querySelector("button")).toBeNull();
     expect(row?.querySelector("pre")).toBeNull();
     expect(row?.textContent).toContain("Ranmonocode app notes.list");
-    expect(row?.querySelector('img[src="/monocode.png"]')).not.toBeNull();
+    expect(row?.querySelector('img[src="/brand/imece-mark.png"]')).not.toBeNull();
     expect(row?.querySelector(".bg-content\\/6")).not.toBeNull();
     expect(container.textContent).not.toContain("Contents/MacOS/monocode");
     expect(container.textContent).not.toContain('"title":"Ideas"');
@@ -121,7 +121,7 @@ describe("MonoCode CLI disclosure", () => {
     );
 
     const trigger = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Show error details for MonoCode: List notes"]',
+      'button[aria-label="Show error details for imc: List notes"]',
     );
     expect(trigger?.getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("Connection refused");

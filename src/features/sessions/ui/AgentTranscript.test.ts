@@ -110,7 +110,7 @@ describe("AgentTranscript collapsed work", () => {
       ],
       true,
     );
-    expect(markup).toContain("Using MonoCode");
+    expect(markup).toContain("Using imc");
     expect(markup).toContain('data-monocode-tool-call="--help"');
     expect(markup).toContain('data-monocode-tool-call="notes.list"');
     expect(markup).toContain("monocode app --help");
@@ -118,7 +118,7 @@ describe("AgentTranscript collapsed work", () => {
     expect(markup).toContain("Ran");
     expect(markup).toContain("Running");
     expect(markup).not.toContain("Contents/MacOS/monocode");
-    expect(markup).not.toContain("Show error details for MonoCode");
+    expect(markup).not.toContain("Show error details for imc");
   });
 
   it("shows the full command before approving a MonoCode CLI call", () => {
@@ -177,7 +177,7 @@ describe("AgentTranscript collapsed work", () => {
     expect(markup).toContain('data-monocode-tool-call="notes.list"');
     expect(markup).toContain("Ran");
     expect(markup).toContain("monocode app notes.list");
-    expect(markup).toContain("Show error details for MonoCode: List notes");
+    expect(markup).toContain("Show error details for imc: List notes");
     expect(markup).not.toContain("Connection refused");
   });
 
@@ -515,12 +515,15 @@ describe("AgentTranscript collapsed work", () => {
       true,
     );
 
-    // A row each, named, hopping while the run is live — no grouped header.
+    // A row each, named, with a project sigil — no grouped header.
     expect(markup).toContain("Correctness review");
     expect(markup).toContain("Quality review");
     expect(markup).toContain("Haiku 4.5");
     expect(markup).toContain("custom-review-model");
-    expect(markup).toContain("mascot-active");
+    // Static rendering has no client motion preference; keep mascots still.
+    expect(markup).not.toContain("mascot-active");
+    expect(markup).not.toContain('shape-rendering="crispEdges"');
+    expect(markup).toContain('viewBox="0 0 24 24"');
     expect(markup).not.toContain("are working");
     // A row counts its agent's work; it does not echo the call in flight,
     // which put a second scrolling command line on every row.

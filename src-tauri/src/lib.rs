@@ -10,12 +10,12 @@ mod control;
 pub mod control_cli;
 mod cursor_store;
 mod external_editor;
-mod html_preview;
 mod fs;
 mod git_conflicts;
 mod gitlab;
 mod harness;
 mod harness_updates;
+mod html_preview;
 mod inbox_media;
 mod jira;
 mod keep_awake;
@@ -306,6 +306,9 @@ pub fn run() {
         .on_menu_event(|app, event| {
             menu::dispatch(app, event.id().as_ref());
         })
+        .register_uri_scheme_protocol("html-preview", |_context, request| {
+            html_preview::respond(request)
+        })
         .invoke_handler(tauri::generate_handler![
             remote::remote_machines,
             remote::remote_connect,
@@ -357,6 +360,8 @@ pub fn run() {
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             html_preview::open_html_in_chrome,
+            html_preview::create_html_preview,
+            html_preview::close_html_preview,
             fs::resolve_project_location,
             fs::open_path_with_default_app,
             fs::claude_sessions,
@@ -482,6 +487,7 @@ pub fn run() {
             fs::move_path,
             fs::reveal_path,
             pasteboard::clipboard_file_paths,
+            pasteboard::copy_text_to_clipboard,
             pasteboard::clipboard_image,
             pasteboard::copy_file_to_clipboard,
             fs::clone_repo,

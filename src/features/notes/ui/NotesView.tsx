@@ -16,6 +16,7 @@ import {
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
@@ -50,6 +51,8 @@ import {
 } from "../noteImages";
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
+import { pickImageFiles } from "../../../platform/tauri/fs";
+import { filesFromClipboard } from "../../sessions/model/attachments";
 import {
   looksLikeProject,
   type RecentProject,
@@ -805,6 +808,47 @@ function NoteEditor({
     [editNote, scheduleSave],
   );
 
+  const pasteImages = useCallback(
+    (files: File[]) => {
+      const range = insertionRange();
+      void addDroppedImages(
+        () => saveNoteImagesFromFiles(note.id, files),
+        range,
+      );
+    },
+    [addDroppedImages, insertionRange, note.id],
+  );
+
+  const insertImage = useCallback(async () => {
+    // Read the caret before the dialog takes focus from the editor.
+    const range = insertionRange();
+    let paths: string[] | null;
+    try {
+      paths = await pickImageFiles();
+    } catch (err: unknown) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    if (!paths) return;
+    await addDroppedImages(
+      () => saveNoteImagesFromPaths(note.id, paths),
+      range,
+    );
+  }, [addDroppedImages, insertionRange, note.id]);
+
+  // The editor takes its own pastes; this catches a paste on the preview.
+  const onPreviewPaste = (event: ReactClipboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || modeRef.current !== "preview") return;
+    const target = event.target as HTMLElement;
+    if (target.closest("input, textarea, [contenteditable='true']")) return;
+    const images = filesFromClipboard(event.clipboardData).filter((file) =>
+      file.type.startsWith("image/"),
+    );
+    if (images.length === 0) return;
+    event.preventDefault();
+    pasteImages(images);
+  };
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -916,8 +960,11 @@ function NoteEditor({
   return (
     <div
       ref={lockOverscroll}
+      // Focusable so a paste over the preview reaches onPreviewPaste.
+      tabIndex={-1}
       onKeyDown={onEditorShortcut}
-      className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none"
+      onPaste={onPreviewPaste}
+      className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-none outline-none"
     >
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-8 py-8">
         <header className="flex flex-col gap-3">
@@ -1066,7 +1113,12 @@ function NoteEditor({
               onSelect={() => setMode("split")}
             />
           </div>
-          {editing ? <NoteMarkdownToolbar viewRef={editorViewRef} /> : null}
+          <NoteMarkdownToolbar
+            viewRef={editorViewRef}
+            editing={editing}
+            imageBusy={imageBusy}
+            onInsertImage={() => void insertImage()}
+          />
         </div>
         <div
           ref={dropZoneRef}
@@ -1117,6 +1169,7 @@ function NoteEditor({
                   scheduleSave();
                 }}
                 onSave={() => void saveNow()}
+                onPasteImages={pasteImages}
               />
             </div>
             {mode === "source" ? null : (

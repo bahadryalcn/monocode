@@ -1,3 +1,4 @@
+import { APPEARANCE_PREFERENCES_EVENT, loadAppearancePreferences } from "../../settings/model/appearancePreferences";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -19,7 +20,10 @@ import {
   parseOsc7Cwd,
   type TerminalMetaPatch,
 } from "../model/terminalTab";
-import { isLightScheme, SCHEME_CHANGE_EVENT } from "../../settings/model/appearance";
+import {
+  isLightScheme,
+  SCHEME_CHANGE_EVENT,
+} from "../../settings/model/appearance";
 import {
   applyTerminalChrome,
   fitTerminal,
@@ -29,6 +33,7 @@ import {
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { loadTerminalProfile } from "../model/terminalProfiles";
 import "@xterm/xterm/css/xterm.css";
+import { takeTerminalCommand } from "../model/terminalLaunchCommand";
 
 type Props = {
   id: string;
@@ -51,7 +56,10 @@ function cssColor(expr: string, fallback: string): string {
 function cssHexColor(expr: string, fallback: string): string {
   const color = cssColor(expr, fallback);
   if (/^#[\da-f]{6}$/i.test(color)) return color;
-  const channels = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+  const channels = color
+    .match(/[\d.]+/g)
+    ?.slice(0, 3)
+    .map(Number);
   if (!channels || channels.length < 3 || channels.some(Number.isNaN)) {
     return fallback;
   }
@@ -103,10 +111,14 @@ const ANSI_LIGHT = {
   brightWhite: "#ffffff",
 };
 
-function terminalTheme(light: boolean) {
+function terminalTheme(light: boolean, scope?: HTMLElement) {
+  const terminalText =
+    scope && getComputedStyle(scope).getPropertyValue("--terminal-text").trim();
   return {
     background: "#00000000",
-    foreground: cssColor("var(--color-content)", light ? "#2e2e2e" : "#e8eef2"),
+    foreground:
+      terminalText ||
+      cssColor("var(--color-content)", light ? "#2e2e2e" : "#e8eef2"),
     cursor: cssColor("var(--color-accent)", light ? "#4078f2" : "#4da3f5"),
     cursorAccent: light ? "#ffffff" : "#000000",
     selectionBackground: light ? "rgba(0,0,0,0.18)" : "rgba(255,255,255,0.18)",
@@ -131,21 +143,20 @@ function monoFont(): string {
  */
 const stoppingPtys = new Map<string, Promise<void>>();
 
-function oscColors() {
+function oscColors(scope?: HTMLElement) {
   const light = isLightScheme();
+  const style = scope && getComputedStyle(scope);
   return {
-    fg: cssHexColor(
-      "var(--color-content)",
-      light ? "#2e2e2e" : "#ebebeb",
-    ),
-    bg: cssHexColor(
-      "var(--color-background-base)",
-      light ? "#f7f7f7" : "#171717",
-    ),
-    cursor: cssHexColor(
-      "var(--color-accent)",
-      light ? "#4078f2" : "#4da3f5",
-    ),
+    fg:
+      style?.getPropertyValue("--terminal-text").trim() ||
+      cssHexColor("var(--color-content)", light ? "#2e2e2e" : "#ebebeb"),
+    bg:
+      style?.getPropertyValue("--terminal-canvas").trim() ||
+      cssHexColor(
+        "var(--color-background-base)",
+        light ? "#f7f7f7" : "#171717",
+      ),
+    cursor: cssHexColor("var(--color-accent)", light ? "#4078f2" : "#4da3f5"),
   };
 }
 
@@ -153,7 +164,13 @@ function oscColors() {
 // no terminal asks again.
 let metaSupported = true;
 
-export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) {
+export function TerminalView({
+  id,
+  cwd,
+  profile,
+  active,
+  onMetaChange,
+}: Props) {
   // Same signal as the WebGL addon: the terminal is actually on screen. Without
   // IntersectionObserver there is no signal, so assume visible.
   const [onScreen, setOnScreen] = useState(
@@ -179,13 +196,13 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
       cursorBlink: true,
       cursorStyle: "bar",
       fontFamily: monoFont(),
-      fontSize: 13,
+      fontSize: loadAppearancePreferences().codeSize,
       lineHeight: 1,
       letterSpacing: 0,
       scrollback: 5000,
       allowTransparency: true,
       smoothScrollDuration: 0,
-      theme: terminalTheme(isLightScheme()),
+      theme: terminalTheme(isLightScheme(), outer),
       macOptionIsMeta: IS_MAC,
     });
     term.open(host);
@@ -307,7 +324,11 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
     const starting = (stoppingPtys.get(id) ?? Promise.resolve())
       .then(start)
       .then(() => {
-        if (!closed) spawned.current = true;
+        if (!closed) {
+          spawned.current = true;
+          const command = takeTerminalCommand(id);
+          if (command) return writePty(id, `${command}\r`);
+        }
       })
       .catch((error) => {
         spawned.current = false;
@@ -349,19 +370,25 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
       return false;
     });
     const oscFg = term.parser.registerOscHandler(10, (data) =>
-      isOscColorQuery(data) ? replyOsc(10, oscColors().fg) : false,
+      isOscColorQuery(data) ? replyOsc(10, oscColors(outer).fg) : false,
     );
     const oscBg = term.parser.registerOscHandler(11, (data) =>
-      isOscColorQuery(data) ? replyOsc(11, oscColors().bg) : false,
+      isOscColorQuery(data) ? replyOsc(11, oscColors(outer).bg) : false,
     );
     const oscCursor = term.parser.registerOscHandler(12, (data) =>
-      isOscColorQuery(data) ? replyOsc(12, oscColors().cursor) : false,
+      isOscColorQuery(data) ? replyOsc(12, oscColors(outer).cursor) : false,
     );
 
     const onSchemeChange = () => {
-      term.options.theme = terminalTheme(isLightScheme());
+      term.options.theme = terminalTheme(isLightScheme(), outer);
     };
     window.addEventListener(SCHEME_CHANGE_EVENT, onSchemeChange);
+    const onTypographyChange = () => {
+      term.options.fontFamily = monoFont();
+      term.options.fontSize = loadAppearancePreferences().codeSize;
+      applySizeRef.current();
+    };
+    window.addEventListener(APPEARANCE_PREFERENCES_EVENT, onTypographyChange);
 
     term.attachCustomWheelEventHandler(() => {
       if (term.element?.classList.contains("enable-mouse-events")) return true;
@@ -433,6 +460,7 @@ export function TerminalView({ id, cwd, profile, active, onMetaChange }: Props) 
       host.removeEventListener("copy", onCopy);
       host.removeEventListener("paste", onPaste);
       window.removeEventListener(SCHEME_CHANGE_EVENT, onSchemeChange);
+      window.removeEventListener(APPEARANCE_PREFERENCES_EVENT, onTypographyChange);
       dataSub.dispose();
       oscCwd.dispose();
       oscFg.dispose();

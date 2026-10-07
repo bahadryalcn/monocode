@@ -397,9 +397,9 @@ describe("confirming reload", () => {
   it("allows reload after unsaved changes are confirmed", async () => {
     await expect(confirmReload(true)).resolves.toBe(true);
     expect(ask).toHaveBeenCalledWith(
-      "Reload MonoCode and discard unsaved changes?",
+      "Reload imc and discard unsaved changes?",
       {
-        title: "MonoCode",
+        title: "imc",
         kind: "warning",
         okLabel: "Reload",
       },
@@ -414,7 +414,7 @@ describe("confirming reload", () => {
 
 describe("remembering the terminal dock side across restarts", () => {
   // The lifecycle caches its boot resume in module state, and the suites
-  // above have already consumed it — reset for a clean quit/restore cycle.
+  // above have already consumed it ï¿½ reset for a clean quit/restore cycle.
   beforeEach(() => {
     vi.resetModules();
   });

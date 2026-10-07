@@ -15,7 +15,7 @@ export type RemoteFailure = { kind: RemoteFailureKind; message: string };
 const UNREACHABLE =
   /Machine is unreachable|Host is not running on the machine|SSH connection failed|SSH timed out|Could not start OpenSSH|Machine is no longer connected|machine isn.t connected on this computer|Connect this project.s machine/i;
 const OUTDATED =
-  /Unsupported (host method|remote operation|workspace command)|Update MonoCode Host in Connections settings/i;
+  /Unsupported (host method|remote operation|workspace command)|Update imc Host in Connections settings/i;
 const UNSUPPORTED = /isn.t available for projects on another machine/i;
 
 export function remoteErrorText(error: unknown): string {

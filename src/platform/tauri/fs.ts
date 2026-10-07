@@ -1,4 +1,5 @@
 import { invoke as invokeLocal } from "@tauri-apps/api/core";
+import { withGithubRead } from "../../shared/lib/githubReadGate";
 import { open } from "@tauri-apps/plugin-dialog";
 import { slash } from "../../shared/lib/paths";
 import { REMOTE_PATH_PREFIX } from "../../shared/lib/remotePaths";
@@ -280,6 +281,8 @@ export type GitChangedFile = {
 };
 
 export type GitDiffIndex = {
+  /** Absent on older hosts. False is a successful lookup outside a repository. */
+  repository?: boolean;
   branch: string | null;
   head: string | null;
   files: GitChangedFile[];
@@ -506,7 +509,9 @@ export type GitPr = {
 };
 
 export function gitPrStatus(cwd: string): Promise<GitPr | null> {
-  return invoke<GitPr | null>("git_pr_status", { cwd });
+  // Keep the remote router: accounts on another host have a separate quota.
+  const scope = cwd.startsWith(REMOTE_PATH_PREFIX) ? cwd.split("/")[2] ?? cwd : "local";
+  return withGithubRead(() => invoke<GitPr | null>("git_pr_status", { cwd }), scope);
 }
 
 export function gitPrCreate(
@@ -902,7 +907,7 @@ export function pathEnvironment(): Promise<Record<string, string>> {
  * projects can be opened in one pass; the dialog still returns a bare string
  * when only one was taken.
  */
-export async function pickFolders(title = "Open projects", multiple = true): Promise<string[]> {
+export async function pickNativeFolders(title = "Open projects", multiple = true): Promise<string[]> {
   const selected = await open({
     directory: true,
     multiple,
@@ -912,6 +917,12 @@ export async function pickFolders(title = "Open projects", multiple = true): Pro
     return selected.filter((path) => !!path).map(slash);
   }
   return typeof selected === "string" && selected ? [slash(selected)] : [];
+}
+
+/** Shared in-app browser for adding projects and session folders. */
+export async function pickFolders(title = "Open projects", multiple = true): Promise<string[]> {
+  const { openFolderPicker } = await import("../../features/projects/ui/openFolderPicker");
+  return openFolderPicker({ title, multiple });
 }
 
 /** A VS Code `.code-workspace` file, or null when the picker is dismissed. */
@@ -930,6 +941,27 @@ export async function pickFiles(title = "Attach files"): Promise<string[] | null
     multiple: true,
     directory: false,
     title,
+  });
+  if (Array.isArray(selected)) {
+    const paths = selected
+      .filter((path): path is string => Boolean(path))
+      .map(slash);
+    return paths.length > 0 ? paths : null;
+  }
+  if (typeof selected === "string" && selected) return [slash(selected)];
+  return null;
+}
+
+export async function pickImageFiles(
+  title = "Insert images",
+): Promise<string[] | null> {
+  const selected = await open({
+    multiple: true,
+    directory: false,
+    title,
+    filters: [
+      { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "svg"] },
+    ],
   });
   if (Array.isArray(selected)) {
     const paths = selected

@@ -1,4 +1,5 @@
 import type { HarnessId } from "../../../features/sessions/model/session";
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   HARNESSES,
   setHarnessAttachmentsSupported,
@@ -80,7 +81,7 @@ const PROBE_TTL_MS = 30_000;
 export function harnessUnavailableHint(id: HarnessId): string {
   const { name, install } = CLI[id];
   const how = install ? ` (\`${install}\`)` : "";
-  return `${name} not found${how}. Install it, or restart MonoCode if it is already installed.`;
+  return `${name} not found${how}. Install it, or restart ${PRODUCT_IDENTITY.displayName} if it is already installed.`;
 }
 
 export function probeHarnessAvailability(options?: {

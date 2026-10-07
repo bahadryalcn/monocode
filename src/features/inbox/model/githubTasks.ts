@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { githubRead } from "./githubReadGate";
 import { clearKnownInboxItems } from "./inboxSeen";
 import {
   linearConnected,
@@ -155,6 +156,7 @@ export type GithubWorkItemQuery = {
 };
 
 export type InboxQuery = Omit<GithubWorkItemQuery, "kind"> & {
+  githubKinds?: GithubTaskKind[];
   linearHiddenTeamIds?: string[];
   jiraHiddenProjectIds?: string[];
 };
@@ -174,7 +176,7 @@ export type InboxListResult = {
   errors: InboxProviderErrors;
 };
 
-const INBOX_CACHE_FRESH_MS = 30_000;
+const INBOX_CACHE_FRESH_MS = 120_000;
 
 /** Closed history competes for the same slots, so an unfiltered fetch needs the wider page. */
 const INBOX_ALL_LIMIT = 100;
@@ -211,9 +213,11 @@ type InboxListCache = InboxListResult & {
   fetchedAt: number;
 };
 
-let inboxListCache: InboxListCache | null = null;
+const inboxListCaches = new Map<string, InboxListCache>();
 let inboxCacheGeneration = 0;
 const inboxListInflight = new Map<string, Promise<InboxListResult>>();
+const githubLists = new Map<string, { items: GithubWorkItem[]; at: number }>();
+const githubListsInflight = new Map<string, Promise<GithubWorkItem[]>>();
 const repoByPath = new Map<string, string>();
 const repositoriesByPath = new Map<string, string[]>();
 const workItemByKey = new Map<string, GithubWorkItem>();
@@ -277,8 +281,10 @@ export function clearInboxCache() {
   inboxCacheGeneration += 1;
   clearJiraCache();
   clearKnownInboxItems();
-  inboxListCache = null;
+  inboxListCaches.clear();
   inboxListInflight.clear();
+  githubLists.clear();
+  githubListsInflight.clear();
   repoByPath.clear();
   repositoriesByPath.clear();
   workItemByKey.clear();
@@ -305,7 +311,7 @@ export function inboxListCacheKey(
     .join("|");
   const teams = [...(query.linearHiddenTeamIds ?? [])].sort().join(",");
   const jiraProjects = [...(query.jiraHiddenProjectIds ?? [])].sort().join(",");
-  return `${query.assignedToMe ? 1 : 0}:${query.state}:${paths}:${teams}:${jiraProjects}`;
+  return `${query.assignedToMe ? 1 : 0}:${query.state}:${paths}:${teams}:${jiraProjects}:${query.search.trim()}:${[...(query.githubKinds ?? ["issue", "pr"])].sort().join(",")}`;
 }
 
 export function peekInboxList(
@@ -313,7 +319,8 @@ export function peekInboxList(
   query: InboxQuery,
 ): InboxListResult | null {
   const key = inboxListCacheKey(projects, query);
-  if (inboxListCache?.key !== key) return null;
+  const inboxListCache = inboxListCaches.get(key);
+  if (!inboxListCache) return null;
   return { items: inboxListCache.items, errors: inboxListCache.errors };
 }
 
@@ -330,8 +337,9 @@ export function inboxListIsFresh(
   now = Date.now(),
 ): boolean {
   const key = inboxListCacheKey(projects, query);
+  const inboxListCache = inboxListCaches.get(key);
   return (
-    inboxListCache?.key === key &&
+    inboxListCache != null &&
     now - inboxListCache.fetchedAt < INBOX_CACHE_FRESH_MS
   );
 }
@@ -356,7 +364,7 @@ export async function githubRepo(cwd: string): Promise<string> {
   if (cached !== undefined) return cached;
   const repositories = repositoriesByPath.get(key);
   if (repositories?.[0]) return repositories[0];
-  const repo = await invoke<string>("git_github_repo", { cwd });
+  const repo = await githubRead<string>("git_github_repo", { cwd });
   repoByPath.set(key, repo);
   return repo;
 }
@@ -365,7 +373,7 @@ export async function githubRepositories(cwd: string): Promise<string[]> {
   const key = normalizeProjectPath(cwd);
   const cached = repositoriesByPath.get(key);
   if (cached) return cached;
-  const repositories = await invoke<string[]>("git_github_repositories", {
+  const repositories = await githubRead<string[]>("git_github_repositories", {
     cwd,
   });
   if (repositories.length === 0) {
@@ -380,8 +388,15 @@ export function listGithubWorkItems(
   cwd: string,
   repo: string,
   query: GithubWorkItemQuery,
+  options?: { force?: boolean },
 ): Promise<GithubWorkItem[]> {
-  return invoke<GithubWorkItem[]>("git_github_work_items", {
+  const key = JSON.stringify([normalizeProjectPath(cwd), repo.trim().toLowerCase(), query.kind, query.assignedToMe, query.state, query.search.trim()]);
+  const cached = githubLists.get(key);
+  if (!options?.force && cached && Date.now() - cached.at < INBOX_CACHE_FRESH_MS) return Promise.resolve(cached.items);
+  const pending = githubListsInflight.get(key);
+  if (pending) return pending;
+  const generation = inboxCacheGeneration;
+  const promise = githubRead<GithubWorkItem[]>("git_github_work_items", {
     cwd,
     repo,
     kind: query.kind,
@@ -389,7 +404,18 @@ export function listGithubWorkItems(
     state: query.state,
     search: query.search.trim(),
     limit: query.state === "all" ? INBOX_ALL_LIMIT : undefined,
+  }).then(items => {
+    if (generation === inboxCacheGeneration) {
+      githubLists.delete(key);
+      githubLists.set(key, { items, at: Date.now() });
+      while (githubLists.size > 128) githubLists.delete(githubLists.keys().next().value!);
+    }
+    return items;
+  }).finally(() => {
+    if (githubListsInflight.get(key) === promise) githubListsInflight.delete(key);
   });
+  githubListsInflight.set(key, promise);
+  return promise;
 }
 
 function workItemLookupKey(
@@ -426,7 +452,7 @@ export function githubWorkItem(
   if (options?.force) workItemInflight.delete(key);
   const pending = workItemInflight.get(key);
   if (pending) return pending;
-  const promise = invoke<GithubWorkItem>("git_github_work_item", {
+  const promise = githubRead<GithubWorkItem>("git_github_work_item", {
     cwd,
     repo,
     kind,
@@ -537,7 +563,7 @@ export async function githubWorkItemDetails(
   const pending = detailsInflight.get(key);
   if (pending) return pending;
   const generation = inboxCacheGeneration;
-  const promise = invoke<GithubWorkItemDetails>("git_github_work_item_details", { cwd, repo, kind, number })
+  const promise = githubRead<GithubWorkItemDetails>("git_github_work_item_details", { cwd, repo, kind, number })
     .then((details) => {
       if (generation === inboxCacheGeneration && detailsInflight.get(key) === promise) remember(detailsByKey, key, details, "details");
       return details;
@@ -574,7 +600,7 @@ export async function githubWorkItemThread(
   const generation = inboxCacheGeneration;
   const pending = threadInflight.get(key);
   if (pending) return pending;
-  const promise = invoke<GithubWorkItemThread>("git_github_work_item_thread", {
+  const promise = githubRead<GithubWorkItemThread>("git_github_work_item_thread", {
     cwd,
     repo,
     kind,
@@ -635,8 +661,8 @@ export async function githubPrAction(
   invalidateGithubWorkItem(repo, "pr", number);
   const key = workItemLookupKey(repo, "pr", number);
   remember(workItemByKey, key, item, "item");
-  if (inboxListCache) {
-    inboxListCache = {
+  for (const [cacheKey, inboxListCache] of inboxListCaches) {
+    inboxListCaches.set(cacheKey, {
       ...inboxListCache,
       items: inboxListCache.items.map((cached) =>
         cached.provider === "github" &&
@@ -646,7 +672,7 @@ export async function githubPrAction(
           ? { ...cached, ...item }
           : cached,
       ),
-    };
+    });
   }
   recordInboxSelfActivity({ provider: "github", kind: "pr", repo, number });
   return item;
@@ -748,7 +774,7 @@ export async function githubPrDiff(
   const generation = inboxCacheGeneration;
   const pending = prDiffInflight.get(key);
   if (pending) return pending;
-  const promise = invoke<GithubPrDiff>("git_github_pr_diff", {
+  const promise = githubRead<GithubPrDiff>("git_github_pr_diff", {
     cwd,
     repo,
     number,
@@ -787,10 +813,19 @@ export async function listInboxItems(
   const pending = inboxListInflight.get(key);
   if (pending) return pending;
   const generation = inboxCacheGeneration;
-  const promise = fetchInboxItems(projects, query)
+  const promise = fetchInboxItems(projects, query, options)
     .then((result) => {
       if (generation === inboxCacheGeneration) {
-        inboxListCache = { key, ...result, fetchedAt: Date.now() };
+        const previous = inboxListCaches.get(key);
+        const failed = new Set(Object.keys(result.errors));
+        const items = dedupeInboxItems([
+          ...result.items,
+          ...(previous?.items.filter(item => failed.has(item.provider)) ?? []),
+        ], projects.map(project => project.path));
+        result = { ...result, items };
+        inboxListCaches.delete(key);
+        inboxListCaches.set(key, { key, ...result, fetchedAt: Date.now() });
+        while (inboxListCaches.size > 16) inboxListCaches.delete(inboxListCaches.keys().next().value!);
       }
       return result;
     })
@@ -804,6 +839,7 @@ export async function listInboxItems(
 async function fetchInboxItems(
   projects: readonly { path: string }[],
   query: InboxQuery,
+  options?: { force?: boolean },
 ): Promise<InboxListResult> {
   const unique = uniqueInboxProjects(projects);
   const preferredPaths = unique.map((project) => project.path);
@@ -811,6 +847,7 @@ async function fetchInboxItems(
   // Providers are independent, so a slow one does not hold the others back.
   // Each reports its own error; the merge below keeps the fixed provider order.
   const fetchGithub = async (): Promise<{ items: InboxItem[]; error?: string }> => {
+    if (query.githubKinds?.length === 0) return { items: [] };
     const discovery = await settleWithLimit(
       unique.map((project) => () => githubRepositories(project.path)),
     );
@@ -821,11 +858,11 @@ async function fetchInboxItems(
     );
     const grouped = groupProjectsByRepo(resolved);
     const githubJobs = grouped.flatMap((project) =>
-      (["issue", "pr"] as const).map((kind) => async () => {
+      (query.githubKinds ?? ["issue", "pr"] as const).map((kind) => async () => {
         const items = await listGithubWorkItems(project.path, project.repo, {
           ...query,
           kind,
-        });
+        }, options);
         return items.map((item) => ({
           ...item,
           projectPath: project.path,

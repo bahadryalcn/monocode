@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useState } from "react";
 import { Loader } from "../../../shared/ui/icons";
 import { OPEN_CONNECTIONS_EVENT, requestMachineEdit } from "../model/connections";
@@ -29,7 +30,7 @@ export function RemoteLoadError({
     failure.kind === "unreachable"
       ? `Can’t reach ${name}`
       : failure.kind === "outdated"
-        ? `MonoCode Host on ${name} needs an update`
+        ? `${PRODUCT_IDENTITY.displayName} Host on ${name} needs an update`
         : "Couldn’t load from the machine";
   const needsAuth = needsSignIn(status);
   const startReconnect = () => {

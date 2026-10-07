@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Modal } from "../../../shared/ui/Modal";
 import {
@@ -140,7 +141,7 @@ export function SetLockPasswordDialog({ mode, onClose, onDone }: Props) {
         ) : null}
         <ul className="flex list-disc flex-col gap-1 pl-4 text-[11px] leading-snug text-content/50">
           <li>
-            This hides locked groups inside MonoCode. It does not encrypt your
+            This hides locked groups inside {PRODUCT_IDENTITY.displayName}. It does not encrypt your
             project files, the session database, or the Claude Code and Codex
             transcripts on disk; anyone with access to this computer&apos;s
             files can still read them.

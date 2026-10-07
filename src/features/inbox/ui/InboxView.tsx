@@ -1,3 +1,4 @@
+import { INBOX_VISIBLE_POLL_MS } from "../model/inboxPolling";
 import { hasActiveOverlay } from "../../../shared/ui/overlay";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -23,6 +24,7 @@ import {
 } from "react";
 import { InboxFiltersMenu, INBOX_FILTER_MENU_WIDTH } from "./InboxFiltersMenu";
 import { InboxConnectMenu } from "./InboxConnectMenu";
+import { WORKSPACE_REFRESH_EVENT } from "../../../app/shell/WorkspaceControls";
 import { InboxProviderMark } from "./InboxProviderMark";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
@@ -198,6 +200,8 @@ function InboxSourceTab({
 }
 
 type Props = {
+  pullRequestsOnly?: boolean;
+  onOpenProject?: () => void | Promise<void>;
   onAsk: (item: InboxItem) => Promise<string>;
   onAskRestart: (item: InboxItem) => Promise<string>;
   onAskMount: (portal: InboxSessionPortal | null) => void;
@@ -219,6 +223,8 @@ type Props = {
 };
 
 export function InboxView({
+  pullRequestsOnly = false,
+  onOpenProject,
   onAsk,
   onAskRestart,
   onAskMount,
@@ -268,15 +274,36 @@ export function InboxView({
     () => peekInboxForRail(recents, cwd)?.errors ?? {},
   );
   const [refresh, setRefresh] = useState(0);
+  const [automaticRefresh, setAutomaticRefresh] = useState(0);
+  useEffect(() => {
+    const refreshVisible = () => {
+      if (!document.hidden) setAutomaticRefresh(value => value + 1);
+    };
+    const timer = window.setInterval(refreshVisible, INBOX_VISIBLE_POLL_MS);
+    document.addEventListener("visibilitychange", refreshVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshVisible);
+    };
+  }, []);
+  useEffect(() => {
+    const reload = () => setRefresh(value => value + 1);
+    window.addEventListener(WORKSPACE_REFRESH_EVENT, reload);
+    return () => window.removeEventListener(WORKSPACE_REFRESH_EVENT, reload);
+  }, []);
   const targetSelectionKey = target ? linkedWorkItemInboxKey(target) : null;
   const [selectedKey, setSelectedKey] = useState<string | null>(
     targetSelectionKey,
   );
   const [targetItem, setTargetItem] = useState<InboxItem | null>(null);
-  const [filters, setFilters] = useState(loadInboxFilters);
+  const [filters, setFilters] = useState(() => {
+    const saved = loadInboxFilters();
+    return pullRequestsOnly ? { ...saved, hiddenKinds: saved.hiddenKinds.filter(kind => kind !== "pr") } : saved;
+  });
+  const [prSort, setPrSort] = useState("updated");
   const [connections, setConnections] = useState(loadInboxConnections);
   const [source, setSource] = useState(() =>
-    resolveInboxSource(loadInboxSource(), connections),
+    pullRequestsOnly ? "github" as InboxSource : resolveInboxSource(loadInboxSource(), connections),
   );
   const [connectMenuOpen, setConnectMenuOpen] = useState(false);
   const connectButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -322,11 +349,14 @@ export function InboxView({
       assignedToMe: activeFilters.assignedToMe,
       state: fetchState,
       search: "",
+      githubKinds: source !== "github" ? [] : pullRequestsOnly ? ["pr"] : undefined,
       linearHiddenTeamIds,
       jiraHiddenProjectIds,
     }),
     [
       activeFilters.assignedToMe,
+      pullRequestsOnly,
+      source,
       fetchState,
       linearHiddenTeamIds,
       jiraHiddenProjectIds,
@@ -454,7 +484,7 @@ export function InboxView({
   // The initial source is resolved against cached status, so storage can still
   // name a provider this view has already fallen back from.
   useEffect(() => {
-    saveInboxSource(source);
+    if (!pullRequestsOnly) saveInboxSource(source);
     // Mount only: the temporary switch to GitHub for a linked target must not
     // be persisted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -462,13 +492,14 @@ export function InboxView({
 
   // Disconnecting can pull the tab out from under the current selection.
   useEffect(() => {
-    const next = resolveInboxSource(source, connections);
+    const available = visibleInboxSources(connections).filter(candidate => !pullRequestsOnly || !isTrackerSource(candidate));
+    const next = pullRequestsOnly ? available.includes(source) ? source : available[0] ?? "github" : resolveInboxSource(source, connections);
     if (next === source) return;
     setSource(next);
-    saveInboxSource(next);
-  }, [connections, source]);
+    if (!pullRequestsOnly) saveInboxSource(next);
+  }, [connections, source, pullRequestsOnly]);
 
-  const visibleSources = visibleInboxSources(connections);
+  const visibleSources = visibleInboxSources(connections).filter(source => !pullRequestsOnly || !isTrackerSource(source));
   const connectableSources = connectableInboxSources(connections);
   const sourceAvailable = visibleSources.includes(source);
   const noSourcesConnected = visibleSources.length === 0;
@@ -553,7 +584,7 @@ export function InboxView({
     return () => {
       cancelled = true;
     };
-  }, [fetchQuery, projects, refresh]);
+  }, [fetchQuery, projects, refresh, automaticRefresh]);
 
   useEffect(() => {
     if (
@@ -583,12 +614,13 @@ export function InboxView({
   const visibleItems = useMemo(() => {
     if (!sourceAvailable) return [];
     const visible = applyInboxFilters(
-      items,
+      pullRequestsOnly ? items.filter(item => item.kind === "pr") : items,
       activeFilters,
       searchInput,
       Date.now(),
       source,
     );
+    if (pullRequestsOnly) return [...visible].sort((a, b) => prSort === "title" ? a.title.localeCompare(b.title) : Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
     if (!target || source !== "github") return visible;
     const targeted =
       items.find((item) => inboxItemMatchesLinkedWorkItem(item, target)) ??
@@ -598,6 +630,8 @@ export function InboxView({
     if (!targeted || visible.includes(targeted)) return visible;
     return [targeted, ...visible];
   }, [
+    pullRequestsOnly,
+    prSort,
     activeFilters,
     items,
     searchInput,
@@ -708,12 +742,12 @@ export function InboxView({
       projects.map((project) => project.path),
     );
     setFilters(pruned);
-    saveInboxFilters(pruned);
+    if (!pullRequestsOnly) saveInboxFilters(pruned);
   };
 
   const onSourceChange = (next: InboxSource) => {
     setSource(next);
-    saveInboxSource(next);
+    if (!pullRequestsOnly) saveInboxSource(next);
   };
 
   const onFilterButtonClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -778,8 +812,8 @@ export function InboxView({
             <input
               value={searchInput}
               onChange={(event) => setSearchInput(event.target.value)}
-              placeholder="Filter inbox"
-              aria-label="Filter inbox"
+              placeholder={pullRequestsOnly ? "Search pull requests" : "Filter inbox"}
+              aria-label={pullRequestsOnly ? "Search pull requests" : "Filter inbox"}
               spellCheck={false}
               autoComplete="off"
               className="h-7 w-full rounded-md bg-transparent pl-7 pr-2 text-[12px] text-content outline-none placeholder:text-content/40"
@@ -840,7 +874,7 @@ export function InboxView({
       >
         {noSourcesConnected ? (
           <p className="px-3 py-3 text-[12px] text-content/50">
-            Add a connection to start using the Inbox.
+            {pullRequestsOnly ? "Connect GitHub, GitLab or Azure DevOps to view pull requests." : "Add a connection to start using the Inbox."}
           </p>
         ) : sourceError && visibleItems.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/50">{sourceError}</p>
@@ -848,6 +882,8 @@ export function InboxView({
           <div className="flex justify-center py-10 text-content/40">
             <LoaderCircle className="size-4 animate-spin" strokeWidth={1.75} />
           </div>
+        ) : pullRequestsOnly && visibleItems.length === 0 ? (
+          <p className="px-3 py-2 text-[12px] text-content/50">{projects.length === 0 ? "Add a project to see its repository's pull requests." : narrowedByUser ? "No pull requests match these filters." : "No pull requests in this workspace."}</p>
         ) : visibleItems.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/50">
             {narrowedByUser
@@ -963,7 +999,7 @@ export function InboxView({
       role="region"
       aria-label="Inbox"
       data-app-inbox
-      className="flex min-h-0 min-w-0 flex-1 flex-col text-content"
+      className="imece-inbox flex min-h-0 min-w-0 flex-1 flex-col text-content"
     >
       <div
         className="flex h-10 shrink-0 select-none items-center border-b border-stroke"
@@ -979,10 +1015,21 @@ export function InboxView({
             className="size-3.5 shrink-0 text-content/45"
             strokeWidth={1.75}
           />
-          <span className="min-w-0 truncate text-content">Inbox</span>
+          <span className="min-w-0 truncate text-content">{pullRequestsOnly ? "Pull Requests" : "Inbox"}</span>
         </div>
         {IS_MAC ? null : <WindowControls />}
       </div>
+
+      <header className="imece-workspace-heading">
+        <div className="imece-heading-mark" aria-hidden="true"><Inbox className="size-6" /></div>
+        <div className="min-w-0 flex-1">
+          <h1>{pullRequestsOnly ? "Pull Requests" : "Find the next step"}</h1>
+          <p>{pullRequestsOnly ? "Search repository reviews, check CI and open the related conversation." : "Bring requests, conversations and reviews into your workspace."}</p>
+        </div>
+        <div className="imece-heading-count"><strong>{visibleItems.length}</strong><span>items</span></div>
+        {pullRequestsOnly && projects.length === 0 && onOpenProject ? <button type="button" onClick={() => void onOpenProject()} className="rounded-md bg-accent px-3 py-1.5 text-xs text-white">Add project</button> : null}
+        {pullRequestsOnly ? <select aria-label="Sort pull requests" value={prSort} onChange={event => setPrSort(event.target.value)} className="rounded-md border border-stroke bg-background px-2 py-1 text-xs"><option value="updated">Recently updated</option><option value="title">Title</option></select> : null}
+      </header>
 
       <div className="flex min-h-0 min-w-0 flex-1">
         {list}

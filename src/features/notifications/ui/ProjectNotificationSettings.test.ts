@@ -13,7 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockRejectedValue(new Error("No native bridge")),
 }));
-vi.mock("cuelume", () => ({
+vi.mock("../../settings/model/imeceSoundEngine", () => ({
   play: vi.fn(),
   setEnabled: vi.fn(),
   setVolume: vi.fn(),

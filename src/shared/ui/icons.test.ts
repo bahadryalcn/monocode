@@ -1,65 +1,30 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
-import { FilePlus, FoldVertical, UnfoldVertical } from "./icons";
+// @vitest-environment happy-dom
+import { act, createElement, createRef } from "react";
+import { createRoot } from "react-dom/client";
+import { expect, it, vi } from "vitest";
+import { Search, Settings } from "./icons";
 
-const SRC = fileURLToPath(new URL("../..", import.meta.url));
-const CATALOG = "shared/ui/icons.tsx";
-const SPECIFIER = /["'](@hugeicons\/[^"']+)["']/g;
-const DEEP_ICON = /^@hugeicons\/core-free-icons\/[A-Z][A-Za-z0-9]+Icon$/;
-
-function sourceFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...sourceFiles(path));
-    else if (/\.(ts|tsx)$/.test(entry.name) && !entry.name.endsWith(".test.ts")) {
-      out.push(path);
-    }
-  }
-  return out;
-}
-
-describe("hugeicons imports", () => {
-  it("only deep-imports glyphs through chrome/icons.tsx", () => {
-    const violations: string[] = [];
-
-    for (const file of sourceFiles(SRC)) {
-      const rel = relative(SRC, file).replaceAll("\\", "/");
-      const source = readFileSync(file, "utf8");
-      for (const match of source.matchAll(SPECIFIER)) {
-        const spec = match[1];
-        const allowedCatalog =
-          rel === CATALOG &&
-          (spec === "@hugeicons/react" || DEEP_ICON.test(spec));
-        if (allowedCatalog) continue;
-        violations.push(`${rel}: ${spec}`);
-      }
-    }
-
-    expect(violations).toEqual([]);
-  });
-
-  it("draws fold/unfold as strokes, not filled chevrons", () => {
-    for (const Icon of [FoldVertical, UnfoldVertical, FilePlus]) {
-      const html = renderToStaticMarkup(createElement(Icon));
-      expect(html, Icon.displayName).not.toMatch(/fill="currentColor"/);
-      expect(html, Icon.displayName).toMatch(/stroke="currentColor"/);
-    }
-  });
-
-  it("optically insets the detailed Hermes artwork at UI icon sizes", () => {
-    const html = renderToStaticMarkup(
-      createElement(HarnessIcon, {
-        harness: "hermes",
-        className: "size-4 shrink-0",
-      }),
-    );
-    expect(html).toContain("items-center justify-center");
-    expect(html).toContain("size-[72%]");
-  });
+it("forwards SVG refs and consumer sizing/stroke without losing the accessible title", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host); const ref = createRef<SVGSVGElement>();
+  try {
+    act(() => root.render(createElement(Search, { ref, title: "Search projects", size: 32, strokeWidth: 2, className: "custom" })));
+    const svg = host.querySelector("svg")!;
+    expect(ref.current).toBe(svg); expect(svg.getAttribute("width")).toBe("32");
+    expect(svg.getAttribute("stroke-width")).toBe("2"); expect(svg.getAttribute("role")).toBe("img");
+    expect(svg.querySelector("title")?.textContent).toBe("Search projects");
+    expect(svg.getAttribute("aria-labelledby")).toBe(svg.querySelector("title")?.id);
+  } finally { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); }
+});
+it("hides decorative glyphs while allowing explicit accessible labels", () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const host = document.createElement("div"); const root = createRoot(host);
+  try {
+    act(() => root.render(createElement(Settings)));
+    expect(host.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    act(() => root.render(createElement(Settings, { "aria-label": "Settings" })));
+    expect(host.querySelector("svg")?.getAttribute("aria-hidden")).toBeNull();
+    expect(host.querySelector("svg")?.getAttribute("aria-label")).toBe("Settings");
+  } finally { act(() => root.unmount()); vi.unstubAllGlobals(); }
 });

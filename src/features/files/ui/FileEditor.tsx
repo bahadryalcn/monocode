@@ -1,24 +1,46 @@
-
-
 import { AlertCircle, Folder, RotateCcw } from "../../../shared/ui/icons";
 import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MarkdownViewShell, useMarkdownMode } from "../../sessions/ui/MarkdownModeToggle";
+import {
+  MarkdownViewShell,
+  useMarkdownMode,
+} from "../../sessions/ui/MarkdownModeToggle";
 
-import { basename, gitDiffFiles, gitFileDiff, gitStageContents, notifyGitChanged, openHtmlInChrome, readTextFile, revealPath, subscribeGitChanged, writeTextFile, type GitFileDiffKind } from "../../../platform/tauri/fs";
+import {
+  basename,
+  gitDiffFiles,
+  gitFileDiff,
+  gitStageContents,
+  notifyGitChanged,
+  openHtmlInChrome,
+  readTextFile,
+  revealPath,
+  subscribeGitChanged,
+  writeTextFile,
+  type GitFileDiffKind,
+} from "../../../platform/tauri/fs";
 import { syncWatchedMtime, watchFile } from "../model/fileWatch";
 import { displayPath } from "../../../shared/lib/paths";
 import type { EditorNavigation } from "../../search/model/search";
 import { MarkdownDocumentPreview } from "../../sessions/ui/MarkdownDocumentPreview";
 
-import { detectLineEnding, type LineEnding, normalizeLineBreaks, restoreLineEnding } from "../editor/editorDoc";
+import {
+  detectLineEnding,
+  type LineEnding,
+  normalizeLineBreaks,
+  restoreLineEnding,
+} from "../editor/editorDoc";
 
 import { FilePreviewSearch } from "./FilePreviewSearch";
-import { InlineBlameToggle, useInlineBlameUnavailableReason } from "./InlineBlameToggle";
+import {
+  InlineBlameToggle,
+  useInlineBlameUnavailableReason,
+} from "./InlineBlameToggle";
 
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
+import { HtmlPreview } from "./HtmlPreview";
 export { CodeMirrorEditor } from "./CodeMirrorEditor";
 type EditorNavigationRequest = EditorNavigation & { token: number };
 
@@ -121,13 +143,13 @@ export function FileEditor({
   useEffect(() => {
     if (
       !navigation ||
-      (!markdown && !svg) ||
+      (!markdown && !svg && !html) ||
       sourceNavigationToken.current === navigation.token
     )
       return;
     sourceNavigationToken.current = navigation.token;
     setMode("source");
-  }, [markdown, svg, navigation, setMode]);
+  }, [markdown, svg, html, navigation, setMode]);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const saveGeneration = useRef(0);
   const loadGeneration = useRef(0);
@@ -484,7 +506,7 @@ export function FileEditor({
           changes. Line breaks are normalized in this view.
         </p>
       )}
-      {markdown || svg ? (
+      {markdown || svg || html ? (
         <MarkdownViewShell
           mode={mode}
           onModeChange={setMode}
@@ -501,6 +523,12 @@ export function FileEditor({
                   onOpenFile={onOpenFile}
                 />
               </FilePreviewSearch>
+            ) : html ? (
+              <HtmlPreview
+                path={path}
+                source={draft}
+                active={active && mode === "preview"}
+              />
             ) : (
               <SvgPreview source={draft} />
             )
@@ -520,15 +548,15 @@ export function FileEditor({
                 onDirtyChange={dirtyChange}
                 onErrorCountChange={errorCountChange}
                 onSave={save}
+                saveRequestRef={saveRequestRef}
                 canAutosave={() => !pendingDiskRef.current}
                 onStageGit={
                   showDiff && gitDiff?.kind === "unstaged"
                     ? stageGit
                     : undefined
                 }
-                // Only the preview reads the draft; skip copying the document
-                // on every keystroke while the source is what is showing.
-                onDocChange={mode === "preview" ? setDraft : undefined}
+                // HTML must retain source edits when switching back to its live view.
+                onDocChange={html || mode === "preview" ? setDraft : undefined}
                 onOpenFile={onOpenFile}
               />
             </div>
@@ -568,6 +596,22 @@ export function FileEditor({
         <span className="min-w-0 flex-1 truncate" title={path}>
           {relativePath}
         </span>
+        {html ? (
+          <button
+            type="button"
+            disabled={isRemoteProjectPath(path)}
+            onClick={() =>
+              void revealPath(path).catch((error: unknown) =>
+                setChromeError(String(error)),
+              )
+            }
+            title={REVEAL_LABEL}
+            aria-label={REVEAL_LABEL}
+            className="mr-2 shrink-0 rounded px-1.5 py-0.5 text-content/75 hover:bg-content/10 disabled:opacity-40"
+          >
+            <Folder className="size-3" />
+          </button>
+        ) : null}
         {html ? (
           <button
             type="button"

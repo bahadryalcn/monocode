@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { GitFeedback } from "./GitFeedback";
 import { Loader } from "../../../shared/ui/icons";
 import { Modal } from "../../../shared/ui/Modal";
 import {
@@ -19,14 +20,18 @@ export type GitFileInspectRequest = {
 };
 
 export function requestGitFileInspect(request: GitFileInspectRequest): void {
-  window.dispatchEvent(new CustomEvent(GIT_FILE_INSPECT_EVENT, { detail: request }));
+  window.dispatchEvent(
+    new CustomEvent(GIT_FILE_INSPECT_EVENT, { detail: request }),
+  );
 }
 
 /** Asks the host to show a commit's diff, from places with no handler of their own (the editor's blame gutter). */
 export const GIT_COMMIT_OPEN_EVENT = "monocode:git-commit-open";
 
 export function requestOpenCommit(commit: GitHistoryCommit): void {
-  window.dispatchEvent(new CustomEvent(GIT_COMMIT_OPEN_EVENT, { detail: commit }));
+  window.dispatchEvent(
+    new CustomEvent(GIT_COMMIT_OPEN_EVENT, { detail: commit }),
+  );
 }
 
 type Props = {
@@ -69,9 +74,19 @@ export function GitFileInspector({ onOpenCommit }: Props) {
     onOpenCommit(commit, true);
   };
   return request.kind === "history" ? (
-    <FileHistoryDialog request={request} onClose={close} onOpenCommit={openCommit} />
+    <FileHistoryDialog
+      key={`${request.cwd}:${request.relative}`}
+      request={request}
+      onClose={close}
+      onOpenCommit={openCommit}
+    />
   ) : (
-    <BlameDialog request={request} onClose={close} onOpenCommit={openCommit} />
+    <BlameDialog
+      key={`${request.cwd}:${request.relative}`}
+      request={request}
+      onClose={close}
+      onOpenCommit={openCommit}
+    />
   );
 }
 
@@ -83,7 +98,10 @@ type DialogProps = {
 
 function Loading() {
   return (
-    <div className="flex items-center gap-2 p-4 text-[12px] text-content/50">
+    <div
+      role="status"
+      className="flex items-center gap-2 p-4 text-[12px] text-content/50"
+    >
       <Loader className="size-3.5 animate-spin" strokeWidth={1.75} />
       Loading…
     </div>
@@ -93,9 +111,12 @@ function Loading() {
 function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
   const [commits, setCommits] = useState<GitHistoryCommit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     let stale = false;
+    setError(null);
+    setCommits(null);
     gitFileHistory(request.cwd, request.relative).then(
       (next) => !stale && setCommits(next),
       (err) => !stale && setError(errorText(err)),
@@ -103,7 +124,7 @@ function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
     return () => {
       stale = true;
     };
-  }, [request]);
+  }, [request, retry]);
 
   return (
     <Modal
@@ -114,13 +135,17 @@ function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
       onClose={onClose}
     >
       {error ? (
-        <p role="alert" className="p-4 text-[12px] text-red-400/90">
-          {error}
-        </p>
+        <GitFeedback
+          title="Couldn’t load file information"
+          detail={error}
+          onRetry={() => setRetry((value) => value + 1)}
+        />
       ) : !commits ? (
         <Loading />
       ) : commits.length === 0 ? (
-        <p className="p-4 text-[12px] text-content/50">No commits touch this file</p>
+        <p className="p-4 text-[12px] text-content/50">
+          No commits touch this file
+        </p>
       ) : (
         <ul className="min-h-0 overflow-y-auto p-1.5">
           {commits.map((commit) => (
@@ -136,7 +161,9 @@ function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
                 <span className="min-w-0 flex-1 truncate text-content">
                   {commit.subject}
                 </span>
-                <span className="shrink-0 truncate text-content/45">{commit.author}</span>
+                <span className="shrink-0 truncate text-content/45">
+                  {commit.author}
+                </span>
                 <span className="shrink-0 tabular-nums text-content/40">
                   {shortDate(commit.timestamp)}
                 </span>
@@ -150,24 +177,29 @@ function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
 }
 
 function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
-  const [data, setData] = useState<{ blame: GitBlameLine[]; lines: string[] } | null>(
-    null,
-  );
+  const [data, setData] = useState<{
+    blame: GitBlameLine[];
+    lines: string[];
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     let stale = false;
+    setError(null);
+    setData(null);
     Promise.all([
       gitBlame(request.cwd, request.relative),
       readTextFile(`${request.cwd}/${request.relative}`),
     ]).then(
-      ([blame, text]) => !stale && setData({ blame, lines: text.split(/\r?\n/) }),
+      ([blame, text]) =>
+        !stale && setData({ blame, lines: text.split(/\r?\n/) }),
       (err) => !stale && setError(errorText(err)),
     );
     return () => {
       stale = true;
     };
-  }, [request]);
+  }, [request, retry]);
 
   return (
     <Modal
@@ -178,9 +210,11 @@ function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
       onClose={onClose}
     >
       {error ? (
-        <p role="alert" className="p-4 text-[12px] text-red-400/90">
-          {error}
-        </p>
+        <GitFeedback
+          title="Couldn’t load file information"
+          detail={error}
+          onRetry={() => setRetry((value) => value + 1)}
+        />
       ) : !data ? (
         <Loading />
       ) : (
@@ -197,7 +231,11 @@ function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
                 <button
                   type="button"
                   disabled={uncommitted}
-                  title={uncommitted ? "Not committed yet" : `${entry.shortSha} ${entry.summary}`}
+                  title={
+                    uncommitted
+                      ? "Not committed yet"
+                      : `${entry.shortSha} ${entry.summary}`
+                  }
                   onClick={() =>
                     onOpenCommit({
                       sha: entry.sha,
@@ -221,7 +259,9 @@ function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
                 <span className="w-10 shrink-0 pr-3 text-right text-content/35 select-none">
                   {entry.line}
                 </span>
-                <span className="text-content">{data.lines[entry.line - 1] ?? ""}</span>
+                <span className="text-content">
+                  {data.lines[entry.line - 1] ?? ""}
+                </span>
               </div>
             );
           })}

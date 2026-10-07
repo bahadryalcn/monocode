@@ -10,13 +10,13 @@ import time
 import urllib.request
 
 from local_update_lib import (alive, backup, count, digest, lock, ps, ps_quote,
-                              read_json, run, safe_child, verify_tree, write_json, windows_binary_digest)
+                              read_json, run, safe_child, verify_tree, write_json, windows_binary_digest, PRODUCT_IDENTITY, package_identity)
 
-BASE = pathlib.Path.home() / '.monocode-host'
+BASE = pathlib.Path.home() / PRODUCT_IDENTITY['hostDirectory']
 
 def desktop_db():
-    return (pathlib.Path(os.environ['APPDATA']) / 'com.monocode.desktop.fork/monocode.db'
-            if os.name == 'nt' else pathlib.Path.home() / 'Library/Application Support/com.monocode.desktop.fork/monocode.db')
+    return (pathlib.Path(os.environ['APPDATA']) / 'com.imece.desktop/monocode.db'
+            if os.name == 'nt' else pathlib.Path.home() / 'Library/Application Support/com.imece.desktop/monocode.db')
 
 def wait_idle(db, sql, report):
     last = object()
@@ -64,15 +64,37 @@ def host_install(release, manifest, report):
         verify_tree(runtime, manifest['hostHashes'])
     else:
         shutil.copytree(source, runtime)
+    if not (BASE / 'host.db').exists():
+        # A fresh, independent product has no previous database to read. Never
+        # reinterpret a missing DB for an existing installation as idle.
+        if any((BASE / name).exists() for name in ('runtime-path', 'running.json', 'service.ps1')):
+            raise RuntimeError('Existing İmece host database is missing; installation requires recovery')
+        launcher = PRODUCT_IDENTITY['hostLauncher'] + ('.cmd' if os.name == 'nt' else '')
+        (BASE / 'bin').mkdir(parents=True, exist_ok=True)
+        if os.name == 'nt':
+            content = '@echo off\r\nsetlocal DisableDelayedExpansion\r\n"'+str(runtime/'node.exe')+'" "'+str(runtime/'host.mjs')+'" %*\r\nexit /b %errorlevel%\r\n'
+        else:
+            import shlex
+            content = '#!/bin/sh\nexec ' + shlex.quote(str(runtime/'bin/node')) + ' ' + shlex.quote(str(runtime/'host.mjs')) + ' "$@"\n'
+        (BASE / 'bin' / launcher).write_text(content, encoding='utf-8')
+        if os.name != 'nt':
+            (BASE / 'bin' / launcher).chmod(0o755)
+        (BASE / 'runtime-path').write_text(str(runtime)+'\n', encoding='utf-8')
+        node = runtime / ('node.exe' if os.name == 'nt' else 'bin/node')
+        run([str(node), str(runtime/'host.mjs'), 'service', 'install', '--data-dir', str(BASE),
+             '--port', str(PRODUCT_IDENTITY['hostPort'])])
+        verify_host(runtime)
+        report('installed', runtime=str(runtime), firstInstall=True)
+        return
     wait_idle(BASE / 'host.db', "select count(*) from sessions where status='running' or shell_running=1", report)
     rollback = release / 'rollback-host'
     rollback.mkdir(exist_ok=True)
     backup(BASE / 'host.db', rollback / 'host.db')
     configs = [BASE / 'runtime-path']
     if os.name == 'nt':
-        configs += [BASE / 'service.ps1', BASE / 'bin/monocode-host.cmd']
+        configs += [BASE / 'service.ps1', BASE / 'bin/imece-host.cmd']
     else:
-        configs += [pathlib.Path.home() / 'Library/LaunchAgents/com.monocode.host.plist']
+        configs += [pathlib.Path.home() / 'Library/LaunchAgents/com.imece.host.plist']
     for path in configs:
         shutil.copy2(path, rollback / path.name)
     previous = (BASE / 'runtime-path').read_text(encoding='utf-8-sig').strip()
@@ -80,7 +102,7 @@ def host_install(release, manifest, report):
     if os.name == 'nt':
         # Request host shutdown, not Stop-ScheduledTask (which can orphan node.exe).
         port = stop_windows_host()
-        task = '$name="MonoCode Host-"+[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; '
+        task = '$name="Imece Host-"+[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; '
         ps(task + '$deadline=(Get-Date).AddSeconds(15); while ((Get-ScheduledTask -TaskName $name).State -eq "Running") { if ((Get-Date) -gt $deadline) { throw "Host task did not stop" }; Start-Sleep -Milliseconds 300 }')
         try:
             for path in configs:
@@ -152,63 +174,76 @@ def verify_host(runtime):
 
 def app_install(release, manifest, report):
     windows = os.name == 'nt'
-    verify_tree(release if windows else release / 'MonoCode.app', manifest['appHashes'])
+    app = (pathlib.Path(os.environ['LOCALAPPDATA']) / PRODUCT_IDENTITY['productName'] /
+           (PRODUCT_IDENTITY['binaryName']+'.exe') if windows else
+           pathlib.Path('/Applications')/(PRODUCT_IDENTITY['productName']+'.app'))
+    first_install = not app.exists()
+    has_database = desktop_db().exists()
+    if app.exists() and not desktop_db().exists():
+        raise RuntimeError('Existing İmece desktop database is missing; installation requires recovery')
+    verify_tree(release if windows else release / (PRODUCT_IDENTITY['productName']+'.app'), manifest['appHashes'])
     # Give the turn scheduling this update time to persist its final reply.
     time.sleep(30)
-    wait_idle(desktop_db(), 'select count(*) from in_flight_sessions', report)
+    if has_database:
+        wait_idle(desktop_db(), 'select count(*) from in_flight_sessions', report)
     rollback = release / 'rollback-app'
     rollback.mkdir(exist_ok=True)
-    backup(desktop_db(), rollback / 'desktop.db')
+    if has_database:
+        backup(desktop_db(), rollback / 'desktop.db')
     report('installing')
     if windows:
-        app = pathlib.Path(os.environ['LOCALAPPDATA']) / 'MonoCode/monocode.exe'
-        shutil.copy2(app, rollback / 'monocode.exe')
+        app = pathlib.Path(os.environ['LOCALAPPDATA']) / PRODUCT_IDENTITY['productName']/(PRODUCT_IDENTITY['binaryName']+'.exe')
+        if not first_install:
+            shutil.copy2(app, rollback / 'monocode.exe')
         app_q = ps_quote(app)
-        ps(f'Get-Process | Where-Object {{ $_.ProcessName -eq "monocode" -and $_.Path -eq {app_q} }} | ForEach-Object {{ [void]$_.CloseMainWindow() }}')
+        ps(f'Get-Process | Where-Object {{ $_.ProcessName -eq "{PRODUCT_IDENTITY["binaryName"]}" -and $_.Path -eq {app_q} }} | ForEach-Object {{ [void]$_.CloseMainWindow() }}')
         time.sleep(5)
-        if count(desktop_db(), 'select count(*) from in_flight_sessions') != 0:
+        if has_database and count(desktop_db(), 'select count(*) from in_flight_sessions') != 0:
             raise RuntimeError('A new turn started; app installation canceled')
         # Close-to-tray retains an idle process; only terminate the known app path.
-        ps(f'Get-Process | Where-Object {{ $_.ProcessName -eq "monocode" -and $_.Path -eq {app_q} }} | Stop-Process -Force')
+        ps(f'Get-Process | Where-Object {{ $_.ProcessName -eq "{PRODUCT_IDENTITY["binaryName"]}" -and $_.Path -eq {app_q} }} | Stop-Process -Force')
         run([str(release / 'setup.exe'), '/S'], timeout=180)
         version = ps(f'(Get-Item -LiteralPath {app_q}).VersionInfo.ProductVersion')
         if version != manifest['version'] or windows_binary_digest(app) != manifest['binaryHash']:
             raise RuntimeError('Installed Windows executable version/hash mismatch; rollback EXE retained')
         ps(f'Start-Process -FilePath {app_q}')
     else:
-        app = pathlib.Path('/Applications/MonoCode.app')
-        saved = pathlib.Path('/Applications') / ('MonoCode-before-' + manifest['id'] + '.app')
-        staged = pathlib.Path('/Applications') / ('MonoCode-staged-' + manifest['id'] + '.app')
+        app = pathlib.Path('/Applications')/(PRODUCT_IDENTITY['productName']+'.app')
+        saved = pathlib.Path('/Applications') / (PRODUCT_IDENTITY['productName']+'-before-' + manifest['id'] + '.app')
+        staged = pathlib.Path('/Applications') / (PRODUCT_IDENTITY['productName']+'-staged-' + manifest['id'] + '.app')
         if saved.exists() or staged.exists():
             raise RuntimeError('Rollback/staging app already exists; refusing overwrite')
-        run(['codesign', '--verify', '--deep', '--strict', str(release / 'MonoCode.app')])
-        run(['ditto', str(release / 'MonoCode.app'), str(staged)])
-        run(['osascript', '-e', 'tell application "MonoCode" to quit'])
+        run(['codesign', '--verify', '--deep', '--strict', str(release / (PRODUCT_IDENTITY['productName']+'.app'))])
+        run(['ditto', str(release / (PRODUCT_IDENTITY['productName']+'.app')), str(staged)])
+        if not first_install:
+            run(['osascript', '-e', f'tell application "{PRODUCT_IDENTITY["productName"]}" to quit'])
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             try:
-                run(['pgrep', '-x', 'monocode'])
+                run(['pgrep', '-f', re.escape(str(app/'Contents/MacOS'/PRODUCT_IDENTITY['binaryName']))])
             except Exception:
                 break
             time.sleep(1)
         else:
             raise RuntimeError('App did not quit; installation canceled')
-        if count(desktop_db(), 'select count(*) from in_flight_sessions') != 0:
+        if has_database and count(desktop_db(), 'select count(*) from in_flight_sessions') != 0:
             raise RuntimeError('A new turn started; app installation canceled')
-        app.rename(saved)
+        if not first_install:
+            app.rename(saved)
         try:
             staged.rename(app)
             run(['codesign', '--verify', '--deep', '--strict', str(app)])
             with (app / 'Contents/Info.plist').open('rb') as f:
                 if plistlib.load(f)['CFBundleShortVersionString'] != manifest['version']:
                     raise RuntimeError('Installed bundle version mismatch')
-            if digest(app / 'Contents/MacOS/monocode') != manifest['binaryHash']:
+            if digest(app / 'Contents/MacOS' / PRODUCT_IDENTITY['binaryName']) != manifest['binaryHash']:
                 raise RuntimeError('Installed Mac executable hash mismatch')
         except Exception:
             if app.exists():
                 app.rename(staged)
-            saved.rename(app)
-            run(['open', '-a', str(app)])
+            if not first_install:
+                saved.rename(app)
+                run(['open', '-a', str(app)])
             raise
         run(['open', '-a', str(app)])
     report('installed', version=manifest['version'])
@@ -217,6 +252,7 @@ def main():
     manifest_path = pathlib.Path(sys.argv[1]).resolve()
     release = manifest_path.parent
     manifest = read_json(manifest_path)
+    package_identity(manifest)
     if not re.fullmatch(r'[a-f0-9]{16}-(local|release)(-\d+)?', manifest['id']) or not re.fullmatch(r'\d+\.\d+\.\d+', manifest['version']):
         raise ValueError('Invalid package id/version')
     component = sys.argv[2]

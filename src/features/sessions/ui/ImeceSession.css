@@ -1,0 +1,47 @@
+.imece-session-backdrop {
+  position: absolute;
+  inset: auto 0 5.5rem;
+  z-index: -1;
+  margin: 0 auto;
+  pointer-events: none;
+}
+.imece-empty .imece-entry-workbench {
+  max-width: 1280px;
+  padding: 32px 24px;
+  justify-content: flex-start;
+  gap: 26px;
+}
+.imece-entry-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--color-stroke);
+}
+.imece-empty .imece-wordmark { margin: 0; font-size: 14px; letter-spacing: .08em; }
+.imece-entry-context {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ui-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.imece-empty .imece-task-brief { margin: 0; padding: 0; }
+.imece-empty .imece-task-brief h1 { font-size: clamp(22px, 2.3vw, 30px); font-weight: 500; max-width: none; }
+.imece-empty .imece-task-brief p { margin-top: 10px; font-size: 13px; max-width: 560px; }
+.imece-entry-composer { position: relative; max-width: 896px; margin-inline: auto; }
+.imece-entry-composer::before {
+  content: "TASK INPUT";
+  display: block;
+  margin-bottom: 10px;
+  color: var(--ui-text-secondary);
+  font: 10px var(--font-mono);
+  letter-spacing: .1em;
+}
+.imece-empty .village-coffeehouse { margin-top: 12px; padding-top: 0; align-self: stretch; }
+@media (max-width: 640px) {
+  .imece-empty .imece-entry-workbench { padding: 24px 16px; gap: 20px; }
+  .imece-entry-heading { gap: 12px; }
+}

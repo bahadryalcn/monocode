@@ -1,3 +1,4 @@
+import { initAppearancePreferences } from "./appearancePreferences";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { hslToRgb, isHexColor, type Rgb } from "../../../shared/lib/colorUtils";
 import { IS_LINUX, IS_MAC } from "../../../platform/tauri/platform";
@@ -84,7 +85,7 @@ export const NEW_THREAD_BACKGROUND_EFFECT_DESCRIPTIONS: Record<
 
 export const THEME_PREFERENCE_DEFAULT: ThemePreference = "dark";
 
-export const ACCENT_COLOR_DEFAULT = null;
+export const ACCENT_COLOR_DEFAULT = "#A3ACB8";
 
 /** Fired on `window` whenever the color scheme flips (detail: ColorScheme). */
 export const SCHEME_CHANGE_EVENT = "monocode:schemechange";
@@ -120,23 +121,23 @@ const DEFAULT_SIDEBAR_TAB_ORDER: SidebarTabId[] = [
 
 export const THEME_HUE_MIN = 0;
 export const THEME_HUE_MAX = 360;
-export const THEME_HUE_DEFAULT = 240;
+export const THEME_HUE_DEFAULT = 216;
 
 export const THEME_SATURATION_MIN = 0;
 export const THEME_SATURATION_MAX = 100;
-export const THEME_SATURATION_DEFAULT = 0;
+export const THEME_SATURATION_DEFAULT = 24;
 
 export const THEME_DARK_LIGHTNESS_MIN = 0;
 export const THEME_DARK_LIGHTNESS_MAX = 30;
-export const THEME_DARK_LIGHTNESS_DEFAULT = 9;
+export const THEME_DARK_LIGHTNESS_DEFAULT = 4;
 
 export const SIDEBAR_OPACITY_MIN = 0.15;
 export const SIDEBAR_OPACITY_MAX = 1;
-export const SIDEBAR_OPACITY_DEFAULT = 0.85;
+export const SIDEBAR_OPACITY_DEFAULT = 1;
 
 export const MAIN_OPACITY_MIN = 0.15;
 export const MAIN_OPACITY_MAX = 1;
-export const MAIN_OPACITY_DEFAULT = 0.85;
+export const MAIN_OPACITY_DEFAULT = 1;
 
 export const SIDEBAR_BLUR_MIN = 1;
 export const SIDEBAR_BLUR_MAX = 64;
@@ -146,13 +147,13 @@ export const PROJECT_RAIL_WIDTH_MIN = 56;
 /** Below this the rail drops its labels and shows icons only. */
 export const PROJECT_RAIL_COMPACT_WIDTH = 140;
 export const PROJECT_RAIL_WIDTH_MAX = 360;
-export const PROJECT_RAIL_WIDTH_DEFAULT = 200;
+export const PROJECT_RAIL_WIDTH_DEFAULT = 176;
 
 export const SESSION_SIDEBAR_WIDTH_MIN = 180;
 export const SESSION_SIDEBAR_WIDTH_MAX = 560;
-export const SESSION_SIDEBAR_WIDTH_DEFAULT = 260;
+export const SESSION_SIDEBAR_WIDTH_DEFAULT = 244;
 
-export const BODY_GLASS_DEFAULT = !IS_LINUX;
+export const BODY_GLASS_DEFAULT = false;
 
 export const CHAT_BACKGROUND_OPACITY_MIN = 0.05;
 export const CHAT_BACKGROUND_OPACITY_MAX = 0.65;
@@ -196,6 +197,26 @@ function normalizeAccentColor(value: unknown): string | null {
     : ACCENT_COLOR_DEFAULT;
 }
 
+/** Migrate only the previous shipped defaults, once; custom selections survive. */
+export function migrateWorkbenchPalette() {
+  try {
+    const marker = "imece.workbenchPalette.v1";
+    if (localStorage.getItem(marker) === "1") return;
+    const hue = readNumber(THEME_HUE_KEY);
+    const saturation = readNumber(THEME_SATURATION_KEY);
+    const lightness = readNumber(THEME_DARK_LIGHTNESS_KEY);
+    if ((hue == null || hue === 330) &&
+        (saturation == null || saturation === 10) &&
+        (lightness == null || lightness === 9)) {
+      for (const key of [THEME_HUE_KEY, THEME_SATURATION_KEY, THEME_DARK_LIGHTNESS_KEY])
+        localStorage.removeItem(key);
+    }
+    if (localStorage.getItem(ACCENT_COLOR_KEY)?.toLowerCase() === "#b39963")
+      localStorage.removeItem(ACCENT_COLOR_KEY);
+    localStorage.setItem(marker, "1");
+  } catch { /* Storage may be unavailable; defaults still work without migration. */ }
+}
+
 function accentForeground(color: string): "#000000" | "#ffffff" {
   const channels = [1, 3, 5].map((offset) => {
     const value = Number.parseInt(color.slice(offset, offset + 2), 16) / 255;
@@ -209,6 +230,7 @@ function accentForeground(color: string): "#000000" | "#ffffff" {
 }
 
 export function loadAccentColor(): string | null {
+  migrateWorkbenchPalette();
   try {
     return normalizeAccentColor(localStorage.getItem(ACCENT_COLOR_KEY));
   } catch {
@@ -217,9 +239,10 @@ export function loadAccentColor(): string | null {
 }
 
 export function saveAccentColor(value: string | null) {
+  migrateWorkbenchPalette();
   try {
     const next = normalizeAccentColor(value);
-    if (next == null) localStorage.removeItem(ACCENT_COLOR_KEY);
+    if (value == null || next == null || next.toLowerCase() === ACCENT_COLOR_DEFAULT.toLowerCase()) localStorage.removeItem(ACCENT_COLOR_KEY);
     else localStorage.setItem(ACCENT_COLOR_KEY, next);
   } catch {
     // private mode / quota
@@ -243,6 +266,7 @@ export function applyAccentColor(value: string | null) {
 }
 
 export function loadThemeHue(): number {
+  migrateWorkbenchPalette();
   return Math.round(
     clamp(
       readNumber(THEME_HUE_KEY) ?? THEME_HUE_DEFAULT,
@@ -253,6 +277,7 @@ export function loadThemeHue(): number {
 }
 
 export function saveThemeHue(value: number) {
+  migrateWorkbenchPalette();
   writeNumber(
     THEME_HUE_KEY,
     Math.round(clamp(value, THEME_HUE_MIN, THEME_HUE_MAX)),
@@ -260,6 +285,7 @@ export function saveThemeHue(value: number) {
 }
 
 export function loadThemeSaturation(): number {
+  migrateWorkbenchPalette();
   return Math.round(
     clamp(
       readNumber(THEME_SATURATION_KEY) ?? THEME_SATURATION_DEFAULT,
@@ -270,6 +296,7 @@ export function loadThemeSaturation(): number {
 }
 
 export function saveThemeSaturation(value: number) {
+  migrateWorkbenchPalette();
   writeNumber(
     THEME_SATURATION_KEY,
     Math.round(clamp(value, THEME_SATURATION_MIN, THEME_SATURATION_MAX)),
@@ -277,6 +304,7 @@ export function saveThemeSaturation(value: number) {
 }
 
 export function loadThemeDarkLightness(): number {
+  migrateWorkbenchPalette();
   return Math.round(
     clamp(
       readNumber(THEME_DARK_LIGHTNESS_KEY) ?? THEME_DARK_LIGHTNESS_DEFAULT,
@@ -287,6 +315,7 @@ export function loadThemeDarkLightness(): number {
 }
 
 export function saveThemeDarkLightness(value: number) {
+  migrateWorkbenchPalette();
   writeNumber(
     THEME_DARK_LIGHTNESS_KEY,
     Math.round(
@@ -320,6 +349,7 @@ export function applyThemeTint(hue: number, saturation: number) {
 }
 
 export function initAppearance() {
+  initAppearancePreferences();
   document.documentElement.classList.toggle("is-mac", IS_MAC);
   applyAccentColor(loadAccentColor());
   applyThemeTint(loadThemeHue(), loadThemeSaturation());

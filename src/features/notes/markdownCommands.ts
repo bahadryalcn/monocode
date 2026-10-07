@@ -1,13 +1,16 @@
 export type MarkdownCommand =
   | "bold"
   | "italic"
+  | "strike"
   | "heading"
   | "bullet"
   | "numbered"
   | "checklist"
   | "quote"
   | "code"
-  | "link";
+  | "link"
+  | "table"
+  | "rule";
 
 /** Replace `from..to` with `insert`, then select `anchor..head` in the result. */
 export type MarkdownEdit = {
@@ -31,6 +34,8 @@ export function markdownEdit(
       return toggleInline(doc, start, end, "**");
     case "italic":
       return toggleInline(doc, start, end, "*");
+    case "strike":
+      return toggleInline(doc, start, end, "~~");
     case "heading":
       return editLines(doc, start, end, cycleHeading);
     case "bullet":
@@ -49,6 +54,10 @@ export function markdownEdit(
       return toggleCode(doc, start, end);
     case "link":
       return insertLink(doc, start, end);
+    case "table":
+      return insertBlock(doc, start, end, TABLE, "Column");
+    case "rule":
+      return insertBlock(doc, start, end, "---");
   }
 }
 
@@ -258,4 +267,38 @@ function insertLink(doc: string, from: number, to: number): MarkdownEdit {
     anchor,
     head: anchor + 3,
   };
+}
+
+const TABLE = "| Column | Column |\n| --- | --- |\n|  |  |";
+
+/** Put `block` on its own paragraph, selecting `select` inside it if given. */
+function insertBlock(
+  doc: string,
+  from: number,
+  to: number,
+  block: string,
+  select?: string,
+): MarkdownEdit {
+  const before = doc.slice(0, from);
+  const after = doc.slice(to);
+  const leading = !before
+    ? ""
+    : before.endsWith("\n\n")
+      ? ""
+      : before.endsWith("\n")
+        ? "\n"
+        : "\n\n";
+  const trailing = after.startsWith("\n\n")
+    ? ""
+    : after.startsWith("\n")
+      ? "\n"
+      : "\n\n";
+  const insert = `${leading}${block}${trailing}`;
+  const offset = select ? block.indexOf(select) : -1;
+  if (offset >= 0) {
+    const anchor = from + leading.length + offset;
+    return { from, to, insert, anchor, head: anchor + select!.length };
+  }
+  const cursor = from + insert.length;
+  return { from, to, insert, anchor: cursor, head: cursor };
 }

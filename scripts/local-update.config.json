@@ -1,6 +1,8 @@
 {
-  "stateRoot": "~/.monocode-build",
-  "windows": { "cargoTarget": "target" },
+  "stateRoot": "~/.imece-build",
+  "windows": {
+    "cargoTarget": "target"
+  },
   "mac": {
     "ssh": "macbook",
     "python": "/opt/homebrew/bin/python3.12",

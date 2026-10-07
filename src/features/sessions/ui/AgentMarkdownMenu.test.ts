@@ -111,7 +111,7 @@ describe("AgentMarkdown file link context menu", () => {
     const menu = openMenu(container.querySelector("a")!);
 
     expect(menu).not.toBeNull();
-    expect(menu!.textContent).toContain("Open in MonoCode");
+    expect(menu!.textContent).toContain("Open in imc");
     expect(menu!.textContent).toContain("Open in Default App");
     expect(menu!.textContent).toMatch(
       /Reveal in Finder|Reveal in File Explorer|Open Containing Folder/,
@@ -121,7 +121,7 @@ describe("AgentMarkdown file link context menu", () => {
   });
 
   it("runs internal-open, external-open, reveal, and copy actions", async () => {
-    await pick("Open in MonoCode");
+    await pick("Open in imc");
     expect(props.onOpenFile).toHaveBeenCalledWith("/repo/docs/guide.md");
 
     await pick("Open in Default App");
@@ -181,7 +181,7 @@ describe("AgentMarkdown file link context menu", () => {
     render();
 
     const menu = openMenu(container.querySelector("code")!);
-    expect(menu?.textContent).toContain("Open in MonoCode");
+    expect(menu?.textContent).toContain("Open in imc");
   });
 
   it.each([
@@ -199,7 +199,7 @@ describe("AgentMarkdown file link context menu", () => {
       render();
       const link = container.querySelector(selector)!;
 
-      await pick("Open in MonoCode", link);
+      await pick("Open in imc", link);
       expect(props.onOpenFile).toHaveBeenCalledWith(
         "/repo/src/main.ts",
         navigation,

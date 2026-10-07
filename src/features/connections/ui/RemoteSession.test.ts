@@ -1883,7 +1883,7 @@ slow(
     await settle();
     expect(commands).toHaveLength(0);
     expect(queueCard()?.textContent).toContain("Also update the docs");
-    expect(queueCard()?.textContent).toContain("while MonoCode is open");
+    expect(queueCard()?.textContent).toContain("while imc is open");
     // A host turn cannot be steered.
     expect(queueCard()?.textContent).not.toContain("Steer");
     expect(container.querySelector("textarea")!.value).toBe("");

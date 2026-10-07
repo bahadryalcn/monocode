@@ -1,23 +1,28 @@
 import { getName } from "@tauri-apps/api/app";
+import { PRODUCT_IDENTITY } from "./productIdentity";
 
-export const FALLBACK_APP_NAME = "MonoCode";
+export const FALLBACK_APP_NAME: string = PRODUCT_IDENTITY.displayName;
 
 let cachedName = FALLBACK_APP_NAME;
 
-// The product name differs between the official ("MonoCode"), fork
-// ("MonoCode Fork") and dev ("MonoCode Dev") builds. Warm the cache once at
+// Native builds may have distinct product names. Warm the cache once at
 // startup; callers that cannot await read it through appName().
 const resolved: Promise<string> = (async () => {
   try {
     const name = (await getName()).trim();
-    if (name) cachedName = name;
+    // Native package metadata stays compatible until the installer migration.
+    // Adapt only known legacy product names; custom runtime names remain intact.
+    if (name === "MonoCode" || name === "Imece") cachedName = PRODUCT_IDENTITY.displayName;
+    else if (name === "MonoCode Dev" || name === "Imece Dev") cachedName = `${PRODUCT_IDENTITY.displayName} Dev`;
+    else if (name === "MonoCode Fork") cachedName = `${PRODUCT_IDENTITY.displayName} Fork`;
+    else if (name) cachedName = name;
   } catch {
     // Outside Tauri (tests, browser preview) the fallback stays.
   }
   return cachedName;
 })();
 
-/** Product name, resolved at runtime. Falls back to "MonoCode" until known. */
+/** Runtime product name, using the frontend brand default until known. */
 export function appName(): string {
   return cachedName;
 }

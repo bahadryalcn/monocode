@@ -5,6 +5,7 @@ import {
   type UserQuestionReply,
 } from "../../../../features/sessions/model/userQuestion";
 import { asRecord } from "./codexProtocol";
+import { PRODUCT_IDENTITY } from "../../../../shared/lib/productIdentity";
 
 export function codexQuestions(params: unknown): UserQuestion[] {
   const raw = asRecord(params)?.questions;
@@ -15,7 +16,7 @@ export function codexQuestions(params: unknown): UserQuestion[] {
   // secure credential-entry surface. Never send secret questions to it.
   if (raw.some((question) => asRecord(question)?.isSecret === true)) {
     throw new Error(
-      "Codex requested secret input. MonoCode cannot collect secret answers securely.",
+      `Codex requested secret input. ${PRODUCT_IDENTITY.displayName} cannot collect secret answers securely.`,
     );
   }
   const questions = questionsFromUnknown({

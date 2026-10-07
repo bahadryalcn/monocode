@@ -99,3 +99,21 @@ describe("machine snapshot", () => {
     expect((await probeMachines()).capable).toEqual([mac]);
   });
 });
+
+
+it("forces a retry through the tunnel failure cache while sharing parallel probes", async () => {
+  await probeMachines();
+  request.mockClear();
+  await Promise.all([probeMachines("tasks", true), probeMachines("goals", true)]);
+  expect(calls("environment.describe")).toBe(2);
+  expect(request).toHaveBeenCalledWith(mac.id, "environment.describe", {}, true);
+});
+
+it("retains the actual discovery failure for each unreachable host", async () => {
+  request.mockRejectedValue(new Error("Host identity changed"));
+  const reach = await probeMachines();
+  expect(reach.unreachableErrors).toEqual({
+    [mac.id]: "Host identity changed",
+    [mini.id]: "Host identity changed",
+  });
+});

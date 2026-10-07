@@ -10,7 +10,8 @@ import {
   isCheckoutBlockedByChanges,
   listProjectFiles,
   listSkills,
-  pickFolders,
+  pickNativeFolders as pickFolders,
+  pickFolders as pickProjectFolders,
   resolveProjectLocation,
 } from "./fs";
 
@@ -21,6 +22,15 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
+
+const picker = vi.hoisted(() => ({ openFolderPicker: vi.fn() }));
+vi.mock("../../features/projects/ui/openFolderPicker", () => picker);
+
+it("routes project and session folder requests through the in-app browser", async () => {
+  picker.openFolderPicker.mockResolvedValueOnce(["/work/project"]);
+  await expect(pickProjectFolders("Choose session project", false)).resolves.toEqual(["/work/project"]);
+  expect(picker.openFolderPicker).toHaveBeenCalledWith({ title: "Choose session project", multiple: false });
+});
 
 describe("pickFolders", () => {
   it("can request a single project folder", async () => {

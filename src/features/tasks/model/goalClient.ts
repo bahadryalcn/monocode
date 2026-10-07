@@ -64,8 +64,8 @@ export type GoalDraft = {
 };
 
 /** Machines whose host carries out goals, this computer's included. */
-export function goalMachines(): Promise<RemoteMachine[]> {
-  return backgroundMachines(HOST_GOALS);
+export function goalMachines(fresh = false): Promise<RemoteMachine[]> {
+  return backgroundMachines(HOST_GOALS, fresh);
 }
 
 export function newGoalDraft(

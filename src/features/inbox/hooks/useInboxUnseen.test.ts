@@ -273,7 +273,7 @@ describe("Inbox activity polling", () => {
 });
 
 describe("Inbox activity for automations", () => {
-  const POLL_MS = 30_000;
+
   const onActivity = vi.fn();
 
   function AutomationHarness() {
@@ -400,7 +400,7 @@ describe("Inbox polling while the window is hidden", () => {
     Reflect.deleteProperty(document, "hidden");
   });
 
-  it("reads through the freshness cache at a slower cadence, and force-refreshes when shown again", async () => {
+  it("reads through the freshness cache at a slower cadence, without forcing when shown again", async () => {
     vi.useFakeTimers();
     listInboxItems.mockResolvedValue({ items: [], errors: {} });
     await mount();
@@ -413,8 +413,8 @@ describe("Inbox polling while the window is hidden", () => {
     expect(forces()).toEqual([false, false]);
 
     await act(async () => setHidden(false));
-    expect(forces()).toEqual([false, false, true]);
+    expect(forces()).toEqual([false, false, false]);
     await act(async () => vi.advanceTimersByTimeAsync(POLL_MS));
-    expect(forces()).toEqual([false, false, true, true]);
+    expect(forces()).toEqual([false, false, false, false]);
   });
 });

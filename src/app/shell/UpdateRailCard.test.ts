@@ -1,6 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../../shared/lib/productIdentity", () => ({
+  PRODUCT_IDENTITY: { displayName: "Test Product", logoSrc: "/test-product.svg" },
+}));
+
 import { UpdateRailCard } from "./UpdateRailCard";
 
 describe("UpdateRailCard", () => {
@@ -14,6 +19,8 @@ describe("UpdateRailCard", () => {
     );
 
     expect(markup).toContain('role="status"');
+    expect(markup).toContain('src="/test-product.svg"');
+    expect(markup).not.toContain("monocode.png");
     expect(markup).toContain("Updated to 0.1.25");
     expect(markup).toContain("What&#x27;s new");
     expect(markup).toContain('aria-label="Dismiss update notification"');

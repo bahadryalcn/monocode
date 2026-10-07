@@ -3,6 +3,7 @@ import {
   subscribeSyncedProjectsAdded,
 } from "../features/sync/model/syncRemoteProjects";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
+import { queueTerminalCommand } from "../features/terminal/model/terminalLaunchCommand";
 import {
   liveAgentsEqual,
   sessionSummariesEqual,
@@ -108,7 +109,7 @@ import {
 import { useLockSnapshot } from "../features/group-lock/hooks/useGroupLock";
 import {
   getGroupLockView,
-  isProjectLocked,
+  isProjectPasswordLocked,
   startGroupLockWatcher,
 } from "../features/group-lock/model/groupLock";
 import {
@@ -144,6 +145,7 @@ import {
 } from "../features/source-control/model/worktreeFocus";
 import { composerDraftOf } from "../features/sessions/model/draftCache";
 import { UsageFooter } from "./shell/UsageFooter";
+import { WorkspaceControls } from "./shell/WorkspaceControls";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
 import { useInboxActivity } from "../features/inbox/hooks/useInboxUnseen";
 import {
@@ -255,10 +257,7 @@ import {
   type SplitDir,
   type WorkspaceTab,
 } from "../features/workspace/model/layout";
-import {
-  releaseNotesForVersion,
-  releaseNotesTitle,
-} from "./model/releaseNotes";
+import { releaseNotesTitle } from "./model/releaseNotes";
 import { mergeOrderedSubset, orderByIds } from "../shared/lib/reorder";
 import {
   addTerminalToDock,
@@ -764,6 +763,7 @@ import {
 } from "../features/projects/model/projectNames";
 import { ProjectNameConflictDialog } from "../features/projects/ui/ProjectNameConflictDialog";
 import { SessionImportHost } from "../features/sessions/ui/SessionImportHost";
+import { OnboardingHost } from "../features/onboarding/ui/OnboardingHost";
 import { requestSessionImport } from "../features/sessions/import/importModel";
 import type { ConnectableInboxSource } from "../features/inbox/model/inboxFilters";
 import type { InboxSessionPortal } from "../features/inbox/ui/InboxDiscussionPanel";
@@ -1242,6 +1242,7 @@ function Workspace({
   const [searchViewOpen, setSearchViewOpen] = useState(false);
   const [searchViewFocusToken, setSearchViewFocusToken] = useState(0);
   const [inboxViewOpen, setInboxViewOpen] = useState(false);
+  const [pullRequestsOnly, setPullRequestsOnly] = useState(false);
   const [linkedWorkItemPanels, setLinkedWorkItemPanels] = useState<
     ReadonlyMap<string, LinkedWorkItemPanelState>
   >(() => new Map());
@@ -2708,15 +2709,7 @@ function Workspace({
   );
 
   const onOpenWhatsNew = useCallback((version: string) => {
-    const document = releaseNotesForVersion(version);
-    if (!document) {
-      void message(
-        "Release notes for this version are not available in this build.",
-        { title: appName() },
-      );
-      return;
-    }
-    setWhatsNewVersion(document.source.version);
+    setWhatsNewVersion(version.trim());
   }, []);
 
   const createWorkspaceTab = useCallback(
@@ -7744,7 +7737,7 @@ function Workspace({
         operatorCommand.matched || operatorEnabledInThread(current.blocks);
       const promptText = operatorCommand.matched
         ? operatorCommand.text.trim() ||
-          "Explain what you can do in MonoCode with the app CLI."
+          "Explain what you can do in imc with the app CLI."
         : submittedText;
       const rawCommand =
         !operatorCommand.matched &&
@@ -8797,7 +8790,7 @@ function Workspace({
       let breach: string | null = null;
       try {
         await earlier;
-        const skip = isProjectLocked(automation.cwd)
+        const skip = isProjectPasswordLocked(automation.cwd)
           ? LOCKED_PROJECT_SKIP
           : run.trigger === "manual"
             ? null
@@ -10884,7 +10877,7 @@ function Workspace({
           source.orchestrationLeadId ||
           orchestrator.run(source.id)
         )
-          throw new Error("This session cannot use the MonoCode app CLI");
+          throw new Error("This session cannot use the imc app CLI");
         const key = `${source.id}:${payload.requestId}`;
         const signature = JSON.stringify([payload.action, payload.input]);
         const previous = appReceipts.current.get(key);
@@ -11563,6 +11556,7 @@ function Workspace({
   }, []);
 
   const onOpenInbox = useCallback(() => {
+    setPullRequestsOnly(false);
     startTransition(() => {
       setFilePickerOpen(false);
       setSettingsOpen(false);
@@ -12643,6 +12637,15 @@ function Workspace({
       tabs={titleTabs}
       activeId={activeTabId}
       cwd={sidebarCwd}
+      onRunProjectAction={(action) => {
+        if (!isLocalProject(sidebarCwd)) return;
+        const file = newTerminalFile(sidebarCwd, action.name, sidebarCwd, loadTerminalProfile());
+        queueTerminalCommand(file.id, action.command);
+        const tab = newTerminalWorkspaceTab(file);
+        appendTab(tab, sidebarCwd);
+        setActiveTabId(tab.id);
+        setComposerFocused(false);
+      }}
       projectRailOpen={!detachedSessionWindow && projectRailOpen}
       sessionSidebarOpen={!detachedSessionWindow && sessionSidebarOpen}
       compactRail={compactTitleBar}
@@ -13042,6 +13045,9 @@ function Workspace({
               </div>
               {inboxViewOpen ? (
                 <InboxView
+                  key={pullRequestsOnly ? "pullRequests" : "inbox"}
+                  pullRequestsOnly={pullRequestsOnly}
+                  onOpenProject={pickProject}
                   cwd={sidebarCwd}
                   recents={visibleRecents}
                   besideRail={projectRailOpen || compactProjectRail}
@@ -13109,7 +13115,6 @@ function Workspace({
                   onRemoveWorktree={onRemoveWorktree}
                   onCheckWorktreeRemoval={onCheckWorktreeRemoval}
                   onDeleteWorktreeSessions={onDeleteWorktreeSessions}
-                  besideRail
                   onClose={onCloseSettings}
                   onSelectSection={onSelectSettingsSection}
                   onOpenSession={onOpenArchivedSession}
@@ -13124,12 +13129,14 @@ function Workspace({
                   onCollapsedProjectRailModeChange={setCollapsedProjectRailMode}
                 />
               ) : null}
+              <div className="flex h-8 min-w-0 shrink-0 items-center border-t border-stroke">
               {searchViewOpen ||
               inboxViewOpen ||
               notesViewOpen ||
               automationsViewOpen ||
               settingsOpen ? null : (
                 <UsageFooter
+                  embedded
                   providers={usageProviders}
                   session={usageSession}
                   project={active?.cwd ?? projectCwd}
@@ -13154,6 +13161,14 @@ function Workspace({
                   }
                 />
               )}
+              <WorkspaceControls
+                canRefresh={inboxViewOpen || (settingsOpen ? settingsSection === "usage" : !searchViewOpen && !notesViewOpen && !automationsViewOpen)}
+                onSettings={onOpenSettings}
+                onPullRequests={() => { onOpenInbox(); setPullRequestsOnly(true); }}
+                onUsage={() => openSettings("usage")}
+                active={settingsOpen ? settingsSection === "usage" ? "usage" : "settings" : inboxViewOpen && pullRequestsOnly ? "pullRequests" : undefined}
+              />
+              </div>
             </div>
           </div>
 
@@ -13251,6 +13266,11 @@ function Workspace({
           ) : null}
           <GitFileInspector onOpenCommit={onOpenCommit} />
           <SessionImportHost onImported={onSessionsImported} />
+          <OnboardingHost
+            context={{ projects: recents.length, sessions: bootHistory.length, restored: !!resumed, transferred: !!windowTransfer }}
+            onImported={onSessionsImported}
+            onOpenProject={onSelectProject}
+          />
           {backgroundSession ? (
             <BackgroundSessionDialog
               target={backgroundSession}

@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
@@ -500,7 +501,7 @@ export async function confirmReload(
   hasUnsavedFiles: boolean,
 ): Promise<boolean> {
   if (!hasUnsavedFiles) return true;
-  return ask("Reload MonoCode and discard unsaved changes?", {
+  return ask(`Reload ${PRODUCT_IDENTITY.displayName} and discard unsaved changes?`, {
     title: appName(),
     kind: "warning",
     okLabel: "Reload",

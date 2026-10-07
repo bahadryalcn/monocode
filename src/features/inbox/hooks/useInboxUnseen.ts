@@ -1,3 +1,4 @@
+import { INBOX_BACKGROUND_POLL_MS, INBOX_HIDDEN_POLL_MS } from "../model/inboxPolling";
 import {
   useCallback,
   useEffect,
@@ -72,12 +73,12 @@ import {
   subscribeInboxSelfActivity,
 } from "../model/inboxSelfActivity";
 
-export const POLL_MS = 30_000;
+export const POLL_MS = INBOX_BACKGROUND_POLL_MS;
 /** While the window is hidden or in the tray: notifications, the tray badge
  * and Inbox automations still ride this refresh, but a few minutes of latency
  * is acceptable and it reads through the freshness cache instead of forcing. */
-export const HIDDEN_POLL_MS = 180_000;
-const FALLBACK_REFRESH_MS = 60_000;
+export const HIDDEN_POLL_MS = INBOX_HIDDEN_POLL_MS;
+const FALLBACK_REFRESH_MS = INBOX_BACKGROUND_POLL_MS;
 const MAX_CONCURRENT_LOOKUPS = 3;
 
 type ProjectSeenEntry = InboxSeenEntry & NotificationSubject;
@@ -391,7 +392,7 @@ export function useInboxActivity(
       window.clearTimeout(timer);
       timer = window.setTimeout(
         () => {
-          void pull(!document.hidden);
+          void pull(false);
           arm();
         },
         document.hidden ? HIDDEN_POLL_MS : POLL_MS,
@@ -399,7 +400,7 @@ export function useInboxActivity(
     };
     arm();
     const onVis = () => {
-      if (!document.hidden) void pull(true);
+      if (!document.hidden) void pull(false);
       arm();
     };
     document.addEventListener("visibilitychange", onVis);

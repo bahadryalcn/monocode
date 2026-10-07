@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   useEffect,
   useId,
@@ -65,7 +66,7 @@ type Machine = { environmentId: string; name: string; cwd: string };
 /** Why a machine's skills could not be listed, in words the user can act on. */
 function machineFailure(machine: Machine, error: unknown): string {
   const failure = classifyRemoteError(error);
-  const outdated = `${machine.name}'s MonoCode Host needs updating to list skills. Update it in Connections settings.`;
+  const outdated = `${machine.name}'s ${PRODUCT_IDENTITY.displayName} Host needs updating to list skills. Update it in Connections settings.`;
   if (failure.kind === "outdated" || /needs updating/i.test(failure.message))
     return outdated;
   if (failure.kind === "unreachable") return `Couldn't reach ${machine.name}.`;
@@ -488,7 +489,7 @@ export function SkillsPage({
                             {skill.scope === "user"
                               ? "Personal"
                               : skill.scope === "builtin"
-                                ? "MonoCode"
+                                ? `${PRODUCT_IDENTITY.displayName}`
                                 : "Project"}
                           </span>
                           <span className="w-20 shrink-0 truncate text-right font-sans text-[11px] text-content/40">
@@ -497,7 +498,7 @@ export function SkillsPage({
                           <button
                             type="button"
                             role="switch"
-                            aria-label={`Include ${skill.name} in MonoCode catalog`}
+                            aria-label={`Include ${skill.name} in ${PRODUCT_IDENTITY.displayName} catalog`}
                             aria-checked={!disabled}
                             onClick={() => onToggle(skill.path, disabled)}
                             className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${disabled ? "bg-content/20" : "bg-accent"}`}
@@ -767,7 +768,7 @@ export function SkillsPage({
             ))}
 
             <p className="pt-3 text-[12px] text-content/40">
-              Hidden skills stay on disk and are excluded from MonoCode's
+              Hidden skills stay on disk and are excluded from {PRODUCT_IDENTITY.displayName}'s
               file-skill catalog. Provider-managed skills and native commands
               are unaffected. Skills live in{" "}
               <span className="font-sans">.agents/skills</span> for this project

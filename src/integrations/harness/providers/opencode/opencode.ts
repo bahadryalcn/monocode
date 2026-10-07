@@ -1,4 +1,5 @@
 import { modelContextWindow, nativeModelId } from "../../../../features/sessions/model/models";
+import { PRODUCT_IDENTITY } from "../../../../shared/lib/productIdentity";
 import type { RuntimeMode, TurnMetrics } from "../../../../features/sessions/model/session";
 import { taskListFromToolInput } from "../../../../features/sessions/model/taskList";
 import {
@@ -1331,7 +1332,7 @@ async function assertOpenCodeVersion(path: string, cwd: string): Promise<void> {
   const version = parseOpenCodeVersion(output);
   if (!version) {
     throw new Error(
-      `Unable to determine OpenCode version. MonoCode requires v${MINIMUM_OPENCODE_VERSION} or newer.`,
+      `Unable to determine OpenCode version. ${PRODUCT_IDENTITY.displayName} requires v${MINIMUM_OPENCODE_VERSION} or newer.`,
     );
   }
   if (compareSemver(version, MINIMUM_OPENCODE_VERSION) < 0) {

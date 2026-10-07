@@ -68,9 +68,22 @@ describe("ActivityDock", () => {
   it("keeps Done up after work finishes until the composer is focused", () => {
     render({ busy: true });
     expect(dock()?.getAttribute("data-activity-dock")).toBe("working");
+    expect(dock()?.querySelector("[data-pacing-uncle]")).not.toBeNull();
+    expect(
+      dock()?.querySelector('[data-pacing-track="full-width"]')?.parentElement,
+    ).toBe(dock()?.querySelector("[data-activity-status-row]"));
+    expect(
+      dock()
+        ?.querySelector('[data-pacing-track="full-width"]')
+        ?.classList.contains("absolute"),
+    ).toBe(true);
+    expect(
+      dock()?.querySelector("[data-pacing-uncle]")?.classList.contains("h-8"),
+    ).toBe(true);
 
     render({ busy: false });
     expect(dock()?.getAttribute("data-activity-dock")).toBe("done");
+    expect(dock()?.querySelector("[data-pacing-uncle]")).toBeNull();
 
     act(() => {
       container
@@ -136,7 +149,8 @@ describe("ActivityDock", () => {
   describe("stopping", () => {
     const stopButtons = () =>
       [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
-        (button) => /^Stop(ping)? /.test(button.getAttribute("aria-label") ?? ""),
+        (button) =>
+          /^Stop(ping)? /.test(button.getAttribute("aria-label") ?? ""),
       );
     const expand = () =>
       act(() =>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type RefObject } from "react";
-import { ask, message } from "@tauri-apps/plugin-dialog";
+import { ask } from "@tauri-apps/plugin-dialog";
 import { Loader, MoreHorizontal } from "../../../shared/ui/icons";
 import { ExplorerMenu } from "../../files/ui/ExplorerMenu";
 import {
@@ -32,7 +32,11 @@ import {
   type GitStashEntry,
   type GitStashMode,
 } from "../../../platform/tauri/fs";
-import { GIT_ACTIONS, HOST_UPDATE_NOTICE, useRemoteSupports } from "../../connections/model/remoteCapabilities";
+import {
+  GIT_ACTIONS,
+  HOST_UPDATE_NOTICE,
+  useRemoteSupports,
+} from "../../connections/model/remoteCapabilities";
 import { useProjectBranchesState } from "../hooks/useProjectBranches";
 import { deleteLocalBranch } from "../model/deleteBranch";
 import { operationLabel } from "../model/commitActions";
@@ -45,6 +49,11 @@ import { BranchManagerDialog } from "./BranchManagerDialog";
 import { GitPickDialog, type PickItem } from "./GitPickDialog";
 import { stashCommit } from "./GitStashSection";
 import { RefNameDialog } from "./RefNameDialog";
+import {
+  gitPanelRuntime,
+  setGitFeedback,
+  withGitOperation,
+} from "../model/gitPanelState";
 import { appName } from "../../../shared/lib/appName";
 
 /** The `busy` key the menu's own actions hold while they run. */
@@ -52,6 +61,7 @@ export const GIT_MENU_BUSY = "git-menu";
 
 /** What the changed-files list exposes so the menu can drive its commit box. */
 export type ChangesActions = {
+  refreshPr?: () => void;
   commit: (options: CommitMenuOptions) => Promise<void>;
   runAll: (action: "stage" | "unstage" | "discard") => Promise<void>;
 };
@@ -202,16 +212,23 @@ export function GitActionsMenu({
     status?: string,
     pending?: string,
   ) => {
+    if (gitPanelRuntime(cwd).state.busy) return;
+    setGitFeedback(cwd, null);
     setBusy(GIT_MENU_BUSY);
     onPending?.(pending ?? null);
     try {
       await work();
       if (status) onStatus(status);
+      setGitFeedback(cwd, {
+        kind: "success",
+        title: status ?? "Git operation complete",
+      });
     } catch (error) {
-      // The dialog waits for the user; git is no longer running behind it.
-      onPending?.(null);
-      setBusy(null);
-      await message(errorText(error), { title: appName(), kind: "error" });
+      setGitFeedback(cwd, {
+        kind: "error",
+        title: "Git operation failed",
+        detail: errorText(error),
+      });
     } finally {
       onPending?.(null);
       setBusy(null);
@@ -225,9 +242,15 @@ export function GitActionsMenu({
     dialog: Omit<Extract<Dialog, { kind: "pick" }>, "kind" | "items">,
   ) => {
     try {
-      setDialog({ kind: "pick", items: await load(), ...dialog });
+      const items = await withGitOperation(cwd, "Loading Git options…", load);
+      setDialog({ kind: "pick", items, ...dialog });
     } catch (error) {
-      await message(errorText(error), { title: appName(), kind: "error" });
+      setGitFeedback(cwd, {
+        kind: "error",
+        title: "Couldn’t load Git options",
+        detail: errorText(error),
+        retry: async () => choose(load, dialog),
+      });
     }
   };
 
@@ -249,10 +272,16 @@ export function GitActionsMenu({
   const branchItems = async (localOnly: boolean, skipCurrent: boolean) => {
     const listed = await gitBranches(cwd);
     return listed.branches
-      .filter((item) => !(localOnly && item.remote) && !(skipCurrent && item.current))
+      .filter(
+        (item) => !(localOnly && item.remote) && !(skipCurrent && item.current),
+      )
       .map((item): PickItem => {
         const ref = item.remote ? `${item.remote}/${item.name}` : item.name;
-        return { id: ref, label: ref, detail: item.remote ? "remote" : undefined };
+        return {
+          id: ref,
+          label: ref,
+          detail: item.remote ? "remote" : undefined,
+        };
       });
   };
 
@@ -260,13 +289,11 @@ export function GitActionsMenu({
     const entries = await gitStashList(cwd);
     return {
       entries,
-      items: entries.map(
-        (entry): PickItem => ({
-          id: String(entry.index),
-          label: entry.message,
-          detail: `stash@{${entry.index}}`,
-        }),
-      ),
+      items: entries.map((entry): PickItem => ({
+        id: String(entry.index),
+        label: entry.message,
+        detail: `stash@{${entry.index}}`,
+      })),
     };
   };
 
@@ -287,7 +314,9 @@ export function GitActionsMenu({
         emptyText: "No stashes",
         onPick: (id) => {
           setDialog(null);
-          const entry = entries.find((candidate) => String(candidate.index) === id);
+          const entry = entries.find(
+            (candidate) => String(candidate.index) === id,
+          );
           if (entry) onEntry(entry, entries.length);
         },
       },
@@ -436,20 +465,21 @@ export function GitActionsMenu({
             label: "Remote name",
             placeholder: "origin",
             submitLabel: "Add Remote",
-            extra: { label: "Remote URL", placeholder: "https://github.com/owner/repo.git" },
+            extra: {
+              label: "Remote URL",
+              placeholder: "https://github.com/owner/repo.git",
+            },
           },
           (name, url) => gitRemoteAdd(cwd, name, url),
         );
       case "remote-remove":
         return choose(
           async () =>
-            (await gitRemotes(cwd)).map(
-              (remote): PickItem => ({
-                id: remote.name,
-                label: remote.name,
-                detail: remote.url,
-              }),
-            ),
+            (await gitRemotes(cwd)).map((remote): PickItem => ({
+              id: remote.name,
+              label: remote.name,
+              detail: remote.url,
+            })),
           {
             title: "Remove Remote",
             placeholder: "Filter remotes",
@@ -477,22 +507,27 @@ export function GitActionsMenu({
       case "stash-pop-latest":
         return run(() => gitStashAction(cwd, "pop", 0));
       case "stash-apply":
-        return pickStash("Apply Stash", (entry) =>
-          void run(() => gitStashAction(cwd, "apply", entry.index)),
+        return pickStash(
+          "Apply Stash",
+          (entry) => void run(() => gitStashAction(cwd, "apply", entry.index)),
         );
       case "stash-pop":
-        return pickStash("Pop Stash", (entry) =>
-          void run(() => gitStashAction(cwd, "pop", entry.index)),
+        return pickStash(
+          "Pop Stash",
+          (entry) => void run(() => gitStashAction(cwd, "pop", entry.index)),
         );
       case "stash-drop":
-        return pickStash("Drop Stash", (entry) =>
-          void (async () => {
-            const confirmed = await confirm(
-              `Drop "${entry.message}"? The stashed changes are lost.`,
-              "Drop",
-            );
-            if (confirmed) await run(() => gitStashAction(cwd, "drop", entry.index));
-          })(),
+        return pickStash(
+          "Drop Stash",
+          (entry) =>
+            void (async () => {
+              const confirmed = await confirm(
+                `Drop "${entry.message}"? The stashed changes are lost.`,
+                "Drop",
+              );
+              if (confirmed)
+                await run(() => gitStashAction(cwd, "drop", entry.index));
+            })(),
         );
       case "stash-drop-all": {
         const count = data.stashCount;
@@ -504,7 +539,9 @@ export function GitActionsMenu({
         return;
       }
       case "stash-view":
-        return pickStash("View Stash", (entry) => onOpenCommit(stashCommit(entry)));
+        return pickStash("View Stash", (entry) =>
+          onOpenCommit(stashCommit(entry)),
+        );
       case "tag-create": {
         const head = index?.head;
         if (!head) return;
@@ -522,7 +559,10 @@ export function GitActionsMenu({
       case "tag-delete":
         return choose(
           async () =>
-            (await gitTags(cwd)).map((name): PickItem => ({ id: name, label: name })),
+            (await gitTags(cwd)).map((name): PickItem => ({
+              id: name,
+              label: name,
+            })),
           {
             title: "Delete Tag",
             placeholder: "Filter tags",

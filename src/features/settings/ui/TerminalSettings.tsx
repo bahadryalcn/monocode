@@ -3,6 +3,7 @@ import {
   useRemoteMachines,
 } from "../../connections/model/connections";
 import { HOST_UPDATE_NOTICE } from "../../connections/model/remoteCapabilities";
+import { isLocalSyncMachine } from "../../connections/model/localSync";
 import type { RemoteMachine } from "../../connections/model/protocol";
 import {
   effectiveProfileId,
@@ -39,8 +40,8 @@ export function TerminalPage() {
   return (
     <>
       <Group
-        title="Default profile"
-        description="New terminals open in this shell, and `!commands` from the composer run in it. A terminal already open keeps the shell it started with."
+        title="This computer · Default profile"
+        description="New terminals on this computer open in this shell, and local `!commands` run in it. A terminal already open keeps the shell it started with."
         action={
           <button
             type="button"
@@ -81,7 +82,7 @@ export function TerminalPage() {
         </Row>
       </Group>
       <Group
-        title="Available shells"
+        title="This computer · Available shells"
         description="Found on this computer. Git Bash runs bash commands such as ls, grep and && chains on Windows. Sessions on this computer use this choice even when you type the command on another machine."
       >
         {listed === null ? (
@@ -128,6 +129,7 @@ export function RemoteMachineShells() {
 }
 
 export function RemoteMachineShell({ machine }: { machine: RemoteMachine }) {
+  const local = isLocalSyncMachine(machine);
   const [listed, setListed] = useState<ShellProfiles | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -175,8 +177,19 @@ export function RemoteMachineShell({ machine }: { machine: RemoteMachine }) {
       : "";
   return (
     <Group
-      title={machine.name}
-      description="`!commands` in sessions on this machine run here, in this shell, whichever computer you type them on."
+      title={
+        <span className="flex flex-col gap-1">
+          <span>{local ? "This computer" : "Remote server"}</span>
+          <span className="break-words text-[12px] font-normal text-content/60">
+            {local ? "Local sync" : machine.name}
+          </span>
+        </span>
+      }
+      description={
+        local
+          ? "`!commands` in this computer's synced sessions run on this computer, using the shell selected here."
+          : "`!commands` in this server's sessions run on the remote server, using the shell selected here, even when you type them on this computer."
+      }
     >
       <Row
         label="Default shell"
@@ -190,7 +203,11 @@ export function RemoteMachineShell({ machine }: { machine: RemoteMachine }) {
       >
         {listed ? (
           <Select
-            label={`Default shell on ${machine.name}`}
+            label={
+              local
+                ? "Default shell on this computer (local sync)"
+                : `Default shell on remote server ${machine.name}`
+            }
             value={chosen}
             options={[
               {

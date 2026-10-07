@@ -23,6 +23,7 @@ import type { Block } from "../model/session";
 import { AgentClock } from "./AgentClock";
 import { formatElapsed, useElapsedFrom } from "./useElapsedFrom";
 import { STOP_ALL, useStopRequests } from "./useStopRequests";
+import { PacingUncle } from "./PacingUncle";
 
 /** Expanded or not, per session, for as long as the app is open. */
 const expandedBySession = new Map<string, boolean>();
@@ -118,6 +119,7 @@ export const ActivityDock = memo(function ActivityDock({
           key={dock.state === "done" ? "done" : "live"}
           sessionId={sessionId}
           dock={dock}
+          visible={visible}
           label={label}
           onOpenAgent={onOpenAgent}
           stop={{
@@ -141,12 +143,14 @@ type DockStop = ReturnType<typeof useStopRequests> & {
 function DockBody({
   sessionId,
   dock,
+  visible,
   label,
   onOpenAgent,
   stop,
 }: {
   sessionId: string;
   dock: ActivityDockModel;
+  visible: boolean;
   label: string;
   onOpenAgent: (agent: DockAgent) => void;
   stop: DockStop;
@@ -174,65 +178,81 @@ function DockBody({
         dock.state === "done" ? "activity-dock-done" : ""
       }`}
     >
-      <div className="flex min-h-8 items-center gap-2 px-3">
-        <DockMark state={dock.state} />
-        <span
-          className={`min-w-0 truncate ${
-            dock.state === "needs-input"
-              ? "text-amber-400"
-              : dock.state === "done"
-                ? "text-emerald-400"
-                : "text-content/60"
-          }`}
+      <div className="relative" data-activity-status-row>
+        {dock.state === "working" || dock.state === "waiting" ? (
+          <div
+            data-pacing-track="full-width"
+            className="pointer-events-none absolute inset-0"
+          >
+            <PacingUncle visible={visible} />
+          </div>
+        ) : null}
+        <div
+          className="relative flex min-h-8 items-center gap-2 px-3"
+          style={{
+            textShadow:
+              "0 0 4px var(--color-background-base), 0 1px 2px var(--color-background-base)",
+          }}
         >
-          {dock.state === "working" ? (
-            <Shimmer className="truncate" duration={1.6}>
-              {label}
-            </Shimmer>
-          ) : (
-            label
-          )}
-        </span>
-        {clock ? <DockClock startedAt={dock.startedAt} /> : null}
-        <span className="flex-1" />
-        {stopAll ? (
-          <button
-            type="button"
-            title={stopAll.title}
-            disabled={stop.stopping.has(STOP_ALL)}
-            onClick={() => stop.request(STOP_ALL, () => stop.onAll!())}
-            className={`flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] hover:bg-content/8 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:pointer-events-none ${
-              stop.failed.has(STOP_ALL) ? "text-red-400" : "text-content/50"
+          <DockMark state={dock.state} />
+          <span
+            className={`min-w-0 truncate ${
+              dock.state === "needs-input"
+                ? "text-amber-400"
+                : dock.state === "done"
+                  ? "text-emerald-400"
+                  : "text-content/60"
             }`}
           >
-            <Square className="size-3" strokeWidth={1.75} />
-            {stop.stopping.has(STOP_ALL)
-              ? "Stopping…"
-              : stop.failed.has(STOP_ALL)
-                ? "Could not stop. Retry"
-                : stopAll.label}
-          </button>
-        ) : null}
-        {hasAgents ? (
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-controls={listId}
-            aria-label={`Background agents, ${counts}. ${open ? "Hide" : "Show"} list`}
-            title={open ? "Hide agents" : "Show agents"}
-            onClick={() => setExpanded(!open)}
-            className="flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-content/50 hover:bg-content/8 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
-          >
-            <Bot className="size-3" strokeWidth={1.75} />
-            <span className="tabular-nums">{counts}</span>
-            <ChevronUp
-              className={`size-3 transition-transform duration-150 motion-reduce:transition-none ${
-                open ? "" : "rotate-180"
+            {dock.state === "working" ? (
+              <Shimmer className="truncate" duration={1.6}>
+                {label}
+              </Shimmer>
+            ) : (
+              label
+            )}
+          </span>
+          {clock ? <DockClock startedAt={dock.startedAt} /> : null}
+          <span className="flex-1" />
+          {stopAll ? (
+            <button
+              type="button"
+              title={stopAll.title}
+              disabled={stop.stopping.has(STOP_ALL)}
+              onClick={() => stop.request(STOP_ALL, () => stop.onAll!())}
+              className={`flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] hover:bg-content/8 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:pointer-events-none ${
+                stop.failed.has(STOP_ALL) ? "text-red-400" : "text-content/50"
               }`}
-              strokeWidth={1.75}
-            />
-          </button>
-        ) : null}
+            >
+              <Square className="size-3" strokeWidth={1.75} />
+              {stop.stopping.has(STOP_ALL)
+                ? "Stopping…"
+                : stop.failed.has(STOP_ALL)
+                  ? "Could not stop. Retry"
+                  : stopAll.label}
+            </button>
+          ) : null}
+          {hasAgents ? (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={listId}
+              aria-label={`Background agents, ${counts}. ${open ? "Hide" : "Show"} list`}
+              title={open ? "Hide agents" : "Show agents"}
+              onClick={() => setExpanded(!open)}
+              className="flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-content/50 hover:bg-content/8 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+            >
+              <Bot className="size-3" strokeWidth={1.75} />
+              <span className="tabular-nums">{counts}</span>
+              <ChevronUp
+                className={`size-3 transition-transform duration-150 motion-reduce:transition-none ${
+                  open ? "" : "rotate-180"
+                }`}
+                strokeWidth={1.75}
+              />
+            </button>
+          ) : null}
+        </div>
       </div>
       {open ? (
         <div
@@ -245,17 +265,16 @@ function DockBody({
           {[...dock.agents]
             .sort(
               (a, b) =>
-                Number(b.status === "running") -
-                Number(a.status === "running"),
+                Number(b.status === "running") - Number(a.status === "running"),
             )
             .map((agent) => (
-            <DockAgentRow
-              key={agent.blockId}
-              agent={agent}
-              onOpen={onOpenAgent}
-              stop={stop}
-            />
-          ))}
+              <DockAgentRow
+                key={agent.blockId}
+                agent={agent}
+                onOpen={onOpenAgent}
+                stop={stop}
+              />
+            ))}
         </div>
       ) : null}
     </section>

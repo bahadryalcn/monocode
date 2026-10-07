@@ -45,7 +45,7 @@ describe("project groups", () => {
         name: "Clients",
         collapsed: true,
         customColor: "#aabbcc",
-        mascot: "ghost",
+        mascot: "orbit",
       },
       {
         id: "personal",

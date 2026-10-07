@@ -14,7 +14,7 @@ import { saveNotificationEvent } from "./notificationEvents";
 
 const { invoke, play } = vi.hoisted(() => ({ invoke: vi.fn(), play: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
-vi.mock("cuelume", () => ({ play, setEnabled: vi.fn(), setVolume: vi.fn() }));
+vi.mock("../../settings/model/imeceSoundEngine", () => ({ play, setEnabled: vi.fn(), setVolume: vi.fn() }));
 beforeEach(() => {
   localStorage.clear();
   invoke.mockReset();

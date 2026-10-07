@@ -1,16 +1,71 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import { WhatsNewBody } from "./WhatsNewDialog";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const identity = vi.hoisted(() => ({
+  repositoryUrl: null,
+  releaseNotesUrl: null as string | null,
+}));
+vi.mock("../../shared/lib/productIdentity", () => ({
+  PRODUCT_IDENTITY: identity,
+}));
+
+vi.mock("../../shared/lib/appName", () => ({ appName: () => "Test Product Native" }));
+vi.mock("../../shared/ui/Modal", () => ({
+  Modal: ({ description }: { description: string }) =>
+    createElement("section", null, description),
+}));
+
+import { WhatsNewBody, WhatsNewDialog } from "./WhatsNewDialog";
 
 describe("WhatsNewBody", () => {
+  beforeEach(() => {
+    identity.releaseNotesUrl = null;
+  });
+
+  it("shows current notes with no GitHub link while its URL is unset", () => {
+    const markup = renderToStaticMarkup(
+      createElement(WhatsNewBody, { version: "0.9.13" }),
+    );
+    expect(markup).toContain("Workspace and terminal");
+    expect(markup).not.toContain("have not been added yet");
+    expect(markup).not.toContain("View release on GitHub");
+  });
+
+  it("renders the configured GitHub release link", () => {
+    identity.releaseNotesUrl =
+      "https://github.com/example/imc/releases/tag/v0.9.13";
+    const markup = renderToStaticMarkup(
+      createElement(WhatsNewBody, { version: "0.9.13" }),
+    );
+    expect(markup).toContain(`href="${identity.releaseNotesUrl}"`);
+    expect(markup).toContain("View release on GitHub");
+  });
+
+  it("explains missing notes inside the release view", () => {
+    const markup = renderToStaticMarkup(
+      createElement(WhatsNewBody, { version: "99.0.0" }),
+    );
+    expect(markup).toContain(
+      "Release notes for this version have not been added yet.",
+    );
+  });
+
   it("renders the version notes without the changelog heading", () => {
     const markup = renderToStaticMarkup(
       createElement(WhatsNewBody, { version: "0.1.25" }),
     );
 
     expect(markup).toContain("whats-new-md");
-    expect(markup).toContain("What&#x27;s new in MonoCode 0.1.25");
+    expect(markup).toContain("What&#x27;s new in Test Product Native 0.1.25");
     expect(markup).not.toContain("## [0.1.25]");
+  });
+
+  it("uses the runtime product name in release dialog chrome", () => {
+    const markup = renderToStaticMarkup(
+      createElement(WhatsNewDialog, { version: "99.0.0", onClose: vi.fn() }),
+    );
+    expect(markup).toContain("Test Product Native 99.0.0");
+    expect(markup).not.toContain("MonoCode");
   });
 });

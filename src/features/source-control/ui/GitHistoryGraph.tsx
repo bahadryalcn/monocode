@@ -6,13 +6,15 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { ask, message } from "@tauri-apps/plugin-dialog";
+import { ask } from "@tauri-apps/plugin-dialog";
 import {
   ChevronDown,
   ChevronRight,
   GitBranch,
   Maximize2,
   Search,
+  Loader,
+  RefreshCw,
 } from "../../../shared/ui/icons";
 import { suppressTextSelection } from "../../../shared/lib/drag";
 import {
@@ -24,14 +26,18 @@ import {
   gitReset,
   gitRevert,
   notifyGitChanged,
-  subscribeGitChanged,
   type GitHistoryCommit,
 } from "../../../platform/tauri/fs";
 import { ExplorerMenu } from "../../files/ui/ExplorerMenu";
 import { isRemoteProjectPath } from "../../projects/model/recents";
-import { GIT_ACTIONS, useRemoteSupports } from "../../connections/model/remoteCapabilities";
-import type { RemoteFailure } from "../../connections/model/remoteFailure";
-import { reportRemoteLoad, useRemoteLoadFailure } from "../../connections/model/remoteHealth";
+import {
+  GIT_ACTIONS,
+  useRemoteSupports,
+} from "../../connections/model/remoteCapabilities";
+import {
+  reportRemoteLoad,
+  useRemoteLoadFailure,
+} from "../../connections/model/remoteHealth";
 import { RemoteLoadError } from "../../connections/ui/RemoteLoadError";
 import { commitMenuItems, filterHistory } from "../model/commitActions";
 import { layoutGitGraph } from "../model/gitGraph";
@@ -40,6 +46,13 @@ import { GitGraphList, type GraphListItem } from "./GitGraphList";
 import { GraphSearchInput } from "./GitGraphParts";
 import { RefNameDialog } from "./RefNameDialog";
 import { appName } from "../../../shared/lib/appName";
+import { useGitResource } from "../hooks/useGitResource";
+import { GitFeedback, GitLoading } from "./GitFeedback";
+import {
+  useGitPanelState,
+  withGitOperation,
+  setGitFeedback,
+} from "../model/gitPanelState";
 
 type Props = {
   cwd: string;
@@ -51,8 +64,6 @@ type Props = {
 };
 
 const HISTORY_PAGE = 200;
-
-const historyByCwd = new Map<string, GitHistoryCommit[]>();
 
 /** Remembered across remounts, like the panel height. */
 let graphShowAll = false;
@@ -79,13 +90,19 @@ export function GitHistoryGraph({
   const [limit, setLimit] = useState(HISTORY_PAGE);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const { commits, failure } = useGitHistory(cwd, enabled && expanded, actions && showAll, limit);
+  const [fullOpen, setFullOpen] = useState(false);
+  const { commits, failure, loading, error, refresh } = useGitHistory(
+    cwd,
+    enabled && (expanded || fullOpen),
+    actions && showAll,
+    limit,
+  );
+  const [busy] = useGitPanelState(cwd, "busy");
   const rows = useMemo(() => layoutGitGraph(commits), [commits]);
   const rowBySha = useMemo(
     () => new Map(commits.map((commit, index) => [commit.sha, rows[index]])),
     [commits, rows],
   );
-  const [fullOpen, setFullOpen] = useState(false);
   // The full-graph dialog has its own search field bound to the same query.
   const searching = (searchOpen || fullOpen) && query.trim() !== "";
   const items = useMemo(() => {
@@ -113,12 +130,17 @@ export function GitHistoryGraph({
 
   const run = async (action: () => Promise<unknown>) => {
     try {
-      await action();
+      await withGitOperation(cwd, "Updating repository…", action);
+      setGitFeedback(cwd, { kind: "success", title: "Git operation complete" });
     } catch (error) {
-      await message(errorText(error), { title: appName(), kind: "error" });
+      setGitFeedback(cwd, {
+        kind: "error",
+        title: "Git operation failed",
+        detail: errorText(error),
+      });
     } finally {
       // Also after a failure: a conflict leaves the tree and index changed.
-      notifyGitChanged();
+      notifyGitChanged(cwd, "refs");
     }
   };
 
@@ -159,13 +181,13 @@ export function GitHistoryGraph({
     setNamingBusy(true);
     setNamingError(null);
     try {
-      if (naming.kind === "branch") {
-        await gitCreateBranchAt(cwd, name, naming.commit.sha);
-      } else {
-        await gitCreateTag(cwd, name, naming.commit.sha);
-      }
+      await withGitOperation(cwd, "Creating reference…", async () => {
+        if (naming.kind === "branch")
+          await gitCreateBranchAt(cwd, name, naming.commit.sha);
+        else await gitCreateTag(cwd, name, naming.commit.sha);
+      });
       setNaming(null);
-      notifyGitChanged();
+      notifyGitChanged(cwd, "refs");
     } catch (error) {
       setNamingError(errorText(error));
     } finally {
@@ -173,22 +195,21 @@ export function GitHistoryGraph({
     }
   };
 
-  const showAllButton =
-    actions ? (
-      <button
-        type="button"
-        title={showAll ? "Showing all branches" : "Show all branches"}
-        aria-label="Show all branches"
-        aria-pressed={showAll}
-        onClick={() => {
-          graphShowAll = !showAll;
-          setShowAll(graphShowAll);
-        }}
-        className={HEADER_BUTTON}
-      >
-        <GitBranch className="size-3.5" strokeWidth={1.75} />
-      </button>
-    ) : null;
+  const showAllButton = actions ? (
+    <button
+      type="button"
+      title={showAll ? "Showing all branches" : "Show all branches"}
+      aria-label="Show all branches"
+      aria-pressed={showAll}
+      onClick={() => {
+        graphShowAll = !showAll;
+        setShowAll(graphShowAll);
+      }}
+      className={HEADER_BUTTON}
+    >
+      <GitBranch className="size-3.5" strokeWidth={1.75} />
+    </button>
+  ) : null;
 
   const closeFull = () => {
     setFullOpen(false);
@@ -198,10 +219,20 @@ export function GitHistoryGraph({
   const list = (variant: "compact" | "wide") => {
     const empty =
       !cwd || cwd === "~" ? (
-        <p className="px-3 py-2 text-[12px] text-content/45">No project folder</p>
+        <p className="px-3 py-2 text-[12px] text-content/45">
+          No project folder
+        </p>
       ) : commits.length === 0 ? (
-        failure ? undefined : (
-          <p className="px-3 py-2 text-[12px] text-content/45">No commits yet</p>
+        loading ? (
+          <GitLoading text="Loading commit graph…" />
+        ) : error || failure ? (
+          <p className="px-3 py-2 text-[12px] text-content/45">
+            Commit history unavailable
+          </p>
+        ) : (
+          <p className="px-3 py-2 text-[12px] text-content/45">
+            No commits yet
+          </p>
         )
       ) : items.length === 0 ? (
         <p className="px-3 py-2 text-[12px] text-content/45">
@@ -214,7 +245,7 @@ export function GitHistoryGraph({
         items={items}
         plain={searching}
         selectedSha={selectedSha}
-        hasMore={hasMore}
+        hasMore={hasMore && !loading && !error && !failure}
         empty={empty}
         suspendHover={menu !== null}
         onLoadMore={() => setLimit((value) => value + HISTORY_PAGE)}
@@ -222,21 +253,48 @@ export function GitHistoryGraph({
           if (variant === "wide") closeFull();
           onOpenCommit(commit, pin);
         }}
-        onMenu={actions ? (x, y, commit) => setMenu({ x, y, commit }) : undefined}
+        onMenu={
+          actions && !busy
+            ? (x, y, commit) => setMenu({ x, y, commit })
+            : undefined
+        }
       />
     );
     return failure ? (
       <>
-        <RemoteLoadError cwd={cwd} failure={failure} stale={commits.length > 0} onRetry={notifyGitChanged} />
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col opacity-60">{graph}</div>
+        <RemoteLoadError
+          cwd={cwd}
+          failure={failure}
+          stale={commits.length > 0}
+          onRetry={refresh}
+        />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col opacity-60">
+          {graph}
+        </div>
       </>
     ) : (
-      graph
+      <>
+        {loading && commits.length > 0 ? (
+          <GitLoading text="Refreshing commit graph…" />
+        ) : null}
+        {error ? (
+          <GitFeedback
+            title="Couldn’t load commit graph"
+            detail={error}
+            stale={commits.length > 0}
+            onRetry={refresh}
+          />
+        ) : null}
+        {graph}
+      </>
     );
   };
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+    <div
+      aria-busy={loading}
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+    >
       <div
         className={`flex w-full shrink-0 items-center ${expanded ? "h-7" : "h-full"}`}
       >
@@ -262,6 +320,24 @@ export function GitHistoryGraph({
             />
           )}
         </button>
+        {loading ? (
+          <Loader
+            aria-hidden
+            className="mr-1 size-3 animate-spin text-content/50"
+          />
+        ) : null}
+        {expanded ? (
+          <button
+            type="button"
+            title="Refresh commit graph"
+            aria-label="Refresh commit graph"
+            disabled={loading}
+            onClick={refresh}
+            className={HEADER_BUTTON}
+          >
+            <RefreshCw className="size-3.5" />
+          </button>
+        ) : null}
         {expanded ? showAllButton : null}
         {expanded ? (
           <button
@@ -311,6 +387,16 @@ export function GitHistoryGraph({
           toolbar={
             <>
               {showAllButton}
+              <button
+                type="button"
+                title="Refresh commit graph"
+                aria-label="Refresh full commit graph"
+                disabled={loading}
+                onClick={refresh}
+                className={HEADER_BUTTON}
+              >
+                <RefreshCw className="size-3.5" />
+              </button>
               <div className="max-w-sm min-w-0 flex-1">
                 <GraphSearchInput value={query} onChange={setQuery} />
               </div>
@@ -343,9 +429,11 @@ export function GitHistoryGraph({
               : `Create a tag at ${naming.commit.shortSha}.`
           }
           label={naming.kind === "branch" ? "Branch name" : "Tag name"}
-          placeholder={naming.kind === "branch" ? "feature/my-branch" : "v1.0.0"}
+          placeholder={
+            naming.kind === "branch" ? "feature/my-branch" : "v1.0.0"
+          }
           submitLabel="Create"
-          busy={namingBusy}
+          busy={namingBusy || !!busy}
           error={namingError}
           onSubmit={(name) => void submitName(name)}
           onCancel={() => setNaming(null)}
@@ -360,81 +448,30 @@ function useGitHistory(
   enabled: boolean,
   all: boolean,
   limit: number,
-): { commits: GitHistoryCommit[]; failure: RemoteFailure | undefined } {
+) {
   const failure = useRemoteLoadFailure(cwd, "graph");
   const remote = isRemoteProjectPath(cwd);
-  const cacheKey = all ? `${cwd}\nall` : cwd;
-  const [commits, setCommits] = useState<GitHistoryCommit[]>(
-    () => historyByCwd.get(cacheKey) ?? [],
+  const read = useCallback(
+    async () => (await gitHistory(cwd, limit, all)).commits,
+    [cwd, limit, all],
   );
-  const commitsRef = useRef(commits);
-  commitsRef.current = commits;
-
-  const load = useCallback(() => {
-    if (!enabled || !cwd || cwd === "~") return;
-    void gitHistory(cwd, limit, all)
-      .then((next) => {
-        if (remote) reportRemoteLoad(cwd, "graph");
-        const prev = commitsRef.current;
-        if (sameHistory(prev, next.commits)) return;
-        historyByCwd.set(cacheKey, next.commits);
-        commitsRef.current = next.commits;
-        setCommits(next.commits);
-      })
-      .catch((error: unknown) => {
-        // On a remote project, keep the last commits and say why they are stale.
-        if (remote) return reportRemoteLoad(cwd, "graph", error);
-        historyByCwd.delete(cacheKey);
-        commitsRef.current = [];
-        setCommits([]);
-      });
-  }, [all, cacheKey, cwd, enabled, limit, remote]);
-
+  const resource = useGitResource(
+    cwd,
+    `history:${cwd}:${all}`,
+    enabled && !!cwd && cwd !== "~",
+    read,
+  );
   useEffect(() => {
-    if (!enabled || !cwd || cwd === "~") {
-      commitsRef.current = [];
-      setCommits([]);
-      return;
-    }
-    const cached = historyByCwd.get(cacheKey) ?? [];
-    commitsRef.current = cached;
-    setCommits(cached);
-    load();
-    const onResume = () => {
-      if (!document.hidden) load();
-    };
-    window.addEventListener("focus", onResume);
-    document.addEventListener("visibilitychange", onResume);
-    const unsub = subscribeGitChanged(load, { refsOnly: true });
-    return () => {
-      window.removeEventListener("focus", onResume);
-      document.removeEventListener("visibilitychange", onResume);
-      unsub();
-    };
-  }, [cacheKey, cwd, enabled, load]);
-
-  return { commits, failure };
-}
-
-function sameHistory(
-  prev: GitHistoryCommit[],
-  next: GitHistoryCommit[],
-): boolean {
-  if (prev.length !== next.length) return false;
-  return prev.every((commit, i) => {
-    const other = next[i];
-    return (
-      other &&
-      commit.sha === other.sha &&
-      commit.subject === other.subject &&
-      commit.head === other.head &&
-      commit.refs.length === other.refs.length &&
-      commit.refs.every(
-        (ref, j) =>
-          other.refs[j]?.name === ref.name && other.refs[j]?.kind === ref.kind,
-      )
-    );
-  });
+    if (enabled && remote && !resource.loading)
+      reportRemoteLoad(cwd, "graph", resource.error ?? undefined);
+  }, [cwd, enabled, remote, resource.loading, resource.error]);
+  return {
+    commits: resource.data ?? [],
+    loading: resource.loading,
+    error: resource.error,
+    failure,
+    refresh: resource.refresh,
+  };
 }
 
 export const GRAPH_PANEL_MIN = 120;

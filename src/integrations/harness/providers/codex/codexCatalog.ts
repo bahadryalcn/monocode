@@ -1,4 +1,5 @@
 import { homeDir } from "../../../../platform/tauri/fs";
+import { PRODUCT_IDENTITY } from "../../../../shared/lib/productIdentity";
 import {
   setHarnessModels,
   type AgentModel,
@@ -85,7 +86,7 @@ export async function discoverCodexModels(
           {
             clientInfo: {
               name: "monocode",
-              title: "MonoCode",
+              title: PRODUCT_IDENTITY.displayName,
               version: "0.1.0",
             },
             capabilities: { experimentalApi: true },

@@ -426,7 +426,7 @@ describe("UsageProviderChip", () => {
 
     await act(async () => button("Codex usage details").click());
     const mascot = document.querySelector('[data-reset-mascot-mood="happy"]');
-    expect(mascot?.getAttribute("data-mascot-name")).toBe("cat");
+    expect(mascot?.getAttribute("data-mascot-name")).toBe("link");
   });
 
   it("hides the banked resets card when no resets are available", async () => {

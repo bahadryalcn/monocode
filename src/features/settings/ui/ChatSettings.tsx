@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useEffect, useState } from "react";
 
 import {
@@ -10,21 +11,19 @@ import {
 } from "../model/appearance";
 
 import {
-  loadComposerRunner,
   loadDiffViewer,
   loadFollowUpBehavior,
   loadAutoContinueInterrupted,
   loadResumeAtReset,
   loadFormatOnSave,
-  loadGridArcadeEnabled,
+  loadCoffeehouseSceneEnabled,
   loadModelControls,
-  saveComposerRunner,
   saveDiffViewer,
   saveFollowUpBehavior,
   saveAutoContinueInterrupted,
   saveResumeAtReset,
   saveFormatOnSave,
-  saveGridArcadeEnabled,
+  saveCoffeehouseSceneEnabled,
   saveModelControls,
   type DiffViewer,
   type FollowUpBehavior,
@@ -46,9 +45,8 @@ export function ChatPage() {
     useState<ModelControls>(loadModelControls);
   const [diffViewer, setDiffViewer] = useState<DiffViewer>(loadDiffViewer);
   const [formatOnSave, setFormatOnSave] = useState(loadFormatOnSave);
-  const [composerRunner, setComposerRunner] = useState(loadComposerRunner);
-  const [gridArcadeEnabled, setGridArcadeEnabled] = useState(
-    loadGridArcadeEnabled,
+  const [coffeehouseSceneEnabled, setCoffeehouseSceneEnabled] = useState(
+    loadCoffeehouseSceneEnabled,
   );
 
   useEffect(() => {
@@ -101,14 +99,9 @@ export function ChatPage() {
     setFormatOnSave(next);
   };
 
-  const onComposerRunner = (next: boolean) => {
-    saveComposerRunner(next);
-    setComposerRunner(next);
-  };
-
-  const onGridArcadeEnabled = (next: boolean) => {
-    saveGridArcadeEnabled(next);
-    setGridArcadeEnabled(next);
+  const onCoffeehouseSceneEnabled = (next: boolean) => {
+    saveCoffeehouseSceneEnabled(next);
+    setCoffeehouseSceneEnabled(next);
   };
 
   return (
@@ -178,7 +171,7 @@ export function ChatPage() {
         <Row
           id="auto-continue-interrupted"
           label="Automatically continue interrupted turns"
-          description="When MonoCode quit in the middle of a turn and the transcript shows it was cut off, send Continue at the next launch. Turns that finished or are still running are never continued, and nothing is sent when you have queued messages. When off, the chat shows an Interrupted - Continue action instead."
+          description={`When ${PRODUCT_IDENTITY.displayName} quit in the middle of a turn and the transcript shows it was cut off, send Continue at the next launch. Turns that finished or are still running are never continued, and nothing is sent when you have queued messages. When off, the chat shows an Interrupted - Continue action instead.`}
         >
           <Toggle
             label="Automatically continue interrupted turns"
@@ -243,28 +236,17 @@ export function ChatPage() {
 
       <Group
         title="Extras"
-        description="Idle animation, and nothing else. Turn both off for a still workspace."
+        description="Monochrome code art in new tasks and behind conversations."
       >
         <Row
-          id="composer-mascot"
-          label="Composer mascot"
-          description="When a turn is running, the project mascot runs along the composer, bonks the scroll-to-latest button the first time, then jumps it, and sometimes grabs a coin."
+          id="coffeehouse-scene"
+          label="Village coffeehouse"
+          description="Show six coffeehouse regulars holding tea beside a backgammon table. Decorative animations controls their occasional tea sips."
         >
           <Toggle
-            label="Composer mascot"
-            on={composerRunner}
-            onChange={onComposerRunner}
-          />
-        </Row>
-        <Row
-          id="empty-session-games"
-          label="Empty session games"
-          description="Pac-man and snake idle on the empty-session grid. Hover the band to take control of whichever is on screen. Turn this off to keep the pane still."
-        >
-          <Toggle
-            label="Empty session games"
-            on={gridArcadeEnabled}
-            onChange={onGridArcadeEnabled}
+            label="Village coffeehouse"
+            on={coffeehouseSceneEnabled}
+            onChange={onCoffeehouseSceneEnabled}
           />
         </Row>
       </Group>

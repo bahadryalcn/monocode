@@ -1,62 +1,13 @@
-import { mascotPath } from "../../projects/model/projectMascots";
+import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 
-const GRID_W = 16;
-
-/**
- * A terminal at a prompt, in the same '#'/'.' pixel convention as the project
- * mascots. `glow` is a sparse scatter drawn dimmer than the sprite so the
- * shape dissolves at its edges instead of ending on a hard rectangle.
- */
-const TERMINAL = [
-  "..############..",
-  ".##..........##.",
-  ".#............#.",
-  ".#..#.........#.",
-  ".#...#...###..#.",
-  ".#..#....###..#.",
-  ".#............#.",
-  ".#............#.",
-  ".##..........##.",
-  "..############..",
-  "......####......",
-  "....########....",
-];
-
-const GLOW = [
-  "#.#..........#.#",
-  "................",
-  "#..............#",
-  "................",
-  "................",
-  "................",
-  "................",
-  "#..............#",
-  "................",
-  "#.#..........#.#",
-  "................",
-  "..#..........#..",
-];
-
-const TERMINAL_PATH = mascotPath(TERMINAL);
-const GLOW_PATH = mascotPath(GLOW);
-
-/** Empty state for a project that has no sessions yet. */
+/** A quiet shared-work illustration for an empty workspace. */
 export function SessionsEmpty({ message }: { message: string }) {
   return (
-    // `min-h-full` rather than `h-full` so a short window scrolls instead of
-    // clipping the artwork.
     <div className="flex min-h-full flex-col items-center justify-center gap-5 px-6 py-10 text-center">
-      <p className="text-[13px] leading-relaxed text-content/45">{message}</p>
-      <svg
-        aria-hidden
-        viewBox={`0 0 ${GRID_W} ${TERMINAL.length}`}
-        shapeRendering="crispEdges"
-        className="w-24 text-content/25"
-        fill="currentColor"
-      >
-        <path d={GLOW_PATH} opacity={0.4} />
-        <path d={TERMINAL_PATH} />
-      </svg>
+      <div className="grid size-20 place-items-center rounded-2xl border border-accent/20 bg-accent/5">
+        <ProjectMascot project="workspace" name="bridge" className="size-10 text-accent/70" />
+      </div>
+      <p className="max-w-sm text-[13px] leading-relaxed text-content/60">{message}</p>
     </div>
   );
 }

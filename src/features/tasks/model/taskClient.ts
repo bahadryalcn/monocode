@@ -35,7 +35,7 @@ import {
 } from "./hostTasks";
 
 export const TASK_MACHINE_ERROR =
-  "This project’s machine isn’t connected, or its MonoCode Host needs an update.";
+  "This project’s machine isn’t connected, or its imc Host needs an update.";
 export const TASK_AGENT_ERROR =
   "This agent cannot run tasks in the background.";
 
@@ -74,13 +74,13 @@ export type TaskDraft = {
 };
 
 /** Machines whose host keeps a task board, this computer's included. */
-export function taskMachines(): Promise<RemoteMachine[]> {
-  return backgroundMachines(HOST_TASKS);
+export function taskMachines(fresh = false): Promise<RemoteMachine[]> {
+  return backgroundMachines(HOST_TASKS, fresh);
 }
 
 /** Like `taskMachines`, plus the machines whose tasks cannot be shown. */
-export function probeTaskMachines(): Promise<MachineReach> {
-  return probeMachines(HOST_TASKS);
+export function probeTaskMachines(fresh = false): Promise<MachineReach> {
+  return probeMachines(HOST_TASKS, fresh);
 }
 
 /** Why some machines' tasks are missing from the board, or null. */
@@ -107,14 +107,14 @@ export function missingMachinesNotice(
   );
   if (reach.outdated.length)
     parts.push(
-      `Update MonoCode Host on ${reach.outdated.join(", ")} to see ${reach.outdated.length === 1 ? "its" : "their"} tasks.`,
+      `Update imc Host on ${reach.outdated.join(", ")} to see ${reach.outdated.length === 1 ? "its" : "their"} tasks.`,
     );
   return parts.length ? parts.join(" ") : null;
 }
 
 /** Machines whose host also keeps manual to-do items. */
-export function todoMachines(): Promise<RemoteMachine[]> {
-  return backgroundMachines(HOST_TASKS_TODO);
+export function todoMachines(fresh = false): Promise<RemoteMachine[]> {
+  return backgroundMachines(HOST_TASKS_TODO, fresh);
 }
 
 /** Why a to-do item cannot be added for the project at `cwd`: its machine
@@ -128,7 +128,7 @@ export function todoUnsupportedMessage(
   const machine = backgroundMachineFor(machines, cwd);
   if (!machine || todoCapable.some((entry) => entry.id === machine.id))
     return undefined;
-  return `Update MonoCode Host on ${
+  return `Update imc Host on ${
     isLocalSyncMachine(machine) ? "this computer" : machine.name
   } to add to-do items`;
 }

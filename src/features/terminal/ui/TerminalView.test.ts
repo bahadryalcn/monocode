@@ -42,6 +42,23 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 import { TerminalView } from "./TerminalView";
+import { queueTerminalCommand } from "../model/terminalLaunchCommand";
+
+it("runs an action once after shell startup, without replaying it on remount", async () => {
+  const { host, root } = setup();
+  queueTerminalCommand("action-terminal", "pnpm test");
+  try {
+    await act(async () => root.render(createElement(StrictMode, null,
+      createElement(TerminalView, { id: "action-terminal", cwd: "/tmp", active: true }))));
+    expect(pty.writePty).toHaveBeenCalledExactlyOnceWith("action-terminal", "pnpm test\r");
+    await act(async () => root.render(null));
+    await act(async () => root.render(createElement(TerminalView, { id: "action-terminal", cwd: "/tmp", active: true })));
+    expect(pty.writePty).toHaveBeenCalledTimes(1);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
 
 afterEach(() => {
   vi.clearAllMocks();

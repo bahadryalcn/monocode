@@ -1,5 +1,6 @@
+import { gitPanelRuntime, setGitFeedback } from "../model/gitPanelState";
 import { useCallback } from "react";
-import { ask, message } from "@tauri-apps/plugin-dialog";
+import { ask } from "@tauri-apps/plugin-dialog";
 import {
   gitResolveConflict,
   gitStageFile,
@@ -7,7 +8,10 @@ import {
   writeTextFile,
 } from "../../../platform/tauri/fs";
 import { appName } from "../../../shared/lib/appName";
-import { hasConflictMarkers, resolveConflictMarkers } from "../model/conflictMarkers";
+import {
+  hasConflictMarkers,
+  resolveConflictMarkers,
+} from "../model/conflictMarkers";
 import {
   conflictHasFile,
   type ConflictChoice,
@@ -35,18 +39,28 @@ type Options = {
 export function useConflictActions({ cwd, busy, setBusy, onMutated }: Options) {
   const run = useCallback(
     async (key: string, paths: string[], work: () => Promise<unknown>) => {
-      if (busy) return;
+      if (busy || gitPanelRuntime(cwd).state.busy) return;
+      setGitFeedback(cwd, null);
       setBusy(key);
       try {
-        await work();
+        const result = await work();
+        if (result !== false)
+          setGitFeedback(cwd, {
+            kind: "success",
+            title: "Conflict operation complete",
+          });
       } catch (error) {
-        await message(errorText(error), { title: appName(), kind: "error" });
+        setGitFeedback(cwd, {
+          kind: "error",
+          title: "Couldn’t resolve conflict",
+          detail: errorText(error),
+        });
       } finally {
         setBusy(null);
         onMutated(paths);
       }
     },
-    [busy, onMutated, setBusy],
+    [busy, cwd, onMutated, setBusy],
   );
 
   /** Take a whole-file choice. "Both" joins the two sides of each block in the file. */
@@ -54,7 +68,10 @@ export function useConflictActions({ cwd, busy, setBusy, onMutated }: Options) {
     (row: ConflictRow, choice: ConflictChoice) =>
       run(row.relative, [row.path], async () => {
         if (choice.side === "both") {
-          await writeTextFile(row.path, resolveConflictMarkers(await readTextFile(row.path), "both"));
+          await writeTextFile(
+            row.path,
+            resolveConflictMarkers(await readTextFile(row.path), "both"),
+          );
           await gitStageFile(cwd, row.relative);
           return;
         }
@@ -75,7 +92,7 @@ export function useConflictActions({ cwd, busy, setBusy, onMutated }: Options) {
               `${row.relative} still contains conflict markers. Mark it as resolved anyway?`,
               { title: appName(), kind: "warning", okLabel: "Mark Resolved" },
             );
-            if (!confirmed) return;
+            if (!confirmed) return false;
           }
         }
         await gitStageFile(cwd, row.relative);
@@ -92,12 +109,21 @@ export function useConflictActions({ cwd, busy, setBusy, onMutated }: Options) {
         `Accept all ${which} changes in ${rows.length} conflicted file${rows.length === 1 ? "" : "s"}? ` +
           `Each file is replaced by the ${which} branch's version, and a file that branch deleted is deleted. ` +
           "Edits you made to these files are discarded.",
-        { title: appName(), kind: "warning", okLabel: `Accept All ${side === "ours" ? "Current" : "Incoming"}` },
+        {
+          title: appName(),
+          kind: "warning",
+          okLabel: `Accept All ${side === "ours" ? "Current" : "Incoming"}`,
+        },
       );
       if (!confirmed) return;
-      await run("conflicts", rows.map((row) => row.path), async () => {
-        for (const row of rows) await gitResolveConflict(cwd, row.relative, side);
-      });
+      await run(
+        "conflicts",
+        rows.map((row) => row.path),
+        async () => {
+          for (const row of rows)
+            await gitResolveConflict(cwd, row.relative, side);
+        },
+      );
     },
     [busy, cwd, run],
   );

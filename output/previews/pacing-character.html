@@ -1,0 +1,122 @@
+<div id="pacing-preview">
+  <div class="preview-label">Karakter · büyütülmüş görünüm</div>
+  <div class="character-stage"><canvas data-scene="large" role="img" aria-label="Elleri arkasında birleşmiş, kısa adımlarla sağa sola volta atan piksel karakter"></canvas></div>
+  <div class="preview-label second-label">Çalışma çubuğunda · 24 px</div>
+  <div class="working-bar">
+    <span class="working-copy"><span class="status-dot"></span>Working <span class="elapsed">1m 33s</span></span>
+    <canvas data-scene="small" role="img" aria-label="Çalışma çubuğunda sağa sola yürüyen küçük karakter"></canvas>
+  </div>
+  <div class="preview-actions"><button type="button" class="pause">Duraklat</button></div>
+</div>
+<style>
+  #pacing-preview { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #d6d6d6; padding: 20px 0 4px; }
+  #pacing-preview .preview-label { font-size: 12px; color: #a4a4a4; margin: 0 0 12px; }
+  #pacing-preview .character-stage { background: #191919; border: 1px solid #333; border-radius: 12px; overflow: hidden; }
+  #pacing-preview canvas { display: block; width: 100%; }
+  #pacing-preview [data-scene="large"] { height: 172px; }
+  #pacing-preview .second-label { margin-top: 24px; }
+  #pacing-preview .working-bar { position: relative; background: #222; border: 1px solid #363636; border-radius: 8px; height: 48px; }
+  #pacing-preview .working-copy { position: absolute; top: 9px; left: 13px; font-size: 12px; display: flex; align-items: center; gap: 9px; color: #a0a0a0; }
+  #pacing-preview .elapsed { color: #777; }
+  #pacing-preview .status-dot { width: 6px; height: 6px; background: #459fff; border-radius: 50%; box-shadow: 0 0 7px #459fff70; }
+  #pacing-preview [data-scene="small"] { position: absolute; bottom: -1px; height: 28px; }
+  #pacing-preview .preview-actions { display: flex; justify-content: flex-end; padding-top: 14px; }
+  #pacing-preview .pause { font: inherit; font-size: 12px; color: #bcbcbc; background: #252525; border: 1px solid #414141; border-radius: 6px; padding: 7px 12px; }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('pacing-preview');
+  const scenes = [...root.querySelectorAll('canvas')].map(canvas => ({ canvas, ctx: canvas.getContext('2d'), width: 0, height: 0 }));
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  const settings = { speed: 1, playing: !reduced.matches };
+  const button = root.querySelector('.pause');
+  let time = 0, last = null;
+  const palette = { hair: '#323b4b', hairLight: '#4a566b', skin: '#f1c69e', skinShade: '#d69b78', coat: '#63b3ff', coatShade: '#3383cf', coatLight: '#a1d1ff', pants: '#526176', pantsShade: '#394558', shoes: '#b3c0cd' };
+  function rect(ctx, color, x, y, w, h) { ctx.fillStyle = color; ctx.fillRect(x, y, w, h); }
+  function limb(ctx, color, points, width) {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = 'square'; ctx.lineJoin = 'miter';
+    ctx.beginPath(); ctx.moveTo(...points[0]); points.slice(1).forEach(p => ctx.lineTo(...p)); ctx.stroke();
+  }
+  function person(ctx, x, ground, scale, direction, gait, walking) {
+    const step = walking ? Math.sin(gait) : 0;
+    const lift = walking ? Math.abs(Math.sin(gait)) * 0.65 : 0;
+    ctx.save(); ctx.translate(Math.round(x), ground); ctx.scale(scale * direction, scale); ctx.translate(0, -32 - lift);
+    // Both feet land on the same baseline; the returning foot lifts.
+    const frontX = Math.round(step * 3.5), backX = -frontX;
+    const frontLift = Math.max(0, -step) * 1.8, backLift = Math.max(0, step) * 1.8;
+    limb(ctx, palette.pantsShade, [[0, 20], [backX - 1, 25], [backX - 2, 30 - backLift]], 3);
+    rect(ctx, '#8593a5', backX - 3, 29 - backLift, 5, 2);
+    limb(ctx, palette.pants, [[3, 20], [frontX + 3, 25], [frontX + 2, 30 - frontLift]], 3);
+    rect(ctx, palette.shoes, frontX + 1, 29 - frontLift, 6, 2);
+    // Far arm stays folded behind the lower back.
+    limb(ctx, palette.coatShade, [[0, 12], [-5, 17], [-3, 21]], 3);
+    rect(ctx, palette.coatShade, -2, 11, 8, 11);
+    rect(ctx, palette.coat, -1, 11, 6, 10);
+    rect(ctx, palette.coatLight, 4, 12, 1, 7);
+    rect(ctx, palette.skinShade, 2, 9, 3, 3);
+    // Side-profile face and a slightly bowed, thoughtful head.
+    rect(ctx, palette.skin, 0, 3, 9, 7);
+    rect(ctx, palette.skin, 8, 6, 3, 2);
+    rect(ctx, palette.skinShade, 1, 8, 2, 2);
+    rect(ctx, palette.hair, -2, 1, 9, 4);
+    rect(ctx, palette.hair, -2, 4, 3, 4);
+    rect(ctx, palette.hairLight, -1, 0, 6, 2);
+    rect(ctx, palette.hair, 4, 2, 4, 2);
+    rect(ctx, '#344052', 7, 5, 1, 1);
+    // Visible elbow bends backward; two hands clasp behind the waist.
+    limb(ctx, palette.coatLight, [[0, 13], [-5, 17], [-4, 20]], 2);
+    rect(ctx, palette.skinShade, -6, 19, 4, 3);
+    rect(ctx, palette.skin, -5, 19, 3, 2);
+    rect(ctx, palette.skin, -6, 20, 2, 2);
+    ctx.restore();
+  }
+  function motion(t) {
+    const p = t % 8.6;
+    if (p < 3.6) return { progress: p / 3.6, direction: 1, walking: true, gait: p * Math.PI * 3.5 };
+    if (p < 3.9) return { progress: 1, direction: 1, walking: false, gait: 0 };
+    if (p < 4.3) return { progress: 1, direction: Math.cos((p - 3.9) / .4 * Math.PI), walking: false, gait: 0 };
+    if (p < 7.9) return { progress: 1 - (p - 4.3) / 3.6, direction: -1, walking: true, gait: (p - 4.3) * Math.PI * 3.5 };
+    if (p < 8.2) return { progress: 0, direction: -1, walking: false, gait: 0 };
+    return { progress: 0, direction: -Math.cos((p - 8.2) / .4 * Math.PI), walking: false, gait: 0 };
+  }
+  function draw() {
+    const pose = motion(time);
+    scenes.forEach(({canvas, ctx, width, height}) => {
+      ctx.clearRect(0, 0, width, height);
+      const large = canvas.dataset.scene === 'large';
+      const scale = large ? 3 : .75;
+      const span = Math.min(large ? 370 : 135, width - (large ? 110 : 44));
+      const x = (width - span) / 2 + pose.progress * span;
+      const ground = large ? 137 : 27;
+      if (large) { rect(ctx, '#303030', 24, ground + 2, width - 48, 1); }
+      ctx.fillStyle = '#00000030'; ctx.beginPath(); ctx.ellipse(x, ground + 1, 7 * scale, 1 * scale, 0, 0, Math.PI * 2); ctx.fill();
+      person(ctx, x, ground, scale, pose.direction, pose.gait, pose.walking);
+    });
+  }
+  function resize() {
+    scenes.forEach(scene => {
+      const bounds = scene.canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+      scene.width = bounds.width; scene.height = bounds.height;
+      scene.canvas.width = Math.round(bounds.width * dpr); scene.canvas.height = Math.round(bounds.height * dpr);
+      scene.ctx.setTransform(dpr, 0, 0, dpr, 0, 0); scene.ctx.imageSmoothingEnabled = false;
+    });
+    draw();
+  }
+  function controls() { button.textContent = settings.playing ? 'Duraklat' : 'Oynat'; button.setAttribute('aria-pressed', String(!settings.playing)); draw(); }
+  button.addEventListener('click', () => { settings.playing = !settings.playing; controls(); });
+  reduced.addEventListener('change', () => { settings.playing = !reduced.matches; controls(); });
+  new ResizeObserver(resize).observe(root);
+  resize(); controls();
+  function frame(now) {
+    if (!root.isConnected) return;
+    if (last !== null && settings.playing) time += Math.min((now - last) / 1000, .05) * settings.speed;
+    last = now; draw(); requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  if (globalThis.Tweak) {
+    const tweak = new Tweak({ container: root, onChange: controls });
+    tweak.addSlider(settings, 'speed', { label: 'Yürüme hızı', min: .5, max: 1.5, step: .1 });
+    tweak.addToggle(settings, 'playing', { label: 'Animasyon' });
+  }
+})();
+</script>

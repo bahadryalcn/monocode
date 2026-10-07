@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.13]
+
+### Workspace and terminal
+
+- Open project terminals in a dedicated dock and keep workspace, worktree and branch controls close to the composer.
+- Preview HTML files inside the app while working on a project.
+
+### Connections and source control
+
+- Add and edit remote machines from Connections, including an alternate SSH address.
+- Browse Git history and manage working-tree changes, branches and worktrees from the project workspace.
+
+### Interface
+
+- Introduce the imc identity, updated project icons and appearance options.
+- Access setup again from Settings to connect computers, configure agents and choose projects.
+- Read this version's bundled release notes from **What's new**, even when automatic updates are disabled.
+
 ## [0.8.89] - 2026-10-05
 
 ### Added

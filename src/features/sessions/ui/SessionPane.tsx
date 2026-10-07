@@ -6,6 +6,7 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import { sessionPerformanceTrace } from "../../../shared/lib/performanceTrace";
+import { useDecorativeMotionEnabled } from "../../settings/model/decorativeMotion";
 import {
   memo,
   useCallback,
@@ -80,6 +81,7 @@ import {
   subscribeTranscriptJump,
 } from "../model/transcriptJump";
 import { EmptySession } from "./EmptySession";
+import { CoffeehouseBackdrop } from "./CoffeehouseBackdrop";
 import { useComposerDockMotion } from "./useComposerDockMotion";
 import { MOD } from "../../../platform/tauri/platform";
 import {
@@ -102,11 +104,7 @@ import {
   subscribeNotesEnabled,
 } from "../../settings/model/settings";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
-import { resolveModel } from "../model/models";
-import { isAstraModel } from "../model/astraWelcome";
-import { isOpus55Model } from "../model/opusWelcome";
-import { AstraWelcome } from "./AstraWelcome";
-import { OpusWelcome } from "./OpusWelcome";
+import { ImeceWelcome } from "./ImeceWelcome";
 import { projectKey } from "../../../shared/lib/paths";
 import { userPromptHistory } from "../model/composerHistory";
 import { canEditLastTurn, lastTurnRecall } from "../model/editLastTurn";
@@ -499,14 +497,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
     setEditingLastTurn(false);
   }, [session.id, editLastTurnSupported]);
   const modelWelcomeSequence = useRef(0);
+  const decorativeMotionEnabled = useDecorativeMotionEnabled();
   const [modelWelcome, setModelWelcome] = useState<{
-    kind: "astra" | "opus";
     run: number;
   } | null>(null);
   const dismissModelWelcome = useCallback(() => setModelWelcome(null), []);
   useEffect(() => {
-    if (!visible) setModelWelcome(null);
-  }, [visible]);
+    if (!visible || !decorativeMotionEnabled) setModelWelcome(null);
+  }, [visible, decorativeMotionEnabled]);
   // Restore a saved run for this lead; its agents render on the sidebar card.
   useEffect(() => {
     if (!remote && !session.inboxAsk && !session.worktreeRemoved)
@@ -732,14 +730,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const composerModelChange = useStableCallback(
     (harness: HarnessId, model: string) => {
       onModelChange(session.id, harness, model);
-      const selected = resolveModel(harness, model);
       // A new key restarts the animation and its cleanup timer on every pick.
-      const kind = isAstraModel(selected)
-        ? "astra"
-        : isOpus55Model(selected)
-          ? "opus"
-          : null;
-      setModelWelcome(kind && { kind, run: ++modelWelcomeSequence.current });
+      setModelWelcome(
+        decorativeMotionEnabled
+          ? { run: ++modelWelcomeSequence.current }
+          : null,
+      );
     },
   );
   const composerModelSettingsChange = useStableCallback(
@@ -1004,6 +1000,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
     </Composer>
   );
 
+  const hasPaneHeader = inSplit || Boolean(onPaneDragStart);
   const notesShortcut = keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`);
   const notesButton =
     notesEnabled && visible && focused && !showNotesPanel ? (
@@ -1016,7 +1013,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
         onMouseDown={(event) => event.stopPropagation()}
         onClick={toggleNotesPanel}
         className={
-          inSplit
+          hasPaneHeader
             ? "grid size-5 shrink-0 place-items-center rounded text-content/35 hover:bg-content/10 hover:text-content"
             : "absolute right-3 top-1.5 z-10 grid size-6 place-items-center rounded-md text-content/35 hover:bg-content/10 hover:text-content"
         }
@@ -1037,20 +1034,17 @@ const LocalSessionPane = memo(function LocalSessionPane({
       className="chat-pane-background relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col"
       onMouseDown={() => onFocus(session.id)}
     >
+      {!isEmpty ? <CoffeehouseBackdrop visible={visible} /> : null}
       {projectBackground?.effect === "gradient-blur" ||
       (!projectBackground &&
         globalBackgroundPath &&
         globalBackgroundEffect === "gradient-blur") ? (
         <GradientBlurBackground />
       ) : null}
-      {modelWelcome && visible ? (
-        modelWelcome.kind === "astra" ? (
-          <AstraWelcome key={modelWelcome.run} onDone={dismissModelWelcome} />
-        ) : (
-          <OpusWelcome key={modelWelcome.run} onDone={dismissModelWelcome} />
-        )
+      {modelWelcome && visible && decorativeMotionEnabled ? (
+        <ImeceWelcome key={modelWelcome.run} onDone={dismissModelWelcome} />
       ) : null}
-      {inSplit || onPaneDragStart ? (
+      {hasPaneHeader ? (
         <div
           className={`flex h-9 shrink-0 touch-none items-center gap-1.5 border-b border-stroke px-2 select-none ${
             onPaneDragStart ? "cursor-grab active:cursor-grabbing" : ""
@@ -1261,6 +1255,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     session.worktreeRemoved ||
                     draftBlock ? undefined : (
                       <SessionReview
+                        onOpenFile={onOpenFile}
                         sessionId={session.id}
                         cwd={workCwd}
                         enabled={visible}
@@ -1375,7 +1370,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       {pane}
       {showNotesPanel ? (
         <SessionNotesPanel sessionId={session.id} cwd={session.cwd} />
-      ) : !inSplit ? (
+      ) : !hasPaneHeader ? (
         notesButton
       ) : null}
     </div>

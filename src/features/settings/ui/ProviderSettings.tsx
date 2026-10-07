@@ -13,11 +13,13 @@ import {
   type ReactNode,
 } from "react";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
+import "./ProviderSettings.css";
 
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 
 import {
   getHarnessAvailabilitySnapshot,
+  hasProbedHarnessAvailability,
   harnessUnavailableHint,
   isHarnessAvailable,
   probeHarnessAvailability,
@@ -242,18 +244,30 @@ export function ProvidersPage({
     );
   };
 
+  // Installed CLIs come first. Stable sorting keeps Claude before Codex and
+  // preserves the catalog order within each availability group.
+  const orderedHarnesses = [...HARNESSES].sort(
+    (left, right) =>
+      Number(isHarnessAvailable(right)) - Number(isHarnessAvailable(left)),
+  );
+
   return (
     <>
       <Group
         id="agent-clis"
         title="Agent CLIs"
         action={
-          <Select
-            label="Provider defaults scope"
-            value={scope}
-            options={scopeOptions}
-            onChange={setScope}
-          />
+          <div className="provider-cli-scope">
+            <span className="text-[11px] text-content/60">
+              Apply defaults to
+            </span>
+            <Select
+              label="Provider defaults scope"
+              value={scope}
+              options={scopeOptions}
+              onChange={setScope}
+            />
+          </div>
         }
         description={
           project
@@ -261,8 +275,8 @@ export function ProvidersPage({
             : "Choose the default model, effort and permissions for new conversations. CLIs not found on your PATH are left out of the picker."
         }
       >
-        <div className="max-h-[480px] overflow-y-auto">
-          {HARNESSES.map((harness) => {
+        <div className="provider-cli-grid">
+          {orderedHarnesses.map((harness) => {
             const inPicker = project
               ? !(projectSettings.hidden ?? []).includes(harness) &&
                 !hiddenGlobally.includes(harness)
@@ -678,28 +692,51 @@ export function ProviderRow({
   }, [available, harness, models.length]);
 
   return (
-    <Row
-      label={
-        <span className="flex items-center gap-2">
-          <HarnessIcon harness={harness} className="size-4 shrink-0" />
-          {harness === "gemini" ? "Gemini CLI (enterprise / API key)" : HARNESS_TITLE[harness]}
-          <ProviderBinaryControl provider={harness} />
-          {isDefault ? (
-            <span className="rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-content/60">
-              Default
-            </span>
-          ) : null}
-        </span>
-      }
-      description={
-        available
-          ? `${models.length} ${models.length === 1 ? "model" : "models"} available.`
-          : harnessUnavailableHint(harness)
-      }
+    <article
+      className="provider-cli-card"
+      aria-label={`${HARNESS_TITLE[harness]} CLI settings`}
+      data-default={isDefault || undefined}
     >
-      <div className="flex flex-col items-end gap-2">
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {current ? (
+      <div className="provider-cli-header">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-content/10 bg-content/5">
+            <HarnessIcon harness={harness} className="size-4 shrink-0" />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-[13px] font-semibold text-content">
+              {harness === "gemini"
+                ? "Gemini CLI (enterprise / API key)"
+                : HARNESS_TITLE[harness]}
+            </h3>
+            <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-content/60">
+              <span
+                className={`size-1.5 rounded-full ${available ? "bg-emerald-400" : "bg-content/30"}`}
+              />
+              {available
+                ? "CLI detected"
+                : hasProbedHarnessAvailability()
+                  ? "CLI not found"
+                  : "Checking CLI…"}
+              {available ? (
+                <span className="text-content/45">
+                  · {models.length} {models.length === 1 ? "model" : "models"}
+                </span>
+              ) : null}
+            </span>
+          </div>
+        </div>
+        <ProviderBinaryControl provider={harness} showLabel />
+      </div>
+      {!available && hasProbedHarnessAvailability() ? (
+        <details className="provider-cli-install">
+          <summary>Installation help</summary>
+          <p>{harnessUnavailableHint(harness)}</p>
+        </details>
+      ) : null}
+      <div className="provider-cli-fields">
+        {current ? (
+          <div className="provider-cli-field">
+            <span>Model</span>
             <Select
               label={`${HARNESS_TITLE[harness]} model`}
               value={current.id}
@@ -709,32 +746,20 @@ export function ProviderRow({
                 label: item.name,
               }))}
             />
-          ) : null}
-          <SecondaryButton
-            onClick={() => current && onDefault(harness, current.id)}
-            disabled={isDefault || !current}
-          >
-            {isDefault ? "Default" : "Use by default"}
-          </SecondaryButton>
-          {available ? (
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] text-content/50">
-                {pickerLocked ? "Hidden globally" : "In picker"}
-              </span>
-              <Toggle
-                label={`Show ${HARNESS_TITLE[harness]} in the model picker`}
-                on={inPicker}
-                onChange={onPickerVisible}
-                disabled={pickerLocked}
-              />
-            </div>
-          ) : null}
-        </div>
+          </div>
+        ) : (
+          <div className="provider-cli-field">
+            <span>Model</span>
+            <p className="py-1 text-[12px] text-content/45">
+              {available ? "Loading models…" : "Available after CLI setup"}
+            </p>
+          </div>
+        )}
         {onSessionDefaultsChange ? (
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <>
             {effort ? (
-              <div className="flex items-center gap-2">
-                <span className="text-[12px] text-content/50">Effort</span>
+              <div className="provider-cli-field">
+                <span>Effort</span>
                 <Select
                   label={`${HARNESS_TITLE[harness]} default effort`}
                   value={
@@ -760,8 +785,8 @@ export function ProviderRow({
                 />
               </div>
             ) : null}
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] text-content/50">Permissions</span>
+            <div className="provider-cli-field">
+              <span>Permissions</span>
               <Select
                 label={`${HARNESS_TITLE[harness]} default permissions`}
                 value={scopeDefaults.runtimeMode ?? ""}
@@ -787,9 +812,38 @@ export function ProviderRow({
                 }
               />
             </div>
-          </div>
+          </>
         ) : null}
       </div>
-    </Row>
+      <div className="provider-cli-footer">
+        <SecondaryButton
+          aria-label={
+            isDefault
+              ? `${HARNESS_TITLE[harness]} is the default provider`
+              : `Use ${HARNESS_TITLE[harness]} by default`
+          }
+          onClick={() => current && onDefault(harness, current.id)}
+          disabled={isDefault || !current}
+        >
+          {isDefault ? <Check className="size-3.5" /> : null}
+          {isDefault ? "Default" : "Use by default"}
+        </SecondaryButton>
+        {available ? (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-content/60">
+              {pickerLocked ? "Hidden globally" : "Show in picker"}
+            </span>
+            <Toggle
+              label={`Show ${HARNESS_TITLE[harness]} in the model picker`}
+              on={inPicker}
+              onChange={onPickerVisible}
+              disabled={pickerLocked}
+            />
+          </div>
+        ) : (
+          <span className="text-[11px] text-content/45">Not in picker</span>
+        )}
+      </div>
+    </article>
   );
 }

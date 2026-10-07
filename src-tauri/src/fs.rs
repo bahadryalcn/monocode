@@ -1116,6 +1116,7 @@ pub struct GitChangedFile {
 #[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitDiffIndex {
+    pub repository: bool,
     pub branch: Option<String>,
     pub head: Option<String>,
     pub files: Vec<GitChangedFile>,
@@ -1137,17 +1138,17 @@ pub struct GitDiffIndex {
 /// Changed files in the opened folder, with per-file line counts and status.
 #[tauri::command]
 pub async fn git_diff_index(cwd: String) -> Result<GitDiffIndex, String> {
-    tauri::async_runtime::spawn_blocking(move || git_diff_index_for(&expand_home(&cwd)))
+    tauri::async_runtime::spawn_blocking(move || git_diff_index_checked(&expand_home(&cwd), true))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?
 }
 
 /// Changed files and counts without branch/upstream synchronization metadata.
 #[tauri::command]
 pub async fn git_diff_files(cwd: String) -> Result<GitDiffIndex, String> {
-    tauri::async_runtime::spawn_blocking(move || git_diff_files_for(&expand_home(&cwd)))
+    tauri::async_runtime::spawn_blocking(move || git_diff_index_checked(&expand_home(&cwd), false))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -1423,7 +1424,7 @@ pub struct GitPr {
 /// Latest pull request for the current branch, if `gh` can see one.
 #[tauri::command]
 pub async fn git_pr_status(cwd: String) -> Result<Option<GitPr>, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(git_pr_status_for(&expand_home(&cwd))))
+    tauri::async_runtime::spawn_blocking(move || git_pr_status_for(&expand_home(&cwd)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2256,7 +2257,7 @@ pub struct GitStashEntry {
 
 #[tauri::command]
 pub async fn git_stash_list(cwd: String) -> Result<Vec<GitStashEntry>, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(git_stash_list_for(&expand_home(&cwd))))
+    tauri::async_runtime::spawn_blocking(move || git_stash_list_checked(&expand_home(&cwd)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2345,17 +2346,25 @@ struct FileAcc {
 }
 
 pub(crate) fn git_diff_index_for(root: &Path) -> GitDiffIndex {
-    git_diff_index_with(root, true)
+    git_diff_index_checked(root, true).unwrap_or_default()
 }
 
 /// File list + counts only. Skips ahead/behind/remote lookups used by Git chrome.
 pub(crate) fn git_diff_files_for(root: &Path) -> GitDiffIndex {
-    git_diff_index_with(root, false)
+    git_diff_index_checked(root, false).unwrap_or_default()
 }
 
-fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
+fn git_diff_index_checked(root: &Path, include_sync: bool) -> Result<GitDiffIndex, String> {
     let Some(changes) = git_changes_for(root) else {
-        return GitDiffIndex::default();
+        return match git_checked(root, &["rev-parse", "--is-inside-work-tree"]) {
+            Err(error) if error.to_lowercase().contains("not a git repository") => {
+                Ok(GitDiffIndex::default())
+            }
+            Err(error) => Err(error),
+            Ok(()) => {
+                Err("Could not read Git status. Retry after checking repository access.".into())
+            }
+        };
     };
     let sync = if include_sync {
         git_sync_for(root, &changes.status)
@@ -2363,7 +2372,8 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
         GitSync::default()
     };
     let status = changes.status;
-    GitDiffIndex {
+    Ok(GitDiffIndex {
+        repository: true,
         // A detached HEAD is named by its short sha.
         branch: status.head.or_else(|| {
             status
@@ -2384,7 +2394,7 @@ fn git_diff_index_with(root: &Path, include_sync: bool) -> GitDiffIndex {
         head_pushed: sync.head_pushed,
         conflicts: changes.conflicts,
         operation: git_operation_state_for(root),
-    }
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2974,7 +2984,13 @@ fn git_history_for(root: &Path, limit: Option<u32>) -> Result<GitHistory, String
 
 fn git_history_scoped(root: &Path, limit: Option<u32>, all: bool) -> Result<GitHistory, String> {
     if !git_is_work_tree(root) {
-        return Ok(GitHistory::default());
+        return match git_checked(root, &["rev-parse", "--is-inside-work-tree"]) {
+            Err(error) if error.to_lowercase().contains("not a git repository") => {
+                Ok(GitHistory::default())
+            }
+            Err(error) => Err(error),
+            Ok(()) => Ok(GitHistory::default()),
+        };
     }
     let n = limit
         .unwrap_or(GIT_HISTORY_DEFAULT)
@@ -3004,10 +3020,10 @@ fn git_history_scoped(root: &Path, limit: Option<u32>, all: bool) -> Result<GitH
     args.extend(tips);
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
     let Some(text) = git_run(root, &args_ref) else {
-        return Ok(GitHistory {
-            head,
-            commits: Vec::new(),
-        });
+        if head.is_some() {
+            return Err("Could not read Git history. Check repository access and retry.".into());
+        }
+        return Ok(GitHistory::default());
     };
     Ok(GitHistory {
         commits: parse_git_history_log(&text, head.as_deref(), &remotes),
@@ -3584,11 +3600,14 @@ fn git_range_context_for(root: &Path) -> Result<GitRangeContext, String> {
     })
 }
 
-fn git_pr_status_for(root: &Path) -> Option<GitPr> {
-    let branch = git_branch(root)?;
-    let repo = git_github_repo_for(root).ok()?;
-    let head = github_pr_head_filter(&repo, &branch)?;
-    let json = gh_stdout(
+fn git_pr_status_for(root: &Path) -> Result<Option<GitPr>, String> {
+    let Some(branch) = git_branch(root) else {
+        return Ok(None);
+    };
+    let repo = git_github_repo_for(root)?;
+    let head =
+        github_pr_head_filter(&repo, &branch).ok_or("Could not resolve pull request owner")?;
+    let json = gh_checked(
         root,
         &[
             "pr",
@@ -3603,7 +3622,8 @@ fn git_pr_status_for(root: &Path) -> Option<GitPr> {
             "all",
         ],
     )?;
-    parse_gh_pr_list(&json)
+    let _: Vec<GitPr> = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    Ok(parse_gh_pr_list(&json))
 }
 
 fn github_pr_head_filter(repo: &str, branch: &str) -> Option<String> {
@@ -5993,14 +6013,24 @@ fn git_delete_remote_branch_for(root: &Path, remote: &str, name: &str) -> Result
     git_checked(root, &["push", &remote, "--delete", name])
 }
 
+#[cfg(test)]
 fn git_stash_list_for(root: &Path) -> Vec<GitStashEntry> {
+    git_stash_list_checked(root).unwrap_or_default()
+}
+
+fn git_stash_list_checked(root: &Path) -> Result<Vec<GitStashEntry>, String> {
     let Some(text) = git_run(
         root,
         &["stash", "list", "--format=%gd%x00%H%x00%gs%x00%ct%x1e"],
     ) else {
-        return Vec::new();
+        return match git_checked(root, &["rev-parse", "--is-inside-work-tree"]) {
+            Err(error) if error.to_lowercase().contains("not a git repository") => Ok(Vec::new()),
+            Err(error) => Err(error),
+            Ok(()) => Err("Could not read Git stashes. Check repository access and retry.".into()),
+        };
     };
-    text.split('\u{1e}')
+    Ok(text
+        .split('\u{1e}')
         .filter_map(|record| {
             let mut fields = record.trim().split('\0');
             let index = fields
@@ -6016,7 +6046,7 @@ fn git_stash_list_for(root: &Path) -> Vec<GitStashEntry> {
                 timestamp: fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
             })
         })
-        .collect()
+        .collect())
 }
 
 fn git_stash_action_for(root: &Path, action: &str, index: u32) -> Result<(), String> {
@@ -7558,6 +7588,30 @@ mod tests {
     use std::sync::Arc;
 
     static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn git_index_checked_distinguishes_non_repository_from_read_failure() {
+        let dir = tmp("git-index-read-state");
+        assert!(!git_diff_index_checked(&dir.0, true).unwrap().repository);
+        git_checked(&dir.0, &["init"]).unwrap();
+        assert!(git_diff_index_checked(&dir.0, true).unwrap().repository);
+        std::fs::write(dir.0.join(".git/index"), b"invalid index").unwrap();
+        assert!(git_diff_index_checked(&dir.0, true).is_err());
+    }
+
+    #[test]
+    fn git_history_reports_invalid_repository_access() {
+        let dir = tmp("git-history-read-state");
+        let missing = dir.0.join("missing");
+        assert!(git_history_scoped(&missing, Some(10), false).is_err());
+    }
+
+    #[test]
+    fn git_stash_reports_invalid_repository_access() {
+        let dir = tmp("git-stash-read-state");
+        assert!(git_stash_list_checked(&dir.0).unwrap().is_empty());
+        assert!(git_stash_list_checked(&dir.0.join("missing")).is_err());
+    }
 
     #[test]
     fn claude_shell_commands_match_only_requested_bash_tool_ids() {

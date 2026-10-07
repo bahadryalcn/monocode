@@ -1,20 +1,20 @@
 <p align="center">
-  <img src="public/monocode.png" alt="MonoCode" width="88" />
+  <img src="public/brand/imece-mark.png" alt="İmece tea saucer mark" width="88" />
 </p>
 
-<h1 align="center">MonoCode — independently maintained fork</h1>
+<h1 align="center">İmece — a collaborative workspace for coding agents</h1>
 
 <p align="center">
-  A desktop workspace for your coding agents, based on the original MonoCode.
+  An independent desktop product with its own identity, interface and tools.
 </p>
 
 ## Original project and credits
 
 **MonoCode was originally created by [Nick (hardbeat920)](https://github.com/hardbeat920).**
 This repository is [Bahadır Yalçın's fork](https://github.com/bahadryalcn/monocode)
-of [hardbeat920/monocode](https://github.com/hardbeat920/monocode). The application
-foundation, existing integrations, design and project artwork come from the
-original project and its contributors. Thank you to Nick and everyone who has
+of [hardbeat920/monocode](https://github.com/hardbeat920/monocode). The original application foundation and inherited integrations come from the
+original project and its contributors. İmece adds its own branding and interface
+work while preserving attribution for retained upstream contributions. Thank you to Nick and everyone who has
 contributed to MonoCode.
 
 This fork is maintained independently. Changes developed here and improvements
@@ -30,7 +30,7 @@ The original [MIT license](LICENSE) and copyright notice are preserved.
 Fork modifications use the same license. This repository and its packages are
 independent of the upstream project's official releases.
 
-## Fork development
+## Product development
 
 Compared with the original project, this fork adds or expands:
 
@@ -40,45 +40,36 @@ Compared with the original project, this fork adds or expands:
 - **Remote work:** project/group synchronization, host-owned running status, reconnection and session recovery improvements.
 - **Tasks and goals:** a host-backed task board, planning/review workflows and controlled auto-merge.
 - **Everyday tools:** a session notes panel and combined provider usage overview.
-- **Providers and distribution:** Gemini CLI integration, a separate signed Windows updater feed and a shared Windows/Mac local update coordinator.
+- **Providers and local distribution:** Gemini CLI integration and a shared Windows/Mac local update coordinator. Independent İmece publication is not configured.
 
 See [the detailed comparison and source references](docs/fork-differences.md).
 MonoCode's original agent workspace, existing provider integrations, remote host,
 notes and other shared foundations remain upstream work. This fork also imports
 community improvements with their original authors credited.
 
-See the [fork guide](docs/fork.md), [remote access guide](docs/remote-access.md),
-[changelog](CHANGELOG.md) and [commit history](https://github.com/bahadryalcn/monocode/commits/main/)
-for details. The source branch can be ahead of the published application.
-Gemini CLI support is included from v0.8.75; it is not in the older v0.8.74 packages.
+See the [independent product guide](docs/fork.md), [remote access guide](docs/remote-access.md),
+[changelog](CHANGELOG.md) and [transition checklist](docs/product-transition-todo.md)
+for source details and remaining acceptance work.
 
-## Install this fork
+## Installation status
 
-Download from [this fork's releases](https://github.com/bahadryalcn/monocode/releases).
-Check the tag and asset list before installing; source changes do not update
-an already published package.
+İmece has no published installer, download repository or automatic update feed yet.
+Earlier MonoCode and fork releases do not contain this product's branding or changes.
+Build from this checkout using the instructions below; for Windows/Mac local build
+and installation use the [shared coordinator](docs/local-update.md).
 
-The [v0.8.76 release](https://github.com/bahadryalcn/monocode/releases/tag/v0.8.76) includes:
+The independent installed identity is `com.imece.desktop`; development uses
+`com.imece.desktop.dev`. Install artifacts use the filesystem name `Imece`, while
+the application displays **İmece**. The host uses its own `.imece-host` directory
+and port `3775`. Existing MonoCode data and services are not copied or replaced.
 
-| Platform | Application package | Installation |
-| --- | --- | --- |
-| Windows x64 | `MonoCode_0.8.76_x64-setup.exe` | Run the installer after saving work. |
-| macOS Apple Silicon | `MonoCode_0.8.76_aarch64.app.zip` | Extract and move `MonoCode.app` to Applications. |
-
-That release also includes Windows x64 and macOS arm64 host packages for remote
-sessions. The Mac application is ad-hoc signed and is not notarized, so macOS may
-require explicit approval when opening it. The signed updater feed currently
-provides Windows x64 updates only. See [the fork guide](docs/fork.md) for build
-identities, data directories and updates.
-
-For the **original MonoCode**, use [the upstream releases](https://github.com/hardbeat920/monocode/releases).
-Those packages are maintained by the original project and have their own feature
-set and update channel. Intel macOS and Linux packages are not included in this
-fork's v0.8.76 release; consult the upstream asset list or build from source.
+Automatic updates and inherited publication jobs are disabled until an independent
+signing key, feed, release destination and publication workflow are configured and
+verified. Source checks do not establish packaged or installed acceptance.
 
 ## Agent providers
 
-MonoCode runs provider CLIs installed and authenticated on your machine. Provider
+İmece runs provider CLIs installed and authenticated on your machine. Provider
 availability depends on the source checkout or release you use. It does not sell
 tokens or include subscriptions to those services.
 
@@ -98,22 +89,15 @@ Install and log in to at least one provider first:
 For Gemini CLI on the current source branch, follow the setup instructions shown
 in Settings. Provider names and logos belong to their respective owners.
 
-<p align="center">
-  <img width="1680" height="1050" alt="Original MonoCode screenshot from the upstream README" src="https://github.com/user-attachments/assets/2cd4a6ec-eb1e-4b45-8627-a76442ea3874" />
-</p>
-
-*Screenshot retained from the upstream README as a reference. This fork's current
-interface may differ; credit for the original screenshot belongs to the upstream project.*
-
 ## Usage notes
 
 Experimental remote sessions: run agents on an always-on Windows, Linux, or macOS machine and connect from the desktop. See [remote access setup and current limitations](docs/remote-access.md).
 
 This is very early and you should expect bugs.
 
-### Agent access to MonoCode
+### Agent access to İmece
 
-Type `/operator` at the start of a composer message to enable MonoCode access in that thread. For example, `/operator start two Codex sessions: one to inspect the API and one to review the UI`, or `/operator list my notes`. The slash picker also offers this command. The transcript shows only the request text in a translucent amber bubble; MonoCode removes the command from the request sent to the agent and supplies the local `app` CLI path and instructions on that turn. Later turns in the same thread can use the CLI without repeating `/operator`; other threads receive no CLI instructions or app access. The CLI can act only during an active agent turn. The agent can run the shown `app --help` command for the exact JSON input fields.
+Type `/operator` at the start of a composer message to enable İmece access in that thread. For example, `/operator start two Codex sessions: one to inspect the API and one to review the UI`, or `/operator list my notes`. The slash picker also offers this command. The transcript shows only the request text in a translucent amber bubble; İmece removes the command from the request sent to the agent and supplies the local `app` CLI path and instructions on that turn. Later turns in the same thread can use the CLI without repeating `/operator`; other threads receive no CLI instructions or app access. The CLI can act only during an active agent turn. The agent can run the shown `app --help` command for the exact JSON input fields.
 
 - `models.list` shows available providers, models, settings, and permission modes.
 - `sessions.start` opens a tab in the current project with a prompt. Set `placement: "right"` or `placement: "down"` to split the calling session's pane instead; `besideSessionId` selects another visible session pane in the project. Reuse the returned session ID as the next `besideSessionId` to build nested layouts. By default it submits the prompt; set `draft: true` to save it unsent without starting an agent turn. It accepts a provider, model, effort or other model settings, permission mode, and current checkout or new worktree choice. Set `worktreeCwd` to a path from `worktrees.list` for a specific existing checkout. Use `worktrees.create` to create a worktree on a named new or existing local branch, then pass its path as `worktreeCwd`. Omit `runtimeMode` to inherit the calling session's permission mode, or set it explicitly to override. It returns the new session ID as soon as the pane and prompt are accepted, so the agent can move it into a folder immediately.
@@ -154,22 +138,10 @@ Tauri loads `src-tauri/tauri.linux.conf.json` automatically for Linux developmen
 
 ### Fedora / Enterprise Linux packages
 
-For packages built by the original project, use [upstream releases](https://github.com/hardbeat920/monocode/releases). These packages contain upstream code.
+### Fedora / Enterprise Linux source packages
 
-On Fedora, or on an Enterprise Linux 10 system (registered RHEL, Rocky, Alma, CentOS Stream, Oracle), install the release `.rpm` from [GitHub Releases](https://github.com/hardbeat920/monocode/releases/latest). Enterprise Linux needs EPEL first, because `webkit2gtk4.1` is an EPEL package there — CRB is not needed to run MonoCode. On Oracle Linux 10, `epel-release` does not enable `ol10_developer_EPEL`, which is the repository that provides that package. Enable it before installing the rpm:
-
-```bash
-# Enterprise Linux 10 only; skip on Fedora.
-sudo dnf install -y epel-release   # RHEL: sudo dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
-# Oracle Linux 10, instead of epel-release:
-# sudo dnf install -y oracle-epel-release-el10 dnf-plugins-core
-# sudo dnf config-manager --set-enabled ol10_developer_EPEL
-sudo dnf install ./MonoCode-*.rpm
-```
-
-The `.rpm` declares its own runtime dependencies, so `dnf` pulls the WebKitGTK stack for you. GitHub Releases builds that package on Enterprise Linux 10 so it loads on Fedora and EL 10. Building natively links the system WebKitGTK instead of the Ubuntu-built libraries shipped in the AppImage, which avoids graphics issues (e.g. `Could not create default EGL display`) on newer Mesa/Wayland systems.
-
-To build it yourself instead — which also enables EPEL 10 and CRB automatically, since the -devel packages need CRB:
+Use the existing source setup/build helpers rather than packages from an earlier
+product's release feed:
 
 ```bash
 pnpm run setup:linux:fedora
@@ -177,11 +149,14 @@ pnpm install --frozen-lockfile
 pnpm run build:fedora
 ```
 
-That emits a `.rpm` under `target/release/bundle/rpm/`, installable with `sudo dnf install ./target/release/bundle/rpm/MonoCode-*.rpm`. EL 9 and older are unsupported (`webkit2gtk4.1-devel` only exists in EPEL 10).
+The native RPM appears under `target/release/bundle/rpm/`. Inspect the generated
+package name and identity before installing it. Linux package and device acceptance
+for the İmece transition remains unverified.
 
 ### Troubleshooting on Fedora / Wayland
 
-The portable AppImage bundles Ubuntu-built Wayland libraries that can fail against newer Mesa drivers: the app aborts at startup with `Could not create default EGL display: EGL_BAD_PARAMETER`, or opens a blank window. The native `.rpm` above links the system WebKitGTK stack and does not have this problem — prefer it on Fedora.
+Inherited portable AppImage builds can contain Ubuntu-built Wayland libraries that fail against newer Mesa drivers: the app aborts at startup with `Could not create default EGL display: EGL_BAD_PARAMETER`, or opens a blank window. The native RPM build links the system WebKitGTK stack; validate it on the target
+Fedora system before treating it as an İmece distribution.
 
 ### Windows packages
 
@@ -191,7 +166,9 @@ pnpm run build:windows
 ```
 
 The Windows build emits an NSIS installer under `target/release/bundle/nsis/`.
-The build script also loads `src-tauri/tauri.fork.conf.json` for the fork identity and updater. See [the fork guide](docs/fork.md) for signing prerequisites.
+The build script loads `src-tauri/tauri.fork.conf.json` for the independent
+`Imece` / `com.imece.desktop` identity. Updater artifacts and inherited signing-key
+loading are disabled. See [the product guide](docs/fork.md) for publication limits.
 
 ## License
 

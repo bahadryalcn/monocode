@@ -1,4 +1,4 @@
-import { play, setEnabled, setVolume, type SoundName } from "cuelume";
+import { play, setEnabled, setVolume, type SoundName } from "./imeceSoundEngine";
 import type { LinkedWorkItemUpdateCard } from "../../inbox/model/linkedWorkItemActivity";
 import {
   allowsProjectNotification,
@@ -25,12 +25,12 @@ export type SoundCue =
   | "copy";
 
 const CUES: Record<SoundCue, SoundName> = {
-  turnFinished: "success",
-  inboxUnseen: "bloom",
-  linkedActivity: "chime",
-  updateAvailable: "arrival",
-  switch: "toggle",
-  copy: "scan",
+  turnFinished: "settle",
+  inboxUnseen: "knock",
+  linkedActivity: "thread",
+  updateAvailable: "welcome",
+  switch: "touch",
+  copy: "stamp",
 };
 
 export function loadSoundsEnabled(): boolean {
@@ -88,7 +88,7 @@ export function playCue(cue: SoundCue, subject?: NotificationSubject): boolean {
     }
   }
   applySoundEngine();
-  play(CUES[cue]);
+  void play(CUES[cue]);
   return true;
 }
 

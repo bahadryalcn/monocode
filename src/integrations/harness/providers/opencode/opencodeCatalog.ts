@@ -1,4 +1,5 @@
 import { homeDir } from "../../../../platform/tauri/fs";
+import { PRODUCT_IDENTITY } from "../../../../shared/lib/productIdentity";
 import {
   setHarnessModels,
   type AgentModel,
@@ -74,7 +75,7 @@ export async function discoverOpenCodeModels(
   const version = parseOpenCodeVersion(versionOut);
   if (!version) {
     throw new Error(
-      `Unable to determine OpenCode version. MonoCode requires v${MINIMUM_OPENCODE_VERSION} or newer.`,
+      `Unable to determine OpenCode version. ${PRODUCT_IDENTITY.displayName} requires v${MINIMUM_OPENCODE_VERSION} or newer.`,
     );
   }
   if (compareSemver(version, MINIMUM_OPENCODE_VERSION) < 0) {

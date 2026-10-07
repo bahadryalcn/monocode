@@ -1,8 +1,9 @@
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
 import { TemplatesSettings } from "./TemplatesSettings";
 
-import { RotateCcw } from "../../../shared/ui/icons";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, RotateCcw } from "../../../shared/ui/icons";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import "./ImeceSettings.css";
 
 import { McpSettings } from "./McpSettings";
 import { GroupLockSettings } from "../../group-lock/ui/GroupLockSettings";
@@ -16,6 +17,7 @@ import { type RecentProject } from "../../projects/model/recents";
 import type { SessionSummary } from "../../sessions/data/sessionStore";
 
 import {
+  SETTINGS_SECTIONS,
   settingsSectionDescription,
   settingsSectionLabel,
   type CollapsedProjectRailMode,
@@ -48,6 +50,7 @@ import { AppearancePage } from "./AppearanceSettings";
 import { KeybindingsPage } from "./ShortcutSettings";
 import { TerminalPage } from "./TerminalSettings";
 import { ProvidersPage } from "./ProviderSettings";
+import { UsagePage } from "../../usage/ui/UsagePage";
 import { ArchivePage } from "./ArchiveSettings";
 import { RemoteReconnectGroup } from "./ConnectionRecoverySettings";
 
@@ -113,6 +116,8 @@ export function SettingsView({
   onCollapsedProjectRailModeChange,
 }: Props) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
+  const panelId = useId();
+  const categoryRefs = useRef(new Map<SettingsSectionId, HTMLButtonElement>());
   const [revealed, setRevealed] = useState<string | null>(anchor);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -122,6 +127,10 @@ export function SettingsView({
   );
 
   useEffect(() => setRevealed(anchor), [anchor, notificationSettingsRequest]);
+
+  useEffect(() => {
+    categoryRefs.current.get(section)?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [section]);
 
   // Section is a dependency so a search result on another page scrolls once
   // that page has mounted the row.
@@ -162,7 +171,7 @@ export function SettingsView({
       role="region"
       aria-label="Settings"
       data-app-settings
-      className="flex min-h-0 min-w-0 flex-1 flex-col text-content"
+      className="imece-settings imece-settings-workbench flex min-h-0 min-w-0 flex-1 flex-col text-content"
     >
       <div
         className="flex h-10 shrink-0 select-none items-center border-b border-stroke"
@@ -170,18 +179,28 @@ export function SettingsView({
       >
         {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
         <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
-          <span className="shrink-0 text-content/45">Settings</span>
-          <span aria-hidden className="shrink-0 text-content/25">
-            /
-          </span>
-          <span className="min-w-0 truncate text-content">
-            {settingsSectionLabel(section)}
-          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Back to workspace"
+            data-tauri-drag-region="false"
+            className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-content/70 hover:bg-content/10 hover:text-content"
+          >
+            <ArrowLeft className="size-3.5" aria-hidden="true" />
+            <span>Back to workspace</span>
+          </button>
+          <span className="shrink-0 text-content/60">{section === "usage" ? "Usage / This machine" : "Settings"}</span>
         </div>
-        <div
-          className="flex shrink-0 items-center gap-1.5 pr-2"
-          data-tauri-drag-region="false"
-        >
+        {IS_MAC ? null : <WindowControls />}
+      </div>
+
+      <header className="imece-settings-toolbar">
+        <div className="imece-settings-toolbar-title">
+          <span>{section === "usage" ? "Usage" : "Workspace configuration"}</span>
+          <p>{section === "usage" ? "Provider limits and session activity" : "Application, agents and project preferences"}</p>
+        </div>
+        <div className="imece-settings-toolbar-actions">
+          <SettingsSearch onReveal={onReveal} />
           {section === "appearance" ? (
             <button
               type="button"
@@ -192,10 +211,39 @@ export function SettingsView({
               Restore defaults
             </button>
           ) : null}
-          <SettingsSearch onReveal={onReveal} />
         </div>
-        {IS_MAC ? null : <WindowControls />}
-      </div>
+      </header>
+
+      <nav className="imece-settings-categories" role="tablist" aria-label="Settings categories">
+        {SETTINGS_SECTIONS.map((category, index) => (
+          <button key={category.id} ref={node => {
+            if (node) categoryRefs.current.set(category.id, node);
+            else categoryRefs.current.delete(category.id);
+          }} type="button" role="tab" id={`${panelId}-${category.id}`}
+            aria-selected={category.id === section} aria-controls={panelId}
+            tabIndex={category.id === section ? 0 : -1}
+            disabled={!onSelectSection && category.id !== section}
+            data-category-group={category.group}
+            onClick={() => onSelectSection?.(category.id)}
+            onKeyDown={event => {
+              if (!onSelectSection) return;
+              let next = index;
+              if (event.key === "ArrowRight") next = (index + 1) % SETTINGS_SECTIONS.length;
+              else if (event.key === "ArrowLeft") next = (index - 1 + SETTINGS_SECTIONS.length) % SETTINGS_SECTIONS.length;
+              else if (event.key === "Home") next = 0;
+              else if (event.key === "End") next = SETTINGS_SECTIONS.length - 1;
+              else return;
+              event.preventDefault(); event.stopPropagation();
+              const target = SETTINGS_SECTIONS[next]!;
+              categoryRefs.current.get(target.id)?.focus();
+              onSelectSection(target.id);
+            }}>
+            {category.label}
+          </button>
+        ))}
+      </nav>
+
+      <div id={panelId} role="tabpanel" tabIndex={0} aria-labelledby={`${panelId}-${section}`} className="imece-settings-panel">
 
       {section === "skills" ? (
         <SkillsPage
@@ -214,7 +262,7 @@ export function SettingsView({
             ref={lockOverscroll}
             className="@container/settings min-h-0 flex-1 overflow-y-auto overscroll-none"
           >
-            <div className="mx-auto w-full max-w-5xl px-5 py-6 pb-16 @min-[560px]/settings:px-8 @min-[560px]/settings:py-8">
+            <div data-settings-section={section} className="imece-settings-content imece-settings-form mx-auto w-full px-5 py-6 pb-16 @min-[560px]/settings:px-8 @min-[560px]/settings:py-8">
               <PageHeader
                 title={settingsSectionLabel(section)}
                 description={settingsSectionDescription(section)}
@@ -241,6 +289,7 @@ export function SettingsView({
               {section === "providers" ? (
                 <ProvidersPage cwd={cwd} recents={recents} />
               ) : null}
+              {section === "usage" ? <UsagePage /> : null}
               {section === "worktrees" ? (
                 <WorktreesPage
                   cwd={cwd}
@@ -277,6 +326,7 @@ export function SettingsView({
           </div>
         </RevealedSetting.Provider>
       )}
+      </div>
     </div>
   );
 }

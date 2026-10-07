@@ -5,6 +5,8 @@ import {
 } from "../model/releaseNotes";
 import { AgentMarkdown } from "../../features/sessions/ui/AgentMarkdown";
 import { Modal } from "../../shared/ui/Modal";
+import { appName } from "../../shared/lib/appName";
+import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 
 type Props = {
   version: string;
@@ -25,9 +27,16 @@ export function WhatsNewBody({ version }: { version: string }) {
         />
       ) : (
         <p className="text-[13px] text-content/60">
-          Release notes for this version are not available in this build.
+          Release notes for this version have not been added yet.
         </p>
       )}
+      {PRODUCT_IDENTITY.releaseNotesUrl ? (
+        <AgentMarkdown
+          className="whats-new-md mt-5"
+          text={`[View release on GitHub](${PRODUCT_IDENTITY.releaseNotesUrl})`}
+          streaming={false}
+        />
+      ) : null}
     </article>
   );
 }
@@ -40,7 +49,7 @@ export function WhatsNewDialog({ version, onClose }: Props) {
     <Modal
       onClose={onClose}
       title="What's new"
-      description={`MonoCode ${version}${date ? ` · ${date}` : ""}`}
+      description={`${appName()} ${version}${date ? ` · ${date}` : ""}`}
       size="md"
       className="h-[min(72vh,640px)]"
     >

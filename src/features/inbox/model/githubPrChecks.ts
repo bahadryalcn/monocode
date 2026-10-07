@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { githubRead } from "./githubReadGate";
 
 export type GithubPrCheckState =
   "pass" | "fail" | "pending" | "skipping" | "cancel" | "unknown";
@@ -55,7 +55,7 @@ export function fetchGithubCheckDetails(
   repo: string,
   jobId: string,
 ): Promise<GithubCheckDetails> {
-  return invoke("git_github_check_details", { cwd, repo, jobId });
+  return githubRead<GithubCheckDetails>("git_github_check_details", { cwd, repo, jobId });
 }
 
 /** Backend owns the GitHub run/conclusion → state mapping; this only transports it. */
@@ -64,7 +64,7 @@ export function fetchGithubPrChecks(
   repo: string,
   number: number,
 ): Promise<GithubPrChecks> {
-  return invoke<GithubPrChecks>("git_github_pr_checks", { cwd, repo, number });
+  return githubRead<GithubPrChecks>("git_github_pr_checks", { cwd, repo, number });
 }
 
 export const CHECK_STATES: readonly GithubPrCheckState[] = [

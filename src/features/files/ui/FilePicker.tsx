@@ -1,4 +1,5 @@
 import { RefreshCw, Search } from "../../../shared/ui/icons";
+import { appName } from "../../../shared/lib/appName";
 import {
   useEffect,
   useMemo,
@@ -71,7 +72,7 @@ function paletteActions(
       ]
     : [];
   return [
-    { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
+    { id: "reload", label: `Reload ${appName()}`, hint: reloadActionHint() },
     ...(stopBackgroundWork
       ? [
           {

@@ -11,7 +11,8 @@ permissions:
 jobs:
   release:
     # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
-    if: github.repository == 'hardbeat920/monocode'
+    # Independent İmece publication pipeline is not configured
+    if: ${{ false }}
     needs: [linux, linux-rpm, windows, host]
     runs-on: macos-latest
     permissions:
@@ -399,7 +400,8 @@ jobs:
 
   host:
     # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
-    if: github.repository == 'hardbeat920/monocode'
+    # Independent İmece publication pipeline is not configured
+    if: ${{ false }}
     name: Standalone host packages
     strategy:
       fail-fast: false
@@ -433,7 +435,8 @@ jobs:
 
   linux:
     # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
-    if: github.repository == 'hardbeat920/monocode'
+    # Independent İmece publication pipeline is not configured
+    if: ${{ false }}
     name: Linux packages
     runs-on: ubuntu-22.04
     steps:
@@ -479,7 +482,8 @@ jobs:
 
   linux-rpm:
     # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
-    if: github.repository == 'hardbeat920/monocode'
+    # Independent İmece publication pipeline is not configured
+    if: ${{ false }}
     name: Linux rpm package
     runs-on: ubuntu-latest
     # Build on EL 10 so the published rpm's glibc requirement matches the
@@ -547,7 +551,8 @@ jobs:
 
   windows:
     # The fork has none of the signing, notarization or updater secrets; its installers are built locally.
-    if: github.repository == 'hardbeat920/monocode'
+    # Independent İmece publication pipeline is not configured
+    if: ${{ false }}
     name: Windows packages
     runs-on: windows-latest
     steps:

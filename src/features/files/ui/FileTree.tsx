@@ -3,6 +3,7 @@ import {
   ChevronRight,
   FilePlus,
   FolderPlus,
+  FolderOpen,
   FoldVertical,
   Search,
 } from "../../../shared/ui/icons";
@@ -1050,6 +1051,9 @@ export const FileTree = memo(function FileTree({
           </HeaderIcon>
           <HeaderIcon label="New Folder" onClick={() => startCreate(true)}>
             <FolderPlus className="size-3.5" strokeWidth={1.75} />
+          </HeaderIcon>
+          <HeaderIcon label={REVEAL_LABEL} onClick={() => void run(() => revealPath(cwd))}>
+            <FolderOpen className="size-3.5" strokeWidth={1.75} />
           </HeaderIcon>
           <HeaderIcon
             label="Collapse All"

@@ -398,7 +398,7 @@ it("says so when the project's machine cannot take a task", async () => {
   await act(async () => button(container, "New task")!.click());
   const form = container.querySelector('form[aria-label="New task"]')!;
   expect(form.querySelector('[role="alert"]')?.textContent).toContain(
-    "isn’t connected, or its MonoCode Host needs an update",
+    "isn’t connected, or its imc Host needs an update",
   );
   expect(button(form, "Add to To do")!.disabled).toBe(true);
   expect(button(form, "Add and start")!.disabled).toBe(true);
@@ -643,7 +643,7 @@ it("offers to update an older host instead of adding a to-do item", async () => 
     ),
   );
   expect(form.querySelector('[role="status"]')!.textContent).toBe(
-    "Update MonoCode Host on this computer to add to-do items",
+    "Update imc Host on this computer to add to-do items",
   );
   expect(button(form, "Add to To do")!.disabled).toBe(true);
   expect(requests.some((request) => request.method === "tasks.save")).toBe(
@@ -1218,4 +1218,22 @@ it("opens the summary panel when a notification click asked for it", async () =>
   requestSummaryPanel();
   await render();
   expect(container.querySelector('[aria-label="Summary"]')).not.toBeNull();
+});
+
+
+it("reconnects discovery on Retry and shows a probe failure only once", async () => {
+  host([task({ title: "Recovered task" })]);
+  const normal = invoke.getMockImplementation()!;
+  invoke.mockImplementation(async (command: string, args?: any) => {
+    if (command === "remote_request" && args.method === "environment.describe" && !args.fresh)
+      throw new Error("Host connection refused");
+    return normal(command, args);
+  });
+  await render();
+  expect(container.textContent?.match(/this computer: Host connection refused/g)).toHaveLength(1);
+  expect(container.textContent).not.toContain("Recovered task");
+  await act(async () => button(container, "Retry")!.click());
+  await act(async () => {});
+  expect(container.textContent).toContain("Recovered task");
+  expect(container.textContent).not.toContain("Host connection refused");
 });

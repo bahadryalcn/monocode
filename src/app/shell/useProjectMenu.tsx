@@ -7,6 +7,7 @@ import {
   BellOff,
   ChevronDown,
   ExternalLink,
+  EyeOff,
   FolderOpen,
   FolderPlus,
   FolderTree,
@@ -103,6 +104,7 @@ import type { ExplorerMenuItem } from "../../features/files/ui/ExplorerMenu";
 import { useGroupLock } from "../../features/group-lock/hooks/useGroupLock";
 import {
   getGroupLockView,
+  hideGroup,
   lockGroup,
   makeGroupLockable,
   removeGroupLock,
@@ -725,8 +727,10 @@ export function useProjectMenu({
         }}
         showActions={false}
         ariaLabel="Project group actions"
+        footer={menuError ? <p role="alert" className="px-3 py-2 text-xs text-red-400">{menuError}</p> : undefined}
         extraItems={[
           ...moveItems,
+          { id: "hide-group", label: "Hide group", description: "Restore from Settings → Group privacy → Hidden groups", icon: EyeOff, sepBefore: true },
           ...lockItems.map((item, index) =>
             index === 0 ? { ...item, sepBefore: true } : item,
           ),
@@ -734,6 +738,14 @@ export function useProjectMenu({
         ]}
         onExtraPick={(action) => {
           const file = group.workspaceFile;
+          if (action === "hide-group") {
+            if (!hideGroup(group.id)) {
+              setMenuError("Could not save group visibility. Please try again.");
+              return false;
+            }
+            captureTrigger(document.querySelector<HTMLElement>('button[aria-label="Manage hidden groups"]'));
+            return;
+          }
           if (action.startsWith("move-group-")) {
             moveProjectGroup(
               group.id,

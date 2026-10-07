@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetGitIndexStore } from "../model/gitIndexStore";
+import { resetGitResourceCache } from "../hooks/useGitResource";
 import { resetGitPanelState } from "../model/gitPanelState";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -60,11 +61,12 @@ vi.mock("../../inbox/model/inboxSelfActivity", () => ({
   recordInboxSelfActivity: vi.fn(),
 }));
 
-import { GitChangesPanel } from "./GitChangesPanel";
+import { ChangeList, GitChangesPanel, GIT_POLL_MS } from "./GitChangesPanel";
 import {
   gitCommit,
   gitDiffIndex,
   gitPrCreate,
+  gitPrStatus,
   gitPull,
   gitPush,
   gitRangeContext,
@@ -101,10 +103,130 @@ function index(overrides: Partial<GitDiffIndex> = {}): GitDiffIndex {
 let container: HTMLDivElement;
 let root: Root;
 
+describe("changed file context menus", () => {
+  it.each(["list", "tree"] as const)(
+    "offers file and index actions in %s view",
+    async (view) => {
+      const onOpenFile = vi.fn();
+      const onOpenInEditor = vi.fn();
+      const onAction = vi.fn();
+      act(() =>
+        root.render(
+          createElement(
+            "ul",
+            null,
+            createElement(ChangeList, {
+              files: [changedFile("src/app.ts")],
+              view,
+              kind: "unstaged",
+              busy: null,
+              onOpenFile,
+              onOpenInEditor,
+              onAction,
+              onFolderAction: vi.fn(),
+            }),
+          ),
+        ),
+      );
+      const row = container.querySelector<HTMLButtonElement>(
+        'button[title="src/app.ts"]',
+      )!;
+      const openMenu = () => {
+        const event = new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 100,
+          clientY: 80,
+        });
+        act(() => row.dispatchEvent(event));
+        expect(event.defaultPrevented).toBe(true);
+        return document.querySelector<HTMLElement>(
+          '[aria-label="Changed file actions"]',
+        )!;
+      };
+      const menu = openMenu();
+      const items = Array.from(
+        menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+      );
+      expect(
+        items.some((button) =>
+          /Reveal in|Open Containing Folder/.test(button.textContent!),
+        ),
+      ).toBe(true);
+      expect(
+        items.some((button) => button.textContent === "Discard Changes"),
+      ).toBe(true);
+      await act(async () =>
+        items.find((button) => button.textContent === "View Changes")!.click(),
+      );
+      expect(onOpenFile).toHaveBeenCalledWith("/repo/src/app.ts", "unstaged");
+      const stage = Array.from(
+        openMenu().querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+      ).find((button) => button.textContent === "Stage Changes")!;
+      await act(async () => stage.click());
+      expect(onAction).toHaveBeenCalledWith(
+        expect.objectContaining({ relative: "src/app.ts" }),
+        "stage",
+      );
+      const open = Array.from(
+        openMenu().querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+      ).find((button) => button.textContent?.startsWith("Open in "))!;
+      await act(async () => open.click());
+      expect(onOpenInEditor).toHaveBeenCalledWith("/repo/src/app.ts", true);
+    },
+  );
+
+  it("keeps reveal enabled while index actions are busy", () => {
+    act(() =>
+      root.render(
+        createElement(
+          "ul",
+          null,
+          createElement(ChangeList, {
+            files: [changedFile("app.ts")],
+            view: "list",
+            kind: "staged",
+            busy: "app.ts",
+            onOpenFile: vi.fn(),
+            onAction: vi.fn(),
+            onFolderAction: vi.fn(),
+          }),
+        ),
+      ),
+    );
+    act(() =>
+      container
+        .querySelector('button[title="app.ts"]')!
+        .dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+        ),
+    );
+    const items = Array.from(
+      document
+        .querySelector('[aria-label="Changed file actions"]')!
+        .querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
+    );
+    expect(
+      items.find((button) => button.textContent === "Unstage Changes")!
+        .disabled,
+    ).toBe(true);
+    expect(
+      items.find((button) =>
+        /Reveal in|Open Containing Folder/.test(button.textContent!),
+      )!.disabled,
+    ).toBe(false);
+    expect(
+      items.some((button) => button.textContent === "Discard Changes"),
+    ).toBe(false);
+  });
+});
+
 beforeEach(() => {
   vi.useFakeTimers();
   resetGitIndexStore();
   resetGitPanelState();
+  resetGitResourceCache();
+  vi.mocked(gitPrStatus).mockReset().mockResolvedValue(null);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal(
     "ResizeObserver",
@@ -663,6 +785,187 @@ describe("GitChangesPanel navigation", () => {
   });
 });
 
+describe("GitChangesPanel loading and publication recovery", () => {
+  it("refreshes local changes and PR status explicitly, without polling every two seconds", async () => {
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ remote: "origin" }));
+    await renderPanel("/repo-manual-refresh");
+    const initialReads = vi.mocked(gitDiffIndex).mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(gitDiffIndex).toHaveBeenCalledTimes(initialReads);
+    expect(gitPrStatus).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Refresh source control"]')!.click();
+    });
+    expect(gitDiffIndex).toHaveBeenCalledTimes(initialReads + 1);
+    expect(gitPrStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps PR failures stable during repeated focus and refs events", async () => {
+    const listeners = new Set<() => void>();
+    vi.mocked(subscribeGitChanged).mockImplementation(listener => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    });
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ remote: "origin", aheadOfDefault: 1 }));
+    vi.mocked(gitPrStatus).mockRejectedValue(new Error("GraphQL: API rate limit already exceeded"));
+    await renderPanel("/repo-pr-focus-storm");
+    expect(gitPrStatus).toHaveBeenCalledTimes(1);
+    const feedback = container.textContent;
+    await act(async () => {
+      for (let i = 0; i < 10; i++) {
+        window.dispatchEvent(new Event("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
+        listeners.forEach(listener => listener());
+      }
+    });
+    expect(gitPrStatus).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toBe(feedback);
+    expect(container.textContent).not.toContain("Checking pull request…");
+  });
+
+  it("keeps the file list and layout stable while an unchanged background read is pending", async () => {
+    const current = index({ remote: "origin" });
+    vi.mocked(gitDiffIndex).mockResolvedValue(current);
+    await renderPanel("/repo-quiet-poll");
+    const before = container.textContent;
+    let finish!: (value: typeof current) => void;
+    vi.mocked(gitDiffIndex).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await act(async () => vi.advanceTimersByTimeAsync(GIT_POLL_MS));
+    expect(container.textContent).toBe(before);
+    expect(container.textContent).not.toContain("Refreshing changes…");
+    await act(async () => finish(current));
+    expect(container.textContent).toBe(before);
+  });
+
+  it("shows PR lookup errors and waits for a successful lookup before allowing creation", async () => {
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({
+        remote: "origin",
+        upstream: "origin/feature/pull",
+        aheadOfDefault: 1,
+      }),
+    );
+    vi.mocked(gitPrStatus).mockRejectedValueOnce(
+      new Error("GitHub authentication required"),
+    );
+    await renderPanel("/repo-pr-error");
+    expect(container.textContent).toContain("Couldn’t check pull request");
+    const create = () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) => button.textContent?.trim() === "Create PR",
+      )!;
+    expect(create().disabled).toBe(true);
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Retry")!
+        .click(),
+    );
+    expect(container.textContent).not.toContain("Couldn’t check pull request");
+    expect(create().disabled).toBe(false);
+  });
+
+  it("ignores the previous branch’s late PR response", async () => {
+    let finish!: (pr: Awaited<ReturnType<typeof gitPrStatus>>) => void;
+    vi.mocked(gitPrStatus).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ remote: "origin", branch: "first", aheadOfDefault: 1 }),
+    );
+    await renderPanel("/repo-pr-branch");
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ remote: "origin", branch: "second", aheadOfDefault: 1 }),
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(GIT_POLL_MS));
+    await act(async () =>
+      finish({
+        number: 42,
+        state: "open",
+        title: "Old branch PR",
+        url: "https://example.test/pull/42",
+      }),
+    );
+    expect(container.textContent).not.toContain("View PR");
+    expect(container.querySelector("header")?.textContent).toContain("second");
+  });
+
+  it("shows a local load error instead of indefinite loading and retries", async () => {
+    vi.mocked(gitDiffIndex).mockRejectedValueOnce(
+      new Error("Repository access denied"),
+    );
+    await renderPanel("/repo-read-error");
+    expect(container.textContent).toContain("Couldn’t load Git changes");
+    expect(container.textContent).not.toContain("Loading changes…");
+    vi.mocked(gitDiffIndex).mockResolvedValue(index());
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Retry")!
+        .click(),
+    );
+    expect(container.textContent).not.toContain("Couldn’t load Git changes");
+    expect(container.textContent).toContain("No uncommitted changes");
+  });
+
+  it("distinguishes a non-repository from a clean repository", async () => {
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({ repository: false, branch: null }),
+    );
+    await renderPanel("/ordinary-folder");
+    expect(container.textContent).toContain(
+      "This folder is not a Git repository",
+    );
+    expect(container.textContent).not.toContain("No uncommitted changes");
+  });
+
+  it("retries a failed push without creating another commit", async () => {
+    const cwd = "/repo-push-recovery";
+    vi.mocked(gitCommit).mockClear();
+    vi.mocked(gitPush).mockReset();
+    vi.mocked(gitPush)
+      .mockRejectedValueOnce(new Error("Push authentication failed"))
+      .mockResolvedValue(undefined);
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({
+        remote: "origin",
+        upstream: "origin/feature/pull",
+        files: [changedFile("file.ts", { staged: true, unstaged: false })],
+      }),
+    );
+    await renderPanel(cwd);
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!.call(textarea, "Recoverable commit");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Commit options"]')!
+        .click(),
+    );
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+        .find((button) => button.textContent?.trim() === "Commit & Push")!
+        .click(),
+    );
+    expect(container.textContent).toContain("Commit created; push failed");
+    expect(gitCommit).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Retry")!
+        .click(),
+    );
+    expect(gitCommit).toHaveBeenCalledTimes(1);
+    expect(gitPush).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Push complete");
+  });
+});
+
 describe("GitChangesPanel pull action", () => {
   it("disables Pull when the branch has no upstream", async () => {
     vi.mocked(gitDiffIndex).mockResolvedValue(
@@ -762,6 +1065,45 @@ describe("GitChangesPanel actions menu", () => {
 });
 
 describe("GitChangesPanel remote pull request", () => {
+  it("keeps the created PR link when opening the browser fails", async () => {
+    const cwd = "remote://machine/home/user/pr-link";
+    vi.mocked(gitDiffIndex).mockResolvedValue(
+      index({
+        remote: "origin",
+        upstream: "origin/feature/pull",
+        aheadOfDefault: 1,
+      }),
+    );
+    vi.mocked(gitRangeContext).mockResolvedValue({
+      base: "main",
+      head: "feature/pull",
+      commitSummary: "abc123 Fix link",
+      diffSummary: "1 file changed",
+      diffPatch: "",
+    });
+    vi.mocked(gitPrCreate)
+      .mockClear()
+      .mockResolvedValue("https://example.test/pull/43");
+    vi.mocked(openUrl).mockRejectedValueOnce(new Error("Browser unavailable"));
+    await renderPanel(cwd);
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent?.trim() === "Create PR")!
+        .click(),
+    );
+    expect(container.textContent).toContain(
+      "Pull request created; couldn’t open the link",
+    );
+    expect(container.textContent).toContain("Open pull request");
+    await act(async () =>
+      [...container.querySelectorAll<HTMLButtonElement>("button")]
+        .find((button) => button.textContent === "Open pull request")!
+        .click(),
+    );
+    expect(gitPrCreate).toHaveBeenCalledTimes(1);
+    expect(openUrl).toHaveBeenLastCalledWith("https://example.test/pull/43");
+  });
+
   it("creates it from the host Git range without calling a local harness", async () => {
     const cwd = "remote://machine/home/user/repo";
     vi.mocked(gitDiffIndex).mockResolvedValue(
@@ -1002,7 +1344,9 @@ describe("GitChangesPanel folder actions", () => {
       await vi.advanceTimersByTimeAsync(150);
     });
 
-    expect(alert).toHaveBeenCalledWith("Git index is locked");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "Git index is locked",
+    );
     expect(stage.disabled).toBe(false);
     expect(notifyGitChanged).toHaveBeenCalled();
     alert.mockRestore();

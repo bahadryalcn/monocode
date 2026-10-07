@@ -18,7 +18,7 @@ import time
 import tomllib
 
 from local_update_lib import (digest, lock, read_json, run, safe_child,
-                              tree_hashes, verify_tree, write_json, alive, windows_binary_digest)
+                              tree_hashes, verify_tree, write_json, alive, windows_binary_digest, PRODUCT_IDENTITY, package_identity)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TOOLS = ('local_update.py', 'local_update_lib.py', 'local_install.py')
@@ -101,6 +101,19 @@ def validate_versions(files):
         raise RuntimeError('Cargo.lock version disagrees; run the bump-version script before building')
     return version
 
+def validate_product_identity(files, windows):
+    """Validate the frozen configs before deriving artifact/install paths."""
+    config = json.loads(files['src-tauri/tauri.conf.json'])
+    override = 'src-tauri/tauri.fork.conf.json' if windows else 'src-tauri/tauri.fork.macos.conf.json'
+    config.update(json.loads(files[override]))
+    if (config.get('productName') != PRODUCT_IDENTITY['productName']
+            or config.get('identifier') != PRODUCT_IDENTITY['bundleIdentifier']
+            or config.get('mainBinaryName') != PRODUCT_IDENTITY['binaryName']):
+        raise RuntimeError('Native package identity disagrees with the İmece coordinator')
+    if config.get('plugins', {}).get('updater', {}).get('endpoints') or config.get('bundle', {}).get('createUpdaterArtifacts'):
+        raise RuntimeError('Independent updater must stay disabled until its feed/key are configured')
+    return dict(PRODUCT_IDENTITY)
+
 def legacy_updaters():
     if os.name == 'nt':
         from local_update_lib import ps
@@ -111,7 +124,7 @@ def legacy_updaters():
             if re.search(r'/projects/monocode-build[^ ]*/(?:install-host|finish-mac-host[^ ]*|update-mac)\.py(?:\s|$)', line)]
 
 def status():
-    base = pathlib.Path.home() / '.monocode-host/update-jobs'
+    base = pathlib.Path.home() / PRODUCT_IDENTITY['hostDirectory'] / 'update-jobs'
     return {component: read_json(base / (component+'.json')) if (base / (component+'.json')).exists()
             else {'state': 'not scheduled by this pipeline'} for component in ('host', 'app')}
 
@@ -130,7 +143,8 @@ def stage(name, command, workspace, env, release, timings):
 
 def queue_install(release):
     manifest = read_json(release / 'manifest.json')
-    base = pathlib.Path.home() / '.monocode-host' / 'update-jobs'
+    package_identity(manifest)
+    base = pathlib.Path.home() / PRODUCT_IDENTITY['hostDirectory'] / 'update-jobs'
     base.mkdir(parents=True, exist_ok=True)
     results = {}
     for component in ('host', 'app'):
@@ -139,11 +153,11 @@ def queue_install(release):
         if old.get('id') == manifest['id'] and old.get('state') == 'installed':
             try:
                 if component == 'host':
-                    runtime = pathlib.Path((pathlib.Path.home()/'.monocode-host/runtime-path').read_text().strip())
+                    runtime = pathlib.Path((pathlib.Path.home()/PRODUCT_IDENTITY['hostDirectory']/'runtime-path').read_text().strip())
                     verify_tree(runtime, manifest['hostHashes'])
                 else:
-                    binary = (pathlib.Path(os.environ['LOCALAPPDATA'])/'MonoCode/monocode.exe' if os.name == 'nt'
-                              else pathlib.Path('/Applications/MonoCode.app/Contents/MacOS/monocode'))
+                    binary = (pathlib.Path(os.environ['LOCALAPPDATA'])/PRODUCT_IDENTITY['productName']/(PRODUCT_IDENTITY['binaryName']+'.exe') if os.name == 'nt'
+                              else pathlib.Path('/Applications')/(PRODUCT_IDENTITY['productName']+'.app')/'Contents/MacOS'/PRODUCT_IDENTITY['binaryName'])
                     if (windows_binary_digest(binary) if os.name == 'nt' else digest(binary)) != manifest['binaryHash']:
                         raise RuntimeError('Installed binary changed')
                 results[component] = str(record)
@@ -206,6 +220,7 @@ def worker(request):
         previous_package = package_file.read_bytes() if package_file.exists() else None
         files = sync_source(archive, request['source'], workspace)
         version = validate_versions(files)
+        validate_product_identity(files, os.name == 'nt')
         workspace = state / 'source'
         env = os.environ.copy()
         env['PATH'] = str(pathlib.Path.home() / '.cargo/bin') + os.pathsep + env['PATH']
@@ -216,7 +231,9 @@ def worker(request):
         env['MONOCODE_HOST_RUNTIME_CACHE'] = str(state / 'runtime-cache')
         if os.name == 'nt':
             env['RUSTUP_TOOLCHAIN'] = 'stable-x86_64-pc-windows-msvc'
-            env.setdefault('TAURI_SIGNING_PRIVATE_KEY', str(pathlib.Path.home() / '.tauri/monocode-fork.key'))
+        # Independent updater is disabled until an İmece key/feed is configured.
+        env.pop('TAURI_SIGNING_PRIVATE_KEY', None)
+        env.pop('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', None)
         if request['mode'] == 'local':
             env.update(CARGO_PROFILE_RELEASE_LTO='false', CARGO_PROFILE_RELEASE_CODEGEN_UNITS='16',
                        CARGO_PROFILE_RELEASE_INCREMENTAL='true')
@@ -275,11 +292,11 @@ def worker(request):
         override.write_text('{"build":{"beforeBuildCommand":""}}', encoding='utf-8')
         cargo = pathlib.Path(env['CARGO_TARGET_DIR'])
         artifacts = cargo / ('release' if windows else 'aarch64-apple-darwin/release')
-        app = artifacts / 'bundle/nsis' / f'MonoCode_{version}_x64-setup.exe' if windows else artifacts / 'bundle/macos/MonoCode.app'
-        native_binary = artifacts / ('monocode.exe' if windows else 'bundle/macos/MonoCode.app/Contents/MacOS/monocode')
+        app = artifacts / 'bundle/nsis' / f"{PRODUCT_IDENTITY['productName']}_{version}_x64-setup.exe" if windows else artifacts / 'bundle/macos' / (PRODUCT_IDENTITY['productName']+'.app')
+        native_binary = artifacts / (PRODUCT_IDENTITY['binaryName']+'.exe') if windows else app/'Contents/MacOS'/PRODUCT_IDENTITY['binaryName']
         matches = app.exists() and native_binary.exists() and cache.get('binaryHash') == digest(native_binary)
         if matches and windows:
-            matches = pathlib.Path(str(app)+'.sig').exists() and cache.get('installerHash') == digest(app)
+            matches = cache.get('installerHash') == digest(app)
         if matches and not windows:
             try:
                 run(['codesign', '--verify', '--deep', '--strict', str(app)])
@@ -305,21 +322,20 @@ def worker(request):
             shutil.copytree(host, payload)
         if windows:
             shutil.copy2(app, release / 'setup.exe')
-            shutil.copy2(str(app) + '.sig', release / 'setup.exe.sig')
-            native_exe = artifacts / 'monocode.exe'
+            native_exe = artifacts / (PRODUCT_IDENTITY['binaryName']+'.exe')
             binary_hash = windows_binary_digest(native_exe)
-            app_hashes = {'setup.exe': digest(release / 'setup.exe'), 'setup.exe.sig': digest(release / 'setup.exe.sig')}
+            app_hashes = {'setup.exe': digest(release / 'setup.exe')}
         else:
-            destination = release / 'MonoCode.app'
+            destination = release / (PRODUCT_IDENTITY['productName']+'.app')
             if not destination.exists():
                 # ditto preserves bundle links and permissions.
                 run(['ditto', str(app), str(destination)])
             run(['codesign', '--verify', '--deep', '--strict', str(destination)])
-            binary_hash = digest(destination / 'Contents/MacOS/monocode')
+            binary_hash = digest(destination / 'Contents/MacOS' / PRODUCT_IDENTITY['binaryName'])
             app_hashes = tree_hashes(destination)
         for name in TOOLS:
             shutil.copy2(workspace / 'scripts' / name, release / name)
-        manifest = {'id': request['id'], 'version': version, 'source': request['source'], 'mode': request['mode'],
+        manifest = {'identity': dict(PRODUCT_IDENTITY), 'id': request['id'], 'version': version, 'source': request['source'], 'mode': request['mode'],
                     'platform': target, 'hostHashes': tree_hashes(payload), 'appHashes': app_hashes,
                     'binaryHash': binary_hash, 'timings': timings}
         write_json(release / 'manifest.json', manifest)
@@ -368,7 +384,7 @@ def main():
                 print('Mac:', json.dumps(status(), indent=2))
             else:
                 host = config['mac']['ssh']
-                code = 'import pathlib,json; p=pathlib.Path.home()/".monocode-host/update-jobs"; print(json.dumps({k:json.loads((p/(k+".json")).read_text()) if (p/(k+".json")).exists() else {"state":"not scheduled by this pipeline"} for k in ("host","app")}))'
+                code = 'import pathlib,json; p=pathlib.Path.home()/".imece-host/update-jobs"; print(json.dumps({k:json.loads((p/(k+".json")).read_text()) if (p/(k+".json")).exists() else {"state":"not scheduled by this pipeline"} for k in ("host","app")}))'
                 command = f'{shlex.quote(config["mac"]["python"])} -c {shlex.quote(code)}'
                 print('Mac:', run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, command], timeout=30))
         return
@@ -407,8 +423,8 @@ def main():
                 worker(request)
             else:
                 host = machine['ssh']
-                remote = '.monocode-build/incoming/' + previous['id']
-                remote_tools = '.monocode-build/tools/' + previous['id']
+                remote = '.imece-build/incoming/' + previous['id']
+                remote_tools = '.imece-build/tools/' + previous['id']
                 run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
                      f'mkdir -p "$HOME/{remote}" "$HOME/{remote_tools}"'], timeout=30)
                 if not args.install_only:

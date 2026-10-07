@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   ALT,
   IS_MAC,
@@ -25,6 +26,7 @@ export type SettingsSectionId =
   | "terminal"
   | "chat"
   | "providers"
+  | "usage"
   | "mcp"
   | "skills"
   | "inbox"
@@ -56,7 +58,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     group: "app",
     label: "General",
     description:
-      "The build you are running, how MonoCode reaches you, and the panels it shows.",
+      `The build you are running, how ${PRODUCT_IDENTITY.displayName} reaches you, and the panels it shows.`,
     keywords: "version update sounds notifications notes rail sleep",
   },
   {
@@ -106,9 +108,16 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     group: "agents",
     label: "Providers",
     description:
-      "Provider accounts, agent CLIs MonoCode can drive, and the model new sessions start with.",
+      `Provider accounts, agent CLIs ${PRODUCT_IDENTITY.displayName} can drive, and the model new sessions start with.`,
     keywords:
       "account sign in login model harness claude codex gemini cli default hooks",
+  },
+  {
+    id: "usage",
+    group: "agents",
+    label: "Usage",
+    description: "Account limits, remaining capacity and usage by project.",
+    keywords: "quota limits weekly session tokens cost",
   },
   {
     id: "mcp",
@@ -153,10 +162,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "groupLock",
     group: "workspace",
-    label: "Group lock",
+    label: "Group privacy",
     description:
-      "Protect project groups in the rail with one password. An access lock for the interface, not encryption.",
-    keywords: "password privacy hide private protect secure passcode",
+      "Hide and restore project groups, or protect them with a password. Hidden projects stay on disk.",
+    keywords: "password privacy hide hidden restore private protect secure passcode gizli gizle geri getir görünür",
   },
 ];
 
@@ -191,6 +200,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "shell bash git bash powershell pwsh cmd wsl zsh default ! command",
   },
   {
+    id: "hidden-project-groups",
+    section: "groupLock",
+    label: "Hidden groups",
+    keywords: "hide hidden restore recover show visible temporary privacy personal gizli gizle geri getir görünür kişisel",
+  },
+  {
     id: "group-lock-password",
     section: "groupLock",
     label: "Lock password",
@@ -199,7 +214,7 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   {
     id: "group-lock-options",
     section: "groupLock",
-    label: "Lock groups again when MonoCode starts",
+    label: `Lock groups again when ${PRODUCT_IDENTITY.displayName} starts`,
     keywords: "auto lock inactivity timeout minutes launch startup unlock all",
   },
   {
@@ -319,6 +334,17 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Theme",
     keywords: "dark light system appearance mode",
   },
+  { id: "interface-contrast", section: "appearance", label: "Contrast", keywords: "borders secondary text softer stronger" },
+  { id: "chat-width", section: "appearance", label: "Chat width", keywords: "comfortable wide full messages composer" },
+  { id: "interface-font", section: "appearance", label: "Interface font", keywords: "typography typeface Segoe Arial Verdana" },
+  { id: "monospace-font", section: "appearance", label: "Monospace font", keywords: "code terminal font size Consolas Menlo typography" },
+  { id: "code-word-wrap", section: "appearance", label: "Word wrap", keywords: "code long lines wrapping" },
+  {
+    id: "decorative-motion",
+    section: "appearance",
+    label: "Decorative animations",
+    keywords: "motion reduced accessibility mascot particles welcome effects",
+  },
   {
     id: "accent-color",
     section: "appearance",
@@ -436,12 +462,6 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "effort thinking reasoning fast service tier model picker composer",
   },
   {
-    id: "composer-mascot",
-    section: "chat",
-    label: "Composer mascot",
-    keywords: "runner animation coin fun",
-  },
-  {
     id: "format-on-save",
     section: "chat",
     label: "Format on save",
@@ -454,10 +474,10 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "unified editor review changes working tree",
   },
   {
-    id: "empty-session-games",
+    id: "coffeehouse-scene",
     section: "chat",
-    label: "Empty session games",
-    keywords: "pacman snake arcade grid fun",
+    label: "Village coffeehouse",
+    keywords: "coffeehouse village tea sohbet kahve çay amcalar dayılar ambient scene",
   },
   {
     id: "agent-clis",
@@ -670,8 +690,6 @@ export function saveSettingsSection(id: SettingsSectionId) {
   }
 }
 
-const COMPOSER_RUNNER_KEY = "monocode.composerRunner";
-
 const FOLLOW_UP_BEHAVIOR_KEY = "monocode.followUpBehavior";
 
 const COMPOSER_EFFORT_VISIBLE_KEY = "monocode.composerEffortVisible";
@@ -827,23 +845,6 @@ export function subscribeModelControls(onStoreChange: () => void) {
   window.addEventListener(MODEL_CONTROLS_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(MODEL_CONTROLS_CHANGE_EVENT, onStoreChange);
-}
-
-export const COMPOSER_RUNNER_DEFAULT = true;
-
-/** Fired on `window` when the composer mascot setting flips. */
-export const COMPOSER_RUNNER_CHANGE_EVENT = "monocode:composer-runner-change";
-
-export function loadComposerRunner(): boolean {
-  return readFlag(COMPOSER_RUNNER_KEY) ?? COMPOSER_RUNNER_DEFAULT;
-}
-
-export function saveComposerRunner(value: boolean) {
-  writeFlag(COMPOSER_RUNNER_KEY, value);
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(
-    new CustomEvent<boolean>(COMPOSER_RUNNER_CHANGE_EVENT, { detail: value }),
-  );
 }
 
 const NOTES_ENABLED_KEY = "monocode.notesEnabled";
@@ -1123,33 +1124,33 @@ export function saveCloseToTray(value: boolean) {
   writeFlag(CLOSE_TO_TRAY_KEY, value);
 }
 
-const GRID_ARCADE_ENABLED_KEY = "monocode.gridArcadeEnabled";
+const COFFEEHOUSE_SCENE_ENABLED_KEY = "imece.coffeehouseSceneEnabled";
 
-export const GRID_ARCADE_ENABLED_DEFAULT = true;
+export const COFFEEHOUSE_SCENE_ENABLED_DEFAULT = true;
 
-/** Fired on `window` when the empty-session games setting flips. */
-export const GRID_ARCADE_ENABLED_CHANGE_EVENT =
-  "monocode:grid-arcade-enabled-change";
+/** Fired on `window` when the coffeehouse scene setting flips. */
+export const COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT =
+  "imece:coffeehouse-scene-enabled-change";
 
-export function loadGridArcadeEnabled(): boolean {
-  return readFlag(GRID_ARCADE_ENABLED_KEY) ?? GRID_ARCADE_ENABLED_DEFAULT;
+export function loadCoffeehouseSceneEnabled(): boolean {
+  return readFlag(COFFEEHOUSE_SCENE_ENABLED_KEY) ?? COFFEEHOUSE_SCENE_ENABLED_DEFAULT;
 }
 
-export function saveGridArcadeEnabled(value: boolean) {
-  writeFlag(GRID_ARCADE_ENABLED_KEY, value);
+export function saveCoffeehouseSceneEnabled(value: boolean) {
+  writeFlag(COFFEEHOUSE_SCENE_ENABLED_KEY, value);
   if (typeof window === "undefined") return;
   window.dispatchEvent(
-    new CustomEvent<boolean>(GRID_ARCADE_ENABLED_CHANGE_EVENT, {
+    new CustomEvent<boolean>(COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT, {
       detail: value,
     }),
   );
 }
 
-export function subscribeGridArcadeEnabled(onStoreChange: () => void) {
+export function subscribeCoffeehouseSceneEnabled(onStoreChange: () => void) {
   if (typeof window === "undefined") return () => {};
-  window.addEventListener(GRID_ARCADE_ENABLED_CHANGE_EVENT, onStoreChange);
+  window.addEventListener(COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT, onStoreChange);
   return () =>
-    window.removeEventListener(GRID_ARCADE_ENABLED_CHANGE_EVENT, onStoreChange);
+    window.removeEventListener(COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT, onStoreChange);
 }
 
 const DIFF_VIEWER_KEY = "monocode.diffViewer";

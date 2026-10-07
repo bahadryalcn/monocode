@@ -1,5 +1,11 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { ImagePlus, Loader } from "../../../shared/ui/icons";
-import { useRef, useState } from "react";
+import { useContext, useRef, useState } from "react";
+import {
+  AppearanceStudio,
+  AppearanceInterface,
+  AppearanceTypography,
+} from "./AppearancePreviews";
 
 import {
   ColorPickerPopover,
@@ -36,9 +42,15 @@ import {
 } from "../model/appearance";
 
 import { UI_SCALE_PERCENTS } from "../model/uiScale";
+import {
+  saveDecorativeMotionEnabled,
+  useDecorativeMotionPreference,
+  usePrefersReducedMotion,
+} from "../model/decorativeMotion";
 
 import {
   Group,
+  RevealedSetting,
   Row,
   Segmented,
   Slider,
@@ -52,182 +64,205 @@ export function AppearancePage({
 }: {
   appearance: AppearanceSettings;
 }) {
+  const revealed = useContext(RevealedSetting);
+  const [advanced, setAdvanced] = useState(false);
+  const showAdvanced =
+    advanced ||
+    [
+      "accent-color",
+      "hue",
+      "saturation",
+      "dark-lightness",
+      "sidebar-opacity",
+      "blur",
+      "main-pane-glass",
+      "main-pane-opacity",
+    ].includes(revealed ?? "");
   const percent = Math.round(appearance.opacity * 100);
   const mainPercent = Math.round(appearance.mainOpacity * 100);
   const glassDisabled = useColorScheme() === "light";
+  const decorativeMotion = useDecorativeMotionPreference();
+  const reducedMotion = usePrefersReducedMotion();
 
   return (
     <>
-      <Group
-        title="Theme"
-        description="Dark and light share the same tint, so the color settings below apply to both."
-      >
-        <Row
-          id="theme"
-          label="Theme"
-          description="System follows the OS appearance."
+      <AppearanceStudio appearance={appearance} />
+      <div className="appearance-tuning">
+        <AppearanceInterface appearance={appearance} />
+        <AppearanceTypography appearance={appearance} />
+      </div>
+      <div className="mt-8 flex items-center justify-between gap-4">
+        <div>
+          <h2 className="text-[13px] font-semibold">Custom colors & glass</h2>
+          <p className="mt-1 text-[12px] text-content/45">
+            Fine-tune the palette and desktop transparency.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="rounded-md border border-content/10 px-3 py-1.5 text-[12px]"
+          aria-expanded={showAdvanced}
+          aria-controls="appearance-advanced"
+          onClick={() => setAdvanced(!showAdvanced)}
         >
-          <Segmented
-            label="Theme"
-            value={appearance.themePreference}
-            options={[
-              { value: "system", label: "System" },
-              { value: "dark", label: "Dark" },
-              { value: "light", label: "Light" },
-            ]}
-            onChange={appearance.onThemePreference}
-          />
-        </Row>
-        <Row
-          id="diff-colors"
-          label="Diff colors"
-          description="Colors for added and removed lines. Colorblind and High contrast use blue and orange; High contrast adds stronger tints."
-        >
-          <Segmented
-            label="Diff colors"
-            value={appearance.diffPalette}
-            options={[
-              { value: "default", label: "Default" },
-              { value: "colorblind", label: "Colorblind" },
-              { value: "high-contrast", label: "High contrast" },
-            ]}
-            onChange={appearance.onDiffPalette}
-          />
-        </Row>
-        <Row
-          id="accent-color"
-          label="Accent color"
-          description="Used for the composer send button and your message bubbles."
-        >
-          <AccentColorPicker
-            value={appearance.accentColor}
-            onChange={appearance.onAccentColor}
-          />
-        </Row>
-      </Group>
+          Advanced {showAdvanced ? "−" : "+"}
+        </button>
+      </div>
+      <div id="appearance-advanced" hidden={!showAdvanced}>
+        <Group title="Accent">
+          <Row
+            id="accent-color"
+            label="Accent color"
+            description="Used for the composer send button and your message bubbles."
+          >
+            <AccentColorPicker
+              value={appearance.accentColor}
+              onChange={appearance.onAccentColor}
+            />
+          </Row>
+        </Group>
 
-      <Group
-        title="Color"
-        description="Hue and saturation tint every surface. Lightness only moves the dark theme."
-      >
-        <Row
-          id="hue"
-          label="Hue"
-          description="Base hue for accents and tinted surfaces."
+        <Group
+          title="Color"
+          description="Hue and saturation tint every surface. Lightness only moves the dark theme."
         >
-          <Slider
+          <Row
+            id="hue"
             label="Hue"
-            value={appearance.themeHue}
-            display={`${appearance.themeHue}°`}
-            min={THEME_HUE_MIN}
-            max={THEME_HUE_MAX}
-            onChange={(value) =>
-              appearance.onTint(value, appearance.themeSaturation)
-            }
-          />
-        </Row>
-        <Row
-          id="saturation"
-          label="Saturation"
-          description="How strongly the hue tints the interface. Zero keeps it neutral."
-        >
-          <Slider
+            description="Base hue for accents and tinted surfaces."
+          >
+            <Slider
+              label="Hue"
+              value={appearance.themeHue}
+              display={`${appearance.themeHue}°`}
+              min={THEME_HUE_MIN}
+              max={THEME_HUE_MAX}
+              onChange={(value) =>
+                appearance.onTint(value, appearance.themeSaturation)
+              }
+            />
+          </Row>
+          <Row
+            id="saturation"
             label="Saturation"
-            value={appearance.themeSaturation}
-            display={`${appearance.themeSaturation}%`}
-            min={THEME_SATURATION_MIN}
-            max={THEME_SATURATION_MAX}
-            onChange={(value) => appearance.onTint(appearance.themeHue, value)}
-          />
-        </Row>
-        <Row
-          id="dark-lightness"
-          label="Dark-mode lightness"
+            description="How strongly the hue tints the interface. Zero keeps it neutral."
+          >
+            <Slider
+              label="Saturation"
+              value={appearance.themeSaturation}
+              display={`${appearance.themeSaturation}%`}
+              min={THEME_SATURATION_MIN}
+              max={THEME_SATURATION_MAX}
+              onChange={(value) =>
+                appearance.onTint(appearance.themeHue, value)
+              }
+            />
+          </Row>
+          <Row
+            id="dark-lightness"
+            label="Dark-mode lightness"
+            description={
+              glassDisabled
+                ? "This only affects dark mode. Your dark-mode value is preserved."
+                : "Base brightness of the dark theme. Lower values are darker; zero is true black."
+            }
+          >
+            <Slider
+              label="Dark-mode lightness"
+              value={appearance.themeDarkLightness}
+              display={`${appearance.themeDarkLightness}%`}
+              min={THEME_DARK_LIGHTNESS_MIN}
+              max={THEME_DARK_LIGHTNESS_MAX}
+              onChange={appearance.onDarkLightness}
+              disabled={glassDisabled}
+            />
+          </Row>
+        </Group>
+
+        <Group
+          title="Translucency"
           description={
             glassDisabled
-              ? "This only affects dark mode. Your dark-mode value is preserved."
-              : "Base brightness of the dark theme. Lower values are darker; zero is true black."
+              ? "Light mode always uses an opaque window, so these are off. Your dark-mode values are preserved."
+              : `How much of the desktop shows through ${PRODUCT_IDENTITY.displayName}. Blur costs more to composite the higher it goes.`
           }
         >
-          <Slider
-            label="Dark-mode lightness"
-            value={appearance.themeDarkLightness}
-            display={`${appearance.themeDarkLightness}%`}
-            min={THEME_DARK_LIGHTNESS_MIN}
-            max={THEME_DARK_LIGHTNESS_MAX}
-            onChange={appearance.onDarkLightness}
-            disabled={glassDisabled}
-          />
-        </Row>
-      </Group>
-
-      <Group
-        title="Translucency"
-        description={
-          glassDisabled
-            ? "Light mode always uses an opaque window, so these are off. Your dark-mode values are preserved."
-            : "How much of the desktop shows through MonoCode. Blur costs more to composite the higher it goes."
-        }
-      >
-        <Row
-          id="sidebar-opacity"
-          label="Sidebar opacity"
-          description="Applies to the project rail and the session sidebar."
-        >
-          <Slider
+          <Row
+            id="sidebar-opacity"
             label="Sidebar opacity"
-            value={percent}
-            display={`${percent}%`}
-            min={Math.round(SIDEBAR_OPACITY_MIN * 100)}
-            max={Math.round(SIDEBAR_OPACITY_MAX * 100)}
-            onChange={appearance.onOpacity}
-            disabled={glassDisabled}
-          />
-        </Row>
-        <Row
-          id="blur"
-          label="Blur radius"
-          description="Background blur behind the window."
-        >
-          <Slider
+            description="Applies to the project rail and the session sidebar."
+          >
+            <Slider
+              label="Sidebar opacity"
+              value={percent}
+              display={`${percent}%`}
+              min={Math.round(SIDEBAR_OPACITY_MIN * 100)}
+              max={Math.round(SIDEBAR_OPACITY_MAX * 100)}
+              onChange={appearance.onOpacity}
+              disabled={glassDisabled}
+            />
+          </Row>
+          <Row
+            id="blur"
             label="Blur radius"
-            value={appearance.blur}
-            display={String(appearance.blur)}
-            min={SIDEBAR_BLUR_MIN}
-            max={SIDEBAR_BLUR_MAX}
-            onChange={appearance.onBlur}
-            disabled={glassDisabled}
-          />
-        </Row>
+            description="Background blur behind the window."
+          >
+            <Slider
+              label="Blur radius"
+              value={appearance.blur}
+              display={String(appearance.blur)}
+              min={SIDEBAR_BLUR_MIN}
+              max={SIDEBAR_BLUR_MAX}
+              onChange={appearance.onBlur}
+              disabled={glassDisabled}
+            />
+          </Row>
+          <Row
+            id="main-pane-glass"
+            label="Main pane glass"
+            description="Extend the translucent treatment to the main pane behind sessions and editors."
+          >
+            <Toggle
+              label="Main pane glass"
+              on={appearance.bodyGlass}
+              onChange={appearance.onBodyGlass}
+              disabled={glassDisabled}
+            />
+          </Row>
+          <Row
+            id="main-pane-opacity"
+            label="Main pane opacity"
+            description="Applies to the main pane when main pane glass is on."
+          >
+            <Slider
+              label="Main pane opacity"
+              value={mainPercent}
+              display={`${mainPercent}%`}
+              min={Math.round(MAIN_OPACITY_MIN * 100)}
+              max={Math.round(MAIN_OPACITY_MAX * 100)}
+              onChange={appearance.onMainOpacity}
+              disabled={glassDisabled || !appearance.bodyGlass}
+            />
+          </Row>
+        </Group>
+      </div>
+      <Group title="Motion">
         <Row
-          id="main-pane-glass"
-          label="Main pane glass"
-          description="Extend the translucent treatment to the main pane behind sessions and editors."
+          id="decorative-motion"
+          label="Decorative animations"
+          description={
+            reducedMotion
+              ? "Your system requests reduced motion, so decorative animations stay still. Your saved choice is preserved."
+              : "Animate project sigils, chat transitions and the village coffeehouse scene."
+          }
         >
           <Toggle
-            label="Main pane glass"
-            on={appearance.bodyGlass}
-            onChange={appearance.onBodyGlass}
-            disabled={glassDisabled}
-          />
-        </Row>
-        <Row
-          id="main-pane-opacity"
-          label="Main pane opacity"
-          description="Applies to the main pane when main pane glass is on."
-        >
-          <Slider
-            label="Main pane opacity"
-            value={mainPercent}
-            display={`${mainPercent}%`}
-            min={Math.round(MAIN_OPACITY_MIN * 100)}
-            max={Math.round(MAIN_OPACITY_MAX * 100)}
-            onChange={appearance.onMainOpacity}
-            disabled={glassDisabled || !appearance.bodyGlass}
+            label="Decorative animations"
+            on={decorativeMotion}
+            onChange={saveDecorativeMotionEnabled}
           />
         </Row>
       </Group>
-
       <ChatBackgroundCard appearance={appearance} />
 
       <Group title="Layout">
@@ -468,12 +503,17 @@ export function AccentColorPicker({
         value as (typeof ACCENT_COLOR_PRESETS)[number],
       )
     : -1;
-  const presetIndex = value == null ? 0 : colorIndex >= 0 ? colorIndex + 1 : -1;
+  const presetIndex =
+    value == null || value.toLowerCase() === ACCENT_COLOR_DEFAULT.toLowerCase()
+      ? 0
+      : colorIndex >= 0
+        ? colorIndex + 1
+        : -1;
 
   return (
     <div ref={root} className="w-48">
       <ColorSwatchRow
-        colors={["var(--color-content)", ...ACCENT_COLOR_PRESETS]}
+        colors={[ACCENT_COLOR_DEFAULT, ...ACCENT_COLOR_PRESETS]}
         labels={["Default", "Blue", "Violet", "Pink", "Red", "Orange", "Green"]}
         colorIndex={presetIndex >= 0 ? presetIndex : undefined}
         customColor={presetIndex < 0 ? (value ?? undefined) : undefined}

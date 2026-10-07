@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { invoke } from "@tauri-apps/api/core";
 import { RemoteOutboxNotice } from "./RemoteOutboxNotice";
 import { RemoteDataStatus } from "./RemoteDataStatus";
@@ -94,7 +95,7 @@ export function ConnectionsSettings() {
   const [updatingMachine, setUpdatingMachine] = useState<string>();
   const [removing, setRemoving] = useState<string>();
   const [revoking, setRevoking] = useState(false);
-  const [url, setUrl] = useState("http://127.0.0.1:3774");
+  const [url, setUrl] = useState("http://127.0.0.1:3775");
   const [token, setToken] = useState("");
   const alive = useRef(true);
   const currentJob = useRef<string | undefined>(undefined);
@@ -137,9 +138,11 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
             );
           else if (next.machine) {
             setAdding(false);
+            setEditing(undefined);
             setTarget("");
             setName("");
             setPort("");
+            setAlternate("");
             setNotice(
               afterEdit.current
                 ? `${next.machine.name} is connected through its new address.`
@@ -237,6 +240,10 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
     edited = false,
   ) => {
     if (submitting.current) return;
+    const parsed = machine
+      ? undefined
+      : parseMachineDraft({ name, target, port, alternate });
+    if (parsed && !parsed.ok) return setError(parsed.error);
     submitting.current = true;
     afterEdit.current = edited;
     setBusy(true);
@@ -254,6 +261,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
             target: target.trim(),
             name: name.trim(),
             port: port ? Number(port) : null,
+            alternate: parsed?.ok ? parsed.value.alternate : null,
           });
       if (!alive.current) {
         await invoke("remote_ssh_cancel", { jobId: id });
@@ -288,6 +296,14 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
     setName("");
     setPort("");
     setAlternate("");
+  };
+  const startAdd = () => {
+    closeForm();
+    setAdding(true);
+    setJob(undefined);
+    setError("");
+    setNotice("");
+    setRemoving(undefined);
   };
   // Saving is the user's own action, so it connects even when automatic
   // reconnecting is off. The connection runs as a setup job, the same one
@@ -364,7 +380,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
           await remoteRequest(machine.id, "devices.revokeSelf");
         } catch (reason) {
           throw new Error(
-            `Could not revoke access, so ${machine.name} was not removed: ${String(reason)}. Reconnect and try again, or remove it from this desktop only and revoke it on the host with monocode-host devices and monocode-host revoke <device-id>.`,
+            `Could not revoke access, so ${machine.name} was not removed: ${String(reason)}. Reconnect and try again, or remove it from this desktop only and revoke it on the host with imece-host devices and imece-host revoke <device-id>.`,
           );
         }
       }
@@ -406,25 +422,22 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
         }}
         onRefresh={refresh}
       />
-      <div className="flex items-end justify-between gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
           <h2 className="text-[13px] font-semibold text-content">
             Your machines
           </h2>
           <p className="mt-1 text-[12px] leading-relaxed text-content/45">
             Run agents on another computer and return to them from your laptop.
-            The host keeps working when you close MonoCode here.
+            The host keeps working when you close {PRODUCT_IDENTITY.displayName}{" "}
+            here.
           </p>
         </div>
-        {!adding && (
+        {(!adding || editing) && (
           <button
             className={`${button} flex shrink-0 items-center gap-2`}
             disabled={busy}
-            onClick={() => {
-              setAdding(true);
-              setError("");
-              setNotice("");
-            }}
+            onClick={startAdd}
           >
             <Plus className="size-4" /> Add machine
           </button>
@@ -434,18 +447,23 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
         <div className="divide-y divide-stroke overflow-hidden rounded-xl border border-stroke">
           {machines.map((machine) => (
             <div key={machine.id}>
-              <div className="flex items-center gap-3 px-4 py-4">
+              <div className="flex flex-wrap items-center gap-3 px-4 py-4">
                 <Internet className="size-5 shrink-0 text-content/45" />
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0 flex-1 basis-48">
                   <div className="truncate text-[13px] font-medium">
                     {machine.name}
                   </div>
+                  {machine.ssh?.alternate && (
+                    <div className="mt-1 break-all text-[12px] text-content/60">
+                      Other address · {machine.ssh.alternate}
+                    </div>
+                  )}
                   <div className="mt-1 truncate text-[12px] text-content/45">
                     {isLocalSyncMachine(machine)
-                      ? "Syncs projects and groups with the MonoCode on this computer"
+                      ? `Syncs projects and groups with the ${PRODUCT_IDENTITY.displayName} on this computer`
                       : machine.ssh
-                      ? `SSH · ${machine.ssh.target}${machine.ssh.port ? ` · port ${machine.ssh.port}` : ""}`
-                      : machine.endpoint}
+                        ? `SSH · ${machine.ssh.target}${machine.ssh.port ? ` · port ${machine.ssh.port}` : ""}`
+                        : machine.endpoint}
                   </div>
                   <div className="mt-1 text-[12px] text-content/50">
                     {status[machine.id] ?? "Checking connection…"}
@@ -459,7 +477,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                   ) : null}
                 </div>
                 {machine.ssh && (
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
                     {needsUpdate[machine.id] ? (
                       <button
                         className={button}
@@ -512,9 +530,10 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                   </p>
                   {isLocalSyncMachine(machine) ? (
                     <p>
-                      Removing this stops syncing projects and groups with the
-                      MonoCode on this computer. It is created again
-                      automatically the next time MonoCode starts.
+                      Removing this stops syncing projects and groups with the{" "}
+                      {PRODUCT_IDENTITY.displayName} on this computer. It is
+                      created again automatically the next time{" "}
+                      {PRODUCT_IDENTITY.displayName} starts.
                     </p>
                   ) : (
                     <p>
@@ -531,11 +550,11 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                   <p>
                     To stop the host and turn off its background service, run{" "}
                     <code className="rounded bg-content/10 px-1">
-                      ~/.monocode-host/bin/monocode-host service uninstall
+                      ~/.imece-host/bin/imece-host service uninstall
                     </code>{" "}
                     on that machine (
                     <code className="rounded bg-content/10 px-1">
-                      %USERPROFILE%\.monocode-host\bin\monocode-host.cmd service
+                      %USERPROFILE%\.imece-host\bin\imece-host.cmd service
                       uninstall
                     </code>{" "}
                     on Windows). Its sessions and history are kept.
@@ -575,6 +594,8 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
       ) : null}
       {adding && (
         <form
+          key={editing?.id ?? "new-machine"}
+          aria-label={editing ? `Edit ${editing.name}` : "Add a new machine"}
           className="flex flex-col gap-4 rounded-xl border border-stroke p-5"
           onSubmit={(event) => {
             event.preventDefault();
@@ -583,12 +604,17 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
         >
           <div className="flex items-center justify-between">
             <h3 className="text-[14px] font-medium">
-              {editing ? `Edit ${editing.name}` : "Connect through SSH"}
+              {editing ? `Edit ${editing.name}` : "Add a new machine"}
             </h3>
             <span className="rounded bg-selection px-2 py-1 text-[11px] text-content/60">
               SSH
             </span>
           </div>
+          <p className="text-[12px] leading-relaxed text-content/65">
+            {editing
+              ? "Changes apply to this machine. To connect a different computer, choose Add machine."
+              : "Connect a different computer with its own SSH address. Existing machines stay saved."}
+          </p>
           <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
             SSH address
             <input
@@ -623,28 +649,27 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               </button>
             )}
           </label>
-          {editing ? (
-            <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
-              Other address <span className="sr-only">(optional)</span>
-              <input
-                disabled={busy}
-                className={input}
-                value={alternate}
-                onChange={(event) => setAlternate(event.target.value)}
-                placeholder="Optional, e.g. user@100.64.0.5 (Tailscale)"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <span className="text-[11px] leading-relaxed text-content/45">
-                A second way to this same machine, such as its home-network IP
-                and its Tailscale address. MonoCode connects through whichever
-                answers, so it works at home and away. The other address is
-                checked against this machine's known host key.
-              </span>
-            </label>
-          ) : null}
           <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
-            Name <span className="sr-only">(optional)</span>
+            Other address (optional)
+            <input
+              disabled={busy}
+              className={input}
+              value={alternate}
+              onChange={(event) => setAlternate(event.target.value)}
+              placeholder="Optional, e.g. user@100.64.0.5 (Tailscale)"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <span className="text-[11px] leading-relaxed text-content/45">
+              Optional fallback for this same machine, such as its Tailscale
+              address. If the first address cannot connect,{" "}
+              {PRODUCT_IDENTITY.displayName} automatically tries this one. Both
+              addresses stay saved and use the same SSH port. The other address
+              is checked against this machine's known host key.
+            </span>
+          </label>
+          <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
+            Name (optional)
             <input
               disabled={busy}
               className={input}
@@ -675,33 +700,42 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
           </details>
           {editing ? (
             <p className="text-[12px] leading-relaxed text-content/45">
-              Saving a new address closes the current connection and connects
-              to it. If this computer has not connected to that address
-              before, SSH asks you here whether to trust its host key. The
-              machine's projects, sessions and history stay linked to it. If
-              the address turns out to be another machine, the change stays
-              saved so you can fix it; nothing is installed there.
+              Saving a new address closes the current connection and connects to
+              it. If this computer has not connected to that address before, SSH
+              asks you here whether to trust its host key. The machine's
+              projects, sessions and history stay linked to it. If the address
+              turns out to be another machine, the change stays saved so you can
+              fix it; nothing is installed there.
             </p>
           ) : (
             <>
-          <p className="text-[12px] leading-relaxed text-content/45">
-            MonoCode installs and starts its background host, then connects
-            securely. Your SSH keys and config are used automatically. Enable
-            SSH on the host and sign in to Codex or Claude Code there. On
-            Windows and Mac, keep the host’s desktop account signed in and the
-            machine awake. Locking the desktop is fine.
-          </p>
-          <p className="text-[12px] leading-relaxed text-content/45">
-            On Linux, setup installs a systemd user service and turns on
-            lingering for your account (
-            <code className="rounded bg-content/10 px-1">
-              loginctl enable-linger
-            </code>
-            ), so the host and your other user services keep running after you
-            log out. The host keeps running until you stop it on that machine;
-            removing it here only disconnects this desktop.
-          </p>
+              <p className="text-[12px] leading-relaxed text-content/45">
+                {PRODUCT_IDENTITY.displayName} installs and starts its
+                background host, then connects securely. Your SSH keys and
+                config are used automatically. Enable SSH on the host and sign
+                in to Codex or Claude Code there. On Windows and Mac, keep the
+                host’s desktop account signed in and the machine awake. Locking
+                the desktop is fine.
+              </p>
+              <p className="text-[12px] leading-relaxed text-content/45">
+                On Linux, setup installs a systemd user service and turns on
+                lingering for your account (
+                <code className="rounded bg-content/10 px-1">
+                  loginctl enable-linger
+                </code>
+                ), so the host and your other user services keep running after
+                you log out. The host keeps running until you stop it on that
+                machine; removing it here only disconnects this desktop.
+              </p>
             </>
+          )}
+          {error && (
+            <p
+              role="alert"
+              className="whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-3 text-[12px] leading-relaxed text-red-400"
+            >
+              {error}
+            </p>
           )}
           <div className="flex justify-end gap-2">
             <button
@@ -789,7 +823,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
           </button>
         </div>
       )}
-      {error && (
+      {error && !adding && (
         <p
           role="alert"
           className="whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-3 text-[12px] leading-relaxed text-red-400"

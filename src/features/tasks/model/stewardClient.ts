@@ -70,8 +70,8 @@ export const STEWARD_STATUS_LABELS: Record<StewardRunStatus, string> = {
 };
 
 /** Machines whose host runs stewards, this computer's included. */
-export function stewardMachines(): Promise<RemoteMachine[]> {
-  return backgroundMachines(HOST_STEWARDS);
+export function stewardMachines(fresh = false): Promise<RemoteMachine[]> {
+  return backgroundMachines(HOST_STEWARDS, fresh);
 }
 
 export function newStewardDraft(

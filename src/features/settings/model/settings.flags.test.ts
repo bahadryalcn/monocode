@@ -48,13 +48,6 @@ describe.each([
     undefined,
   ],
   [
-    "monocode.composerRunner",
-    settings.loadComposerRunner,
-    settings.saveComposerRunner,
-    true,
-    "monocode:composer-runner-change",
-  ],
-  [
     "monocode.notesEnabled",
     settings.loadNotesEnabled,
     settings.saveNotesEnabled,
@@ -90,11 +83,11 @@ describe.each([
     undefined,
   ],
   [
-    "monocode.gridArcadeEnabled",
-    settings.loadGridArcadeEnabled,
-    settings.saveGridArcadeEnabled,
+    "imece.coffeehouseSceneEnabled",
+    settings.loadCoffeehouseSceneEnabled,
+    settings.saveCoffeehouseSceneEnabled,
     true,
-    "monocode:grid-arcade-enabled-change",
+    "imece:coffeehouse-scene-enabled-change",
   ],
   [
     "monocode.claudeHooks",

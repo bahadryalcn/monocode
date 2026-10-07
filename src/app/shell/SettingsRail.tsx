@@ -15,6 +15,7 @@ import {
   Terminal,
   type IconComponent,
 } from "../../shared/ui/icons";
+import { UsageIcon } from "./WorkspaceControls";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
   settingsSectionsByGroup,
@@ -29,6 +30,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   terminal: Terminal,
   chat: MessageSquare,
   providers: Bot,
+  usage: UsageIcon as IconComponent,
   mcp: Globe,
   skills: Sparkles,
   inbox: Inbox,

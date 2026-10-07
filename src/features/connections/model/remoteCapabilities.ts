@@ -19,7 +19,7 @@ export const SESSION_SHELL = "sessions.shell";
 
 /** Shown where a feature stays off because the machine's host predates it. */
 export const HOST_UPDATE_NOTICE =
-  "Update MonoCode Host in Connections settings to use this on projects on another machine.";
+  "Update imc Host in Connections settings to use this on projects on another machine.";
 
 /** Whether the machine behind `cwd` advertises `capability`: always true for a
  * project on this computer, and undefined until a remote machine has answered. */

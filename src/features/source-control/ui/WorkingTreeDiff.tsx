@@ -33,6 +33,7 @@ import {
 } from "../model/workingTreeReload";
 import { LINE_DIFF_CONFIG } from "../model/lineDiff";
 import { confirmDiscardFile } from "../model/gitConfirmation";
+import { withGitOperation } from "../model/gitPanelState";
 import { UnifiedDiffView, type UnifiedDiffFileModel } from "./UnifiedDiffView";
 
 type Props = {
@@ -142,7 +143,7 @@ export function WorkingTreeDiff({
           setBusyId(id);
           setMutationError(null);
           try {
-            if ((await action()) !== false) {
+            if ((await withGitOperation(cwd, "Updating diff…", action)) !== false) {
               invalidateGitIndex();
               notifyGitChangedWith(cwd, "index", { paths: [path] });
               // Our own action: show its result without the debounce.

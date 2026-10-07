@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useRef, useState, useSyncExternalStore } from "react";
 import {
   getHarnessAvailabilitySnapshot,
@@ -88,7 +89,7 @@ export function AntigravityAccountSettings({
         sign-in.
       </p>
       <p>
-        MonoCode uses the shared Antigravity CLI account on this computer.
+        {PRODUCT_IDENTITY.displayName} uses the shared Antigravity CLI account on this computer.
         Separate named Antigravity accounts cannot currently be added here. To
         change the shared account, run <code>/logout</code> inside agy and
         complete sign-in again. This affects other Antigravity sessions on the

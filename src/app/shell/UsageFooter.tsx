@@ -29,6 +29,7 @@ import {
 } from "../../features/terminal/model/terminalTab";
 import { MOD } from "../../platform/tauri/platform";
 import { UsageProviderChip } from "./UsageProviderChip";
+import { WORKSPACE_REFRESH_EVENT } from "./WorkspaceControls";
 import { PiUsage } from "./PiUsage";
 import {
   ProviderSignInPanel,
@@ -56,6 +57,7 @@ export type UsageFooterSession = {
 };
 
 export function UsageFooter({
+  embedded = false,
   providers,
   session,
   project,
@@ -68,6 +70,7 @@ export function UsageFooter({
   onSelectAccount,
   onManageAccounts,
 }: {
+  embedded?: boolean;
   providers: RateLimitProvider[];
   session?: UsageFooterSession;
   project?: string;
@@ -176,6 +179,12 @@ export function UsageFooter({
     const timer = window.setInterval(() => setNow(Date.now()), CLOCK_MS);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const reload = () => { void refresh(); };
+    window.addEventListener(WORKSPACE_REFRESH_EVENT, reload);
+    return () => window.removeEventListener(WORKSPACE_REFRESH_EVENT, reload);
+  }, [refresh]);
 
   const consumeCodexReset = useCallback(
     async (creditId?: string) => {
@@ -310,7 +319,7 @@ export function UsageFooter({
   return (
     <footer
       aria-label={ariaLabel}
-      className="flex h-7 shrink-0 items-center gap-1.5 overflow-x-auto border-t border-stroke px-3 text-[11px] text-content/55"
+      className={`flex h-7 min-w-0 items-center gap-1.5 overflow-x-auto px-3 text-[11px] text-content/55 ${embedded ? "flex-1" : "shrink-0 border-t border-stroke"}`}
     >
       {session?.harness === "pi" ? (
         <PiUsage key={`${session.id}:${session.model}`} model={session.model} now={now} />

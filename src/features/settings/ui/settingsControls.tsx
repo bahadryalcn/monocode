@@ -32,7 +32,7 @@ export function PageHeader({
         {title}
       </h1>
       {description ? (
-        <p className="mt-1.5 max-w-xl text-[13px] leading-relaxed text-content/45">
+        <p className="settings-description mt-1.5 max-w-xl text-[13px] leading-relaxed text-content/65">
           {description}
         </p>
       ) : null}
@@ -49,6 +49,7 @@ export function Group({
   title,
   description,
   action,
+  layout = "columns",
   children,
 }: {
   /** Matches a `SETTINGS_INDEX` id when the whole card is the search target. */
@@ -56,6 +57,7 @@ export function Group({
   title: ReactNode;
   description?: string;
   action?: ReactNode;
+  layout?: "columns" | "full";
   children: ReactNode;
 }) {
   const revealed = useContext(RevealedSetting);
@@ -65,13 +67,15 @@ export function Group({
     <section
       id={id ? settingDomId(id) : undefined}
       data-setting-id={id}
-      className="pt-8 first:pt-0"
+      data-revealed={flash || undefined}
+      data-settings-layout={layout}
+      className="settings-group pt-8 first:pt-0"
     >
-      <div className="flex items-end gap-4 pb-2.5">
+      <div className="settings-group-heading flex flex-wrap items-start gap-4 pb-2.5">
         <div className="min-w-0 flex-1">
           <h2 className="text-[13px] font-semibold text-content">{title}</h2>
           {description ? (
-            <p className="mt-1 text-[12px] leading-relaxed text-content/45">
+            <p className="settings-description mt-1 text-[12px] leading-relaxed text-content/65">
               {description}
             </p>
           ) : null}
@@ -79,7 +83,7 @@ export function Group({
         {action ? <div className="shrink-0 pb-0.5">{action}</div> : null}
       </div>
       <div
-        className={`overflow-hidden rounded-xl border bg-content/3 transition-colors ${
+        className={`settings-group-content overflow-hidden rounded-xl border bg-content/3 transition-colors ${
           flash ? "border-accent/60" : "border-content/10"
         }`}
       >
@@ -115,7 +119,7 @@ export function Row({
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-content">{label}</div>
         {description ? (
-          <p className="mt-1 text-[12px] leading-relaxed text-content/45">
+          <p className="settings-description mt-1 text-[12px] leading-relaxed text-content/65">
             {description}
           </p>
         ) : null}
@@ -160,8 +164,25 @@ export function Segmented<T extends string>({
           type="button"
           role="radio"
           aria-checked={value === option.value}
+          tabIndex={value === option.value ? 0 : -1}
           onClick={() => onChange(option.value)}
-          className={`min-w-0 rounded-[5px] px-2.5 py-1 ${
+          onKeyDown={(event) => {
+            const index = options.indexOf(option);
+            let next = index;
+            if (event.key === "ArrowRight" || event.key === "ArrowDown")
+              next = (index + 1) % options.length;
+            else if (event.key === "ArrowLeft" || event.key === "ArrowUp")
+              next = (index - 1 + options.length) % options.length;
+            else if (event.key === "Home") next = 0;
+            else if (event.key === "End") next = options.length - 1;
+            else return;
+            event.preventDefault();
+            event.stopPropagation();
+            onChange(options[next]!.value);
+            event.currentTarget.parentElement
+              ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+          }}
+          className={`min-w-0 rounded-[3px] px-2.5 py-1.5 focus-visible:outline-2 focus-visible:outline-accent ${
             value === option.value
               ? "bg-selection text-content"
               : "text-content/50 hover:text-content"
@@ -240,7 +261,7 @@ export function Toggle({
         onChange(!on);
         playCue("switch");
       }}
-      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`settings-toggle relative h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 ${
         on ? "bg-accent" : "bg-content/20"
       }`}
     >
@@ -259,11 +280,13 @@ export function Select({
   value,
   options,
   onChange,
+  disabled = false,
 }: {
   label: string;
   value: string;
   options: { value: string; label: string; icon?: ReactNode }[];
   onChange: (value: string) => void;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(() =>
@@ -323,13 +346,11 @@ export function Select({
       return;
     }
     if (e.key === "Tab") {
-      const option = options[active];
-      if (option && option.value !== value) onChange(option.value);
       setOpen(false);
       trigger.current?.focus();
       return;
     }
-    if (e.key === "Enter") {
+    if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       const option = options[active];
       if (option) pick(option.value);
@@ -341,11 +362,18 @@ export function Select({
       <button
         type="button"
         ref={trigger}
+        disabled={disabled}
         aria-label={`${label}: ${selected?.label ?? value}`}
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-controls={open ? listId : undefined}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          setOpen(true);
+        }}
         onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full items-center justify-between gap-2 rounded-md border border-content/10 bg-content/5 px-2 py-1 text-left text-[12px] text-content outline-none hover:border-content/20"
+        className="settings-select flex min-h-8 w-full items-center justify-between gap-2 rounded-[3px] border border-content/15 bg-content/5 px-2.5 py-1.5 text-left text-[12px] text-content hover:border-content/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
           {selected?.icon ? (
@@ -364,6 +392,7 @@ export function Select({
       </button>
       {open ? (
         <Popover
+          id={listId}
           anchor={root}
           side="bottom"
           align="end"

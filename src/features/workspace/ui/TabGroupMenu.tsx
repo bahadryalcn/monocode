@@ -19,22 +19,26 @@ import {
 } from "react";
 import { normalizeHex } from "../../../shared/lib/colorUtils";
 import { projectKey } from "../../../shared/lib/paths";
-import { clearProjectLogo, pickAndSetProjectLogo } from "../../projects/model/projectLogos";
-import { PROJECT_MASCOTS, projectMascot } from "../../projects/model/projectMascots";
+import {
+  clearProjectLogo,
+  pickAndSetProjectLogo,
+} from "../../projects/model/projectLogos";
 import { TAB_GROUP_COLORS } from "../model/tabGroups";
-import { ColorPickerPopover, ColorSwatchRow } from "../../../shared/ui/ColorPickerPopover";
+import {
+  ColorPickerPopover,
+  ColorSwatchRow,
+} from "../../../shared/ui/ColorPickerPopover";
 import { Popover } from "../../../shared/ui/Popover";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
-import { ProjectMascot } from "../../projects/ui/ProjectMascot";
+import { ProjectIconPicker } from "../../projects/ui/ProjectIconPicker";
 import { MOD } from "../../../platform/tauri/platform";
-import { ExplorerMenu, type ExplorerMenuItem } from "../../files/ui/ExplorerMenu";
+import {
+  ExplorerMenu,
+  type ExplorerMenuItem,
+} from "../../files/ui/ExplorerMenu";
 
 export type TabGroupMenuAction =
-  | "new-tab"
-  | "new-window"
-  | "close-group"
-  | "ungroup"
-  | "delete-group";
+  "new-tab" | "new-window" | "close-group" | "ungroup" | "delete-group";
 
 export type TabGroupMenuExtraItem = {
   id: string;
@@ -75,7 +79,10 @@ type Props = {
   /** When false, only name / logo / color controls are shown. */
   showActions?: boolean;
   /** Active state action shown before the name and appearance controls. */
-  leadingAction?: Pick<TabGroupMenuExtraItem, "id" | "label" | "description" | "icon">;
+  leadingAction?: Pick<
+    TabGroupMenuExtraItem,
+    "id" | "label" | "description" | "icon"
+  >;
   extraItems?: TabGroupMenuExtraItem[];
   /** Return false to keep the menu open after validation or persistence errors. */
   onExtraPick?: (id: string) => void | boolean;
@@ -157,7 +164,8 @@ export function TabGroupMenu({
   } | null>(null);
   const submenuCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cancelSubmenuClose = () => {
-    if (submenuCloseTimer.current != null) clearTimeout(submenuCloseTimer.current);
+    if (submenuCloseTimer.current != null)
+      clearTimeout(submenuCloseTimer.current);
     submenuCloseTimer.current = null;
   };
   const closeSubmenu = () => {
@@ -181,8 +189,6 @@ export function TabGroupMenu({
     input.current?.focus();
     input.current?.select();
   }, []);
-
-  const shownMascot = projectMascot(mascotProject, mascotName).name;
 
   const trimmedName = name.trim();
   const nameError =
@@ -246,7 +252,10 @@ export function TabGroupMenu({
           className="mb-2 w-full rounded-lg border border-content/10 bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none ring-accent/40 focus:ring-1"
         />
         {nameError ? (
-          <p role="alert" className="-mt-1 mb-2 px-0.5 text-xs leading-snug text-red-400">
+          <p
+            role="alert"
+            className="-mt-1 mb-2 px-0.5 text-xs leading-snug text-red-400"
+          >
             {nameError}
           </p>
         ) : null}
@@ -283,7 +292,9 @@ export function TabGroupMenu({
             <div className="min-w-0 flex-1">
               <p className="text-[11px] text-content/50">Project logo</p>
               <p className="truncate text-[12px] text-content/70">
-                {logoPath ? "Shown in tabs and composer" : "Optional — replaces folder icon"}
+                {logoPath
+                  ? "Shown in tabs and composer"
+                  : "Optional — replaces folder icon"}
               </p>
             </div>
             {logoPath ? (
@@ -293,7 +304,9 @@ export function TabGroupMenu({
                 aria-label="Remove project logo"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
-                  void clearProjectLogo(projectKey(logoProject)).then(onLogoChange);
+                  void clearProjectLogo(projectKey(logoProject)).then(
+                    onLogoChange,
+                  );
                 }}
                 className="grid size-7 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/10 hover:text-content"
               >
@@ -324,25 +337,11 @@ export function TabGroupMenu({
           />
         ) : null}
 
-        <div className="mb-2 px-0.5">
-          <p className="mb-1 text-[11px] text-content/50">Mascot</p>
-          <div className="flex items-center justify-between gap-1">
-            {PROJECT_MASCOTS.map((mascot) => (
-              <MascotSwatch
-                key={mascot.name}
-                title={mascot.name}
-                selected={shownMascot === mascot.name}
-                onPick={() => onMascotChange(groupId, mascot.name)}
-              >
-                <ProjectMascot
-                  project={groupId}
-                  name={mascot.name}
-                  className="size-3 text-content/75"
-                />
-              </MascotSwatch>
-            ))}
-          </div>
-        </div>
+        <ProjectIconPicker
+          project={mascotProject}
+          name={mascotName}
+          onPick={(name) => onMascotChange(groupId, name)}
+        />
 
         {showActions ? (
           <>
@@ -393,7 +392,9 @@ export function TabGroupMenu({
                   item={item}
                   expanded={submenu?.item.id === item.id}
                   onHover={(anchor) =>
-                    setSubmenu(item.submenu && !item.disabled ? { item, anchor } : null)
+                    setSubmenu(
+                      item.submenu && !item.disabled ? { item, anchor } : null,
+                    )
                   }
                   onPick={(anchor) => {
                     if (item.submenu) setSubmenu({ item, anchor });
@@ -423,43 +424,14 @@ export function TabGroupMenu({
   );
 }
 
-function MascotSwatch({
-  title,
-  selected,
-  onPick,
-  children,
-}: {
-  title: string;
-  selected: boolean;
-  onPick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={`Mascot ${title}`}
-      aria-pressed={selected}
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onPick}
-      className={`grid size-5 shrink-0 place-items-center rounded-md ${
-        selected
-          ? "bg-selection-hover ring-1 ring-content/50"
-          : "hover:bg-content/8"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
 function MenuRow({
   item,
   onPick,
   onHover,
   expanded,
 }: {
-  item: MenuItem & Pick<TabGroupMenuExtraItem, "disabled" | "submenu" | "description">;
+  item: MenuItem &
+    Pick<TabGroupMenuExtraItem, "disabled" | "submenu" | "description">;
   onPick: (anchor: HTMLButtonElement) => void;
   onHover?: (anchor: HTMLButtonElement) => void;
   expanded?: boolean;
@@ -492,7 +464,9 @@ function MenuRow({
       }`}
     >
       <Icon className="size-3.5 shrink-0 text-content/55" strokeWidth={1.75} />
-      <span className={`min-w-0 flex-1 leading-label ${item.description ? "py-2" : "truncate"}`}>
+      <span
+        className={`min-w-0 flex-1 leading-label ${item.description ? "py-2" : "truncate"}`}
+      >
         {item.label}
         {item.description ? (
           <span className="mt-1 block text-[11px] leading-snug text-content/60">
@@ -501,7 +475,10 @@ function MenuRow({
         ) : null}
       </span>
       {item.submenu ? (
-        <ChevronRight className="size-3.5 shrink-0 text-content/50" strokeWidth={1.75} />
+        <ChevronRight
+          className="size-3.5 shrink-0 text-content/50"
+          strokeWidth={1.75}
+        />
       ) : null}
       {item.shortcut ? (
         <span className="shrink-0 text-[11px] text-content/40">

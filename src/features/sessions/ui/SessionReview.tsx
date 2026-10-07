@@ -12,6 +12,7 @@ import { invalidateWatchedFiles } from "../../files/model/fileWatch";
 import { basename, notifyGitChanged, subscribeGitChanged } from "../../../platform/tauri/fs";
 import { formatInteger } from "../../../shared/lib/numbers";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
+import { useChangedFileMenu } from "../../files/ui/useChangedFileMenu";
 
 type Props = {
   sessionId: string;
@@ -19,6 +20,7 @@ type Props = {
   enabled?: boolean;
   busy?: boolean;
   undoLocked?: boolean;
+  onOpenFile?: (path: string) => void;
   onOpenDiff: (
     path?: string,
     session?: { sessionId: string; cwd: string },
@@ -31,6 +33,7 @@ export function SessionReview({
   enabled = true,
   busy = false,
   undoLocked = false,
+  onOpenFile,
   onOpenDiff,
 }: Props) {
   const [files, setFiles] = useState<CheckpointFile[]>([]);
@@ -193,6 +196,7 @@ export function SessionReview({
                 sessionId={sessionId}
                 cwd={cwd}
                 onOpenDiff={onOpenDiff}
+                onOpenFile={onOpenFile}
               />
             </li>
           ))}
@@ -226,29 +230,42 @@ function FileRow({
   sessionId,
   cwd,
   onOpenDiff,
+  onOpenFile,
 }: {
   file: CheckpointFile;
   sessionId: string;
   cwd: string;
+  onOpenFile?: (path: string) => void;
   onOpenDiff: (
     path?: string,
     session?: { sessionId: string; cwd: string },
   ) => void;
 }) {
   const name = basename(file.relative);
+  const { menu, ...menuHandlers } = useChangedFileMenu({
+    path: file.path,
+    relative: file.relative,
+    deleted: file.status === "deleted",
+    onOpenChanges: () => onOpenDiff(file.path, { sessionId, cwd }),
+    onOpenFile: onOpenFile ? () => onOpenFile(file.path) : undefined,
+  });
   return (
-    <button
-      type="button"
-      title={file.relative}
-      onClick={() => onOpenDiff(file.path, { sessionId, cwd })}
-      className="flex h-8 w-full min-w-0 items-center gap-2 px-3 text-left text-content/65 hover:bg-content/5 hover:text-content"
-    >
-      <FileTypeIcon name={name} isDir={false} size={15} />
-      <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
-        {file.relative}
-      </span>
-      <DiffCounts file={file} />
-    </button>
+    <>
+      <button
+        {...menuHandlers}
+        type="button"
+        title={file.relative}
+        onClick={() => onOpenDiff(file.path, { sessionId, cwd })}
+        className="flex h-8 w-full min-w-0 items-center gap-2 px-3 text-left text-content/65 hover:bg-content/5 hover:text-content"
+      >
+        <FileTypeIcon name={name} isDir={false} size={15} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[12px]">
+          {file.relative}
+        </span>
+        <DiffCounts file={file} />
+      </button>
+      {menu}
+    </>
   );
 }
 

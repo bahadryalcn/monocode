@@ -1,0 +1,304 @@
+<div id="full-width-pacing-preview">
+  <div class="fp-bar">
+    <div class="fp-status"><i></i><span>Working</span><span class="fp-clock">1m 33s</span></div>
+    <canvas aria-label="Tespihli amca, çubuğun bütün genişliğinde değişen adım sayılarıyla sağa sola volta atıyor" role="img"></canvas>
+  </div>
+  <div class="fp-controls"><button type="button">Duraklat</button></div>
+</div>
+<style>
+#full-width-pacing-preview { padding:20px 0 4px; font:12px 'Segoe UI',sans-serif; color:#bbb; }
+#full-width-pacing-preview .fp-bar { position:relative; height:32px; background:#202020; border:1px solid #363636; border-radius:8px; overflow:hidden; }
+#full-width-pacing-preview .fp-status { position:relative; z-index:1; height:32px; display:flex; align-items:center; gap:9px; padding:0 12px; text-shadow:0 0 4px #202020,0 1px 2px #202020; pointer-events:none; }
+#full-width-pacing-preview .fp-status i { width:6px; height:6px; border-radius:50%; background:#459fff; box-shadow:0 0 6px #459fff60; }
+#full-width-pacing-preview .fp-clock { color:#777; }
+#full-width-pacing-preview canvas { position:absolute; inset:0; display:block; width:100%; height:32px; }
+#full-width-pacing-preview .fp-controls { display:flex; justify-content:flex-end; margin-top:12px; }
+#full-width-pacing-preview button { color:#bbb; border:1px solid #444; background:#252525; border-radius:6px; font:inherit; padding:6px 12px; }
+</style>
+<script>
+"use strict";
+var UnclePreviewArt = (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+  var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+  // src/features/sessions/ui/pacingUncleArt.ts
+  var pacingUncleArt_exports = {};
+  __export(pacingUncleArt_exports, {
+    PACING_STEPS: () => PACING_STEPS,
+    PACING_STEP_SECONDS: () => PACING_STEP_SECONDS,
+    createPacingRoute: () => createPacingRoute,
+    drawPacingUncle: () => drawPacingUncle,
+    pacingPose: () => pacingPose
+  });
+  var code = [
+    "const a = (x) => x;",
+    "if (ok) { return 1; }",
+    "</> {} [] () => ;",
+    "let n = i + 1; //",
+    "await run(task);",
+    "0110 : { value }"
+  ];
+  function tube(path, ax, ay, bx, by, radius) {
+    const angle = Math.atan2(by - ay, bx - ax), dx = Math.sin(angle) * radius, dy = Math.cos(angle) * radius;
+    path.moveTo(ax + dx, ay - dy);
+    path.lineTo(bx + dx, by - dy);
+    path.lineTo(bx - dx, by + dy);
+    path.lineTo(ax - dx, ay + dy);
+    path.closePath();
+    path.moveTo(ax + radius, ay);
+    path.arc(ax, ay, radius, 0, Math.PI * 2);
+    path.moveTo(bx + radius, by);
+    path.arc(bx, by, radius, 0, Math.PI * 2);
+  }
+  var PACING_STEPS = [
+    20,
+    -10,
+    5,
+    -20,
+    40,
+    -15,
+    30,
+    -10,
+    50,
+    -20,
+    15,
+    -35,
+    60,
+    -10,
+    25,
+    -80
+  ];
+  var PACING_STEP_SECONDS = 0.34;
+  var PAUSE_SECONDS = 0.28;
+  var TURN_SECONDS = 0.3;
+  function createPacingRoute(span) {
+    if (span <= 0) return [];
+    const stride = Math.min(16, Math.max(4, span / 50));
+    const legs = [];
+    let x = 0;
+    const add = (target) => {
+      const to = Math.min(span, Math.max(0, target));
+      if (Math.abs(to - x) < 1e-3) return;
+      const steps = Math.abs(to - x) / stride;
+      legs.push({
+        from: x,
+        to,
+        dir: Math.sign(to - x),
+        steps,
+        duration: steps * PACING_STEP_SECONDS
+      });
+      x = to;
+    };
+    for (const steps of PACING_STEPS) add(x + steps * stride);
+    add(0);
+    return legs;
+  }
+  function pacingPose(t, span = 844) {
+    const legs = createPacingRoute(span);
+    if (!legs.length) return { x: 0, dir: 1, walk: false, phase: 0 };
+    const cycle = legs.reduce(
+      (sum, leg, i) => sum + leg.duration + PAUSE_SECONDS + (leg.dir !== legs[(i + 1) % legs.length].dir ? TURN_SECONDS : 0),
+      0
+    );
+    let moment = (t % cycle + cycle) % cycle;
+    for (let i = 0; i < legs.length; i++) {
+      const leg = legs[i];
+      const next = legs[(i + 1) % legs.length];
+      if (moment < leg.duration)
+        return {
+          x: (leg.from + (leg.to - leg.from) * moment / leg.duration) / span,
+          dir: leg.dir,
+          walk: true,
+          phase: moment / PACING_STEP_SECONDS * Math.PI
+        };
+      moment -= leg.duration;
+      if (moment < PAUSE_SECONDS)
+        return { x: leg.to / span, dir: leg.dir, walk: false, phase: 0 };
+      moment -= PAUSE_SECONDS;
+      if (next.dir !== leg.dir) {
+        if (moment < TURN_SECONDS)
+          return {
+            x: leg.to / span,
+            dir: leg.dir * Math.cos(moment / TURN_SECONDS * Math.PI),
+            walk: false,
+            phase: 0
+          };
+        moment -= TURN_SECONDS;
+      }
+    }
+    return { x: 0, dir: 1, walk: false, phase: 0 };
+  }
+  function character(ctx, x, baseline, scale, p, backdrop) {
+    const step = p.walk ? Math.sin(p.phase) : 0;
+    const bob = p.walk ? Math.abs(step) * 0.35 : 0;
+    ctx.save();
+    ctx.translate(x, baseline);
+    ctx.scale(scale * p.dir, scale);
+    ctx.translate(0, -112 - bob);
+    const shape = new Path2D();
+    shape.ellipse(4, 23, 15, 16, -0.08, 0, Math.PI * 2);
+    shape.moveTo(15, 20);
+    shape.quadraticCurveTo(26, 23, 21, 27);
+    shape.lineTo(15, 28);
+    shape.closePath();
+    shape.moveTo(-13, 13);
+    shape.quadraticCurveTo(-15, 2, 1, 2);
+    shape.quadraticCurveTo(13, 1, 17, 9);
+    shape.lineTo(24, 12);
+    shape.lineTo(23, 14);
+    shape.lineTo(-13, 14);
+    shape.closePath();
+    tube(shape, 1, 36, 0, 44, 5);
+    shape.moveTo(-10, 42);
+    shape.quadraticCurveTo(5, 38, 14, 46);
+    shape.quadraticCurveTo(27, 54, 24, 67);
+    shape.quadraticCurveTo(24, 80, 9, 81);
+    shape.lineTo(-13, 78);
+    shape.quadraticCurveTo(-17, 59, -16, 50);
+    shape.quadraticCurveTo(-16, 44, -10, 42);
+    shape.closePath();
+    tube(shape, -11, 48, -26, 62, 4);
+    tube(shape, -26, 62, -23, 75, 3.6);
+    tube(shape, -5, 48, -21, 62, 3);
+    tube(shape, -21, 62, -23, 75, 2.8);
+    shape.moveTo(-18, 76);
+    shape.ellipse(-23, 76, 5, 4, -0.3, 0, Math.PI * 2);
+    const a = step * 7, b = -a;
+    const liftA = Math.max(0, -step) * 2, liftB = Math.max(0, step) * 2;
+    tube(shape, -5, 79, b - 6, 94, 5);
+    tube(shape, b - 6, 94, b - 7, 108 - liftB, 4);
+    tube(shape, 9, 79, a + 8, 94, 5);
+    tube(shape, a + 8, 94, a + 6, 108 - liftA, 4);
+    tube(shape, b - 10, 109 - liftB, b, 109 - liftB, 2.6);
+    tube(shape, a + 3, 109 - liftA, a + 14, 109 - liftA, 2.6);
+    ctx.save();
+    ctx.clip(shape);
+    ctx.font = "2.1px monospace";
+    ctx.textBaseline = "top";
+    for (let row = 0; row < 70; row++) {
+      ctx.fillStyle = row % 4 === 0 ? "#bdc2c8" : "#929ba5";
+      ctx.fillText(
+        code[row % code.length].repeat(6),
+        -38 - row % 3,
+        row * 1.65
+      );
+    }
+    ctx.restore();
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.fillStyle = backdrop;
+    ctx.beginPath();
+    ctx.ellipse(11, 21, 2.5, 2.2, -0.1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#e0e3e6";
+    ctx.font = "4px monospace";
+    ctx.fillText(".", 11, 20);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.strokeStyle = backdrop;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(-12, 14);
+    ctx.lineTo(17, 14);
+    ctx.moveTo(7, 18);
+    ctx.lineTo(14, 18);
+    ctx.stroke();
+    ctx.lineWidth = 3.3;
+    ctx.beginPath();
+    ctx.moveTo(9, 29);
+    ctx.quadraticCurveTo(14, 27, 19, 30);
+    ctx.stroke();
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(12, 34);
+    ctx.quadraticCurveTo(15, 35, 17, 33);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(-5, 43);
+    ctx.lineTo(3, 52);
+    ctx.lineTo(11, 45);
+    ctx.moveTo(3, 52);
+    ctx.lineTo(7, 78);
+    ctx.moveTo(-22, 70);
+    ctx.lineTo(-18, 71);
+    ctx.moveTo(-12, 76);
+    ctx.lineTo(19, 78);
+    ctx.stroke();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "#d1d4d8";
+    ctx.font = "3px monospace";
+    ctx.fillText(":", 4, 57);
+    ctx.fillText(":", 5, 65);
+    ctx.fillText(":", 6, 73);
+    ctx.save();
+    ctx.translate(-24, 77);
+    ctx.rotate(p.walk ? Math.sin(p.phase - 0.6) * 0.16 : 0.04);
+    ctx.font = "3px monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "#c6c1b6";
+    for (let i = 0; i < 23; i++) {
+      const angle = -Math.PI / 2 + i / 23 * Math.PI * 2;
+      ctx.fillText("o", Math.cos(angle) * 4.5 - 2, 10 + Math.sin(angle) * 10);
+    }
+    ctx.fillText("|", -2, 22);
+    ctx.fillText(";", -2, 25);
+    ctx.restore();
+    ctx.restore();
+  }
+  function drawPacingUncle(ctx, width, height, elapsed) {
+    ctx.clearRect(0, 0, width, height);
+    const scale = (height - 2) / 112;
+    const span = Math.max(0, width - 36);
+    const p = pacingPose(elapsed, span);
+    character(ctx, (width - span) / 2 + p.x * span, height - 1, scale, p, "#000");
+  }
+  return __toCommonJS(pacingUncleArt_exports);
+})();
+
+</script>
+<script>
+(() => {
+  const root = document.getElementById('full-width-pacing-preview');
+  const canvas = root.querySelector('canvas'), ctx = canvas.getContext('2d');
+  const button = root.querySelector('button');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  const settings = { playing: !reduced.matches, speed: 1 };
+  let elapsed = 0, last = null;
+  function paint() { UnclePreviewArt.drawPacingUncle(ctx, canvas.clientWidth, 32, elapsed); }
+  function resize() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    canvas.width = Math.round(canvas.clientWidth * dpr); canvas.height = 32 * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); paint();
+  }
+  function update() { button.textContent = settings.playing ? 'Duraklat' : 'Oynat'; }
+  button.addEventListener('click', () => { settings.playing = !settings.playing; update(); });
+  reduced.addEventListener('change', () => { settings.playing = !reduced.matches; update(); });
+  new ResizeObserver(resize).observe(root); resize(); update();
+  function tick(now) {
+    if (!root.isConnected) return;
+    if (last !== null && settings.playing) elapsed += Math.min((now - last) / 1000, .1) * settings.speed;
+    last = now; paint(); requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+  if (globalThis.Tweak) {
+    const tweak = new Tweak({ container: root, onChange: update });
+    tweak.addSlider(settings, 'speed', { label: 'Volta hızı', min: .5, max: 3, step: .25 });
+    tweak.addToggle(settings, 'playing', { label: 'Animasyon' });
+  }
+})();
+</script>

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "MonoCode Dev",
+  "productName": "imc Dev",
   "version": "0.9.13",
-  "identifier": "com.monocode.desktop.dev",
+  "identifier": "com.imece.desktop.dev",
   "build": {
     "beforeDevCommand": "pnpm run dev",
     "devUrl": "http://localhost:1420",
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "MonoCode Dev",
+        "title": "imc Dev",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
@@ -28,9 +28,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob: https://avatars.githubusercontent.com https://uploads.linear.app https://lh3.googleusercontent.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; object-src 'none'; base-uri 'self'; frame-src 'none'",
-      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob: https://avatars.githubusercontent.com https://uploads.linear.app https://lh3.googleusercontent.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost http://localhost:1420 ws://localhost:1420 http://127.0.0.1:1420 ws://127.0.0.1:1420; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; object-src 'none'; base-uri 'self'; frame-src 'none'",
-      "dangerousDisableAssetCspModification": ["style-src"],
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob: https://avatars.githubusercontent.com https://uploads.linear.app https://lh3.googleusercontent.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; object-src 'none'; base-uri 'self'; frame-src html-preview: http://html-preview.localhost https://html-preview.localhost",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost https://asset.localhost data: blob: https://avatars.githubusercontent.com https://uploads.linear.app https://lh3.googleusercontent.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost https://ipc.localhost asset: http://asset.localhost https://asset.localhost http://localhost:1420 ws://localhost:1420 http://127.0.0.1:1420 ws://127.0.0.1:1420; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; object-src 'none'; base-uri 'self'; frame-src html-preview: http://html-preview.localhost https://html-preview.localhost",
+      "dangerousDisableAssetCspModification": [
+        "style-src"
+      ],
       "assetProtocol": {
         "enable": true,
         "scope": [
@@ -40,7 +42,7 @@
     }
   },
   "bundle": {
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
     "active": true,
     "targets": "all",
     "icon": [
@@ -50,9 +52,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": {
-      "macos/Assets.car": "Assets.car"
-    },
     "macOS": {
       "entitlements": "Entitlements.plist",
       "signingIdentity": "-"

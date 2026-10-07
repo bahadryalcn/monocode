@@ -40,7 +40,8 @@ import { TabWidthMotion } from "./ClosingTab";
 import { FileTypeIcon } from "../../features/files/ui/FileTypeIcon";
 import { TabLabel } from "../../shared/ui/TabLabel";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
-import { getName } from "@tauri-apps/api/app";
+import { loadAppName } from "../../shared/lib/appName";
+import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TerminalSpinner } from "../../features/sessions/ui/TerminalSpinner";
 import {
@@ -49,6 +50,8 @@ import {
 } from "../model/windowTransferPopout";
 import { beginWindowTabDrag } from "../model/windowDragPreview";
 import { WindowControls } from "./WindowControls";
+import { ProjectQuickActions } from "../../features/projects/ui/ProjectQuickActions";
+import type { ProjectAction } from "../../features/projects/model/projectActions";
 import { IS_MAC, IS_WIN, MOD, SHIFT } from "../../platform/tauri/platform";
 import type { RecentProject } from "../../features/projects/model/recents";
 import {
@@ -120,6 +123,7 @@ type Props = {
   tabs: Tab[];
   activeId: string;
   cwd: string;
+  onRunProjectAction?: (action: ProjectAction) => void;
   projectRailOpen?: boolean;
   sessionSidebarOpen?: boolean;
   compactRail?: boolean;
@@ -677,6 +681,7 @@ function TitleBarComponent({
   tabs,
   activeId,
   cwd,
+  onRunProjectAction,
   projectRailOpen = true,
   sessionSidebarOpen = true,
   compactRail = false,
@@ -916,11 +921,11 @@ function TitleBarComponent({
     [activeId, tabs],
   );
   // The product name differs between the official, fork and dev builds.
-  const [appName, setAppName] = useState("MonoCode");
+  const [appName, setAppName] = useState<string>(PRODUCT_IDENTITY.displayName);
   useEffect(() => {
     void (async () => {
       try {
-        setAppName(await getName());
+        setAppName(await loadAppName());
       } catch {}
     })();
   }, []);
@@ -1088,8 +1093,9 @@ function TitleBarComponent({
     (!sessionSidebarOpen && !projectless);
   const showLayoutControl = Boolean(layout);
   const trailingControls =
-    showTrailingActions || showLayoutControl || !IS_MAC ? (
+    showCurrentProject || showTrailingActions || showLayoutControl || !IS_MAC ? (
       <div className="flex h-full shrink-0 items-stretch">
+        {showCurrentProject ? <ProjectQuickActions cwd={cwd} onRun={onRunProjectAction} /> : null}
         {showLayoutControl ? (
           <div
             ref={layoutAnchorRef}
@@ -1157,7 +1163,7 @@ function TitleBarComponent({
   // exempts buttons, links and inputs on its own.
   return (
     <header
-      className={`flex h-10 shrink-0 select-none items-stretch border-b border-stroke${
+      className={`imece-titlebar flex h-10 shrink-0 select-none items-stretch border-b border-stroke${
         compactRail ? " body-glass" : ""
       }`}
       data-tauri-drag-region="deep"
@@ -1216,6 +1222,7 @@ function TitleBarComponent({
         </CwdPicker>
       ) : null}
 
+      <span className="imece-workbench-tag" aria-hidden="true">WORKBENCH</span>
       <div
         className={`flex min-w-0 flex-1 items-stretch${
           showProjectButton ? " border-l border-stroke" : ""

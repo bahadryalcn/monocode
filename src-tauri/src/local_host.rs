@@ -5,8 +5,8 @@
 //! desktop has a sync peer for its own library. Uses the same host CLI
 //! commands the SSH bootstrap already drives remotely
 //! (`remote_ssh.rs::pairing_script`), just as a local child process.
-use std::path::{Path, PathBuf};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -20,16 +20,16 @@ fn host_data_dir() -> Option<PathBuf> {
     let home = std::env::var("USERPROFILE").ok()?;
     #[cfg(not(windows))]
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".monocode-host"))
+    Some(PathBuf::from(home).join(".imece-host"))
 }
 
 /// The local launcher command (program, leading args), or `None` when
 /// nothing is installed at the expected location on this machine.
 fn launcher_command(data_dir: &Path) -> Option<(String, Vec<String>)> {
     #[cfg(windows)]
-    let launcher = data_dir.join("bin").join("monocode-host.cmd");
+    let launcher = data_dir.join("bin").join("imece-host.cmd");
     #[cfg(not(windows))]
-    let launcher = data_dir.join("bin").join("monocode-host");
+    let launcher = data_dir.join("bin").join("imece-host");
     if !launcher.exists() {
         return None;
     }
@@ -82,7 +82,12 @@ fn run_with_timeout(mut command: Command, timeout: Duration) -> Option<String> {
     Some(String::from_utf8_lossy(&buffer).into_owned())
 }
 
-fn run_launcher(program: &str, base_args: &[String], args: &[&str], timeout: Duration) -> Option<Value> {
+fn run_launcher(
+    program: &str,
+    base_args: &[String],
+    args: &[&str],
+    timeout: Duration,
+) -> Option<Value> {
     let mut command = Command::new(program);
     command.args(base_args).args(args);
     #[cfg(windows)]
@@ -119,7 +124,12 @@ pub fn local_host_connect(app: AppHandle) -> Result<Option<Machine>, String> {
     let Some((program, base_args)) = launcher_command(&data_dir) else {
         return Ok(None);
     };
-    let Some(info) = run_launcher(&program, &base_args, &["connection-info"], Duration::from_secs(10)) else {
+    let Some(info) = run_launcher(
+        &program,
+        &base_args,
+        &["connection-info"],
+        Duration::from_secs(10),
+    ) else {
         return Ok(None);
     };
     let Some(port) = info.get("port").and_then(Value::as_u64) else {
@@ -133,14 +143,25 @@ pub fn local_host_connect(app: AppHandle) -> Result<Option<Machine>, String> {
         return Ok(Some(machine));
     }
 
-    let Some(pair) = run_launcher(&program, &base_args, &["pair", "--name", &local_device_name(), "--json"], Duration::from_secs(20)) else {
+    let Some(pair) = run_launcher(
+        &program,
+        &base_args,
+        &["pair", "--name", &local_device_name(), "--json"],
+        Duration::from_secs(20),
+    ) else {
         return Ok(None);
     };
     let Some(token) = pair.get("token").and_then(Value::as_str) else {
         return Ok(None);
     };
     let state: State<'_, RemoteConnections> = app.state();
-    let machine = remote_connect(app.clone(), state, local_device_name(), url, token.to_string())?;
+    let machine = remote_connect(
+        app.clone(),
+        state,
+        local_device_name(),
+        url,
+        token.to_string(),
+    )?;
     Ok(Some(machine))
 }
 
@@ -151,7 +172,8 @@ mod tests {
 
     #[test]
     fn launcher_command_is_none_when_nothing_is_installed() {
-        let directory = std::env::temp_dir().join(format!("monocode-local-host-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("monocode-local-host-{}", uuid::Uuid::new_v4()));
         assert!(launcher_command(&directory).is_none());
         let _ = fs::remove_dir_all(&directory);
     }
@@ -159,11 +181,12 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn launcher_command_finds_the_unix_binary() {
-        let directory = std::env::temp_dir().join(format!("monocode-local-host-{}", uuid::Uuid::new_v4()));
+        let directory =
+            std::env::temp_dir().join(format!("monocode-local-host-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(directory.join("bin")).unwrap();
-        fs::write(directory.join("bin").join("monocode-host"), b"").unwrap();
+        fs::write(directory.join("bin").join("imece-host"), b"").unwrap();
         let (program, args) = launcher_command(&directory).expect("launcher found");
-        assert!(program.ends_with("monocode-host"));
+        assert!(program.ends_with("imece-host"));
         assert!(args.is_empty());
         let _ = fs::remove_dir_all(&directory);
     }
@@ -171,7 +194,10 @@ mod tests {
     #[test]
     fn run_launcher_parses_the_last_json_line_of_stdout() {
         let value = parse_launcher_output("some log line\n{\"port\":3774}\n");
-        assert_eq!(value.unwrap().get("port").and_then(|v| v.as_u64()), Some(3774));
+        assert_eq!(
+            value.unwrap().get("port").and_then(|v| v.as_u64()),
+            Some(3774)
+        );
     }
 
     #[cfg(not(windows))]

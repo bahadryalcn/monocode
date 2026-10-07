@@ -746,7 +746,7 @@ describe("sidebar session IDs", () => {
     const monocodeMenu = openCopyIdMenu("session-2");
     const copyMonoCodeId = Array.from(
       monocodeMenu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
-    ).find((item) => item.textContent === "MonoCode session ID")!;
+    ).find((item) => item.textContent === "imc session ID")!;
     expect(copyMonoCodeId.disabled).toBe(false);
     await act(async () => copyMonoCodeId.click());
     expect(copyText).toHaveBeenNthCalledWith(2, "session-2");
@@ -760,7 +760,7 @@ describe("sidebar session IDs", () => {
     ).find((item) => item.textContent === "Harness session ID")!;
     const copyMonoCodeId = Array.from(
       copyMenu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'),
-    ).find((item) => item.textContent === "MonoCode session ID")!;
+    ).find((item) => item.textContent === "imc session ID")!;
     expect(copyHarnessId.disabled).toBe(true);
     expect(copyMonoCodeId.disabled).toBe(false);
     await act(async () => copyMonoCodeId.click());
@@ -2168,7 +2168,7 @@ describe("sidebar working agents", () => {
     expect(
       preview.querySelector('[data-live-agent-card="agent-b"]')!.textContent,
     ).toContain("beta");
-    expect(preview.querySelector(".mascot-active")).not.toBeNull();
+    expect(preview.querySelector(".imece-sigil-active")).not.toBeNull();
 
     act(() =>
       preview

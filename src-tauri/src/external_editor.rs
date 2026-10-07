@@ -28,6 +28,33 @@ struct EditorDefinition {
 
 const EDITORS: &[EditorDefinition] = &[
     EditorDefinition {
+        id: "intellij",
+        name: "IntelliJ IDEA",
+        commands: &["idea", "idea64"],
+        #[cfg(target_os = "macos")]
+        mac_apps: &["IntelliJ IDEA.app", "IntelliJ IDEA CE.app"],
+        #[cfg(windows)]
+        windows_paths: &[],
+    },
+    EditorDefinition {
+        id: "webstorm",
+        name: "WebStorm",
+        commands: &["webstorm", "webstorm64"],
+        #[cfg(target_os = "macos")]
+        mac_apps: &["WebStorm.app"],
+        #[cfg(windows)]
+        windows_paths: &[],
+    },
+    EditorDefinition {
+        id: "pycharm",
+        name: "PyCharm",
+        commands: &["pycharm", "pycharm64"],
+        #[cfg(target_os = "macos")]
+        mac_apps: &["PyCharm.app", "PyCharm CE.app"],
+        #[cfg(windows)]
+        windows_paths: &[],
+    },
+    EditorDefinition {
         id: "vscode",
         name: "Visual Studio Code",
         commands: &["code"],
@@ -161,6 +188,54 @@ fn installed_windows_app(editor: &EditorDefinition) -> Option<PathBuf> {
             let path = PathBuf::from(root).join(relative);
             path.is_file().then_some(path)
         })
+        .or_else(|| installed_jetbrains_app(editor))
+}
+
+// Only inspect immediate JetBrains installation children; never walk a disk.
+#[cfg(windows)]
+fn jetbrains_executable(root: &std::path::Path, id: &str) -> Option<PathBuf> {
+    let (prefix, binary) = match id {
+        "intellij" => ("intellij", "idea64.exe"),
+        "webstorm" => ("webstorm", "webstorm64.exe"),
+        "pycharm" => ("pycharm", "pycharm64.exe"),
+        _ => return None,
+    };
+    let mut folders: Vec<_> = std::fs::read_dir(root)
+        .ok()?
+        .take(128)
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with(prefix)
+        })
+        .map(|entry| entry.path())
+        .collect();
+    folders.sort();
+    folders
+        .into_iter()
+        .rev()
+        .map(|folder| folder.join("bin").join(binary))
+        .find(|path| path.is_file())
+}
+
+#[cfg(windows)]
+fn installed_jetbrains_app(editor: &EditorDefinition) -> Option<PathBuf> {
+    if !matches!(editor.id, "intellij" | "webstorm" | "pycharm") {
+        return None;
+    }
+    [
+        ("ProgramFiles", "JetBrains"),
+        ("LOCALAPPDATA", "Programs"),
+        ("LOCALAPPDATA", "JetBrains/Toolbox/apps"),
+    ]
+    .iter()
+    .find_map(|(variable, relative)| {
+        let root = PathBuf::from(std::env::var_os(variable)?).join(relative);
+        jetbrains_executable(&root, editor.id)
+    })
 }
 
 fn resolve_editor(editor: &EditorDefinition) -> Option<EditorLauncher> {
@@ -271,5 +346,28 @@ mod tests {
     fn unknown_editor_is_rejected_before_launch() {
         let error = launch_editor_sync("not-an-editor", ".").unwrap_err();
         assert_eq!(error, "Unknown external editor.");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn finds_versioned_jetbrains_install_without_recursive_scan() {
+        let root = std::env::temp_dir().join(format!(
+            "monocode-editors-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bin = root.join("IntelliJ IDEA 2026.2").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("idea64.exe"), b"test").unwrap();
+        assert_eq!(
+            jetbrains_executable(&root, "intellij"),
+            Some(bin.join("idea64.exe"))
+        );
+        assert_eq!(jetbrains_executable(&root, "webstorm"), None);
+        assert_eq!(jetbrains_executable(&root, "vscode"), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

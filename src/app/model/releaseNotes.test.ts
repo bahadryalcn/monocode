@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import packageJson from "../../../package.json?raw";
+
+vi.mock("../../shared/lib/appName", () => ({ appName: () => "Test Product Native" }));
 import {
   formatReleaseDate,
   presentReleaseNotes,
@@ -31,12 +34,19 @@ const fixture = `# Changelog
 `;
 
 describe("releaseNotesForVersion", () => {
+  it("bundles nonempty notes for the current app version", () => {
+    const { version } = JSON.parse(packageJson) as { version: string };
+    const notes = presentReleaseNotes(version);
+    expect(notes?.version).toBe(version);
+    expect(notes?.markdown.trim()).toBeTruthy();
+  });
+
   it("extracts only the requested release", () => {
     const release = releaseNotesForVersion("0.1.2", fixture);
 
     expect(release?.source).toEqual({ version: "0.1.2" });
     expect(releaseNotesTitle(release!.source.version)).toBe(
-      "What's new in MonoCode 0.1.2",
+      "What's new in Test Product Native 0.1.2",
     );
     expect(release?.markdown).toContain("## [0.1.2]");
     expect(release?.markdown).not.toContain("## [0.1.3]");

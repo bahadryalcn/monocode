@@ -12,19 +12,36 @@ type MarkdownNode = {
 function fileCitationNodes(value: string, cwd?: string): MarkdownNode[] {
   const nodes: MarkdownNode[] = [];
   const citations =
-    /:codex-file-citation\{((?:[^{}"']|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')*)\}/g;
+    /:codex-file-citation\{((?:[^{}"']|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')*)\}|\uE200visualize\uE202(\{[^\uE201]*\})\uE201/g;
   let offset = 0;
   for (const match of value.matchAll(citations)) {
     const attributes: Record<string, string> = {};
-    const rest = match[1].replace(
-      /([\w-]+)\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
-      (_, key: string, quoted: string) => {
-        // Markdown already decoded escapes. Do not interpret native Windows
-        // separators such as \t and \r as JSON control characters.
-        attributes[key] = quoted.slice(1, -1);
-        return "";
-      },
-    );
+    let rest = "";
+    if (match[2]) {
+      try {
+        const payload: unknown = JSON.parse(match[2]);
+        if (
+          !payload ||
+          typeof payload !== "object" ||
+          !("path" in payload) ||
+          typeof payload.path !== "string"
+        )
+          continue;
+        attributes.path = payload.path;
+        if (!/\.html?$/i.test(attributes.path)) continue;
+      } catch {
+        continue;
+      }
+    } else
+      rest = match[1].replace(
+        /([\w-]+)\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g,
+        (_, key: string, quoted: string) => {
+          // Markdown already decoded escapes. Do not interpret native Windows
+          // separators such as \t and \r as JSON control characters.
+          attributes[key] = quoted.slice(1, -1);
+          return "";
+        },
+      );
     const path = attributes.path;
     if (rest.trim() || !path || !resolveWorkspaceFileReference(path, cwd))
       continue;

@@ -1,10 +1,10 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$base = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.monocode-host'
+$base = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.imece-host'
 $version = @@VERSION@@
 $release = @@RELEASE@@
-$forceUpgrade = $env:MONOCODE_HOST_FORCE_UPGRADE -eq '1'
-$hostPort = if ($env:MONOCODE_HOST_PORT) { [int] $env:MONOCODE_HOST_PORT } else { 3774 }
+$forceUpgrade = $env:IMECE_HOST_FORCE_UPGRADE -eq '1'
+$hostPort = if ($env:IMECE_HOST_PORT) { [int] $env:IMECE_HOST_PORT } else { 3775 }
 @@ACL@@
 
 function Download-MonoCode([string] $Url, [string] $Destination) {
@@ -50,14 +50,15 @@ try {
   $pointer = Join-Path $base 'runtime-path'
   $existed = Test-Path -LiteralPath $pointer
   if (-not $existed -or $forceUpgrade) {
+    if (-not $release) { throw 'imc host distribution is not configured. Set IMECE_HOST_RELEASE_URL when building the desktop, or install an imc host package manually.' }
     $arch = $env:PROCESSOR_ARCHITEW6432
     if (-not $arch) { $arch = $env:PROCESSOR_ARCHITECTURE }
     switch ($arch.ToUpperInvariant()) {
       'AMD64' { $target = 'win32-x64' }
       'ARM64' { $target = 'win32-arm64' }
-      default { throw 'MonoCode Host requires x64 or ARM64 Windows.' }
+      default { throw 'imc Host requires x64 or ARM64 Windows.' }
     }
-    $filename = "monocode-host-$target.zip"
+    $filename = "imece-host-$target.zip"
     $runtimeRoot = Join-Path $base 'runtime'
     New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
     $temporary = Join-Path $runtimeRoot ('.install-' + [Guid]::NewGuid().ToString('N'))
@@ -70,11 +71,11 @@ try {
     } catch { throw "The Windows host package for version $version could not be downloaded. Install a release with host packages. $($_.Exception.Message)" }
     $expected = ((Get-Content -LiteralPath $checksum -Raw).Trim() -split '\s+')[0]
     if ($expected -notmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid host package checksum.' }
-    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw 'MonoCode Host package checksum mismatch.' }
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) { throw 'imc Host package checksum mismatch.' }
     $unpacked = Join-Path $temporary 'unpacked'
     Expand-Archive -LiteralPath $archive -DestinationPath $unpacked
     $actual = & (Join-Path $unpacked 'node.exe') (Join-Path $unpacked 'host.mjs') --version
-    if ($LASTEXITCODE -ne 0 -or $actual -ne $version) { throw 'MonoCode Host version mismatch.' }
+    if ($LASTEXITCODE -ne 0 -or $actual -ne $version) { throw 'imc Host version mismatch.' }
     $runtime = Join-Path $runtimeRoot ("$version-$target-" + [Guid]::NewGuid().ToString('N'))
     Move-Item -LiteralPath $unpacked -Destination $runtime
     $bin = Join-Path $base 'bin'
@@ -82,7 +83,7 @@ try {
     $runtimeName = Split-Path -Leaf $runtime
     # Keep the batch file ASCII; cmd's set /p would misread a UTF-8 profile path.
     $launcher = "@echo off`r`nsetlocal DisableDelayedExpansion`r`n`"%~dp0..\runtime\$runtimeName\node.exe`" `"%~dp0..\runtime\$runtimeName\host.mjs`" %*`r`nexit /b %errorlevel%`r`n"
-    [IO.File]::WriteAllText((Join-Path $bin 'monocode-host.cmd'), $launcher, [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $bin 'imece-host.cmd'), $launcher, [Text.Encoding]::ASCII)
     $nextPointer = Join-Path $temporary 'runtime-path'
     [IO.File]::WriteAllText($nextPointer, $runtime, (New-Object Text.UTF8Encoding($false)))
     if (Test-Path -LiteralPath $pointer) {

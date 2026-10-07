@@ -4,7 +4,7 @@ const play = vi.fn();
 const setEnabled = vi.fn();
 const setVolume = vi.fn();
 
-vi.mock("cuelume", () => ({
+vi.mock("./imeceSoundEngine", () => ({
   play: (...args: unknown[]) => play(...args),
   setEnabled: (...args: unknown[]) => setEnabled(...args),
   setVolume: (...args: unknown[]) => setVolume(...args),
@@ -79,17 +79,17 @@ describe("sounds", () => {
   it("plays the mapped cue when enabled", () => {
     playCue("turnFinished", { projectId: "work", category: "agentFinished" });
     expect(setVolume).toHaveBeenCalledWith(SOUNDS_VOLUME);
-    expect(play).toHaveBeenCalledWith("success");
+    expect(play).toHaveBeenCalledWith("settle");
     playCue("inboxUnseen", { projectId: "work", category: "issues" });
-    expect(play).toHaveBeenCalledWith("bloom");
+    expect(play).toHaveBeenCalledWith("knock");
     playCue("linkedActivity", { projectId: "work", category: "pullRequests" });
-    expect(play).toHaveBeenCalledWith("chime");
+    expect(play).toHaveBeenCalledWith("thread");
     playCue("updateAvailable");
-    expect(play).toHaveBeenCalledWith("arrival");
+    expect(play).toHaveBeenCalledWith("welcome");
     playCue("switch");
-    expect(play).toHaveBeenCalledWith("toggle");
+    expect(play).toHaveBeenCalledWith("touch");
     playCue("copy");
-    expect(play).toHaveBeenCalledWith("scan");
+    expect(play).toHaveBeenCalledWith("stamp");
   });
 
   it("is silent when muted", () => {
@@ -108,7 +108,7 @@ describe("sounds", () => {
     expect(play).not.toHaveBeenCalled();
     playCue("inboxUnseen", { projectId: "work", category: "pullRequests" });
     playCue("updateAvailable");
-    expect(play.mock.calls).toEqual([["bloom"], ["arrival"]]);
+    expect(play.mock.calls).toEqual([["knock"], ["welcome"]]);
   });
 
   it("does not catch up on project activity from before global sounds were re-enabled", () => {
@@ -129,7 +129,7 @@ describe("sounds", () => {
         category: "issues",
         occurredAt: 2050,
       });
-      expect(play).toHaveBeenCalledExactlyOnceWith("bloom");
+      expect(play).toHaveBeenCalledExactlyOnceWith("knock");
     } finally {
       vi.useRealTimers();
     }
@@ -138,7 +138,7 @@ describe("sounds", () => {
   it("dings once per update version", () => {
     announceUpdateAvailable("0.2.0");
     expect(play).toHaveBeenCalledTimes(1);
-    expect(play).toHaveBeenCalledWith("arrival");
+    expect(play).toHaveBeenCalledWith("welcome");
     announceUpdateAvailable("0.2.0");
     expect(play).toHaveBeenCalledTimes(1);
     announceUpdateAvailable("0.2.1");

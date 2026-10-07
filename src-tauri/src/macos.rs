@@ -549,7 +549,7 @@ pub(crate) fn prefer_bundle_dock_icon() {
     unsafe { app.setApplicationIconImage(None) };
     app.dockTile().display();
     // Tauri assigns the embedded bitmap after Ready. Clear again so Icon
-    // Services keeps the composed AppIcon (squircle fill + artwork).
+    // Services keeps the imc ICNS supplied by the bundle.
     unsafe {
         let _: () = msg_send![
             &app,
@@ -634,8 +634,15 @@ fn write_dev_bundle_icons(app: &Path, app_name: &str) -> Result<(), String> {
     std::fs::create_dir_all(&resources).map_err(|e| e.to_string())?;
     std::fs::write(app.join("Contents/Info.plist"), dev_bundle_plist(app_name))
         .map_err(|e| e.to_string())?;
-    std::fs::write(resources.join("AppIcon.icns"), DEV_ICNS).map_err(|e| e.to_string())?;
-    std::fs::write(resources.join("Assets.car"), DEV_ASSETS_CAR).map_err(|e| e.to_string())?;
+    std::fs::write(resources.join("icon.icns"), DEV_ICNS).map_err(|e| e.to_string())?;
+    // This is our generated dev wrapper. Remove stale artwork from a previous
+    // wrapper refresh so Icon Services cannot select the old asset catalog.
+    for legacy_icon in ["Assets.car", "AppIcon.icns"] {
+        let legacy_icon = resources.join(legacy_icon);
+        if legacy_icon.exists() {
+            std::fs::remove_file(legacy_icon).map_err(|e| e.to_string())?;
+        }
+    }
     let _ = std::process::Command::new("/usr/bin/touch")
         .arg(app)
         .status();
@@ -644,15 +651,13 @@ fn write_dev_bundle_icons(app: &Path, app_name: &str) -> Result<(), String> {
 
 /// Must match `CFBundleIdentifier` in the generated dev bundle plist and tauri.conf.json.
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_DEFAULT_NAME: &str = "MonoCode";
+const DEV_BUNDLE_DEFAULT_NAME: &str = "imc Dev";
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_NAME_ENV: &str = "MONOCODE_DEV_APP_NAME";
+const DEV_BUNDLE_NAME_ENV: &str = "IMECE_DEV_APP_NAME";
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_ID: &str = "com.monocode.desktop";
+const DEV_BUNDLE_ID: &str = "com.imece.desktop.dev";
 #[cfg(debug_assertions)]
 const DEV_ICNS: &[u8] = include_bytes!("../icons/icon.icns");
-#[cfg(debug_assertions)]
-const DEV_ASSETS_CAR: &[u8] = include_bytes!("../macos/Assets.car");
 #[cfg(debug_assertions)]
 fn dev_bundle_dir_name(app_name: &str) -> String {
     format!("{app_name}.app")
@@ -711,11 +716,9 @@ fn dev_bundle_plist(app_name: &str) -> Vec<u8> {
 	<key>CFBundleExecutable</key>
 	<string>monocode</string>
 	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
-	<key>CFBundleIconName</key>
-	<string>AppIcon</string>
+    <string>icon.icns</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.monocode.desktop</string>
+        <string>{DEV_BUNDLE_ID}</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
@@ -791,8 +794,15 @@ mod tests {
 
     #[test]
     fn dev_bundle_plist_uses_the_provided_app_name() {
-        let plist = String::from_utf8(dev_bundle_plist("MonoCode Dev")).unwrap();
-        assert!(plist.contains("<string>MonoCode Dev</string>"));
+        let plist = String::from_utf8(dev_bundle_plist("imc Dev")).unwrap();
+        assert!(plist.contains("<string>imc Dev</string>"));
+        assert!(plist.contains("<string>com.imece.desktop.dev</string>"));
+        assert!(!plist.contains("com.monocode.desktop"));
+        assert!(plist.contains("<string>monocode</string>"));
+        assert!(plist.contains("<key>CFBundleIconFile</key>"));
+        assert!(plist.contains("<string>icon.icns</string>"));
+        assert!(!plist.contains("CFBundleIconName"));
+        assert!(!plist.contains("AppIcon"));
         assert!(!plist.contains("<string>MonoCode</string>"));
     }
 }

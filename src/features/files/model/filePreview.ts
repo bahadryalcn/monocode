@@ -1,4 +1,14 @@
 import { basename } from "../../../platform/tauri/fs";
+import { documentKind } from "./documentViewer";
+
+/** Only formats with a rendered viewer in FilePane/FileEditor. */
+export function canPreviewFile(path: string): boolean {
+  return (
+    isImagePath(path) ||
+    documentKind(path) !== null ||
+    /\.(md|mdx|markdown|html?|svg)$/i.test(basename(path))
+  );
+}
 
 const IMAGE_EXTENSIONS = new Set([
   ".png",

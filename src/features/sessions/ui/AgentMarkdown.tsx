@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -7,6 +8,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -167,7 +169,7 @@ function fileLinkMenuItems(
     {
       kind: "item",
       id: "open-monocode",
-      label: "Open in MonoCode",
+      label: `Open in ${PRODUCT_IDENTITY.displayName}`,
       disabled: !canOpenInMonoCode,
     },
     {
@@ -179,7 +181,7 @@ function fileLinkMenuItems(
     {
       kind: "item",
       id: "reveal",
-      label: remote ? "Open Containing Folder in MonoCode" : REVEAL_LABEL,
+      label: remote ? `Open Containing Folder in ${PRODUCT_IDENTITY.displayName}` : REVEAL_LABEL,
     },
     ...(remote
       ? [{ kind: "item" as const, id: "reveal-local", label: REVEAL_LABEL }]
@@ -447,7 +449,7 @@ function MarkdownCode({
   );
 
   return (
-    <div className="markdown-code-shell" dir="ltr">
+    <MarkdownCodeShell code={code}>
       {iconName ? (
         <span className="markdown-code-icon" aria-hidden="true">
           <FileTypeIcon name={iconName} isDir={false} />
@@ -467,16 +469,89 @@ function MarkdownCode({
         lineNumbers={lineNumbers}
         startLine={fence.startLine}
       />
+    </MarkdownCodeShell>
+  );
+}
+
+function MarkdownCodeShell({ code, children }: { code: string; children: ReactNode }) {
+  const [collapsed, setCollapsed] = useState(false);
+  const contentId = useId();
+  const label = collapsed ? "Expand code block" : "Collapse code block";
+  const summary = useMemo(() => {
+    const lines = code.replace(/\r?\n$/, "").split(/\r?\n/);
+    return {
+      preview: (lines.find((line) => line.trim())?.trim() || "Code block").slice(0, 160),
+      lineCount: code ? lines.length : 0,
+    };
+  }, [code]);
+
+  return (
+    <div
+      className="markdown-code-shell markdown-code-resizable"
+      data-collapsed={collapsed}
+      dir="ltr"
+      tabIndex={0}
+      role="region"
+      aria-label="Code block"
+      onPointerDown={(event) => {
+        if (event.target instanceof Element && event.target.closest('[data-streamdown="code-block-body"]')) {
+          event.currentTarget.focus({ preventScroll: true });
+        }
+      }}
+      onKeyDown={(event) => {
+        if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== "c") return;
+        const selection = window.getSelection();
+        if (!selection?.toString() || !selection.anchorNode || !selection.focusNode) return;
+        if (!event.currentTarget.contains(selection.anchorNode) || !event.currentTarget.contains(selection.focusNode)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void copyText(selection.toString()).catch(() => {
+          // Preserve the selection so the context-menu copy remains available.
+        });
+      }}
+    >
+      <button
+        type="button"
+        className="markdown-code-copy markdown-code-toggle"
+        title={label}
+        aria-label={label}
+        aria-expanded={!collapsed}
+        aria-controls={contentId}
+        onClick={() => setCollapsed((value) => !value)}
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d={collapsed ? "m6 8 4 4 4-4" : "m6 12 4-4 4 4"} />
+        </svg>
+      </button>
+      {collapsed ? (
+        <button
+          type="button"
+          className="markdown-code-summary"
+          title={label}
+          aria-label={`${label}: ${summary.preview}`}
+          aria-expanded={false}
+          aria-controls={contentId}
+          onClick={() => setCollapsed(false)}
+        >
+          <span className="markdown-code-summary-preview" dir="auto">{summary.preview}</span>
+          <span className="markdown-code-summary-count">
+            {summary.lineCount} {summary.lineCount === 1 ? "line" : "lines"}
+          </span>
+        </button>
+      ) : null}
+      <div id={contentId}>{children}</div>
     </div>
   );
 }
 
 function CodeCopyButton({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
   const timer = useRef<number | null>(null);
 
   useEffect(() => {
     setCopied(false);
+    setFailed(false);
     return () => {
       if (timer.current != null) window.clearTimeout(timer.current);
     };
@@ -485,20 +560,24 @@ function CodeCopyButton({ code }: { code: string }) {
   return (
     <button
       type="button"
-      title={copied ? "Copied" : "Copy code"}
-      aria-label={copied ? "Copied" : "Copy code"}
-      className={`markdown-code-copy ${copied ? "is-copied" : ""}`}
+      title={failed ? "Copy failed — try again" : copied ? "Copied" : "Copy code"}
+      aria-label={failed ? "Copy failed — try again" : copied ? "Copied" : "Copy code"}
+      className={`markdown-code-copy ${copied ? "is-copied" : ""} ${failed ? "is-failed" : ""}`}
       onClick={() => {
+        setFailed(false);
         void copyText(code.replace(/\r?\n$/, "")).then(
           () => {
             setCopied(true);
             if (timer.current != null) window.clearTimeout(timer.current);
             timer.current = window.setTimeout(() => setCopied(false), 1500);
           },
-          () => {},
+          () => setFailed(true),
         );
       }}
     >
+      <span className="sr-only" role="status" aria-live="polite">
+        {failed ? "Copy failed. Try again." : copied ? "Code copied." : ""}
+      </span>
       <svg viewBox="0 0 20 20" aria-hidden="true">
         <g className="markdown-code-copy-pages">
           <path d="M12 4H6a2 2 0 0 0-2 2v6" />
@@ -981,7 +1060,7 @@ function MermaidBlock({
 
   if (incomplete || failed) {
     return (
-      <div className="markdown-code-shell" dir="ltr">
+      <MarkdownCodeShell code={code}>
         <span className="markdown-code-icon" aria-hidden="true">
           <FileTypeIcon name="diagram.mmd" isDir={false} />
         </span>
@@ -992,7 +1071,7 @@ function MermaidBlock({
           language="mermaid"
           lineNumbers={false}
         />
-      </div>
+      </MarkdownCodeShell>
     );
   }
 

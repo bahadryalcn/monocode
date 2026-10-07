@@ -580,11 +580,10 @@ export class WorkspaceCommands {
   }
 
   private async gitPrStatus(cwd: unknown) {
-    const output = await this.ghCommand(cwd, ["pr", "view", "--json", "number,title,url,state"])
-      .catch(() => "");
-    if (!output) return null;
-    const pr = JSON.parse(output) as GitPr;
-    return { ...pr, state: pr.state.toLowerCase() };
+    const output = await this.ghCommand(cwd, ["pr", "list", "--head", (await this.gitCommand(cwd, ["symbolic-ref", "--short", "HEAD"])).trim(), "--state", "all", "--json", "number,title,url,state", "--limit", "20"]);
+    const prs = JSON.parse(output) as GitPr[];
+    const pr = prs.find((entry) => entry.state.toLowerCase() === "open") ?? prs[0];
+    return pr ? { ...pr, state: pr.state.toLowerCase() } : null;
   }
 
   private async gitPrCreate(cwd: unknown, title: unknown, body: unknown, base: unknown, head: unknown) {
@@ -629,7 +628,7 @@ export class WorkspaceCommands {
     }
     const output = await this.gitCommand(cwd, [
       "log", "--topo-order", "--decorate=short", `--max-count=${count}`, HISTORY_FORMAT, ...tips,
-    ]).catch(() => "");
+    ]);
     const remotes = remoteNames.split("\n").map((name) => name.trim()).filter(Boolean);
     const commits = parseHistoryLog(output, headSha, remotes);
     return { head: headSha, commits };

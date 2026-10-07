@@ -64,13 +64,17 @@ pub fn set_terminal_profile(id: Option<String>) -> Result<(), String> {
     }
 }
 
-/// `~/.monocode-host/terminal-profile.json`, next to the host's own data.
+/// `~/.imece-host/terminal-profile.json`, next to the host's own data.
 fn choice_path() -> Option<PathBuf> {
     #[cfg(windows)]
     let home = std::env::var("USERPROFILE").ok()?;
     #[cfg(not(windows))]
     let home = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".monocode-host").join("terminal-profile.json"))
+    Some(
+        PathBuf::from(home)
+            .join(".imece-host")
+            .join("terminal-profile.json"),
+    )
 }
 
 pub(crate) fn chosen_id() -> Option<String> {
@@ -105,7 +109,9 @@ fn default_profile(profiles: &[ShellProfile]) -> Option<&ShellProfile> {
     }
     #[cfg(not(windows))]
     {
-        let login = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty());
+        let login = std::env::var("SHELL")
+            .ok()
+            .filter(|shell| !shell.is_empty());
         login
             .and_then(|shell| profiles.iter().find(|profile| profile.path == shell))
             .or_else(|| profiles.first())
@@ -243,7 +249,12 @@ fn detect_windows(found: &mut Vec<ShellProfile>) {
 
     let powershell = system32.join(r"WindowsPowerShell\v1.0\powershell.exe");
     if powershell.is_file() {
-        found.push(profile("powershell", "Windows PowerShell", &powershell, "powershell"));
+        found.push(profile(
+            "powershell",
+            "Windows PowerShell",
+            &powershell,
+            "powershell",
+        ));
     }
 
     let cmd = std::env::var_os("COMSPEC")
@@ -350,7 +361,10 @@ mod tests {
             .chosen_id
             .filter(|id| listed.profiles.iter().any(|profile| &profile.id == id))
             .unwrap_or(default);
-        assert_eq!(resolve(Some("no-such-profile")).map(|p| p.id), Some(expected.clone()));
+        assert_eq!(
+            resolve(Some("no-such-profile")).map(|p| p.id),
+            Some(expected.clone())
+        );
         assert_eq!(resolve(None).map(|p| p.id), Some(expected));
     }
 

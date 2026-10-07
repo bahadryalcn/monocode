@@ -8,11 +8,13 @@ import {
   subscribeTabGroupLabels,
 } from "../../workspace/model/tabGroups";
 import {
-  loadGridArcadeEnabled,
-  subscribeGridArcadeEnabled,
+  loadCoffeehouseSceneEnabled,
+  subscribeCoffeehouseSceneEnabled,
 } from "../../settings/model/settings";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
-import { TerminalGridBackground } from "../../terminal/ui/TerminalGridBackground";
+import { VillageCoffeehouseScene } from "./VillageCoffeehouseScene";
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
+import "./ImeceSession.css";
 
 type Props = {
   cwd: string;
@@ -22,9 +24,9 @@ type Props = {
 
 export function EmptySession({ cwd, composer, hasChatBackground }: Props) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
-  const arcadeEnabled = useSyncExternalStore(
-    subscribeGridArcadeEnabled,
-    loadGridArcadeEnabled,
+  const coffeehouseEnabled = useSyncExternalStore(
+    subscribeCoffeehouseSceneEnabled,
+    loadCoffeehouseSceneEnabled,
     () => true,
   );
   const getProjectLabel = () =>
@@ -41,29 +43,37 @@ export function EmptySession({ cwd, composer, hasChatBackground }: Props) {
     getProjectLabel,
   );
   const title = project
-    ? `What should we work on in ${project}?`
-    : "What should we work on?";
+    ? `Work on ${project}.`
+    : "Start a new task.";
 
   return (
     <div
       ref={lockOverscroll}
-      className="relative flex h-full min-h-0 overflow-y-auto overscroll-none"
+      className="imece-empty relative flex h-full min-h-0 overflow-y-auto overscroll-none"
     >
-      {arcadeEnabled && !hasChatBackground ? <TerminalGridBackground /> : null}
       {composer ? (
         // Same box as the docked composer (max-w-4xl, p-1.5), so the input
         // keeps its width when the first message docks it.
-        <div className="pointer-events-none relative z-10 mx-auto flex w-full max-w-4xl flex-1 flex-col justify-center px-1.5 py-12">
-          <div className="pointer-events-auto mb-4 px-2.5">
+        <div className="imece-entry-workbench pointer-events-none relative z-10 mx-auto flex w-full flex-1 flex-col">
+          <div className="imece-entry-heading">
+            <div className="imece-wordmark">
+              <img src={PRODUCT_IDENTITY.logoSrc} alt="" />
+              <span>{PRODUCT_IDENTITY.displayName}</span>
+            </div>
+            <span className="imece-entry-context" title={cwd}> {project ?? "Workspace"} / new task</span>
+          </div>
+          <div className="imece-task-brief pointer-events-auto">
             <h1
-              className="truncate text-lg text-content"
+              className="text-content"
               title={project ? cwd : undefined}
             >
               {title}
             </h1>
+            <p>Set the objective, select your tools, and review the changes in your workspace.</p>
           </div>
 
-          <div className="pointer-events-auto w-full">{composer}</div>
+          <div className="imece-entry-composer pointer-events-auto w-full">{composer}</div>
+          {coffeehouseEnabled && !hasChatBackground ? <VillageCoffeehouseScene /> : null}
         </div>
       ) : null}
     </div>

@@ -19,6 +19,7 @@ import {
   type ExplorerFilePointerDragDetail,
 } from "../../../shared/lib/drag";
 import { FileTree } from "./FileTree";
+import { invoke } from "@tauri-apps/api/core";
 
 const { iconRender, directories, failures, pendingReads, clipboardFiles, copied, dragDrop } =
   vi.hoisted(() => ({
@@ -43,6 +44,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       return directories.get(args.path) ?? [];
     }
     if (command === "clipboard_file_paths") return [...clipboardFiles];
+    if (command === "reveal_path") return;
     if (command === "copy_path") {
       copied.push({ from: args.from, destParent: args.destParent });
       return `${args.destParent}/${args.from.split("/").pop()}`;
@@ -146,6 +148,14 @@ afterEach(() => {
 });
 
 describe("FileTree render isolation", () => {
+  it("exposes a file manager action for the project folder in the toolbar", async () => {
+    await act(async () => render());
+    const reveal = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => /Finder|File Explorer|File Manager/i.test(button.getAttribute("aria-label") ?? ""))!;
+    expect(reveal).toBeTruthy();
+    await act(async () => reveal.click());
+    expect(invoke).toHaveBeenCalledWith("reveal_path", { path: cwd });
+  });
+
   it("shows an initial read failure separately from an empty directory and retries the root", async () => {
     forgetDir(cwd);
     failures.set(cwd, "host unavailable");

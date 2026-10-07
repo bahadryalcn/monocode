@@ -1,4 +1,5 @@
 import bundledChangelog from "../../../CHANGELOG.md?raw";
+import { appName } from "../../shared/lib/appName";
 
 export type ReleaseNotesTabSource = {
   version: string;
@@ -10,7 +11,7 @@ export type ReleaseNotesDocument = {
 };
 
 export function releaseNotesTitle(version: string): string {
-  return `What's new in MonoCode ${version}`;
+  return `What's new in ${appName()} ${version}`;
 }
 
 export function releaseNotesForVersion(

@@ -16,24 +16,31 @@ type Entry<T> = { at: number; value?: T; pending?: Promise<T> };
 
 /** A per-machine cache whose concurrent lookups share one request. Failures are
  * never kept, so an unreachable machine is asked again by the next caller. */
-function machineCache<T>(load: (machine: RemoteMachine) => Promise<T>) {
+function machineCache<T>(
+  load: (machine: RemoteMachine, fresh: boolean) => Promise<T>,
+) {
   const entries = new Map<string, Entry<T>>();
   // Editing a machine (endpoint, environment) changes the key, so its old
   // answer is never reused.
   const keyOf = (machine: RemoteMachine) =>
     `${machine.id}\n${machine.endpoint}\n${machine.environmentId}`;
   return {
-    get(machine: RemoteMachine): Promise<T> {
+    get(machine: RemoteMachine, force = false): Promise<T> {
       const key = keyOf(machine);
       const entry = entries.get(key);
       if (entry?.pending) return entry.pending;
       const now = Date.now();
-      if (entry && entry.value !== undefined && now - entry.at < MACHINE_SNAPSHOT_TTL_MS)
+      if (
+        !force &&
+        entry &&
+        entry.value !== undefined &&
+        now - entry.at < MACHINE_SNAPSHOT_TTL_MS
+      )
         return Promise.resolve(entry.value);
       const fresh: Entry<T> = { at: now };
       // An answer for a lookup that was invalidated meanwhile still goes to
       // the callers waiting on it, but is not kept.
-      fresh.pending = load(machine).then(
+      fresh.pending = load(machine, force).then(
         (value) => {
           if (entries.get(key) === fresh)
             entries.set(key, { at: Date.now(), value });
@@ -56,10 +63,12 @@ function machineCache<T>(load: (machine: RemoteMachine) => Promise<T>) {
   };
 }
 
-const capabilities = machineCache(async (machine) => {
+const capabilities = machineCache(async (machine, fresh) => {
   const host = await remoteRequest<{ capabilities?: unknown }>(
     machine.id,
     "environment.describe",
+    {},
+    fresh,
   );
   recordRemoteCapabilities(machine.environmentId, host.capabilities);
   return Array.isArray(host.capabilities)
@@ -75,8 +84,11 @@ const projects = machineCache((machine) =>
 
 /** What the machine's host advertises in `environment.describe`. At most one
  * request is made per machine per TTL window, however many callers ask. */
-export function machineCapabilities(machine: RemoteMachine): Promise<string[]> {
-  return capabilities.get(machine);
+export function machineCapabilities(
+  machine: RemoteMachine,
+  fresh = false,
+): Promise<string[]> {
+  return capabilities.get(machine, fresh);
 }
 
 /** The machine's `projects.list`, shared the same way. */

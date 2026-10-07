@@ -1,6 +1,6 @@
 import { pathKey, slash } from "../../../shared/lib/paths";
 import { moveIdByStep, orderByIds, type MoveStep } from "../../../shared/lib/reorder";
-import { PROJECT_MASCOTS } from "./projectMascots";
+import { normalizeProjectMascotName } from "./projectMascots";
 import { TAB_GROUP_COLORS, tabGroupColor } from "../../workspace/model/tabGroups";
 import { notifyProjectPathsChanged } from "./recents";
 
@@ -45,9 +45,8 @@ function normalizeGroup(value: unknown): ProjectGroup | null {
       ? candidate.customColor.toLowerCase()
       : undefined;
   const mascot =
-    typeof candidate.mascot === "string" &&
-    PROJECT_MASCOTS.some((item) => item.name === candidate.mascot)
-      ? candidate.mascot
+    typeof candidate.mascot === "string"
+      ? normalizeProjectMascotName(candidate.mascot) ?? undefined
       : undefined;
 
   const workspaceFile =

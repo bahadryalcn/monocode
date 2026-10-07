@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import type { Block } from "./session";
 
 export type MonoCodeToolCall = {
@@ -125,5 +126,5 @@ export function monoCodeWorkSummary(
   if (calls.length === 0 || calls.some((block) => !monoCodeToolCall(block))) {
     return undefined;
   }
-  return live ? "Using MonoCode" : "Used MonoCode";
+  return live ? `Using ${PRODUCT_IDENTITY.displayName}` : `Used ${PRODUCT_IDENTITY.displayName}`;
 }

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, expect, it, vi } from "vitest";
-import { copyMessage, messageFilesFromClipboard } from "./clipboard";
+import { copyMessage, copyText, messageFilesFromClipboard } from "./clipboard";
 import { invoke } from "@tauri-apps/api/core";
 import {
   MAX_EMBED_BYTES,
@@ -12,6 +12,43 @@ import {
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 afterEach(() => vi.restoreAllMocks());
+
+it("uses the native text clipboard if WebView permissions reject a long copy", async () => {
+  const text = "İmece — ortak üretim\n".repeat(1000);
+  vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("NotAllowedError"));
+  vi.mocked(invoke).mockResolvedValue(undefined);
+  Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+  try {
+    await copyText(text);
+    expect(invoke).toHaveBeenCalledWith("copy_text_to_clipboard", { text });
+    expect(document.querySelector("textarea")).toBeNull();
+  } finally {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+  }
+});
+
+it("cleans up failed legacy copying and preserves focus and text selection", async () => {
+  vi.spyOn(navigator.clipboard, "writeText").mockRejectedValue(new Error("denied"));
+  const original = Object.getOwnPropertyDescriptor(document, "execCommand");
+  Object.defineProperty(document, "execCommand", { value: () => { throw new Error("denied"); }, configurable: true });
+  const input = document.createElement("input");
+  const text = document.createElement("pre");
+  text.textContent = "selected markdown";
+  document.body.append(input, text);
+  input.focus();
+  const range = document.createRange(); range.selectNodeContents(text);
+  window.getSelection()!.addRange(range);
+  try {
+    await expect(copyText("full document")).rejects.toThrow("denied");
+    expect(document.activeElement).toBe(input);
+    expect(window.getSelection()!.toString()).toBe("selected markdown");
+    expect(document.querySelector("textarea")).toBeNull();
+  } finally {
+    input.remove(); text.remove(); window.getSelection()!.removeAllRanges();
+    if (original) Object.defineProperty(document, "execCommand", original);
+    else delete (document as unknown as Record<string, unknown>).execCommand;
+  }
+});
 
 it("copies fresh disk images but leaves their restored placeholders alone", async () => {
   vi.mocked(invoke).mockResolvedValue(btoa("<svg></svg>"));

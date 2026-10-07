@@ -1,0 +1,4 @@
+.village-coffeehouse { width: 100%; max-width: 1280px; flex: 0 0 auto; margin-inline: auto; pointer-events: none; user-select: none; }
+.village-coffeehouse canvas { display: block; width: 100%; height: auto;  }
+.village-coffeehouse--hero { opacity: 1; }
+.village-coffeehouse--background { opacity: .28; max-width: 1280px; }

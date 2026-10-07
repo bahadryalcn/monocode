@@ -51,6 +51,8 @@ export type LockInputs = {
   assignments: Record<string, string>;
   hasPassword: boolean;
   unlocked: UnlockedGroups;
+  /** Groups hidden from the entire UI, independently of password locking. */
+  hiddenGroupIds?: ReadonlySet<string>;
 };
 
 export type LockSnapshot = {
@@ -76,8 +78,10 @@ export function isGroupLocked(
 export function computeLockSnapshot(inputs: LockInputs): LockSnapshot {
   const lockedGroupIds = new Set(
     inputs.groups
-      .filter((group) =>
-        isGroupLocked(group, inputs.hasPassword, inputs.unlocked),
+      .filter(
+        (group) =>
+          inputs.hiddenGroupIds?.has(group.id) ||
+          isGroupLocked(group, inputs.hasPassword, inputs.unlocked),
       )
       .map((group) => group.id),
   );

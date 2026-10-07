@@ -11,6 +11,9 @@ const { getIdentifier, getVersion, check, message, ask, relaunch } = vi.hoisted(
   }),
 );
 
+const identity = vi.hoisted(() => ({ displayName: "imc", updaterEnabled: true, repositoryUrl: null as string | null }));
+vi.mock("../../shared/lib/productIdentity", () => ({ PRODUCT_IDENTITY: identity }));
+
 vi.mock("@tauri-apps/api/app", () => ({ getIdentifier, getVersion }));
 vi.mock("@tauri-apps/plugin-updater", () => ({ check }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ ask, message }));
@@ -23,14 +26,16 @@ import { probeForUpdate, runUpdateFlow } from "./updater";
 
 describe("updater", () => {
   beforeEach(() => {
-    getIdentifier.mockResolvedValue("com.monocode.desktop");
+    identity.updaterEnabled = true;
+    identity.repositoryUrl = null;
+    getIdentifier.mockResolvedValue("com.imece.desktop");
   });
 
   afterEach(() => {
     vi.resetAllMocks();
   });
 
-  it.each(["com.monocode.desktop.dev", "com.unknown.desktop"])(
+  it.each(["com.imece.desktop.dev", "com.monocode.desktop", "com.monocode.desktop.fork", "com.unknown.desktop"])(
     "never contacts the release feed from %s",
     async (identifier) => {
       getIdentifier.mockResolvedValue(identifier);
@@ -49,8 +54,8 @@ describe("updater", () => {
     },
   );
 
-  it("checks the configured feed for the installed fork", async () => {
-    getIdentifier.mockResolvedValue("com.monocode.desktop.fork");
+  it("checks only an explicitly enabled independent installed product", async () => {
+    getIdentifier.mockResolvedValue("com.imece.desktop");
     check.mockResolvedValue(null);
     await expect(probeForUpdate()).resolves.toBeNull();
     expect(check).toHaveBeenCalledOnce();
@@ -77,7 +82,7 @@ describe("updater", () => {
     expect(message).not.toHaveBeenCalled();
   });
 
-  it("points manual checks without updater endpoints to GitHub releases", async () => {
+  it("reports disabled updates without an inherited release URL", async () => {
     getVersion.mockResolvedValue("0.1.23");
     check.mockRejectedValue(
       new Error("Updater does not have any endpoints set"),
@@ -88,11 +93,15 @@ describe("updater", () => {
       currentVersion: "0.1.23",
     });
     expect(message).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "https://github.com/hardbeat920/monocode/releases/latest",
-      ),
-      { title: "MonoCode" },
+      expect.stringContaining("Automatic updates are disabled"),
+      { title: "imc" },
     );
+  });
+
+  it("never probes a feed while independent updates are disabled", async () => {
+    identity.updaterEnabled = false;
+    await expect(probeForUpdate()).resolves.toBeNull();
+    expect(check).not.toHaveBeenCalled();
   });
 
   it("still reports real updater failures", async () => {

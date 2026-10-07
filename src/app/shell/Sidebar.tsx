@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import { prefetchGithubWorkItem } from "../../features/inbox/model/githubTasks";
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
 import { confirmSessionDelete } from "../../features/sessions/model/confirmSessionDelete";
@@ -925,15 +926,14 @@ function SidebarComponent({
   // locked groups itself); the pickers and menus get only what is unlocked.
   const visibleRecents = useVisibleProjects(recents, recentPath);
   const showProjectRail = Boolean(onSelectProject && onOpenProject);
-  // Settings live in the rail slot, so they keep it visible even when the
-  // project rail itself is collapsed.
-  const railVisible = showProjectRail && (projectRailOpen || settingsOpen);
+  // Settings own the full window and provide their own workspace back button.
+  const railVisible = showProjectRail && projectRailOpen && !settingsOpen;
   // Keep the full rail mounted after its first reveal so reopening does not
   // recreate every project row and restart their Git-stat subscriptions.
   const railMounted = useRef(railVisible);
   if (railVisible) railMounted.current = true;
   const compactRailVisible =
-    compactProjectRail && showProjectRail && !railVisible;
+    compactProjectRail && showProjectRail && !railVisible && !settingsOpen;
   const inProject = looksLikeProject(cwd);
   const showSidebarFooter = !projectRailOpen;
   // A blank session has no project to browse, so the shell stands alone until
@@ -1361,7 +1361,7 @@ function SidebarComponent({
               {
                 kind: "item" as const,
                 id: "copy-monocode-session-id",
-                label: "MonoCode session ID",
+                label: `${PRODUCT_IDENTITY.displayName} session ID`,
               },
             ],
           },
@@ -2077,7 +2077,7 @@ function SidebarComponent({
   const sidebarContent = (
     <aside
       ref={resize.setPaneRef}
-      className="body-glass sidebar-pane relative flex h-full min-h-0 shrink-0 flex-col border-r border-stroke"
+      className="imece-sidebar body-glass sidebar-pane relative flex h-full min-h-0 shrink-0 flex-col border-r border-stroke"
     >
       {railVisible ? (
         <>
@@ -2085,7 +2085,7 @@ function SidebarComponent({
           <div
             role="tablist"
             aria-label="Workspace"
-            className="flex h-9 shrink-0 items-center gap-px border-b border-stroke px-2"
+            className="imece-workspace-tabs flex shrink-0 items-center gap-px border-b border-stroke"
           >
             {workspaceTabItems}
           </div>
@@ -2138,7 +2138,7 @@ function SidebarComponent({
             <div
               role="tablist"
               aria-label="Workspace"
-              className="flex h-9 shrink-0 items-center gap-px overflow-visible border-b border-stroke px-2"
+              className="imece-workspace-tabs flex shrink-0 items-center gap-px overflow-visible border-b border-stroke"
             >
               {workspaceTabItems}
             </div>

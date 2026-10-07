@@ -1,4 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import {
+  APPEARANCE_DEFAULTS,
+  APPEARANCE_PREFERENCES_EVENT,
+  loadAppearancePreferences,
+  saveAppearancePreferences,
+  type AppearancePreferences,
+} from "../model/appearancePreferences";
 
 import {
   applyChatBackground,
@@ -101,6 +108,15 @@ export function useAppearanceSettings(
     mode: CollapsedProjectRailMode,
   ) => void,
 ) {
+  const [preferences, setPreferences] = useState(loadAppearancePreferences);
+  useEffect(() => {
+    const sync = () => setPreferences(loadAppearancePreferences());
+    window.addEventListener(APPEARANCE_PREFERENCES_EVENT, sync);
+    return () => window.removeEventListener(APPEARANCE_PREFERENCES_EVENT, sync);
+  }, []);
+  const onPreferences = useCallback((next: AppearancePreferences) => {
+    setPreferences(saveAppearancePreferences(next));
+  }, []);
   const [themePreference, setThemePreference] =
     useState<ThemePreference>(loadThemePreference);
   const [accentColor, setAccentColor] = useState(loadAccentColor);
@@ -289,6 +305,7 @@ export function useAppearanceSettings(
   );
 
   const restoreDefaults = useCallback(() => {
+    onPreferences({ ...APPEARANCE_DEFAULTS });
     onThemePreference(THEME_PREFERENCE_DEFAULT);
     onAccentColor(ACCENT_COLOR_DEFAULT);
     onOpacity(Math.round(SIDEBAR_OPACITY_DEFAULT * 100));
@@ -312,6 +329,7 @@ export function useAppearanceSettings(
     onUiScale(Math.round(UI_SCALE_DEFAULT * 100));
     onCollapsedProjectRailMode(COLLAPSED_PROJECT_RAIL_MODE_DEFAULT);
   }, [
+    onPreferences,
     chatBackgroundPath,
     onBlur,
     onBodyGlass,
@@ -334,6 +352,8 @@ export function useAppearanceSettings(
   ]);
 
   return {
+    preferences,
+    onPreferences,
     themePreference,
     accentColor,
     opacity,

@@ -1,6 +1,8 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LAYER } from "../../../shared/lib/layers";
+import { OverlayParent, useOverlay } from "../../../shared/ui/overlay";
 import { SearchableSelect } from "../../../shared/ui/SearchableSelect";
 import { ChevronRight, Folder } from "../../../shared/ui/icons";
 import {
@@ -49,6 +51,8 @@ export function AddRemoteProjectDialog({
     requestVersion.current++;
     onCancel();
   };
+  const dialogRoot = useRef<HTMLFormElement>(null);
+  const overlayId = useOverlay(dialogRoot, true, cancel);
   // Set on every mount: development StrictMode mounts, unmounts and mounts
   // again, and responses after the first cleanup must still be shown.
   useEffect(() => {
@@ -138,9 +142,11 @@ export function AddRemoteProjectDialog({
   };
 
   return createPortal(
+    <OverlayParent.Provider value={overlayId}>
     <div className="fixed inset-0" style={{ zIndex: LAYER.dialog }}>
       <div className="absolute inset-0 bg-black/30" onMouseDown={cancel} />
       <form
+        ref={dialogRoot}
         role="dialog"
         aria-modal="true"
         aria-label="Open folder on a machine"
@@ -156,9 +162,9 @@ export function AddRemoteProjectDialog({
             Open folder on a machine
           </h2>
           <p className="text-[12px] leading-snug text-content/55">
-            Sessions in this project run on that machine, using its checkout and
-            its Codex or Claude Code sign-in. They keep running when you close
-            MonoCode here.
+            Sessions in this project run on that machine, using its checkout
+            and its Codex or Claude Code sign-in. They keep running when you
+            close {PRODUCT_IDENTITY.displayName} here.
           </p>
         </div>
         {machinesLoading || machinesError ? (
@@ -323,7 +329,8 @@ export function AddRemoteProjectDialog({
           </>
         )}
       </form>
-    </div>,
+    </div>
+    </OverlayParent.Provider>,
     document.body,
   );
 }

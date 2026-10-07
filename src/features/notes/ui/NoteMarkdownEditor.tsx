@@ -13,13 +13,18 @@ import {
   CheckList,
   CodeBlock,
   Heading,
+  ImagePlus,
   Italic,
   Link,
   ListBullet,
   ListNumbered,
+  Minus,
   Search,
+  Strikethrough,
+  Table,
   type IconComponent,
 } from "../../../shared/ui/icons";
+import { filesFromClipboard } from "../../sessions/model/attachments";
 import { schemeExtensions } from "../../files/editor/editorChrome";
 import {
   editorSearch,
@@ -72,12 +77,15 @@ export function NoteMarkdownEditor({
   value,
   onChange,
   onSave,
+  onPasteImages,
   viewRef,
   autoFocus = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   onSave: () => void;
+  /** Pasted image files; text pastes still go to the editor. */
+  onPasteImages?: (files: File[]) => void;
   viewRef: NoteEditorViewRef;
   autoFocus?: boolean;
 }) {
@@ -88,9 +96,11 @@ export function NoteMarkdownEditor({
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
+  const onPasteImagesRef = useRef(onPasteImages);
   valueRef.current = value;
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
+  onPasteImagesRef.current = onPasteImages;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -136,6 +146,23 @@ export function NoteMarkdownEditor({
             indentWithTab,
           ]),
         ),
+        EditorView.domEventHandlers({
+          paste: (event) => {
+            const onImages = onPasteImagesRef.current;
+            if (!onImages) return false;
+            const images = filesFromClipboard(event.clipboardData).filter(
+              (file) => file.type.startsWith("image/"),
+            );
+            if (images.length === 0) return false;
+            event.preventDefault();
+            onImages(images);
+            return true;
+          },
+          // Dropped files belong to the note's image drop zone, not to
+          // CodeMirror, which would insert their bytes as text.
+          drop: (event) =>
+            [...(event.dataTransfer?.types ?? [])].includes("Files"),
+        }),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           if (update.transactions.every((tr) => tr.annotation(externalChange))) {
@@ -201,6 +228,7 @@ const TOOLBAR: {
 }[] = [
   { command: "bold", label: `Bold (${MOD}B)`, icon: Bold },
   { command: "italic", label: `Italic (${MOD}I)`, icon: Italic },
+  { command: "strike", label: "Strikethrough", icon: Strikethrough },
   { command: "heading", label: "Heading", icon: Heading },
   { command: "bullet", label: "Bullet list", icon: ListBullet },
   { command: "numbered", label: "Numbered list", icon: ListNumbered },
@@ -208,6 +236,8 @@ const TOOLBAR: {
   { command: "quote", label: "Quote", icon: BlockQuote },
   { command: "code", label: "Code block", icon: CodeBlock },
   { command: "link", label: "Link", icon: Link },
+  { command: "table", label: "Table", icon: Table },
+  { command: "rule", label: "Divider", icon: Minus },
 ];
 
 const TOOLBAR_BUTTON =
@@ -215,8 +245,15 @@ const TOOLBAR_BUTTON =
 
 export function NoteMarkdownToolbar({
   viewRef,
+  editing,
+  imageBusy = false,
+  onInsertImage,
 }: {
   viewRef: NoteEditorViewRef;
+  /** Formatting buttons only make sense while the source is visible. */
+  editing: boolean;
+  imageBusy?: boolean;
+  onInsertImage: () => void;
 }) {
   const run = (action: (view: EditorView) => void) => {
     const view = viewRef.current;
@@ -230,7 +267,20 @@ export function NoteMarkdownToolbar({
       // Keep the selection in the editor while a button is pressed.
       onMouseDown={(event) => event.preventDefault()}
     >
-      {TOOLBAR.map(({ command, label, icon: Icon }) => (
+      <button
+        type="button"
+        title={`Insert image · or paste (${MOD}V) / drop one`}
+        aria-label="Insert image"
+        disabled={imageBusy}
+        onClick={onInsertImage}
+        className={`${TOOLBAR_BUTTON} disabled:opacity-40`}
+      >
+        <ImagePlus className="size-3.5" />
+      </button>
+      {editing ? (
+        <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-content/10" />
+      ) : null}
+      {(editing ? TOOLBAR : []).map(({ command, label, icon: Icon }) => (
         <button
           key={command}
           type="button"
@@ -242,16 +292,20 @@ export function NoteMarkdownToolbar({
           <Icon className="size-3.5" />
         </button>
       ))}
-      <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-content/10" />
-      <button
-        type="button"
-        title={`Find (${MOD}F) · Replace (${MOD}H)`}
-        aria-label="Find and replace"
-        onClick={() => run(openSearchPanel)}
-        className={TOOLBAR_BUTTON}
-      >
-        <Search className="size-3.5" />
-      </button>
+      {editing ? (
+        <>
+          <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-content/10" />
+          <button
+            type="button"
+            title={`Find (${MOD}F) · Replace (${MOD}H)`}
+            aria-label="Find and replace"
+            onClick={() => run(openSearchPanel)}
+            className={TOOLBAR_BUTTON}
+          >
+            <Search className="size-3.5" />
+          </button>
+        </>
+      ) : null}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { message as showMessage } from "@tauri-apps/plugin-dialog";
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Check,
@@ -32,6 +32,7 @@ import {
   type RefObject,
 } from "react";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
+import { useChangedFileMenu } from "../../files/ui/useChangedFileMenu";
 import {
   GitHistoryGraph,
   GraphResizeSash,
@@ -63,6 +64,7 @@ import {
 import {
   basename,
   gitCommit,
+  gitDiffIndex,
   gitDiscardAll,
   gitDiscardFile,
   gitFetch,
@@ -120,9 +122,13 @@ import {
   type ConflictRow,
 } from "../model/conflictSection";
 import { useConflictActions } from "../hooks/useConflictActions";
-import { gitPanelRuntime, useGitPanelState } from "../model/gitPanelState";
+import {
+  gitPanelRuntime,
+  useGitPanelState,
+  setGitFeedback,
+  withGitOperation,
+} from "../model/gitPanelState";
 import { useLegacyConflictStatus } from "../hooks/useLegacyConflictStatus";
-import { appName } from "../../../shared/lib/appName";
 import { confirmNative, confirmDiscardFile } from "../model/gitConfirmation";
 import {
   fetchGitIndex,
@@ -131,7 +137,10 @@ import {
   type GitChangeHint,
 } from "../model/gitIndexStore";
 
-const GIT_POLL_MS = 2000;
+import { GitFeedback } from "./GitFeedback";
+import { useGitResource } from "../hooks/useGitResource";
+
+export const GIT_POLL_MS = 15_000;
 
 let stagedOpen = true;
 let changesOpen = true;
@@ -141,7 +150,6 @@ let changesView: ChangesView = loadChangesView();
 /** Folders the user collapsed in tree view, keyed `<kind>:<dir>`. */
 const collapsedDirs = new Set<string>();
 const indexByCwd = new Map<string, GitDiffIndex>();
-const prByCwd = new Map<string, GitPr | null>();
 
 /** Observations already contain a fresh index; mutations need a new read. */
 let announcingObservedChange = false;
@@ -201,7 +209,13 @@ export function GitChangesPanel({
   onOpenAllChanges,
   onOpenCommit,
 }: Props) {
-  const { index, reload, showOptimistic } = useDiffIndex(cwd, enabled);
+  const {
+    index,
+    reload,
+    showOptimistic,
+    error: loadError,
+    loading,
+  } = useDiffIndex(cwd, enabled);
   // Fetch, and the merge status of a host that predates conflict info, need
   // this computer or a host with `git.actions`.
   const gitActions = useRemoteSupports(cwd, GIT_ACTIONS) === true;
@@ -223,6 +237,8 @@ export function GitChangesPanel({
   const [status, setStatus] = useGitPanelState(cwd, "status");
   // The step a running action is on ("Pushing…"), shown beside the spinner.
   const [pending, setPending] = useGitPanelState(cwd, "pending");
+  const [feedback] = useGitPanelState(cwd, "feedback");
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [graphHeight, setGraphHeight] = useState(loadGraphPanelHeight);
   const [graphExpanded, setGraphExpanded] = useState(graphOpen);
 
@@ -231,6 +247,15 @@ export function GitChangesPanel({
     const timer = window.setTimeout(() => setStatus(null), 4000);
     return () => window.clearTimeout(timer);
   }, [status, setStatus]);
+
+  useEffect(() => {
+    if (feedback?.kind !== "success") return;
+    const timer = window.setTimeout(() => {
+      if (gitPanelRuntime(cwd).state.feedback === feedback)
+        setGitFeedback(cwd, null);
+    }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [cwd, feedback]);
 
   const canFetch = gitActions && Boolean(index?.remote);
   const [autoFetch, setAutoFetch] = useState(loadAutoFetch);
@@ -248,14 +273,21 @@ export function GitChangesPanel({
   useEffect(() => {
     if (!enabled || !autoFetch || !canFetch) return;
     const timer = window.setInterval(() => {
-      if (document.hidden || !remotePollDue(cwd)) return;
+      if (
+        document.hidden ||
+        !remotePollDue(cwd) ||
+        gitPanelRuntime(cwd).state.busy
+      )
+        return;
       // Quiet: a failed background fetch should not interrupt with a dialog.
-      void gitFetch(cwd).then(
+      void withGitOperation(cwd, "Fetching…", () => gitFetch(cwd)).then(
         () => {
+          setFetchError(null);
           reload();
           announceGitChange(cwd, "refs");
         },
-        () => {},
+        (error) =>
+          setFetchError(error instanceof Error ? error.message : String(error)),
       );
     }, AUTO_FETCH_MS);
     return () => window.clearInterval(timer);
@@ -303,6 +335,19 @@ export function GitChangesPanel({
           </span>
         ) : null}
         <div className="ml-auto flex min-w-0 items-center gap-1">
+          <button
+            type="button"
+            aria-label="Refresh source control"
+            title="Refresh source control"
+            disabled={!enabled || !!busy || loading}
+            className="rounded p-1 text-content/60 hover:bg-content/10 hover:text-content disabled:opacity-40"
+            onClick={() => {
+              onMutated();
+              changesRef.current?.refreshPr?.();
+            }}
+          >
+            <RefreshCw aria-hidden className="size-3.5" strokeWidth={1.75} />
+          </button>
           {index?.branch ? (
             <span className="flex min-w-0 items-center gap-1 text-[11px] text-content/50">
               <GitBranch className="size-3 shrink-0" strokeWidth={1.75} />
@@ -339,6 +384,52 @@ export function GitChangesPanel({
           ) : null}
         </div>
       </header>
+      {feedback ? (
+        <>
+          <GitFeedback
+            kind={feedback.kind}
+            title={feedback.title}
+            detail={feedback.detail}
+            onDismiss={() => setGitFeedback(cwd, null)}
+            onRetry={
+              feedback.retry && !busy
+                ? () =>
+                    void feedback
+                      .retry?.()
+                      .catch((error) =>
+                        setGitFeedback(cwd, {
+                          kind: "error",
+                          title: "Retry failed",
+                          detail: String(error),
+                          retry: feedback.retry,
+                        }),
+                      )
+                : undefined
+            }
+          />
+          {feedback.url ? (
+            <button
+              type="button"
+              className="mx-3 mb-2 text-left text-[12px] text-content/70 underline"
+              onClick={() =>
+                void openUrl(feedback.url!).catch((error) =>
+                  setGitFeedback(cwd, { ...feedback, detail: String(error) }),
+                )
+              }
+            >
+              Open pull request
+            </button>
+          ) : null}
+        </>
+      ) : null}
+      {fetchError ? (
+        <GitFeedback
+          kind="warning"
+          title="Automatic fetch failed; sync counts may be outdated"
+          detail={fetchError}
+          onDismiss={() => setFetchError(null)}
+        />
+      ) : null}
       {operation && gitActions ? (
         <GitOperationBanner
           cwd={cwd}
@@ -351,6 +442,8 @@ export function GitChangesPanel({
         cwd={cwd}
         textHarness={textHarness}
         index={index}
+        loadError={loadError}
+        loading={loading}
         files={files}
         conflicts={conflicts}
         selected={selectedPath}
@@ -415,6 +508,8 @@ function ChangedFiles({
   cwd,
   textHarness,
   index,
+  loadError,
+  loading,
   files,
   conflicts,
   selected,
@@ -435,6 +530,8 @@ function ChangedFiles({
   cwd: string;
   textHarness?: HarnessId;
   index: GitDiffIndex | null;
+  loadError: string | null;
+  loading: boolean;
   files: GitChangedFile[];
   /** Unmerged files, listed first and never as ordinary changes. */
   conflicts: ConflictRow[];
@@ -478,7 +575,12 @@ function ChangedFiles({
   // Git refuses to commit with unmerged paths; say which, instead of its error.
   const blockedMessage = commitBlockedMessage(conflicts);
   const [view, setView] = useState<ChangesView>(changesView);
-  const { pr, reload: reloadPr } = usePrStatus(cwd, index?.branch);
+  const {
+    pr,
+    reload: reloadPr,
+    loading: prLoading,
+    error: prError,
+  } = usePrStatus(cwd, index?.branch, !!index?.remote);
   const staged = useMemo(() => files.filter((file) => file.staged), [files]);
   const unstaged = useMemo(
     () => files.filter((file) => file.unstaged),
@@ -505,6 +607,8 @@ function ChangedFiles({
     !!index?.branch &&
     !!index.defaultBranch &&
     !hasOpenPr &&
+    !prLoading &&
+    !prError &&
     !onDefault &&
     !diverged &&
     files.length === 0 &&
@@ -512,14 +616,15 @@ function ChangedFiles({
     (index?.aheadOfDefault ?? 0) > 0 &&
     (index?.behind ?? 0) === 0;
   const canViewPr = hasOpenPr && !!pr?.url;
-  const canPublish = hasRemote && !index?.upstream;
+  const canPublish = hasRemote && !!index?.branch && !index?.upstream;
   const canSync =
     hasRemote &&
     Boolean(index?.upstream) &&
     ((index?.ahead ?? 0) > 0 || (index?.behind ?? 0) > 0);
   const canCommitPush =
     canCommit && hasRemote && !diverged && (!amend || !index?.headPushed);
-  const canCommitPushPr = canCommitPush && !hasOpenPr && !onDefault;
+  const canCommitPushPr =
+    canCommitPush && !hasOpenPr && !prLoading && !prError && !onDefault;
   // Any change allows typing, so the menu's Commit All can use the message too.
   // Staging a file must not take the box away from someone typing in it.
   const canEditMessage =
@@ -563,9 +668,11 @@ function ChangedFiles({
 
   const fail = (error: unknown) => {
     const text = error instanceof Error ? error.message : String(error);
-    void showMessage(text, { title: appName(), kind: "error" }).catch(() =>
-      window.alert(text),
-    );
+    setGitFeedback(cwd, {
+      kind: "error",
+      title: "Git operation failed",
+      detail: text,
+    });
   };
 
   const recordPrActivity = (number = pr?.number) => {
@@ -594,11 +701,13 @@ function ChangedFiles({
   ) => {
     const queue = fileActions.current;
     // File actions queue behind each other; any other action holds them off.
-    if (busy && queue.size === 0) return;
+    if (gitPanelRuntime(cwd).state.busy && queue.size === 0) return;
     if (action === "discard") {
       const ok = await confirmDiscardFile(file);
       if (!ok) return;
     }
+    if (gitPanelRuntime(cwd).state.busy && queue.size === 0) return;
+    if (queue.size === 0) setGitFeedback(cwd, null);
     queue.size += 1;
     queue.paths.push(file.path);
     setBusy(file.relative);
@@ -621,12 +730,14 @@ function ChangedFiles({
     if (queue.size > 0) return;
     // Reloading earlier would put back the rows of actions still queued.
     onMutated(queue.paths.splice(0), "index");
+    if (gitPanelRuntime(cwd).state.feedback?.kind !== "error")
+      setGitFeedback(cwd, { kind: "success", title: "File changes updated" });
     setBusy(null);
     setPending(null);
   };
 
   const runAll = async (action: "stage" | "unstage" | "discard") => {
-    if (busy) return;
+    if (gitPanelRuntime(cwd).state.busy) return;
     if (action === "discard") {
       const n = unstaged.length;
       if (n === 0) return;
@@ -642,6 +753,8 @@ function ChangedFiles({
       );
       if (!ok) return;
     }
+    if (gitPanelRuntime(cwd).state.busy) return;
+    setGitFeedback(cwd, null);
     setBusy(action);
     const discarded =
       action === "discard" ? unstaged.map((file) => file.path) : undefined;
@@ -650,6 +763,15 @@ function ChangedFiles({
       if (action === "stage") await gitStageAll(cwd);
       else if (action === "unstage") await gitUnstageAll(cwd);
       else await gitDiscardAll(cwd);
+      setGitFeedback(cwd, {
+        kind: "success",
+        title:
+          action === "stage"
+            ? "Changes staged"
+            : action === "unstage"
+              ? "Changes unstaged"
+              : "Changes discarded",
+      });
       onMutated(discarded, "index");
     } catch (error) {
       onMutated(discarded, "index");
@@ -661,7 +783,8 @@ function ChangedFiles({
 
   const runFolder = async (relative: string, action: "stage" | "unstage") => {
     const queue = fileActions.current;
-    if (busy && queue.size === 0) return;
+    if (gitPanelRuntime(cwd).state.busy && queue.size === 0) return;
+    if (queue.size === 0) setGitFeedback(cwd, null);
     queue.size += 1;
     queue.paths.push(
       ...files
@@ -685,6 +808,8 @@ function ChangedFiles({
     if (queue.size > 0) return;
     // Also refresh after failure: Git may have partially changed the index.
     onMutated(queue.paths.splice(0), "index");
+    if (gitPanelRuntime(cwd).state.feedback?.kind !== "error")
+      setGitFeedback(cwd, { kind: "success", title: "File changes updated" });
     setBusy(null);
     setPending(null);
   };
@@ -738,7 +863,7 @@ function ChangedFiles({
   const confirmAmend = async (amending: boolean) => {
     if (!amending || !index?.headPushed) return true;
     return confirmNative(
-      "Amend a commit that is already pushed? MonoCode cannot push the result. You will need a force push from the terminal.",
+      `Amend a commit that is already pushed? ${PRODUCT_IDENTITY.displayName} cannot push the result. You will need a force push from the terminal.`,
       "Amend",
     );
   };
@@ -771,14 +896,19 @@ function ChangedFiles({
     const stageAll =
       options?.scope === "all" ||
       (options?.scope === "smart" && !amending && staged.length === 0);
+    if (gitPanelRuntime(cwd).state.busy) return;
+    setGitFeedback(cwd, null);
     setBusy(createPr ? "pr" : "commit");
     setPending("Committing…");
     setMenuOpen(false);
+    let committed = false;
+    let pushed = false;
     try {
       if (stageAll) await gitStageAll(cwd);
       // Amending with an empty box keeps the message the commit already has.
       const text = message.trim() || (await gitHeadMessage(cwd));
       await gitCommit(cwd, text, amending, options?.signoff ?? false);
+      committed = true;
       // The commit is made: its files leave the list now, not after the push
       // and the reload that follow.
       if (index) showOptimistic(applyCommit(index, stageAll));
@@ -787,6 +917,7 @@ function ChangedFiles({
       if (push || createPr) {
         setPending("Pushing…");
         await gitPush(cwd);
+        pushed = true;
         recordPrActivity();
       }
       onMutated();
@@ -794,9 +925,27 @@ function ChangedFiles({
         setPending("Creating pull request…");
         await openCreatedPr();
         reloadPr();
-      }
+      } else
+        setGitFeedback(cwd, {
+          kind: "success",
+          title: push ? "Commit created and pushed" : "Commit created",
+        });
     } catch (error) {
-      fail(error);
+      if (committed)
+        setGitFeedback(cwd, {
+          kind: "warning",
+          title: pushed
+            ? "Commit pushed; pull request creation failed"
+            : "Commit created; push failed",
+          detail: error instanceof Error ? error.message : String(error),
+          retry: () =>
+            retryPublication(
+              !pushed && (push || createPr),
+              createPr,
+              index?.branch ?? null,
+            ),
+        });
+      else fail(error);
       onMutated();
     } finally {
       setBusy(null);
@@ -805,6 +954,7 @@ function ChangedFiles({
   };
 
   actionsRef.current = {
+    refreshPr: reloadPr,
     commit: (options) => commit(false, false, options),
     runAll,
   };
@@ -812,9 +962,12 @@ function ChangedFiles({
   const sync = async () => {
     if (!index || !(canSync || canPublish)) return;
     const pushesCommits = index.ahead > 0;
+    if (gitPanelRuntime(cwd).state.busy) return;
+    setGitFeedback(cwd, null);
     setBusy("sync");
     try {
       await gitSync(cwd);
+      setGitFeedback(cwd, { kind: "success", title: "Sync complete" });
       if (pushesCommits) recordPrActivity();
       onMutated();
       reloadPr();
@@ -840,24 +993,103 @@ function ChangedFiles({
     );
     const number = Number(/\/pull\/(\d+)(?:[/?#]|$)/.exec(url)?.[1]);
     if (Number.isInteger(number) && number > 0) recordPrActivity(number);
-    await openUrl(url.trim());
+    reloadPr();
+    try {
+      await openUrl(url.trim());
+      setGitFeedback(cwd, {
+        kind: "success",
+        title: "Pull request created",
+        url: url.trim(),
+      });
+    } catch (error) {
+      setGitFeedback(cwd, {
+        kind: "warning",
+        title: "Pull request created; couldn’t open the link",
+        detail: String(error),
+        url: url.trim(),
+      });
+    }
+  };
+
+  const retryPublication = async (
+    push: boolean,
+    createPr: boolean,
+    branch: string | null,
+  ) => {
+    let remainingPush = push;
+    try {
+      await withGitOperation(
+        cwd,
+        push ? "Pushing…" : "Creating pull request…",
+        async () => {
+          const current = await gitDiffIndex(cwd);
+          if (current.branch !== branch)
+            throw new Error(
+              "The branch changed. Review the current branch before publishing.",
+            );
+          if (remainingPush) {
+            await gitPush(cwd);
+            remainingPush = false;
+          }
+          if (createPr) {
+            const existing = await gitPrStatus(cwd);
+            if (existing?.state === "open")
+              setGitFeedback(cwd, {
+                kind: "success",
+                title: "Pull request already exists",
+                url: existing.url,
+              });
+            else await openCreatedPr();
+          } else
+            setGitFeedback(cwd, { kind: "success", title: "Push complete" });
+        },
+      );
+    } catch (error) {
+      setGitFeedback(cwd, {
+        kind: "warning",
+        title: remainingPush
+          ? "Commit created; push failed"
+          : "Publication incomplete",
+        detail: String(error),
+        retry: () => retryPublication(remainingPush, createPr, branch),
+      });
+    } finally {
+      onMutated();
+      reloadPr();
+    }
   };
 
   const createPr = async () => {
     if (!canCreatePr) return;
     if (!(await confirmDefault("pr"))) return;
+    if (gitPanelRuntime(cwd).state.busy) return;
+    setGitFeedback(cwd, null);
     setBusy("pr");
+    let pushed = false;
     try {
       if ((index?.ahead ?? 0) > 0) {
         setPending("Pushing…");
         await gitPush(cwd);
+        pushed = true;
       }
       setPending("Creating pull request…");
       await openCreatedPr();
       onMutated();
       reloadPr();
     } catch (error) {
-      fail(error);
+      setGitFeedback(cwd, {
+        kind: pushed ? "warning" : "error",
+        title: pushed
+          ? "Branch pushed; pull request creation failed"
+          : "Couldn’t create pull request",
+        detail: String(error),
+        retry: () =>
+          retryPublication(
+            !pushed && (index?.ahead ?? 0) > 0,
+            true,
+            index?.branch ?? null,
+          ),
+      });
       onMutated();
     } finally {
       setBusy(null);
@@ -1040,6 +1272,33 @@ function ChangedFiles({
           />
         ) : null}
       </div>
+      {prLoading ? (
+        <p role="status" className="px-3 py-1 text-[11px] text-content/50">
+          Checking pull request…
+        </p>
+      ) : prError ? (
+        <GitFeedback
+          title="Couldn’t check pull request"
+          detail={prError}
+          onRetry={reloadPr}
+        />
+      ) : null}
+      {loadError && !failure ? (
+        <GitFeedback
+          title="Couldn’t load Git changes"
+          detail={loadError}
+          stale={!!index}
+          onRetry={() => onMutated()}
+        />
+      ) : null}
+      {index?.repository === false ? (
+        <GitFeedback kind="info" title="This folder is not a Git repository" />
+      ) : null}
+      {loading && index ? (
+        <p role="status" className="px-3 py-1 text-[11px] text-content/50">
+          Refreshing changes…
+        </p>
+      ) : null}
       {failure ? (
         <RemoteLoadError
           cwd={cwd}
@@ -1054,13 +1313,15 @@ function ChangedFiles({
       >
         {files.length === 0 && conflicts.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/45">
-            {index
-              ? index.ahead > 0 || index.behind > 0
-                ? syncStatusLabel(index)
-                : "No uncommitted changes"
-              : failure
-                ? ""
-                : "Loading changes…"}
+            {index?.repository === false
+              ? ""
+              : index
+                ? index.ahead > 0 || index.behind > 0
+                  ? syncStatusLabel(index)
+                  : "No uncommitted changes"
+                : failure || loadError
+                  ? ""
+                  : "Loading changes…"}
           </p>
         ) : (
           <>
@@ -1135,6 +1396,7 @@ function ChangedFiles({
               >
                 <ChangeList
                   files={staged}
+                  onOpenInEditor={onOpenInEditor}
                   view={view}
                   kind="staged"
                   selected={selected}
@@ -1177,6 +1439,7 @@ function ChangedFiles({
               >
                 <ChangeList
                   files={unstaged}
+                  onOpenInEditor={onOpenInEditor}
                   view={view}
                   kind="unstaged"
                   selected={selected}
@@ -1207,48 +1470,24 @@ function ChangedFiles({
 function usePrStatus(
   cwd: string,
   branch: string | null | undefined,
-): { pr: GitPr | null; reload: () => void } {
-  const [pr, setPr] = useState<GitPr | null>(() => cachedPr(cwd, branch));
-  const [nonce, setNonce] = useState(0);
-  const reload = useCallback(() => setNonce((value) => value + 1), []);
-
-  useEffect(() => {
-    if (!cwd || cwd === "~" || !branch) {
-      setPr(null);
-      return;
-    }
-    let cancelled = false;
-    const load = () => {
-      void gitPrStatus(cwd)
-        .then((next) => {
-          if (cancelled) return;
-          prByCwd.set(cwd, next);
-          setPr(next);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          prByCwd.set(cwd, null);
-          setPr(null);
-        });
-    };
-    load();
-    const onResume = () => load();
-    window.addEventListener("focus", onResume);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("focus", onResume);
-    };
-  }, [branch, cwd, nonce]);
-
-  return { pr, reload };
-}
-
-function cachedPr(
-  cwd: string,
-  branch: string | null | undefined,
-): GitPr | null {
-  if (!cwd || cwd === "~" || !branch) return null;
-  return prByCwd.get(cwd) ?? null;
+  enabled: boolean,
+) {
+  const read = useCallback(() => gitPrStatus(cwd), [cwd, branch]);
+  const resource = useGitResource(
+    cwd,
+    `pr:${cwd}:${branch ?? ""}`,
+    enabled && !!cwd && cwd !== "~" && !!branch,
+    read,
+    true,
+    600_000,
+    true,
+  );
+  return {
+    pr: resource.data,
+    loading: resource.loading,
+    error: resource.error,
+    reload: resource.refresh,
+  };
 }
 
 function syncStatusLabel(index: GitDiffIndex): string {
@@ -1527,6 +1766,7 @@ async function remotePrContent(cwd: string) {
 }
 
 type ChangeRowProps = {
+  onOpenInEditor?: (path: string, pin?: boolean) => void;
   files: GitChangedFile[];
   view: ChangesView;
   kind: GitFileDiffKind;
@@ -1558,6 +1798,7 @@ export function ChangeList({ files, view, ...rest }: ChangeRowProps) {
           }
           kind={rest.kind}
           onOpenFile={rest.onOpenFile}
+          onOpenInEditor={rest.onOpenInEditor}
           onAction={rest.onAction}
         />
       ))}
@@ -1573,6 +1814,7 @@ function ChangeDirChildren({
   selectedKind,
   busy,
   onOpenFile,
+  onOpenInEditor,
   onAction,
   onFolderAction,
 }: Omit<ChangeRowProps, "files" | "view"> & {
@@ -1591,6 +1833,7 @@ function ChangeDirChildren({
           selectedKind={selectedKind}
           busy={busy}
           onOpenFile={onOpenFile}
+          onOpenInEditor={onOpenInEditor}
           onAction={onAction}
           onFolderAction={onFolderAction}
         />
@@ -1604,6 +1847,7 @@ function ChangeDirChildren({
           kind={kind}
           depth={depth}
           onOpenFile={onOpenFile}
+          onOpenInEditor={onOpenInEditor}
           onAction={onAction}
         />
       ))}
@@ -1755,9 +1999,11 @@ function ChangeRow({
   kind,
   depth,
   onOpenFile,
+  onOpenInEditor,
   onAction,
 }: {
   file: GitChangedFile;
+  onOpenInEditor?: (path: string, pin?: boolean) => void;
   active: boolean;
   busy: boolean;
   kind: GitFileDiffKind;
@@ -1773,8 +2019,36 @@ function ChangeRow({
   const tree = depth !== undefined;
   const dir = tree ? "" : dirname(file.relative);
   const canOpen = file.status !== "deleted";
+  const { menu, ...menuHandlers } = useChangedFileMenu({
+    path: file.path,
+    relative: file.relative,
+    deleted: !canOpen,
+    onOpenChanges: () => onOpenFile(file.path, kind),
+    onOpenFile: onOpenInEditor
+      ? () => onOpenInEditor(file.path, true)
+      : undefined,
+    actions: [
+      {
+        id: "index",
+        label: kind === "staged" ? "Unstage Changes" : "Stage Changes",
+        disabled: busy,
+        run: () => onAction(file, kind === "staged" ? "unstage" : "stage"),
+      },
+      ...(kind === "unstaged"
+        ? [
+            {
+              id: "discard",
+              label: "Discard Changes",
+              danger: true,
+              disabled: busy,
+              run: () => onAction(file, "discard"),
+            },
+          ]
+        : []),
+    ],
+  });
   return (
-    <li>
+    <li {...menuHandlers}>
       <div
         style={tree ? { paddingLeft: 8 + depth * 12 } : undefined}
         className={`group flex h-7 w-full items-center gap-1 pr-2 leading-none ${
@@ -1854,6 +2128,7 @@ function ChangeRow({
           {statusLetter(file.status)}
         </span>
       </div>
+      {menu}
     </li>
   );
 }
@@ -1909,6 +2184,8 @@ function useDiffIndex(
   index: GitDiffIndex | null;
   reload: () => void;
   showOptimistic: (next: GitDiffIndex) => void;
+  error: string | null;
+  loading: boolean;
 } {
   // A remote project keeps its last good index when a load fails; the failure
   // is shown by `ChangedFiles`.
@@ -1917,6 +2194,8 @@ function useDiffIndex(
     cachedIndex(cwd),
   );
   const [nonce, setNonce] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const indexRef = useRef(index);
   indexRef.current = index;
   // An optimistic index is on screen and its git command may still be
@@ -1959,6 +2238,7 @@ function useDiffIndex(
       }
       if (document.hidden && nonce === 0) return;
       inFlight = true;
+      setLoading(!indexRef.current);
       try {
         // Opening the panel (or a reload that bumped `nonce`) reads git itself.
         const next = await fetchGitIndex(cwd, {
@@ -1966,6 +2246,7 @@ function useDiffIndex(
           since: fresh ? Date.now() : undefined,
         });
         if (cancelled || holdRef.current) return;
+        setError(null);
         if (remote) reportRemoteLoad(cwd, "changes");
         const prev = indexRef.current;
         const announced = announcedRef.current;
@@ -1999,10 +2280,10 @@ function useDiffIndex(
         if (remote) {
           reportRemoteLoad(cwd, "changes", error);
         } else {
-          indexByCwd.delete(cwd);
-          setIndex(null);
+          setError(error instanceof Error ? error.message : String(error));
         }
       } finally {
+        if (!cancelled) setLoading(false);
         inFlight = false;
         if (pending && !cancelled) {
           pending = false;
@@ -2042,7 +2323,7 @@ function useDiffIndex(
     };
   }, [cwd, enabled, nonce, remote]);
 
-  return { index, reload, showOptimistic };
+  return { index, reload, showOptimistic, error, loading };
 }
 
 /** Whether HEAD, its branch and its upstream counts are unchanged. */

@@ -3,6 +3,27 @@
 //! put image data there, so pasted images are read from the native clipboard
 //! instead of the paste event.
 
+/// Text fallback for WebViews whose browser clipboard permission is unavailable.
+#[tauri::command(async)]
+pub async fn copy_text_to_clipboard(text: String) -> Result<(), String> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut clipboard = arboard::Clipboard::new()
+                .map_err(|_| "The clipboard could not be opened".to_string())?;
+            clipboard.set_text(text)
+                .map_err(|_| "The text could not be copied".to_string())
+        })
+        .await
+        .map_err(|_| "The clipboard operation could not complete".to_string())?
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = text;
+        Err("Native text copy is unavailable on this platform".into())
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn write_file_to(pb: &objc2_app_kit::NSPasteboard, path: &std::path::Path) -> Result<(), String> {
     use objc2::runtime::ProtocolObject;

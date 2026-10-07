@@ -1,3 +1,4 @@
+import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import {
   clampUsedPercent,
@@ -12,7 +13,7 @@ import {
   type RateLimitWindow,
 } from "../../features/providers/model/rateLimits";
 import type { CodexRateLimitResetOutcome } from "../../features/providers/model/rateLimitsFetch";
-import { mascotPath, projectMascot } from "../../features/projects/model/projectMascots";
+import { projectMascot } from "../../features/projects/model/projectMascots";
 import { projectKey, projectName } from "../../shared/lib/paths";
 import { HARNESS_TITLE, type HarnessId } from "../../features/sessions/model/session";
 import {
@@ -920,63 +921,18 @@ function BankedResetMascot({
   color: string;
 }) {
   const mascot = projectMascot(project, name);
-  const spritePath = `${mascot.restPath}${mascotFacePlatePath(mascot.rest)}`;
-  const maskId = `banked-reset-mascot-${useId().replace(/:/g, "")}`;
   return (
     <div
-      className="reset-mascot-scene"
+      className="grid size-14 shrink-0 place-items-center rounded-xl border border-current/20 bg-current/5"
       data-reset-mascot-mood="happy"
       data-mascot-name={mascot.name}
       style={{ color }}
       aria-hidden
     >
-      <span className="reset-mascot-glow" />
-      <span className="reset-mascot-spark reset-mascot-spark-a" />
-      <span className="reset-mascot-spark reset-mascot-spark-b" />
-      <svg
-        className="reset-mascot-sprite"
-        viewBox="0 0 8 8"
-        shapeRendering="crispEdges"
-      >
-        <defs>
-          <mask
-            id={maskId}
-            maskUnits="userSpaceOnUse"
-            x="0"
-            y="0"
-            width="8"
-            height="8"
-          >
-            <rect width="8" height="8" fill="black" />
-            <path d={spritePath} fill="white" />
-            <g fill="black">
-              <rect x="2" y="3" width="1" height="1" />
-              <rect x="5" y="3" width="1" height="1" />
-              <rect x="2" y="4" width="1" height="1" />
-              <rect x="5" y="4" width="1" height="1" />
-              <rect x="3" y="5" width="2" height="1" />
-            </g>
-          </mask>
-        </defs>
-        <path d={spritePath} fill="currentColor" mask={`url(#${maskId})`} />
-      </svg>
+      <ProjectMascot project={project} name={name} color={color} className="size-8" />
     </div>
   );
 }
-
-/** Fill only the middle of each face row before cutting the mood back out. */
-function mascotFacePlatePath(rows: readonly string[]): string {
-  return mascotPath(
-    rows.map((row, y) => {
-      if (y < 2 || y > 5) return ".".repeat(row.length);
-      const first = row.indexOf("#");
-      const last = row.lastIndexOf("#");
-      if (first < 0) return ".".repeat(row.length);
-      return `${".".repeat(first)}${"#".repeat(last - first + 1)}${".".repeat(row.length - last - 1)}`;
-    }),
-  );
-}
-
 function BankedResetRow({
   credit,
   index,

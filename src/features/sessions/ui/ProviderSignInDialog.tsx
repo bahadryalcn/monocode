@@ -10,9 +10,16 @@ import {
 type Props = {
   harness: HarnessId;
   onClose: () => void;
+  onSignedIn?: () => void;
+  completeDescription?: string;
 };
 
-export function ProviderSignInDialog({ harness, onClose }: Props) {
+export function ProviderSignInDialog({
+  harness,
+  onClose,
+  onSignedIn,
+  completeDescription,
+}: Props) {
   const [state, setState] = useState<ProviderSignInState>("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -25,7 +32,10 @@ export function ProviderSignInDialog({ harness, onClose }: Props) {
     setState("running");
     setError(null);
     void loginHarness(harness).then(
-      () => setState("complete"),
+      () => {
+        setState("complete");
+        onSignedIn?.();
+      },
       (reason: unknown) => {
         setState("error");
         setError(
@@ -35,7 +45,7 @@ export function ProviderSignInDialog({ harness, onClose }: Props) {
         );
       },
     );
-  }, [harness]);
+  }, [harness, onSignedIn]);
 
   return (
     <Modal
@@ -52,6 +62,7 @@ export function ProviderSignInDialog({ harness, onClose }: Props) {
         onSignIn={signIn}
         onComplete={onClose}
         completeActionLabel="Continue"
+        completeDescription={completeDescription}
         autoFocus
       />
     </Modal>

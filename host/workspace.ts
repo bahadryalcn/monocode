@@ -593,6 +593,7 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
   });
   if (repository.trim() !== "true") {
     return {
+      repository: false,
       branch: null,
       head: null,
       files: [],
@@ -748,6 +749,7 @@ export async function hostGitIndex(root: string): Promise<GitDiffIndex> {
   }
   files.sort((a, b) => a.relative.localeCompare(b.relative));
   return {
+    repository: true,
     branch: branchText.trim() || null,
     head: headText.trim() || null,
     files,

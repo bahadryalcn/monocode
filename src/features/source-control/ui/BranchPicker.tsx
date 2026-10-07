@@ -1,3 +1,4 @@
+import { withGitOperation, useGitPanelState } from "../model/gitPanelState";
 import { Check, GitBranch, Plus, Search } from "../../../shared/ui/icons";
 import {
   useEffect,
@@ -65,6 +66,7 @@ export function BranchPicker({
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [checkoutBusy] = useGitPanelState(cwd, "busy");
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [blocked, setBlocked] = useState<PendingSwitch | null>(null);
@@ -189,7 +191,9 @@ export function BranchPicker({
     setBusy(true);
     setError(null);
     try {
-      await applySwitch(pending);
+      await withGitOperation(cwd, "Switching branch…", () =>
+        applySwitch(pending),
+      );
       finishSwitch();
     } catch (err) {
       const message = failMessage(err);
@@ -218,8 +222,10 @@ export function BranchPicker({
     setBlockedBusy(kind);
     setBlockedError(null);
     try {
-      await work();
-      await applySwitch(blocked);
+      await withGitOperation(cwd, "Preparing branch switch…", async () => {
+        await work();
+        await applySwitch(blocked);
+      });
       finishSwitch();
     } catch (err) {
       setBlockedError(failMessage(err));
@@ -289,7 +295,8 @@ export function BranchPicker({
     : missingGit
       ? "No git repository"
       : label;
-  const interactive = enabled && !awaitingBranch && !missingGit;
+  const interactive =
+    enabled && !checkoutBusy && !awaitingBranch && !missingGit;
 
   return (
     <div ref={root} className="relative flex min-w-0 shrink">

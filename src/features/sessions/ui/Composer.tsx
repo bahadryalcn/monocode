@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   ArrowUp,
   AiIdea,
@@ -132,7 +133,6 @@ import {
   type SlashToken,
 } from "../../skills/model/skills";
 import { AccessPicker } from "./AccessPicker";
-import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
 import { AttachmentChip } from "./AttachmentChip";
 import { QueuedMessageEditDialog } from "./QueuedMessageEditDialog";
@@ -159,10 +159,8 @@ import { consumeQuoteRequest, type QuoteRequest } from "../model/quoteDraft";
 import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
 import { useProjectBranchesState } from "../../source-control/hooks/useProjectBranches";
 import {
-  COMPOSER_RUNNER_CHANGE_EVENT,
   keybindingPressed,
   keybindingShortcutLabel,
-  loadComposerRunner,
   loadModelControls,
   loadNotesEnabled,
   subscribeModelControls,
@@ -601,8 +599,7 @@ function MessageQueue({
         })}
         {remote ? (
           <div className="border-t border-stroke py-1 text-[11px] text-content/40">
-            Sent one at a time when the host finishes this turn, while MonoCode
-            is open.
+            {`Sent one at a time when the host finishes this turn, while ${PRODUCT_IDENTITY.displayName} is open.`}
           </div>
         ) : null}
       </div>
@@ -828,10 +825,6 @@ export const Composer = memo(function Composer({
   const [mention, setMention] = useState<MentionToken | null>(null);
   const [mentionActive, setMentionActive] = useState(0);
   const [resendEdited, setResendEdited] = useState(false);
-  const [runnerEnabled, setRunnerEnabled] = useState(loadComposerRunner);
-  const [runnerLive, setRunnerLive] = useState(
-    () => busy && !backgroundOnly && loadComposerRunner(),
-  );
   const groupLogos = useTabGroupLogos();
   const projectLogoPath = resolveTabGroupLogo(projectKey(cwd), groupLogos);
 
@@ -1196,11 +1189,18 @@ export const Composer = memo(function Composer({
   );
   // IPC listener registration is asynchronous; changing providers must not
   // detach it or leave it reading obsolete capabilities and callbacks.
-  const fileDropStateRef = useRef({ attachmentsSupported, remote, addAttachments });
+  const fileDropStateRef = useRef({
+    attachmentsSupported,
+    remote,
+    addAttachments,
+  });
   fileDropStateRef.current = { attachmentsSupported, remote, addAttachments };
 
   const rememberAttachmentRead = useCallback((work: Promise<void>) => {
-    const flight = work.then(() => undefined, () => undefined);
+    const flight = work.then(
+      () => undefined,
+      () => undefined,
+    );
     const previous = pasteFlightRef.current;
     const joined = previous ? previous.then(() => flight) : flight;
     pasteFlightRef.current = joined;
@@ -1209,26 +1209,39 @@ export const Composer = memo(function Composer({
     });
   }, []);
 
-  const readDroppedAttachments = useCallback((read: () => Promise<Attachment[]>) => {
-    const generation = pasteGenerationRef.current;
-    setPasteError(null);
-    rememberAttachmentRead(
-      Promise.resolve().then(read).then((incoming) => {
-        if (pasteGenerationRef.current !== generation || !fileDropStateRef.current.attachmentsSupported) {
-          incoming.forEach(revokeAttachment);
-          return;
-        }
-        if (incoming.length === 0) {
-          setPasteError("Nothing to attach from that drop — the file may have been moved, renamed, or deleted.");
-          return;
-        }
-        fileDropStateRef.current.addAttachments(incoming);
-      }).catch((reason: unknown) => {
-        if (pasteGenerationRef.current !== generation) return;
-        setPasteError(reason instanceof Error ? reason.message : String(reason));
-      }),
-    );
-  }, [rememberAttachmentRead]);
+  const readDroppedAttachments = useCallback(
+    (read: () => Promise<Attachment[]>) => {
+      const generation = pasteGenerationRef.current;
+      setPasteError(null);
+      rememberAttachmentRead(
+        Promise.resolve()
+          .then(read)
+          .then((incoming) => {
+            if (
+              pasteGenerationRef.current !== generation ||
+              !fileDropStateRef.current.attachmentsSupported
+            ) {
+              incoming.forEach(revokeAttachment);
+              return;
+            }
+            if (incoming.length === 0) {
+              setPasteError(
+                "Nothing to attach from that drop — the file may have been moved, renamed, or deleted.",
+              );
+              return;
+            }
+            fileDropStateRef.current.addAttachments(incoming);
+          })
+          .catch((reason: unknown) => {
+            if (pasteGenerationRef.current !== generation) return;
+            setPasteError(
+              reason instanceof Error ? reason.message : String(reason),
+            );
+          }),
+      );
+    },
+    [rememberAttachmentRead],
+  );
 
   // The text as it was just before a user edit. Only a native `beforeinput`
   // sets it, so programmatic text changes never count as the user deleting a
@@ -1290,21 +1303,6 @@ export const Composer = memo(function Composer({
     setAttachments([]);
     syncHasValue(ref.current?.value ?? "", []);
   }, [harness, syncHasValue]);
-  useEffect(() => {
-    const refresh = () => setRunnerEnabled(loadComposerRunner());
-    window.addEventListener(COMPOSER_RUNNER_CHANGE_EVENT, refresh);
-    return () =>
-      window.removeEventListener(COMPOSER_RUNNER_CHANGE_EVENT, refresh);
-  }, []);
-
-  useEffect(() => {
-    if (!runnerEnabled) {
-      setRunnerLive(false);
-      return;
-    }
-    if (busy && !backgroundOnly) setRunnerLive(true);
-  }, [busy, backgroundOnly, runnerEnabled]);
-
   useEffect(() => {
     setSkillActive(0);
   }, [slash?.query, cwd]);
@@ -1779,7 +1777,9 @@ export const Composer = memo(function Composer({
         setFileDrag(false);
         if (!over || !supported) return;
         if (event.payload.paths.length === 0) {
-          setPasteError("This drag did not provide a file. Save the image, then drag the saved file here.");
+          setPasteError(
+            "This drag did not provide a file. Save the image, then drag the saved file here.",
+          );
           return;
         }
         nativeDropAt = Date.now();
@@ -1945,7 +1945,7 @@ export const Composer = memo(function Composer({
       ) {
         setPasteError(
           remote
-            ? "Importing terminal conversations from a remote machine is not available yet. Open MonoCode on that machine to import them."
+            ? `Importing terminal conversations from a remote machine is not available yet. Open ${PRODUCT_IDENTITY.displayName} on that machine to import them.`
             : "Terminal conversation import is not available in this composer.",
         );
         return;
@@ -2736,58 +2736,6 @@ export const Composer = memo(function Composer({
                   onClose={() => ref.current?.focus()}
                 />
               ) : null}
-              {hideBranchPicker ? null : draftWorkspace &&
-                onWorkspaceModeChange &&
-                onWorktreeBaseChange ? (
-                <>
-                  <WorkspacePicker
-                    cwd={executionCwd}
-                    mode={workspaceMode ?? "current"}
-                    base={resolvedWorktreeBase}
-                    enabled={enabled && !busy}
-                    onModeChange={onWorkspaceModeChange}
-                    onBaseChange={onWorktreeBaseChange}
-                    onSelectWorktree={onWorktreeChange}
-                    onOpenSettings={onManageWorktrees}
-                    onClose={() => ref.current?.focus()}
-                  />
-                  {(workspaceMode ?? "current") === "current" ? (
-                    <BranchPicker
-                      cwd={executionCwd}
-                      branch={branch}
-                      enabled={enabled && !busy}
-                      onChange={onBranchChange}
-                      onClose={() => ref.current?.focus()}
-                    />
-                  ) : null}
-                </>
-              ) : worktreeRemoved && onWorktreeChange ? (
-                <WorktreePicker
-                  cwd={cwd}
-                  executionCwd={executionCwd}
-                  enabled={enabled && !busy}
-                  onSelect={onWorktreeChange}
-                  worktreeRemoved={worktreeRemoved}
-                  onBranchChange={onBranchChange}
-                  onManage={onManageWorktrees}
-                  onClose={() => ref.current?.focus()}
-                />
-              ) : (
-                <>
-                  {onWorktreeChange ? (
-                    <WorkspaceIdentity
-                      worktree={pathKey(cwd) !== pathKey(executionCwd)}
-                    />
-                  ) : null}
-                  <BranchPicker
-                    cwd={executionCwd}
-                    branch={branch}
-                    enabled={enabled && !busy}
-                    onChange={onBranchChange}
-                    onClose={() => ref.current?.focus()}
-                  />
-                </>
-              )}
               <div className="ml-auto flex shrink-0 items-center">
                 <ContextMeter
                   usage={context}
@@ -3070,7 +3018,8 @@ export const Composer = memo(function Composer({
                       <span className="min-w-0 flex-1">
                         <span className="block text-[13px]">Operator</span>
                         <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                          Give this thread access to MonoCode
+                          Give this thread access to{" "}
+                          {PRODUCT_IDENTITY.displayName}
                         </span>
                       </span>
                       {operatorActive ? (
@@ -3296,14 +3245,69 @@ export const Composer = memo(function Composer({
             </div>
           </div>
         </div>
-        {runnerLive && runnerEnabled && !remote ? (
-          <ComposerRunner
-            boxRef={boxRef}
-            cwd={cwd}
-            busy={busy && !backgroundOnly}
-            enabled={enabled}
-            onExited={() => setRunnerLive(false)}
-          />
+        {!hideTopBar && !hideBranchPicker ? (
+          <div
+            data-composer-workspace
+            role="group"
+            aria-label="Chat workspace"
+            className="mx-3 flex min-w-0 items-center gap-2 rounded-b-xl border border-t-0 border-content/10 bg-content/2 px-3 pb-1.5 pt-2"
+          >
+            {draftWorkspace && onWorkspaceModeChange && onWorktreeBaseChange ? (
+              <>
+                <WorkspacePicker
+                  alignBase="end"
+                  cwd={executionCwd}
+                  mode={workspaceMode ?? "current"}
+                  base={resolvedWorktreeBase}
+                  enabled={enabled && !busy}
+                  onModeChange={onWorkspaceModeChange}
+                  onBaseChange={onWorktreeBaseChange}
+                  onSelectWorktree={onWorktreeChange}
+                  onOpenSettings={onManageWorktrees}
+                  onClose={() => ref.current?.focus()}
+                />
+                {(workspaceMode ?? "current") === "current" ? (
+                  <div className="ml-auto flex min-w-0 justify-end">
+                    <BranchPicker
+                      cwd={executionCwd}
+                      branch={branch}
+                      enabled={enabled && !busy}
+                      onChange={onBranchChange}
+                      onClose={() => ref.current?.focus()}
+                    />
+                  </div>
+                ) : null}
+              </>
+            ) : worktreeRemoved && onWorktreeChange ? (
+              <WorktreePicker
+                cwd={cwd}
+                executionCwd={executionCwd}
+                enabled={enabled && !busy}
+                onSelect={onWorktreeChange}
+                worktreeRemoved={worktreeRemoved}
+                onBranchChange={onBranchChange}
+                onManage={onManageWorktrees}
+                onClose={() => ref.current?.focus()}
+              />
+            ) : (
+              <>
+                {onWorktreeChange ? (
+                  <WorkspaceIdentity
+                    worktree={pathKey(cwd) !== pathKey(executionCwd)}
+                  />
+                ) : null}
+                <div className="ml-auto flex min-w-0 justify-end">
+                  <BranchPicker
+                    cwd={executionCwd}
+                    branch={branch}
+                    enabled={enabled && !busy}
+                    onChange={onBranchChange}
+                    onClose={() => ref.current?.focus()}
+                  />
+                </div>
+              </>
+            )}
+          </div>
         ) : null}
       </div>
     </div>
@@ -3532,7 +3536,9 @@ function hasFiles(data: DataTransfer | null): data is DataTransfer {
   if (!data) return false;
   return (
     data.files.length > 0 ||
-    [...data.types].some((type) => type === "Files" || type === "application/x-moz-file") ||
+    [...data.types].some(
+      (type) => type === "Files" || type === "application/x-moz-file",
+    ) ||
     Array.from(data.items ?? []).some((item) => item.kind === "file")
   );
 }

@@ -1,6 +1,8 @@
+import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import {
   AlertCircle,
   Archive,
+  EyeOff,
   BellOff,
   ChevronDown,
   ChevronRight,
@@ -37,6 +39,10 @@ import {
   useProjectsDiffStats,
 } from "../../features/source-control/hooks/useProjectDiffStats";
 import { useAnimatedReorder } from "../../shared/hooks/useAnimatedReorder";
+import {
+  COLLAPSE_DURATION_MS,
+  useCollapsibleHeight,
+} from "../../shared/hooks/useCollapsibleHeight";
 import { useTabGroupLogos } from "../../features/projects/hooks/useTabGroupLogos";
 import {
   loadProjectRailWidth,
@@ -104,7 +110,6 @@ import { LastSessionsSection, type RecentSessionsSource } from "./LastSessionsSe
 import { DevModeSlot, TabVisitNav } from "./TitleBar";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
 import type { InstalledUpdate } from "../model/updateNotice";
-import { SettingsNav } from "./SettingsRail";
 import { Shimmer } from "../../shared/ui/Shimmer";
 import type { SettingsSectionId } from "../../features/settings/model/settings";
 import { InboxNotificationMenu } from "../../features/inbox/ui/InboxNotificationMenu";
@@ -220,10 +225,9 @@ export function ProjectRail({
   onSelectAgent,
   recentSessions,
   settingsOpen = false,
-  settingsSection = "general",
   onOpenSettings,
-  onOpenNotificationSettings,
   onSelectSettingsSection,
+  onOpenNotificationSettings,
   onCloseSettings,
   updateNotice = null,
   onOpenWhatsNew,
@@ -334,7 +338,7 @@ export function ProjectRail({
   );
   // Projects in a locked group stay in `allProjects` so their saved order and
   // pins survive, but nothing below lists them while the group is locked.
-  const { lock } = useGroupLock();
+  const { lock, hiddenGroupIds } = useGroupLock();
   const railProjectKeys = useMemo(
     () => new Set([...allProjects.keys()].filter((key) => !lock.lockedProjectKeys.has(key))),
     [allProjects, lock],
@@ -376,15 +380,23 @@ export function ProjectRail({
     }
     return {
       ungrouped,
-      grouped: projectGroups.map((group) => ({
-        group,
-        locked: lock.lockedGroupIds.has(group.id),
-        items: lock.lockedGroupIds.has(group.id)
-          ? []
-          : (byGroup.get(group.id) ?? []),
-      })),
+      grouped: projectGroups
+        .filter((group) => !hiddenGroupIds.has(group.id))
+        .map((group) => ({
+          group,
+          locked: lock.lockedGroupIds.has(group.id),
+          items: lock.lockedGroupIds.has(group.id)
+            ? []
+            : (byGroup.get(group.id) ?? []),
+        })),
     };
-  }, [lock, projectGroupAssignments, projectGroups, sections.projects]);
+  }, [
+    lock,
+    hiddenGroupIds,
+    projectGroupAssignments,
+    projectGroups,
+    sections.projects,
+  ]);
   const busy = useMemo(() => {
     const set = new Set<string>();
     for (const path of busyPaths ?? []) set.add(path);
@@ -624,7 +636,7 @@ export function ProjectRail({
     <nav
       ref={resize.setPaneRef}
       aria-label="Projects"
-      className={`sidebar-glass relative shrink-0 flex-col border-r border-stroke ${visible ? "flex" : "hidden"}`}
+      className={`imece-project-rail sidebar-glass relative shrink-0 flex-col border-r border-stroke ${visible ? "flex" : "hidden"}`}
     >
       <div
         className="@container/rail flex h-10 shrink-0 select-none items-center overflow-hidden pr-1.5"
@@ -652,15 +664,21 @@ export function ProjectRail({
       </div>
 
       <div className="@container/rail flex min-h-0 flex-1 flex-col">
+        <div className="imece-rail-brand @max-[140px]/rail:justify-center" aria-label={PRODUCT_IDENTITY.displayName}>
+          <img src={PRODUCT_IDENTITY.logoSrc} alt="" />
+          <span className="@max-[140px]/rail:hidden">{PRODUCT_IDENTITY.displayName}</span>
+        </div>
       {settingsOpen ? (
-        <SettingsNav
-          section={settingsSection}
-          onSelect={(next) => onSelectSettingsSection?.(next)}
-          onClose={() => onCloseSettings?.()}
-        />
+        <button
+          type="button"
+          className="imece-settings-return"
+          onClick={() => onCloseSettings?.()}
+        >
+          Back to workspace
+        </button>
       ) : (
         <>
-          <div className="flex shrink-0 flex-col gap-px px-2 pb-2 pt-0.5">
+          <div className="imece-rail-tools shrink-0">
             <RailSearch
               label="Search"
               icon={Search}
@@ -737,7 +755,7 @@ export function ProjectRail({
               lockOverscroll(el);
               scrollRef.current = el;
             }}
-            className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-2"
+            className="imece-project-ledger flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-2"
           >
             {rail.order.map((id) => (
               <Fragment key={id}>{sectionNodes[id]}</Fragment>
@@ -754,13 +772,28 @@ export function ProjectRail({
             <div className="@max-[140px]/rail:hidden">
               <GithubStarPrompt />
             </div>
-            <RailAction
-              label="Settings"
-              icon={Settings}
-              onClick={onOpenSettings}
-              shortcut={`${MOD},`}
-              ariaLabel={`Settings (${MOD},)`}
-            />
+            <div className="flex items-center gap-1 @max-[140px]/rail:flex-col">
+              <RailAction
+                label="Settings"
+                icon={Settings}
+                onClick={onOpenSettings}
+                shortcut={`${MOD},`}
+                ariaLabel={`Settings (${MOD},)`}
+              />
+              <button
+                type="button"
+                aria-label="Manage hidden groups"
+                title="Manage hidden groups"
+                disabled={!onOpenSettings || !onSelectSettingsSection}
+                onClick={() => {
+                  onOpenSettings?.();
+                  onSelectSettingsSection?.("groupLock");
+                }}
+                className="flex size-8 shrink-0 items-center justify-center rounded-md text-content/65 hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-accent focus-visible:-outline-offset-2 disabled:opacity-40"
+              >
+                <EyeOff className="size-4" strokeWidth={1.75} />
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -1012,15 +1045,35 @@ function ProjectGroupSection({
   // While any group is dragged, every group shows only its header.
   const folded = sortableGroups.draggingId !== null;
   const showBody = expanded && !folded;
+  const { viewportRef, contentRef, settledOpen } = useCollapsibleHeight(
+    showBody,
+    folded || locked,
+  );
+  // Keep rows alive for the closing transition, then release their subscriptions.
+  const [retainedBody, setRetainedBody] = useState(expanded);
+  const renderBody = !locked && (expanded || retainedBody);
+  useEffect(() => {
+    if (expanded) {
+      setRetainedBody(true);
+      return;
+    }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setRetainedBody(false);
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setRetainedBody(false),
+      COLLAPSE_DURATION_MS + 100,
+    );
+    return () => window.clearTimeout(timer);
+  }, [expanded]);
   const linkStatus = useLinkedGroupStatus(group.id);
   const localPaths = useMemo(
     () => items.map((item) => item.path).filter(isLocalProject),
     [items],
   );
-  // Only an expanded group shows project cards, which already load these
-  // stats. Reading them here adds no git calls; a collapsed group shows no
-  // count rather than starting new ones.
-  const groupStats = useProjectsDiffStats(localPaths, statsEnabled && expanded);
+  // Share card stats, but wait until opening settles before starting subscriptions.
+  const groupStats = useProjectsDiffStats(localPaths, statsEnabled && settledOpen);
   const gitSummary = summarizeGroupGit(
     localPaths.map((_, index) => ({
       remote: false,
@@ -1041,10 +1094,13 @@ function ProjectGroupSection({
   return (
     <div
       ref={(el) => sortableGroups.setItemRef(group.id, el)}
-      className={`reorder-item rail-reorder-block shrink-0 overflow-hidden rounded-md ${
-        showBody ? "mb-1.5 bg-content/3" : ""
+      className={`reorder-item rail-reorder-block project-group-section shrink-0 overflow-hidden rounded-md ${
+        showBody ? "mb-1.5" : ""
+      } ${
+        renderBody && !folded ? "bg-content/3" : ""
       }`}
       data-project-group={group.id}
+      data-folded={folded || undefined}
       role="group"
       aria-label={group.name}
     >
@@ -1217,34 +1273,54 @@ The group was left as it is.`
           <MoreHorizontal className="size-4" strokeWidth={1.75} />
         </button>
       </div>
-      {expanded ? (
-        <div
-          data-project-group-items
-          className={`flex-col gap-px p-1 ${folded ? "hidden" : "flex"}`}
-        >
-          {items.map((item) => (
-            <ProjectCard
-              key={item.path}
-              item={item}
-              muteStatus={muteStatuses.get(pathKey(item.path)) ?? undefined}
-              selected={!searchActive && sameProjectPath(item.path, cwd)}
-              busy={isBusyPath(item.path, busy)}
-              statsEnabled={statsEnabled}
-              pinned={false}
-              sortable={sortable}
-              onSelect={onSelect}
-              onTogglePin={onTogglePin}
-              onContextMenu={onContextMenu}
-              onOpenMenu={onOpenMenu}
-              groupLabels={groupLabels}
-              groupColors={groupColors}
-              groupCustomColors={groupCustomColors}
-              groupLogos={groupLogos}
-              groupMascots={groupMascots}
-            />
-          ))}
+      <div
+        ref={viewportRef}
+        className="project-group-body"
+        data-open={showBody}
+        data-folded={folded || undefined}
+        aria-hidden={!showBody}
+        inert={!showBody}
+        onTransitionEnd={(event) => {
+          if (
+            event.target === event.currentTarget &&
+            event.propertyName === "height" &&
+            !expanded
+          ) {
+            setRetainedBody(false);
+          }
+        }}
+      >
+        <div ref={contentRef} className="project-group-body-clip">
+          {renderBody ? (
+            <div
+              data-project-group-items
+              className="flex flex-col gap-px p-1"
+            >
+              {items.map((item) => (
+                <ProjectCard
+                  key={item.path}
+                  item={item}
+                  muteStatus={muteStatuses.get(pathKey(item.path)) ?? undefined}
+                  selected={!searchActive && sameProjectPath(item.path, cwd)}
+                  busy={isBusyPath(item.path, busy)}
+                  statsEnabled={statsEnabled && settledOpen}
+                  pinned={false}
+                  sortable={sortable}
+                  onSelect={onSelect}
+                  onTogglePin={onTogglePin}
+                  onContextMenu={onContextMenu}
+                  onOpenMenu={onOpenMenu}
+                  groupLabels={groupLabels}
+                  groupColors={groupColors}
+                  groupCustomColors={groupCustomColors}
+                  groupLogos={groupLogos}
+                  groupMascots={groupMascots}
+                />
+              ))}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </div>
     </div>
   );
 }
@@ -1388,7 +1464,7 @@ function ProjectCard({
               project={seed}
               color={color}
               name={resolveTabGroupMascot(key, groupMascots)}
-              className="size-3"
+              className="size-3.5"
               active={busy}
             />
           )}

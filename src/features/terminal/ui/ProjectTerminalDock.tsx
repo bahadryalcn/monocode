@@ -8,6 +8,8 @@ import {
   PanelRight,
   PanelTop,
   Plus,
+  Terminal,
+  Trash2,
 } from "../../../shared/ui/icons";
 import {
   useEffect,
@@ -16,7 +18,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { ExplorerMenu } from "../../files/ui/ExplorerMenu";
-import { SurfaceTabs } from "../../workspace/ui/SurfaceTabs";
+import "./terminal.css";
 import { IconButton } from "../../../app/shell/TitleBar";
 import {
   clampDockSize,
@@ -26,7 +28,7 @@ import {
   type ProjectTerminalDock,
 } from "../../projects/model/projectTerminal";
 import { MOD } from "../../../platform/tauri/platform";
-import type { TerminalMetaPatch } from "../model/terminalTab";
+import { terminalTabLabel, type TerminalMetaPatch } from "../model/terminalTab";
 import { lazySurface } from "../../../shared/ui/lazySurface";
 import {
   effectiveProfileId,
@@ -100,9 +102,16 @@ export function ProjectTerminalDock({
   const vertical = isVerticalDock(dock.side);
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const [profileMenu, setProfileMenu] = useState<{ x: number; y: number } | null>(
-    null,
-  );
+  const [profileMenu, setProfileMenu] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [terminalMenu, setTerminalMenu] = useState<{
+    x: number;
+    y: number;
+    id: string;
+  } | null>(null);
+  const draggedTerminal = useRef<string | null>(null);
   const sideButton = useRef<HTMLDivElement>(null);
   const profileButton = useRef<HTMLDivElement>(null);
   const profiles = useTerminalProfiles();
@@ -197,7 +206,7 @@ export function ProjectTerminalDock({
   return (
     <section
       data-project-terminal-dock=""
-      className={`relative flex h-full min-h-0 min-w-0 flex-col bg-transparent ${
+      className={`project-terminal-dock relative flex h-full min-h-0 min-w-0 ${
         dock.side === "top"
           ? "border-b"
           : dock.side === "bottom"
@@ -223,18 +232,9 @@ export function ProjectTerminalDock({
           commit();
         }}
       />
-      <SurfaceTabs
-        files={dock.pane.files}
-        activeFileId={dock.pane.activeFileId}
-        dirtyFileIds={EMPTY_IDS}
-        fileErrorCounts={EMPTY_ERRORS}
-        label="Terminals"
-        onSelectFile={onSelectTerminal}
-        onCloseFile={onCloseTerminal}
-        onCloseOtherFiles={onCloseOtherTerminals}
-        onReorder={onReorderTerminals}
-        trailing={
-          <div className="flex shrink-0 items-center gap-0.5 pr-1.5">
+      <aside className="terminal-sidebar" aria-label="Terminal controls">
+        <div className="terminal-toolbar">
+          <div className="flex min-w-0 items-center gap-0.5">
             <IconButton
               label={`New Terminal (${MOD}\`)`}
               onClick={onAddTerminal}
@@ -256,30 +256,117 @@ export function ProjectTerminalDock({
               </div>
             ) : null}
             <div ref={sideButton}>
-            <IconButton
-              label="Move Terminal"
-              onClick={() => {
-                const rect = sideButton.current?.getBoundingClientRect();
-                if (!rect) return;
-                setMenu({ x: rect.left, y: rect.bottom + 4 });
-              }}
-            >
-              <SideIcon className="size-3.5" strokeWidth={1.75} />
-            </IconButton>
+              <IconButton
+                label="Move Terminal"
+                onClick={() => {
+                  const rect = sideButton.current?.getBoundingClientRect();
+                  if (!rect) return;
+                  setMenu({ x: rect.left, y: rect.bottom + 4 });
+                }}
+              >
+                <SideIcon className="size-3.5" strokeWidth={1.75} />
+              </IconButton>
             </div>
             <IconButton
-              label={`Hide Terminal (${MOD}J)`}
-              onClick={onHide}
+              label="Close Active Terminal"
+              onClick={() => onCloseTerminal(dock.pane.activeFileId)}
             >
+              <Trash2 className="size-3.5" strokeWidth={1.75} />
+            </IconButton>
+            <IconButton label={`Hide Terminal (${MOD}J)`} onClick={onHide}>
               <HideIcon className="size-3.5" strokeWidth={1.75} />
             </IconButton>
           </div>
-        }
-      />
-      <div className="relative min-h-0 min-w-0 flex-1">
+        </div>
+        <div
+          className="terminal-list"
+          role="tablist"
+          aria-label="Terminals"
+          aria-orientation="vertical"
+        >
+          {dock.pane.files.map((file, index) => (
+            <button
+              key={file.id}
+              id={`terminal-tab-${file.id}`}
+              type="button"
+              role="tab"
+              aria-selected={file.id === dock.pane.activeFileId}
+              aria-controls={`terminal-panel-${file.id}`}
+              tabIndex={file.id === dock.pane.activeFileId ? 0 : -1}
+              className="terminal-list-item"
+              title={`${terminalTabLabel(file)} — ${file.cwd}`}
+              draggable
+              onClick={() => onSelectTerminal(file.id)}
+              onAuxClick={(event) => {
+                if (event.button === 1) onCloseTerminal(file.id);
+              }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setTerminalMenu({
+                  x: event.clientX,
+                  y: event.clientY,
+                  id: file.id,
+                });
+              }}
+              onKeyDown={(event) => {
+                const files = dock.pane.files;
+                const next =
+                  event.key === "ArrowDown"
+                    ? (index + 1) % files.length
+                    : event.key === "ArrowUp"
+                      ? (index - 1 + files.length) % files.length
+                      : event.key === "Home"
+                        ? 0
+                        : event.key === "End"
+                          ? files.length - 1
+                          : null;
+                if (next !== null) {
+                  event.preventDefault();
+                  onSelectTerminal(files[next].id);
+                  document
+                    .getElementById(`terminal-tab-${files[next].id}`)
+                    ?.focus();
+                }
+              }}
+              onDragStart={(event) => {
+                draggedTerminal.current = file.id;
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", file.id);
+              }}
+              onDragEnd={() => {
+                draggedTerminal.current = null;
+              }}
+              onDragOver={(event) => {
+                if (draggedTerminal.current) event.preventDefault();
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const dragged = draggedTerminal.current;
+                draggedTerminal.current = null;
+                if (!dragged || dragged === file.id) return;
+                const ids = dock.pane.files.map((item) => item.id);
+                const source = ids.indexOf(dragged);
+                if (source < 0) return;
+                ids.splice(source, 1);
+                ids.splice(index, 0, dragged);
+                onReorderTerminals(ids);
+              }}
+            >
+              <Terminal className="size-3 shrink-0" strokeWidth={1.5} />
+              <span className="min-w-0 flex-1 truncate">
+                {terminalTabLabel(file)}
+              </span>
+            </button>
+          ))}
+        </div>
+      </aside>
+      <div className="terminal-canvas relative min-h-0 min-w-0 flex-1">
         {dock.pane.files.map((file) => (
           <div
             key={file.id}
+            id={`terminal-panel-${file.id}`}
+            role="tabpanel"
+            aria-labelledby={`terminal-tab-${file.id}`}
             aria-hidden={file.id !== dock.pane.activeFileId}
             className={
               file.id === dock.pane.activeFileId
@@ -297,6 +384,28 @@ export function ProjectTerminalDock({
           </div>
         ))}
       </div>
+      {terminalMenu ? (
+        <ExplorerMenu
+          x={terminalMenu.x}
+          y={terminalMenu.y}
+          ariaLabel="Terminal actions"
+          items={[
+            { kind: "item", id: "close", label: "Close" },
+            {
+              kind: "item",
+              id: "close-others",
+              label: "Close Others",
+              disabled: dock.pane.files.length < 2,
+            },
+          ]}
+          onPick={(id) => {
+            if (id === "close") onCloseTerminal(terminalMenu.id);
+            if (id === "close-others") onCloseOtherTerminals(terminalMenu.id);
+            setTerminalMenu(null);
+          }}
+          onClose={() => setTerminalMenu(null)}
+        />
+      ) : null}
       {profileMenu ? (
         <ExplorerMenu
           x={profileMenu.x}
@@ -353,7 +462,12 @@ export function ProjectTerminalDock({
             checked: item.id === dock.side,
           }))}
           onPick={(id) => {
-            if (id === "top" || id === "bottom" || id === "left" || id === "right") {
+            if (
+              id === "top" ||
+              id === "bottom" ||
+              id === "left" ||
+              id === "right"
+            ) {
               onSideChange(id);
             }
             setMenu(null);
@@ -364,6 +478,3 @@ export function ProjectTerminalDock({
     </section>
   );
 }
-
-const EMPTY_IDS = new Set<string>();
-const EMPTY_ERRORS = new Map<string, number>();

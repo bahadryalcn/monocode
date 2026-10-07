@@ -50,14 +50,14 @@ export function GroupGitPopover({
           const index = await gitDiffIndex(path);
           if (cancelled) return;
           applyProjectDiffStats(path, {
-            files: index.files.length,
+            files: index.files.length + (index.conflicts?.length ?? 0),
             additions: index.additions,
             deletions: index.deletions,
           });
           detail = {
             state: "ready",
             branch: index.branch,
-            files: index.files.length,
+            files: index.files.length + (index.conflicts?.length ?? 0),
             ahead: index.ahead,
             behind: index.behind,
             hasUpstream: index.upstream != null,
@@ -103,12 +103,10 @@ export function GroupGitPopover({
       className="overflow-y-auto p-1"
     >
       <p className="px-2.5 pb-1 pt-1.5 text-xs text-content/50">
-        {summary.dirty} of {summary.local} local{" "}
-        {summary.local === 1 ? "project has" : "projects have"} uncommitted
-        changes
-        {summary.syncKnown > 0
-          ? ` · ↑${summary.ahead} ↓${summary.behind}`
-          : ""}
+        {summary.known} of {summary.local} local projects loaded ·{" "}
+        {summary.dirty} {summary.dirty === 1 ? "project has" : "projects have"}{" "}
+        uncommitted changes
+        {summary.syncKnown > 0 ? ` · ↑${summary.ahead} ↓${summary.behind}` : ""}
       </p>
       <ul>
         {paths.map((path) => {
@@ -122,11 +120,17 @@ export function GroupGitPopover({
                 onClick={() => onSelect(path)}
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-content/80 hover:bg-content/8 hover:text-content"
               >
-                <span className="min-w-0 flex-1 truncate">{basename(path)}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {basename(path)}
+                </span>
                 {!local ? (
-                  <span className="shrink-0 text-[11px] text-content/45">remote</span>
+                  <span className="shrink-0 text-[11px] text-content/45">
+                    remote
+                  </span>
                 ) : !detail || detail.state === "loading" ? (
-                  <span className="shrink-0 text-[11px] text-content/40">…</span>
+                  <span className="shrink-0 text-[11px] text-content/40">
+                    …
+                  </span>
                 ) : detail.state === "error" ? (
                   <span
                     className="shrink-0 text-[11px] text-content/45"
@@ -140,7 +144,9 @@ export function GroupGitPopover({
                       {detail.branch ?? "detached"}
                     </span>
                     <span
-                      className={detail.files > 0 ? "text-amber-400" : undefined}
+                      className={
+                        detail.files > 0 ? "text-amber-400" : undefined
+                      }
                       title={`${detail.files} changed ${detail.files === 1 ? "file" : "files"}`}
                     >
                       {detail.files}

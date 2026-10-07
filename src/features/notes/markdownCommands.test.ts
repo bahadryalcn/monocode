@@ -80,3 +80,23 @@ describe("code and links", () => {
     expect(run("link", "|")).toBe("[{text}](url)");
   });
 });
+
+describe("strikethrough and blocks", () => {
+  it("wraps and unwraps the selection in strikethrough", () => {
+    expect(run("strike", "a {word} b")).toBe("a ~~{word}~~ b");
+    expect(run("strike", "a ~~{word}~~ b")).toBe("a {word} b");
+  });
+
+  it("puts a table on its own paragraph with the first header selected", () => {
+    expect(run("table", "text|")).toBe(
+      "text\n\n| {Column} | Column |\n| --- | --- |\n|  |  |\n\n",
+    );
+    expect(run("table", "|")).toBe(
+      "| {Column} | Column |\n| --- | --- |\n|  |  |\n\n",
+    );
+  });
+
+  it("keeps a rule apart from the text so it is not read as a heading", () => {
+    expect(run("rule", "text|\nmore")).toBe("text\n\n---\n|\nmore");
+  });
+});

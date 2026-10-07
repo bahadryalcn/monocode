@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { Pause, Play } from "../../../shared/ui/icons";
 
 /**
@@ -8,7 +9,7 @@ import { Pause, Play } from "../../../shared/ui/icons";
  */
 export function InterruptedNotice({
   onContinue,
-  message = "This turn was cut off when MonoCode quit.",
+  message = `This turn was cut off when ${PRODUCT_IDENTITY.displayName} quit.`,
 }: {
   onContinue: () => void;
   message?: string;

@@ -15,6 +15,7 @@ import {
 import { useProjectBranchesState } from "../hooks/useProjectBranches";
 import { deleteLocalBranch } from "../model/deleteBranch";
 import { appName } from "../../../shared/lib/appName";
+import { useGitPanelState, withGitOperation } from "../model/gitPanelState";
 
 type Props = {
   cwd: string;
@@ -43,7 +44,9 @@ type Editing = { kind: "create" } | { kind: "rename"; from: string };
 /** Switch to, merge, rebase, create, rename, and delete branches. Needs git.actions on a project on another machine. */
 export function BranchManagerDialog({ cwd, onClose }: Props) {
   const { branches } = useProjectBranchesState(cwd, true);
-  const [busy, setBusy] = useState(false);
+  const [localBusy, setBusy] = useState(false);
+  const [checkoutBusy] = useGitPanelState(cwd, "busy");
+  const busy = localBusy || !!checkoutBusy;
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -61,7 +64,7 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
     setBusy(true);
     setError(null);
     try {
-      await work();
+      await withGitOperation(cwd, "Updating branches…", work);
       return true;
     } catch (err) {
       setError(errorText(err));
@@ -69,12 +72,13 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
     } finally {
       setBusy(false);
       // Also after a failure: a conflicted merge or rebase changed the tree.
-      notifyGitChanged();
+      notifyGitChanged(cwd, "refs");
     }
   };
 
   const checkout = async (branch: GitBranchInfo) => {
-    if (await run(() => gitCheckout(cwd, branch.name, branch.remote))) onClose();
+    if (await run(() => gitCheckout(cwd, branch.name, branch.remote)))
+      onClose();
   };
 
   const removeRemote = async (branch: GitBranchInfo) => {
@@ -148,7 +152,11 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
   const renderRow = (branch: GitBranchInfo) => {
     const reference = branchRef(branch);
     const isCurrent = !branch.remote && branch.name === current;
-    if (editing?.kind === "rename" && !branch.remote && editing.from === branch.name) {
+    if (
+      editing?.kind === "rename" &&
+      !branch.remote &&
+      editing.from === branch.name
+    ) {
       return (
         <li key={reference}>
           {renderForm(`New name for ${branch.name}`, "Save")}
@@ -160,7 +168,10 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
         {isCurrent ? (
           <Check className="size-3.5 shrink-0" strokeWidth={1.75} />
         ) : (
-          <GitBranch className="size-3.5 shrink-0 text-content/50" strokeWidth={1.75} />
+          <GitBranch
+            className="size-3.5 shrink-0 text-content/50"
+            strokeWidth={1.75}
+          />
         )}
         <span
           title={reference}
@@ -222,7 +233,9 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
             <button
               type="button"
               disabled={busy}
-              onClick={() => startEditing({ kind: "rename", from: branch.name })}
+              onClick={() =>
+                startEditing({ kind: "rename", from: branch.name })
+              }
               className={ACTION}
             >
               Rename
@@ -231,7 +244,9 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
               type="button"
               disabled={busy || isCurrent}
               title={isCurrent ? "Cannot delete the current branch" : undefined}
-              onClick={() => void run(() => deleteLocalBranch(cwd, branch.name))}
+              onClick={() =>
+                void run(() => deleteLocalBranch(cwd, branch.name))
+              }
               className={ACTION}
             >
               Delete
@@ -288,7 +303,9 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
             New Branch…
           </button>
         </div>
-        {editing?.kind === "create" ? renderForm("New branch name", "Create") : null}
+        {editing?.kind === "create"
+          ? renderForm("New branch name", "Create")
+          : null}
         {error ? (
           <p
             role="alert"

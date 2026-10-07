@@ -1,4 +1,5 @@
 import { X } from "../../shared/ui/icons";
+import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import type { InstalledUpdate } from "../model/updateNotice";
 
 type Props = {
@@ -22,7 +23,7 @@ export function UpdateRailCard({ update, onOpen, onDismiss }: Props) {
       >
         <span className="mt-0.5 grid size-[18px] shrink-0 place-items-center">
           <img
-            src="/monocode.png"
+            src={PRODUCT_IDENTITY.logoSrc}
             alt=""
             aria-hidden
             className="size-4 object-contain"

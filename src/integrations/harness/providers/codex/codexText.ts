@@ -1,4 +1,5 @@
 import { modelsFor } from "../../../../features/sessions/model/models";
+import { PRODUCT_IDENTITY } from "../../../../shared/lib/productIdentity";
 import {
   killChild,
   resolveCodexBinary,
@@ -342,7 +343,7 @@ async function startLive(
       {
         clientInfo: {
           name: "monocode-text",
-          title: "MonoCode",
+          title: PRODUCT_IDENTITY.displayName,
           version: "0.1.0",
         },
         capabilities: { experimentalApi: true },

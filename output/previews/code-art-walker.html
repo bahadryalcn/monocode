@@ -1,0 +1,131 @@
+<div id="code-walker-preview">
+  <div class="cw-label">Kahvehane amcası · code art</div>
+  <canvas class="cw-large" data-size="large" role="img" aria-label="Kasketli, bıyıklı ve süveterli bir amca, elleri arkasında ve elinde sallanan tespihiyle ağır ağır volta atıyor. Karakter tamamen kod işaretlerinden oluşuyor."></canvas>
+  <div class="cw-label cw-label-small">Çalışma çubuğunda · 32 px</div>
+  <div class="cw-bar"><span class="cw-status"><i></i>Working <span>1m 33s</span></span><canvas class="cw-small" data-size="small" role="img" aria-label="Çalışma çubuğundaki küçük code art karakter"></canvas></div>
+  <div class="cw-actions"><button type="button">Duraklat</button></div>
+</div>
+<style>
+  #code-walker-preview { font-family: 'Segoe UI', sans-serif; padding: 18px 0 2px; color: #bbb; }
+  #code-walker-preview .cw-label { font-size: 12px; color: #96999e; margin-bottom: 12px; }
+  #code-walker-preview canvas { display: block; width: 100%; }
+  #code-walker-preview .cw-large { height: 260px; background: #0b0d0f; border-radius: 10px; }
+  #code-walker-preview .cw-label-small { margin-top: 22px; }
+  #code-walker-preview .cw-bar { height: 54px; background: #202020; border: 1px solid #363636; border-radius: 8px; position: relative; }
+  #code-walker-preview .cw-status { position: absolute; left: 13px; top: 10px; display: flex; gap: 8px; align-items: center; font-size: 12px; color: #aaa; }
+  #code-walker-preview .cw-status i { width: 6px; height: 6px; background: #459fff; border-radius: 50%; box-shadow: 0 0 6px #459fff60; }
+  #code-walker-preview .cw-status span { color: #777; }
+  #code-walker-preview .cw-small { position: absolute; bottom: 0; height: 34px; }
+  #code-walker-preview .cw-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+  #code-walker-preview button { font: 12px 'Segoe UI', sans-serif; background: #242424; border: 1px solid #444; color: #ccc; border-radius: 6px; padding: 7px 12px; }
+</style>
+<script>
+(() => {
+  const root = document.getElementById('code-walker-preview');
+  const canvases = [...root.querySelectorAll('canvas')];
+  const button = root.querySelector('button');
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  const state = { playing: !reduced.matches, speed: 1 };
+  const code = ['const a = (x) => x;', 'if (ok) { return 1; }', '</> {} [] () => ;', 'let n = i + 1; //', 'await run(task);', '0110 : { value }'];
+  let elapsed = 0, previous = null;
+  function tube(path, ax, ay, bx, by, radius) {
+    const angle = Math.atan2(by - ay, bx - ax), dx = Math.sin(angle) * radius, dy = Math.cos(angle) * radius;
+    path.moveTo(ax + dx, ay - dy); path.lineTo(bx + dx, by - dy); path.lineTo(bx - dx, by + dy); path.lineTo(ax - dx, ay + dy); path.closePath();
+    path.moveTo(ax + radius, ay); path.arc(ax, ay, radius, 0, Math.PI * 2);
+    path.moveTo(bx + radius, by); path.arc(bx, by, radius, 0, Math.PI * 2);
+  }
+  function pose(t) {
+    const p = t % 14;
+    if (p < 6) return { x: p / 6, dir: 1, walk: true, phase: p * Math.PI * 1.8 };
+    if (p < 6.5) return { x: 1, dir: 1, walk: false, phase: 0 };
+    if (p < 7) return { x: 1, dir: Math.cos((p - 6.5) * Math.PI / .5), walk: false, phase: 0 };
+    if (p < 13) return { x: 1 - (p - 7) / 6, dir: -1, walk: true, phase: (p - 7) * Math.PI * 1.8 };
+    if (p < 13.5) return { x: 0, dir: -1, walk: false, phase: 0 };
+    return { x: 0, dir: -Math.cos((p - 13.5) * Math.PI / .5), walk: false, phase: 0 };
+  }
+  function character(ctx, x, baseline, scale, p, backdrop) {
+    const step = p.walk ? Math.sin(p.phase) : 0;
+    const bob = p.walk ? Math.abs(step) * .35 : 0;
+    ctx.save(); ctx.translate(x, baseline); ctx.scale(scale * p.dir, scale); ctx.translate(0, -112 - bob);
+    const shape = new Path2D();
+    // Round cheeks, a flat cap and a prominent side-profile nose.
+    shape.ellipse(4, 23, 15, 16, -.08, 0, Math.PI * 2);
+    shape.moveTo(15, 20); shape.quadraticCurveTo(26, 23, 21, 27); shape.lineTo(15, 28); shape.closePath();
+    shape.moveTo(-13, 13); shape.quadraticCurveTo(-15, 2, 1, 2); shape.quadraticCurveTo(13, 1, 17, 9); shape.lineTo(24, 12); shape.lineTo(23, 14); shape.lineTo(-13, 14); shape.closePath();
+    tube(shape, 1, 36, 0, 44, 5);
+    // Sloped shoulders, a cardigan and a comfortably round belly.
+    shape.moveTo(-10, 42); shape.quadraticCurveTo(5, 38, 14, 46); shape.quadraticCurveTo(27, 54, 24, 67); shape.quadraticCurveTo(24, 80, 9, 81); shape.lineTo(-13, 78); shape.quadraticCurveTo(-17, 59, -16, 50); shape.quadraticCurveTo(-16, 44, -10, 42); shape.closePath();
+    // Elbows bend backward, hands clasped at the small of the back.
+    tube(shape, -11, 48, -26, 62, 4); tube(shape, -26, 62, -23, 75, 3.6);
+    tube(shape, -5, 48, -21, 62, 3); tube(shape, -21, 62, -23, 75, 2.8);
+    shape.moveTo(-18, 76); shape.ellipse(-23, 76, 5, 4, -.3, 0, Math.PI * 2);
+    const a = step * 7, b = -a;
+    const liftA = Math.max(0, -step) * 2, liftB = Math.max(0, step) * 2;
+    tube(shape, -5, 79, b - 6, 94, 5); tube(shape, b - 6, 94, b - 7, 108 - liftB, 4);
+    tube(shape, 9, 79, a + 8, 94, 5); tube(shape, a + 8, 94, a + 6, 108 - liftA, 4);
+    tube(shape, b - 10, 109 - liftB, b, 109 - liftB, 2.6);
+    tube(shape, a + 3, 109 - liftA, a + 14, 109 - liftA, 2.6);
+    // Every visible part is an actual monospace glyph.
+    ctx.save(); ctx.clip(shape); ctx.font = '2.1px monospace'; ctx.textBaseline = 'top';
+    for (let row = 0; row < 70; row++) {
+      ctx.fillStyle = row % 4 === 0 ? '#bdc2c8' : '#929ba5';
+      ctx.fillText(code[row % code.length].repeat(6), -38 - (row % 3), row * 1.65);
+    }
+    ctx.restore();
+    // Face and clothing details use gaps between the glyphs.
+    ctx.fillStyle = backdrop;
+    ctx.beginPath(); ctx.ellipse(11, 21, 2.5, 2.2, -.1, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#e0e3e6'; ctx.font = '4px monospace'; ctx.fillText('.', 11, 20);
+    ctx.strokeStyle = backdrop; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(-12, 14); ctx.lineTo(17, 14); ctx.moveTo(7, 18); ctx.lineTo(14, 18); ctx.stroke();
+    // The thick moustache is a dark gap framed by pale code characters.
+    ctx.lineWidth = 3.3; ctx.beginPath(); ctx.moveTo(9, 29); ctx.quadraticCurveTo(14, 27, 19, 30); ctx.stroke();
+    ctx.lineWidth = 1.1; ctx.beginPath(); ctx.moveTo(12, 34); ctx.quadraticCurveTo(15, 35, 17, 33); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-5, 43); ctx.lineTo(3, 52); ctx.lineTo(11, 45); ctx.moveTo(3, 52); ctx.lineTo(7, 78); ctx.moveTo(-22, 70); ctx.lineTo(-18, 71); ctx.moveTo(-12, 76); ctx.lineTo(19, 78); ctx.stroke();
+    ctx.fillStyle = '#d1d4d8'; ctx.font = '3px monospace';
+    ctx.fillText(':', 4, 57); ctx.fillText(':', 5, 65); ctx.fillText(':', 6, 73);
+    // The rosary is made of individual 'o' glyphs, with a gentle pendulum swing.
+    ctx.save(); ctx.translate(-24, 77); ctx.rotate(p.walk ? Math.sin(p.phase - .6) * .16 : .04);
+    ctx.font = '3px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#c6c1b6';
+    for (let i = 0; i < 23; i++) {
+      const angle = -Math.PI / 2 + i / 23 * Math.PI * 2;
+      ctx.fillText('o', Math.cos(angle) * 4.5 - 2, 10 + Math.sin(angle) * 10);
+    }
+    ctx.fillText('|', -2, 22); ctx.fillText(';', -2, 25);
+    ctx.restore();
+    ctx.restore();
+  }
+  function draw() {
+    const p = pose(elapsed);
+    canvases.forEach(canvas => {
+      const ctx = canvas.getContext('2d'), width = canvas.clientWidth, height = canvas.clientHeight;
+      const big = canvas.dataset.size === 'large', scale = big ? 1.75 : 32 / 112;
+      ctx.clearRect(0, 0, width, height);
+      const span = Math.max(0, Math.min(big ? 260 : 70, width - (big ? 140 : 36)));
+      character(ctx, (width - span) / 2 + p.x * span, big ? 232 : 33, scale, p, big ? '#0b0d0f' : '#202020');
+    });
+  }
+  function resize() {
+    canvases.forEach(canvas => {
+      const dpr = devicePixelRatio || 1;
+      canvas.width = Math.round(canvas.clientWidth * dpr); canvas.height = Math.round(canvas.clientHeight * dpr);
+      canvas.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+    }); draw();
+  }
+  function update() { button.textContent = state.playing ? 'Duraklat' : 'Oynat'; button.setAttribute('aria-pressed', String(!state.playing)); draw(); }
+  button.addEventListener('click', () => { state.playing = !state.playing; update(); });
+  reduced.addEventListener('change', () => { state.playing = !reduced.matches; update(); });
+  new ResizeObserver(resize).observe(root); resize(); update();
+  function frame(now) {
+    if (!root.isConnected) return;
+    if (previous !== null && state.playing) elapsed += Math.min(.05, (now - previous) / 1000) * state.speed;
+    previous = now; draw(); requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  if (globalThis.Tweak) {
+    const tweak = new Tweak({ container: root, onChange: update });
+    tweak.addSlider(state, 'speed', { label: 'Volta hızı', min: .5, max: 1.5, step: .1 });
+    tweak.addToggle(state, 'playing', { label: 'Animasyon' });
+  }
+})();
+</script>

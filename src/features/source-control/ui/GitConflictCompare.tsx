@@ -4,6 +4,7 @@ import {
   type GitConflictStages,
 } from "../../../platform/tauri/fs";
 import { AlertCircle, Loader } from "../../../shared/ui/icons";
+import { GitFeedback } from "./GitFeedback";
 import {
   comparisonsFor,
   missingSideNotes,
@@ -33,6 +34,7 @@ type Load =
 export function GitConflictCompare({ cwd, relative, onClose }: Props) {
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [pair, setPair] = useState<CompareId>("sides");
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,7 +55,7 @@ export function GitConflictCompare({ cwd, relative, onClose }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [cwd, relative]);
+  }, [cwd, relative, retry]);
 
   const comparisons = useMemo(
     () => (load.status === "ready" ? comparisonsFor(load.stages) : []),
@@ -88,7 +90,9 @@ export function GitConflictCompare({ cwd, relative, onClose }: Props) {
 
   const notes = load.status === "ready" ? missingSideNotes(load.stages) : [];
   const title = `Compare ${relative}${
-    load.status === "ready" ? ` · ${conflictKindInfo(load.stages.kind).label}` : ""
+    load.status === "ready"
+      ? ` · ${conflictKindInfo(load.stages.kind).label}`
+      : ""
   }`;
 
   return (
@@ -96,7 +100,11 @@ export function GitConflictCompare({ cwd, relative, onClose }: Props) {
       title={title}
       onClose={onClose}
       toolbar={
-        <div role="tablist" aria-label="Versions to compare" className="flex items-center gap-1">
+        <div
+          role="tablist"
+          aria-label="Versions to compare"
+          className="flex items-center gap-1"
+        >
           {comparisons.map((entry) => (
             <button
               key={entry.id}
@@ -119,21 +127,34 @@ export function GitConflictCompare({ cwd, relative, onClose }: Props) {
       }
     >
       {load.status === "loading" ? (
-        <div className="grid flex-1 place-items-center text-content/40">
+        <div
+          role="status"
+          aria-label="Loading conflict versions"
+          className="grid flex-1 place-items-center text-content/40"
+        >
           <Loader className="size-4 animate-spin" strokeWidth={1.75} />
         </div>
       ) : load.status === "error" ? (
         <div className="grid flex-1 place-items-center p-6 text-center">
           <div>
             <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
-            <p className="text-[13px] text-content">Couldn’t load the versions</p>
+            <p className="text-[13px] text-content">
+              Couldn’t load the versions
+            </p>
             <p className="mt-1 text-[12px] text-content/50">{load.message}</p>
+            <GitFeedback
+              title="Conflict versions unavailable"
+              onRetry={() => setRetry((value) => value + 1)}
+            />
           </div>
         </div>
       ) : (
         <>
           {notes.length > 0 ? (
-            <p role="status" className="shrink-0 border-b border-stroke px-4 py-1.5 text-[12px] text-content/60">
+            <p
+              role="status"
+              className="shrink-0 border-b border-stroke px-4 py-1.5 text-[12px] text-content/60"
+            >
               {notes.join(" ")}
             </p>
           ) : null}

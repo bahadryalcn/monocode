@@ -2,13 +2,8 @@ $ErrorActionPreference = 'Stop'
 Push-Location (Split-Path $PSScriptRoot -Parent)
 try {
     $env:RUSTUP_TOOLCHAIN = 'stable-x86_64-pc-windows-msvc'
-    if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
-        $keyPath = Join-Path $env:USERPROFILE '.tauri/monocode-fork.key'
-        if (!(Test-Path -LiteralPath $keyPath)) {
-            throw 'Updater signing key missing. Set TAURI_SIGNING_PRIVATE_KEY or see docs/fork.md.'
-        }
-        $env:TAURI_SIGNING_PRIVATE_KEY = $keyPath
-    }
+    # İmece updater signing is disabled until an independent key/feed exists.
+    # Never load the previous product's private key for ordinary packaging.
     pnpm exec tauri build --ci --bundles nsis --config src-tauri/tauri.fork.conf.json
     if ($LASTEXITCODE -ne 0) { throw "Windows build failed ($LASTEXITCODE)" }
 } finally {

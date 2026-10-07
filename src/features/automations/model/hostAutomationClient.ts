@@ -37,7 +37,7 @@ import {
 export const BACKGROUND_TRIGGER_ERROR =
   "A background automation runs on one schedule. Remove the other triggers.";
 export const BACKGROUND_MACHINE_ERROR =
-  "This project’s machine isn’t connected, or its MonoCode Host needs an update.";
+  "This project’s machine isn’t connected, or its imc Host needs an update.";
 
 /** Machines whose host does background work on its own, this computer's
  * included. `capability` is what the host must advertise: automations unless
@@ -51,10 +51,13 @@ export type MachineReach = {
   unreachable: string[];
   /** The machines behind `unreachable`, for keeping their last-known cards. */
   unreachableMachines: RemoteMachine[];
+  /** Actual probe failures, retained for the board retry notice. */
+  unreachableErrors?: Record<string, string>;
 };
 
 export async function probeMachines(
   capability: string = HOST_AUTOMATIONS,
+  fresh = false,
 ): Promise<MachineReach> {
   const machines = await invoke<RemoteMachine[]>("remote_machines");
   const reach: MachineReach = {
@@ -62,25 +65,32 @@ export async function probeMachines(
     outdated: [],
     unreachable: [],
     unreachableMachines: [],
+    unreachableErrors: {},
   };
   const answers = await Promise.all(
     (Array.isArray(machines) ? machines : []).map(async (machine) => {
       try {
         // Shared with every other board and notification round in flight.
-        const advertised = await machineCapabilities(machine);
+        const advertised = await machineCapabilities(machine, fresh);
         return { machine, capable: advertised.includes(capability) };
-      } catch {
-        return { machine, capable: null };
+      } catch (error) {
+        return {
+          machine,
+          capable: null,
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
     }),
   );
-  for (const { machine, capable } of answers) {
+  for (const { machine, capable, error } of answers) {
     const name = isLocalSyncMachine(machine) ? "this computer" : machine.name;
     if (capable) reach.capable.push(machine);
     else if (capable === false) reach.outdated.push(name);
     else {
       reach.unreachable.push(name);
       reach.unreachableMachines.push(machine);
+      reach.unreachableErrors![machine.id] =
+        error ?? "The machine is not reachable.";
     }
   }
   return reach;
@@ -88,8 +98,9 @@ export async function probeMachines(
 
 export async function backgroundMachines(
   capability: string = HOST_AUTOMATIONS,
+  fresh = false,
 ): Promise<RemoteMachine[]> {
-  return (await probeMachines(capability)).capable;
+  return (await probeMachines(capability, fresh)).capable;
 }
 
 /** The machine that would run a background automation for the project at

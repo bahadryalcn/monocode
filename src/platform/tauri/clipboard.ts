@@ -158,15 +158,38 @@ export async function copyText(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
   } catch {
+    // WebView clipboard permission/focus can fail while the native clipboard
+    // remains available. Keep browser previews independent of the desktop API.
+    if ("__TAURI_INTERNALS__" in window) {
+      try {
+        await invoke("copy_text_to_clipboard", { text });
+        return;
+      } catch {
+        // Older installed backends may not have this command yet.
+      }
+    }
     const el = document.createElement("textarea");
     el.value = text;
     el.style.position = "fixed";
     el.style.left = "-9999px";
     document.body.appendChild(el);
-    el.select();
-    const ok = document.execCommand("copy");
-    el.remove();
-    if (!ok) throw new Error("copy failed");
+    const focused = document.activeElement;
+    const selection = window.getSelection();
+    const ranges = selection
+      ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i).cloneRange())
+      : [];
+    try {
+      el.focus({ preventScroll: true });
+      el.select();
+      if (!document.execCommand("copy")) throw new Error("Could not copy text. Please try again.");
+    } finally {
+      el.remove();
+      if (focused instanceof HTMLElement) focused.focus({ preventScroll: true });
+      if (selection) {
+        selection.removeAllRanges();
+        ranges.forEach((range) => selection.addRange(range));
+      }
+    }
   }
 }
 

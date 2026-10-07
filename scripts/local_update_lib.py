@@ -9,6 +9,20 @@ import sqlite3
 import subprocess
 import time
 
+# Presentation/artifact identity is separate from the internal Rust binary name.
+PRODUCT_IDENTITY = {
+    'productName': 'imc', 'binaryName': 'imc',
+    'bundleIdentifier': 'com.imece.desktop', 'hostDirectory': '.imece-host',
+    'hostService': 'com.imece.host', 'hostTaskName': 'Imece Host',
+    'hostLauncher': 'imece-host', 'hostPort': 3775,
+}
+
+def package_identity(manifest):
+    identity = manifest.get('identity')
+    if identity != PRODUCT_IDENTITY:
+        raise RuntimeError('Package identity is missing or incompatible; rebuild the imc package')
+    return identity
+
 def digest(path):
     with pathlib.Path(path).open('rb') as f:
         return hashlib.file_digest(f, 'sha256').hexdigest()

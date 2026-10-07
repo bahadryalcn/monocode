@@ -1,0 +1,53 @@
+.imece-settings-workbench { background: var(--color-background-base); container-type: inline-size; }
+.imece-settings-close { display: grid; place-items: center; width: 28px; height: 28px; color: inherit; opacity: .65; }
+.imece-settings-close:hover { opacity: 1; background: var(--color-background-hover); }
+.imece-settings-toolbar { display: flex; flex-shrink: 0; justify-content: space-between; align-items: center; gap: 24px; padding: 22px 28px 18px; border-bottom: 1px solid var(--color-stroke); }
+.imece-settings-toolbar-title > span { font-size: 18px; font-weight: 550; letter-spacing: -.025em; }
+.imece-settings-toolbar-title p { margin: 4px 0 0; font-size: 12px; opacity: .5; }
+.imece-settings-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.imece-settings-toolbar-actions label { width: clamp(220px, 25vw, 360px); height: 34px; border-radius: 3px; }
+.imece-settings-categories { display: flex; gap: 0; padding: 0 18px; overflow-x: auto; border-bottom: 1px solid var(--color-stroke); flex-shrink: 0; scrollbar-width: thin; }
+.imece-settings-categories > button { padding: 13px 12px 11px; white-space: nowrap; font-size: 12px; border-bottom: 2px solid transparent; color: inherit; opacity: .5; cursor: pointer; }
+.imece-settings-categories > button:hover { opacity: .85; background: var(--color-background-hover); }
+.imece-settings-categories > button[aria-selected=true] { opacity: 1; border-bottom-color: var(--color-content); font-weight: 550; }
+.imece-settings-categories > button:disabled { cursor: default; }
+.imece-settings-categories > button:focus-visible, .imece-settings-close:focus-visible { outline: 1px solid var(--color-content); outline-offset: -4px; }
+.imece-settings-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.imece-settings-panel:focus-visible { outline: 1px solid var(--color-stroke); outline-offset: -2px; }
+.imece-settings-workbench .imece-settings-form { max-width: 1400px; padding: 26px 28px 72px; }
+.imece-settings-workbench .imece-settings-form > header { margin-bottom: 12px; padding-bottom: 18px; }
+.imece-settings-workbench .imece-settings-form > header h1 { font-size: 24px; letter-spacing: -.025em; font-weight: 550; }
+.imece-settings-workbench .imece-settings-form > section { display: grid; grid-template-columns: minmax(170px, .75fr) minmax(0, 2fr); gap: 28px; padding-top: 24px; padding-bottom: 24px; border-bottom: 1px solid var(--color-stroke); }
+.imece-settings-workbench .imece-settings-form > section > div:first-child { display: block; padding: 4px 0; }
+.imece-settings-workbench .imece-settings-form > section > div:first-child h2 { font-size: 13px; font-weight: 550; }
+.imece-settings-workbench .imece-settings-form > section > div:last-child { min-width: 0; border: 0; border-radius: 0; background: transparent; }
+.imece-settings-workbench .imece-settings-form .settings-row { padding: 13px 0; gap: 22px; }
+.imece-settings-workbench .imece-settings-form .settings-row:first-child { padding-top: 4px; }
+.imece-settings-workbench .settings-description { color: var(--ui-text-secondary); }
+.imece-settings-toolbar-title p { opacity: 1; color: var(--ui-text-secondary); }
+.imece-settings-categories > button { opacity: 1; color: var(--ui-text-secondary); }
+.imece-settings-categories > button[aria-selected=true] { color: var(--color-content); }
+.imece-settings-workbench .imece-settings-form > section[data-settings-layout=full] { display: block; }
+.imece-settings-workbench .imece-settings-form > section[data-settings-layout=full] > .settings-group-heading { display: flex; padding-bottom: 18px; }
+.imece-settings-workbench .settings-group[data-revealed] { outline: 2px solid var(--color-accent); outline-offset: 6px; }
+.imece-settings-workbench .settings-row-control { align-self: center; }
+.imece-settings-workbench .settings-select:disabled { opacity: .45; cursor: not-allowed; }
+.imece-settings-workbench .imece-settings-form > [data-settings-layout=full] > .settings-group-content { overflow: visible; }
+.imece-settings-workbench .settings-row-control > input { max-width: 100%; }
+@container (max-width: 760px) {
+  .imece-settings-workbench .imece-settings-form .settings-row { flex-wrap: wrap; gap: 14px; }
+  .imece-settings-workbench .settings-row > div:first-child { flex-basis: 220px; }
+  .imece-settings-workbench .settings-row-control { max-width: 100%; }
+}
+@container (max-width: 760px) {
+  .imece-settings-toolbar { align-items: flex-start; flex-direction: column; gap: 14px; padding: 18px 20px; }
+  .imece-settings-toolbar-actions { width: 100%; }
+  .imece-settings-toolbar-actions label { width: min(360px, 75cqw); }
+  .imece-settings-workbench .imece-settings-form { padding: 22px 20px 60px; }
+  .imece-settings-workbench .imece-settings-form > section { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+}
+@container (max-width: 460px) {
+  .imece-settings-workbench .settings-row > div:first-child { flex-basis: auto; }
+  .imece-settings-workbench .imece-settings-form .settings-row { flex-direction: column; align-items: stretch; gap: 12px; }
+  .imece-settings-workbench .imece-settings-form .settings-row-control { max-width: 100%; align-self: stretch; justify-content: flex-start; }
+}

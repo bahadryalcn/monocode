@@ -249,7 +249,15 @@ it("formats the selection from the toolbar and undoes it in one step", async () 
   stored = { ...stored, body: "make this bold" };
   await render();
   await act(async () => tab("Preview").click());
-  expect(container.querySelector('[role="toolbar"]')).toBeNull();
+  // Preview keeps only the image button; formatting needs the source.
+  expect(
+    container.querySelector('[role="toolbar"] button[aria-label^="Bold"]'),
+  ).toBeNull();
+  expect(
+    container.querySelector(
+      '[role="toolbar"] button[aria-label="Insert image"]',
+    ),
+  ).not.toBeNull();
   await act(async () => tab("Source").click());
   const view = editorView();
   // happy-dom reports the selection change synchronously, mid-update.
@@ -264,6 +272,39 @@ it("formats the selection from the toolbar and undoes it in one step", async () 
     undo(view);
   });
   expect(view.state.doc.toString()).toBe("make this bold");
+});
+
+it("adds a pasted image to the note at the caret", async () => {
+  const save = invoke.getMockImplementation()!;
+  invoke.mockImplementation(async (command, args) => {
+    if (command === "write_attachment") return "/tmp/pasted.png";
+    if (command === "notes_save_image") {
+      return { name: "shot.png", markdownPath: "/note-assets/n/1-shot.png" };
+    }
+    if (command === "delete_path") return undefined;
+    return save(command, args);
+  });
+  await render();
+  await act(async () => tab("Source").click());
+  const view = editorView();
+  view.focus = () => {};
+  await act(async () => view.dispatch({ selection: { anchor: 4 } }));
+  const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", {
+    type: "image/png",
+  });
+  const paste = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(paste, "clipboardData", {
+    value: { files: [file], items: [], types: ["Files"] },
+  });
+  await act(async () => {
+    view.contentDOM.dispatchEvent(paste);
+  });
+  expect(paste.defaultPrevented).toBe(true);
+  await vi.waitFor(() =>
+    expect(view.state.doc.toString()).toBe(
+      "Keep\n\n![shot.png](/note-assets/n/1-shot.png)\n\n this text.",
+    ),
+  );
 });
 
 it("updates the split preview while the source is edited", async () => {

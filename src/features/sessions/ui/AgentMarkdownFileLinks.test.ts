@@ -96,6 +96,51 @@ describe("markdown file navigation", () => {
     }
   });
 
+  it.each([
+    [
+      "G:/Projects/my_projects/monocode/output/previews/pacing-character.html",
+      "G:/Projects/my_projects/monocode",
+    ],
+    ["/Users/me/My Project/özet.htm", "remote://mac/Users/me/My Project"],
+  ])(
+    "renders visualize HTML %s as a file link with folder access",
+    async (path, cwd) => {
+      await render(
+        `Önizleme: \uE200visualize\uE202${JSON.stringify({ path })}\uE201 hazır.`,
+        cwd,
+      );
+      expect(container.textContent).not.toContain("visualize");
+      expect(
+        container.querySelector('[aria-label="Open containing folder"]'),
+      ).not.toBeNull();
+      await act(async () =>
+        container.querySelector<HTMLAnchorElement>("a")!.click(),
+      );
+      expect(onOpenFile).toHaveBeenCalledWith(
+        cwd.startsWith("remote://") ? `remote://mac${path}` : path,
+        undefined,
+      );
+    },
+  );
+
+  it.each([
+    '\uE200visualize\uE202{"path":"/repo/page.html"}',
+    '\uE200visualize\uE202{"path":"https://example.com/page.html"}\uE201',
+    '\uE200visualize\uE202{"path":"/repo/page.js"}\uE201',
+    "\uE200visualize\uE202{broken}\uE201",
+    '`\uE200visualize\uE202{"path":"/repo/page.html"}\uE201`',
+    '```text\n\uE200visualize\uE202{"path":"/repo/page.html"}\uE201\n```',
+  ])(
+    "leaves invalid or example visualize markers literal: %s",
+    async (text) => {
+      await render(text);
+      expect(container.textContent).toContain("visualize");
+      expect(
+        container.querySelector('[aria-label="Open containing folder"]'),
+      ).toBeNull();
+    },
+  );
+
   it("routes inline citations with spaces and Unicode to their remote host", async () => {
     await render(
       `Rapor: :codex-file-citation{purpose='output' path='/Users/me/My Project/özet.pdf'} hazır.`,

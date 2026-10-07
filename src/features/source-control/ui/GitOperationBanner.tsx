@@ -1,5 +1,9 @@
-import { useState } from "react";
-import { ask, message } from "@tauri-apps/plugin-dialog";
+import { ask } from "@tauri-apps/plugin-dialog";
+import {
+  useGitPanelState,
+  withGitOperation,
+  setGitFeedback,
+} from "../model/gitPanelState";
 import {
   gitOperationAbort,
   gitOperationContinue,
@@ -31,18 +35,29 @@ const ACTION =
  * revert: which one, how many conflicts are left, and Continue / Abort. The
  * panel owns the state (it rides on the index poll) and lists the files.
  */
-export function GitOperationBanner({ cwd, operation, conflictCount, onChanged }: Props) {
-  const [busy, setBusy] = useState(false);
+export function GitOperationBanner({
+  cwd,
+  operation,
+  conflictCount,
+  onChanged,
+}: Props) {
+  const [busy] = useGitPanelState(cwd, "busy");
   const label = operationLabel(operation);
 
   const run = async (work: () => Promise<unknown>) => {
-    setBusy(true);
     try {
-      await work();
+      await withGitOperation(cwd, `Updating ${label.toLowerCase()}…`, work);
+      setGitFeedback(cwd, {
+        kind: "success",
+        title: `${label} operation complete`,
+      });
     } catch (error) {
-      await message(errorText(error), { title: appName(), kind: "error" });
+      setGitFeedback(cwd, {
+        kind: "error",
+        title: `Couldn’t update ${label.toLowerCase()}`,
+        detail: errorText(error),
+      });
     } finally {
-      setBusy(false);
       onChanged();
     }
   };
@@ -60,11 +75,17 @@ export function GitOperationBanner({ cwd, operation, conflictCount, onChanged }:
       role="status"
       className="flex shrink-0 items-center gap-1 border-b border-stroke bg-content/5 px-3 py-1.5 text-[12px] text-content/80"
     >
-      <span className="min-w-0 flex-1 truncate">{operationSummary(label, conflictCount)}</span>
+      <span className="min-w-0 flex-1 truncate">
+        {operationSummary(label, conflictCount)}
+      </span>
       <button
         type="button"
-        disabled={busy || conflictCount > 0}
-        title={conflictCount > 0 ? "Resolve every conflict first" : `Continue the ${label.toLowerCase()}`}
+        disabled={!!busy || conflictCount > 0}
+        title={
+          conflictCount > 0
+            ? "Resolve every conflict first"
+            : `Continue the ${label.toLowerCase()}`
+        }
         onClick={() => void run(() => gitOperationContinue(cwd))}
         className={ACTION}
       >
@@ -72,7 +93,7 @@ export function GitOperationBanner({ cwd, operation, conflictCount, onChanged }:
       </button>
       <button
         type="button"
-        disabled={busy}
+        disabled={!!busy}
         title={`Abort the ${label.toLowerCase()}`}
         onClick={() => void abort()}
         className={ACTION}

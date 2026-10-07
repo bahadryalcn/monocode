@@ -1,3 +1,4 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useState, type FormEvent } from "react";
 import { Modal } from "../../../shared/ui/Modal";
 import { resetForgottenPassword } from "../model/groupLock";
@@ -39,7 +40,7 @@ export function ForgotLockPasswordDialog({ onClose }: Props) {
           can set a new password afterwards and lock groups again.
         </p>
         <p className="text-[12px] leading-snug text-amber-400">
-          MonoCode cannot check who you are, so anyone using this computer can
+          {PRODUCT_IDENTITY.displayName} cannot check who you are, so anyone using this computer can
           do this. The lock is a privacy screen, not a security boundary.
         </p>
         <label className="flex flex-col gap-1 text-[12px] text-content/60">

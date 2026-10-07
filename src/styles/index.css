@@ -1,9 +1,28 @@
 @import "tailwindcss";
+@import "./imece.css";
 @source "../../node_modules/streamdown/dist/*.js";
 @source "../../node_modules/@streamdown/code/dist/*.js";
 @source "../../node_modules/@streamdown/mermaid/dist/*.js";
 
 @custom-variant dark (&:where(html:not(.theme-light), html:not(.theme-light) *));
+
+html [data-transcript-content],
+html [data-session-composer].max-w-4xl {
+  max-width: var(--appearance-chat-width, 56rem);
+}
+html .cm-editor .cm-content,
+html .cm-editor .cm-gutters,
+html .agent-markdown [data-streamdown="code-block-body"] code {
+  font-family: var(--font-mono);
+  font-size: var(--appearance-code-size, 13px);
+}
+html.appearance-word-wrap .agent-markdown [data-streamdown="code-block-body"] pre,
+html.appearance-word-wrap .agent-markdown [data-streamdown="code-block-body"] code > span {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  width: auto;
+  min-width: 0;
+}
 
 @container settings (width < 560px) {
   .settings-row {
@@ -32,7 +51,7 @@
     var(--theme-hue) var(--theme-saturation) var(--content-lightness)
   );
   /* Structural separators: use border-stroke, divide-stroke, or bg-stroke. */
-  --color-stroke: color-mix(in srgb, var(--color-content) 7%, transparent);
+  --color-stroke: color-mix(in srgb, var(--color-content) var(--appearance-stroke-strength, 7%), transparent);
   /* Interactive fills keep their dark-theme contrast but use gentler ink in
      light mode. Prefer these over content opacity for selected/raised UI. */
   --color-selection-subtle: color-mix(
@@ -60,14 +79,14 @@
     var(--color-content) var(--selection-emphasis-strength),
     transparent
   );
-  --color-accent: hsl(211 92% 62%);
-  --color-skill: #e8c547;
-  --color-mention: #38bdf8;
+  --color-accent: #a3acb8;
+  --color-skill: #b0b8c4;
+  --color-mention: #a2b5c8;
   --font-mono:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
   --font-sans:
-    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
+    "Segoe UI Variable", "Aptos", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, Roboto, Oxygen,
     Ubuntu, Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
   /* Diff colors. `diff-add`/`diff-del` are the solid marker hues, `-fg` is
      readable text on the theme background, `-bg`/`-gutter` are row tints.
@@ -104,7 +123,7 @@
   --ui-font-caption: 0.75rem;
   --ui-text-secondary: color-mix(
     in srgb,
-    var(--color-content) 85%,
+    var(--color-content) var(--appearance-secondary-strength, 85%),
     var(--color-background-base)
   );
   --ui-text-disabled: color-mix(
@@ -121,9 +140,9 @@
   --motion-feedback-duration: 120ms;
   --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --motion-tab-ease-out: cubic-bezier(0.3333, 0.6667, 0.6667, 1);
-  --theme-hue: 240;
-  --theme-saturation: 0%;
-  --theme-dark-lightness: 9%;
+  --theme-hue: 216;
+  --theme-saturation: 24%;
+  --theme-dark-lightness: 4%;
   --sidebar-opacity: 0.85;
   --main-opacity: 0.85;
   --chat-background-empty-opacity: 0.24;
@@ -152,9 +171,13 @@
   color: var(--ui-text-secondary);
 }
 
-:where(button, input, select, textarea, a[href], [tabindex]):focus-visible {
-  outline: var(--ui-focus-width) solid var(--color-accent);
-  outline-offset: var(--ui-focus-offset);
+@layer base {
+  /* A fallback only: component outline/ring utilities must take precedence.
+     Text fields can match :focus-visible even when focused with the mouse. */
+  :where(button, input, select, textarea, a[href], [tabindex]):focus-visible {
+    outline: var(--ui-focus-width) solid var(--color-accent);
+    outline-offset: var(--ui-focus-offset);
+  }
 }
 
 html {
@@ -162,7 +185,7 @@ html {
 }
 
 html.theme-light {
-  --background-lightness: 97%;
+  --background-lightness: 94%;
   --content-lightness: 18%;
   --link-color: hsl(211 92% 40%);
   --color-skill: #a07c10;
@@ -1822,6 +1845,11 @@ html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
 
 .agent-markdown .markdown-code-shell [data-streamdown="code-block"] {
   margin-block: 0;
+  background: color-mix(in srgb, var(--color-background-base) 94%, var(--color-content) 6%);
+}
+
+.agent-markdown .markdown-code-copy.is-failed {
+  color: var(--color-danger, #f87171);
 }
 
 .agent-markdown .markdown-code-copy {
@@ -1865,6 +1893,91 @@ html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.6;
+}
+
+.agent-markdown .markdown-code-toggle {
+  right: 36px;
+}
+
+.agent-markdown .markdown-code-summary {
+  position: absolute;
+  z-index: 1;
+  inset: 0 68px 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-content) 65%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-markdown .markdown-code-shell:has(.markdown-code-icon) .markdown-code-summary {
+  left: 34px;
+}
+
+.agent-markdown .markdown-code-summary:hover {
+  color: var(--color-content);
+}
+
+.agent-markdown .markdown-code-summary-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-markdown .markdown-code-summary-count {
+  flex-shrink: 0;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.agent-markdown .markdown-code-resizable[data-collapsed="true"] .markdown-code-path,
+.agent-markdown .markdown-code-resizable[data-collapsed="true"] .markdown-code-fallback-label,
+.agent-markdown .markdown-code-resizable[data-collapsed="true"] [data-streamdown="code-block-header"] > span {
+  visibility: hidden;
+}
+
+.agent-markdown .markdown-code-resizable [data-streamdown="code-block-header"] {
+  padding-right: 68px;
+}
+
+.agent-markdown .markdown-code-resizable [data-streamdown="code-block-body"] {
+  resize: vertical;
+  overflow: auto;
+  min-height: 40px;
+  max-height: min(480px, 60dvh);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.agent-markdown
+  .markdown-code-resizable[data-collapsed="true"]
+  [data-streamdown="code-block-body"] {
+  display: none;
+}
+
+.agent-markdown
+  .markdown-code-resizable[data-collapsed="true"]
+  [data-streamdown="code-block"] {
+  min-height: 36px;
+}
+
+.agent-markdown
+  .markdown-code-resizable:has(.markdown-code-toggle)
+  .markdown-code-path,
+.agent-markdown .markdown-code-resizable .markdown-code-fallback-label {
+  right: 68px;
 }
 
 .agent-markdown .markdown-code-copy-pages,
@@ -2053,6 +2166,12 @@ html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
 .agent-markdown
   .markdown-code-shell:has(.markdown-code-copy)
   [data-streamdown="code-block-header"]:has(span:empty) {
+  display: flex;
+}
+
+.agent-markdown
+  .markdown-code-resizable[data-collapsed]:has(.markdown-code-toggle)
+  [data-streamdown="code-block-header"] {
   display: flex;
 }
 
@@ -2449,75 +2568,6 @@ html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
   }
 }
 
-/* Two-frame mascot loop — a hard swap plus a one-pixel hop, arcade style. */
-.mascot-active {
-  animation: mascot-hop var(--mascot-beat, 460ms) infinite;
-}
-
-.mascot-rest {
-  animation: mascot-rest var(--mascot-beat, 460ms) infinite;
-}
-
-.mascot-talk {
-  animation: mascot-talk var(--mascot-beat, 460ms) infinite;
-}
-
-@keyframes mascot-hop {
-  0%,
-  49.99% {
-    transform: translateY(0);
-  }
-  50%,
-  100% {
-    transform: translateY(-1px);
-  }
-}
-
-@keyframes mascot-rest {
-  0%,
-  49.99% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes mascot-talk {
-  0%,
-  49.99% {
-    opacity: 0;
-  }
-  50%,
-  100% {
-    opacity: 1;
-  }
-}
-
-.composer-coin-face {
-  animation: mascot-rest 320ms infinite;
-}
-
-.composer-coin-edge {
-  animation: mascot-talk 320ms infinite;
-}
-
-/* Freeze the hop while the runner is seeing stars after a chevron bonk. */
-.mascot-stunned .mascot-active,
-.mascot-stunned .mascot-rest,
-.mascot-stunned .mascot-talk {
-  animation: none;
-}
-
-.mascot-stunned .mascot-rest {
-  opacity: 1;
-}
-
-.mascot-stunned .mascot-talk {
-  opacity: 0;
-}
-
 @keyframes shimmer-text {
   from {
     background-position: 100% center;
@@ -2565,6 +2615,45 @@ html.is-grabbing header[data-tauri-drag-region] [data-tab-draggable] * {
 
 .monocode-terminal .xterm-screen {
   user-select: text;
+}
+
+/* Toggle code measures natural height once; children keep their layout while clipped. */
+.project-group-section {
+  transition: margin-bottom 220ms ease;
+}
+
+.project-group-body {
+  height: 0;
+  overflow: hidden;
+  contain: layout paint;
+  transition: height 220ms cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+.project-group-body-clip {
+  display: flow-root;
+  contain: layout style;
+}
+
+/* Rasterize expensive SVG glyphs once during motion, then release the layer. */
+.project-group-body[data-animating="true"] > .project-group-body-clip {
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+.project-group-body[data-animating="true"] .imece-sigil-active {
+  animation-play-state: paused;
+}
+
+.project-group-section[data-folded="true"],
+.project-group-body[data-folded="true"] {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-group-section,
+  .project-group-body {
+    transition: none;
+  }
 }
 
 /*
@@ -3712,6 +3801,15 @@ html.theme-light .btw-burst {
 .linked-work-item-content-enter {
   animation: linked-work-item-reveal 180ms ease-out;
 }
+/* Quiet work-state accents. */
+
+
+.monocode-sparkles {
+  animation: none;
+  box-shadow: inset 2px 0 var(--color-accent);
+}
+.monocode-sparkles::before, .monocode-sparkles::after { content: none; }
+.monocode-sparkle { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .linked-work-item-enter,
   .linked-work-item-content-enter {

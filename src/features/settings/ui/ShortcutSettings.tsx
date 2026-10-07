@@ -302,9 +302,10 @@ export function KeybindingsPage() {
   return (
     <Group
       title="Shortcuts"
+      layout="full"
       description="Click a shortcut to record new keys. Press Delete while recording to disable it."
       action={
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <span className="shrink-0 text-[12px] text-content/40 tabular-nums">
             {rows.length} {rows.length === 1 ? "binding" : "bindings"}
           </span>

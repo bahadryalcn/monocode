@@ -23,7 +23,7 @@ Sürüm zaten doğruysa `-Version` gerekmez. Komut mevcut çalışma ağacını 
 
 ## Süreyi azaltan davranışlar
 
-- Sabit build klasörü `~/.monocode-build/source`: gerçek `node_modules` kullanılır; her çalıştırmada yeni klasör veya junction açılmaz.
+- Sabit build klasörü `~/.imece-build/source`: gerçek `node_modules` kullanılır; her çalıştırmada yeni klasör veya junction açılmaz.
 - pnpm 12.8.2 kullanılır. `package.json` değişmediyse mevcut `node_modules` korunur ve install çalışmaz. Yalnız `package.json` değiştiğinde yönetilen build klasörünün `node_modules` dizini temizlenip `pnpm install --frozen-lockfile --prefer-offline` çalışır; dizin yoksa ilk kurulum yapılır. Lockfile değişikliği, eksik build-cache ve `-ForceBuild` bağımlılık kurdurmaz. İlk kez izlemeye alınan mevcut bağımlılıklar korunur.
 - `verifyDepsBeforeRun: false` ile pnpm'in `run`/`exec` öncesinde otomatik install yapması kapalıdır; kurulum kararını yalnız koordinatör verir.
 - Web, host ve native girdileri ayrı izlenir. Yalnız host değiştiğinde web/native derleme tekrarlanmaz. Başarılı aşamalar hemen kaydedilir; sonraki aşama başarısız olsa da tekrar koşuda baştan başlanmaz.
@@ -44,13 +44,13 @@ Windows host'un kayıtlı PID'i zaten sona ermişse kapatma isteği gönderilmez
 koordinatör boşta DB ve durmuş servis kontrollerinden sonra paketi kurar. PID
 hâlâ çalışıyorsa lifecycle hatası kurulumu durdurur; bağlantı hatası boşta sayılmaz.
 
-Veritabanı yedeklemeleri 15 saniyeyle sınırlıdır ve bağlantılar açık bırakılmaz. Uygulama tur bitişini bekledikten sonra kapanır. Mac bundle imzası/sürümü, Windows installer ve updater imzası dosyalarının checksum'ı, kurulu binary'nin derlenen binary ile eşleşmesi kontrol edilir. Rollback dosyaları paket klasöründe korunur. Mac notarization bu yerel akışta yapılmaz.
+Veritabanı yedeklemeleri 15 saniyeyle sınırlıdır ve bağlantılar açık bırakılmaz. Uygulama tur bitişini bekledikten sonra kapanır. Mac bundle imzası/sürümü, Windows installer checksum'ı, kurulu binary'nin derlenen binary ile eşleşmesi kontrol edilir. Rollback dosyaları paket klasöründe korunur. Mac notarization bu yerel akışta yapılmaz.
 
 Çifte kurulum engellenir. Başka paketin bekleyen yardımcısı veya önceki ad-hoc kurulum yardımcısı hâlâ çalışıyorsa yeni akış derlemeye başlamadan o bilgisayar için hata verir. Eski 0.8.70 yardımcılarının bitişinden sonra bu ortak akış kullanılmalıdır; mevcut işleri kesmek için süreç öldürmez.
 
-Loglar, süreler, immutable payload ve manifest: `~/.monocode-build/runs/<kaynak-id>-<mod>/`. Bekleyen/bitmiş/başarısız kurulum durumları: `~/.monocode-host/update-jobs/{host,app}.json`; `-Status` bunları iki bilgisayardan okur. Mac build logu koordinatörün `.monocode-build/mac-<id>.log` dosyasındadır. Kurulum yardımcıları komut bittikten sonra çalışmaya devam eder; "scheduled" güncellemenin tamamlandığı anlamına gelmez.
+Loglar, süreler, immutable payload ve manifest: `~/.imece-build/runs/<kaynak-id>-<mod>/`. Bekleyen/bitmiş/başarısız kurulum durumları: `~/.imece-host/update-jobs/{host,app}.json`; `-Status` bunları iki bilgisayardan okur. Mac build logu koordinatörün `.imece-build/mac-<id>.log` dosyasındadır. Kurulum yardımcıları komut bittikten sonra çalışmaya devam eder; "scheduled" güncellemenin tamamlandığı anlamına gelmez.
 
-Ön koşullar: Python 3.12+, mevcut Node/pnpm 12.8.2/Rust/Tauri araçları, kurulu MonoCode host servisi, Windows updater imza anahtarı dosyası ve `macbook` SSH bağlantısı. Script ek araç kurmaz, Intel Mac veya tüm host platformlarını gereksiz yere derlemez.
+Ön koşullar: Python 3.12+, mevcut Node/pnpm 12.8.2/Rust/Tauri araçları, İmece host araçları, `macbook` SSH bağlantısı. Script ek araç kurmaz, Intel Mac veya tüm host platformlarını gereksiz yere derlemez.
 
 ## Build almadan doğrulama
 
@@ -63,3 +63,15 @@ Bu kontroller derleme/kurulum/SSH başlatmaz. Kaynak arşivinin kökü, eski kay
 
 
 Yerel güncellemeler ve CI/release workflowları `pnpm-lock.yaml` kullanır. `package-lock.json` mevcut sürüm değiştirme scripti ve eski kilit kaydı için korunur; kurulum kararına katılmaz.
+
+## imc kurulum kimliği
+
+Paket adı ve görünür marka `imc`, geliştirme adı `imc Dev` olur. Mevcut verileri korumak için bundle kimliği `com.imece.desktop` ve geliştirme kimliği `com.imece.desktop.dev` olarak kalır. Windows kurulum dizini `%LOCALAPPDATA%\imc`, Mac bundle `/Applications/imc.app` olur. Paketlenen executable adı `imc.exe` / `imc` olarak ayrıdır; Rust crate adı uyumluluk için `monocode` kalır. Ayrı executable adı zorunludur: NSIS sessiz kurulumu çalışan uygulamayı dosya adıyla bulup kapattığından, eski MonoCode ile aynı adı kullanmak aktif eski uygulamayı da kapatabilir. Koordinatör `mainBinaryName` değerini derlemeden önce doğrular.
+
+İlk uygulama kurulumundan önce oturum verileri aktarılmış olabilir. Koordinatör bu durumda mevcut veritabanının boşta olmasını bekler ve yedeğini alır; henüz bulunmayan eski executable veya bundle için rollback kopyası aramaz.
+
+Host `~/.imece-host`, servis `com.imece.host` / `imece-host.service`, Windows görevi `Imece Host-<SID>`, varsayılan port `3775` ve launcher `imece-host(.cmd)` kullanır. Önceki MonoCode veri ve servislerine dokunulmaz; otomatik veri aktarımı yoktur. Host ve masaüstü veritabanı dosyalarının iç adları uyumluluk için korunur.
+
+Yeni paket manifesti tam bağımsız kimliği taşır. Eski veya kimliği farklı paketler `-InstallOnly` ile kurulamaz; yeni İmece paketi derlenmelidir. İlk kurulumda yalnız İmece dizinleri kullanılır. Mevcut İmece servis/bundle kaydı varken veritabanının eksik olması boşta sayılmaz ve kurtarma gerektirir.
+
+Otomatik updater kapalıdır: eski MonoCode feed veya signing key kullanılmaz, `.sig` artefaktı beklenmez. Bağımsız anahtar, feed ve yayın iş akışı ayrıca onaylanıp doğrulanmadan yayın yapılmamalıdır. Yerel build/kurulum bu kayıtta çalıştırılmadı.

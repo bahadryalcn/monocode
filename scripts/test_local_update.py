@@ -10,11 +10,75 @@ import time
 import unittest
 from unittest.mock import patch
 
-from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, finish_build, host_key, install_job_active
-from local_update_lib import backup, count, safe_child, write_json, read_json, alive, digest, windows_binary_digest
-from local_install import wait_idle, stop_windows_host
+from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, validate_product_identity, finish_build, host_key, install_job_active
+from local_update_lib import backup, count, safe_child, write_json, read_json, alive, digest, windows_binary_digest, PRODUCT_IDENTITY, package_identity
+from local_install import wait_idle, stop_windows_host, host_install
+from local_install import app_install
 
 class LocalUpdateTests(unittest.TestCase):
+    @unittest.skipUnless(__import__('os').name == 'nt', 'Windows installer regression')
+    def test_first_install_with_imported_database_waits_and_backs_up(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            release = root / 'release'
+            release.mkdir()
+            db = root / 'imported.db'
+            db.touch()
+            with patch.dict('os.environ', {'LOCALAPPDATA': str(root)}), \
+                 patch('local_install.desktop_db', return_value=db), \
+                 patch('local_install.verify_tree'), patch('local_install.time.sleep'), \
+                 patch('local_install.wait_idle') as idle, \
+                 patch('local_install.backup') as snapshot, \
+                 patch('local_install.ps'), patch('local_install.count', return_value=0), \
+                 patch('local_install.run', side_effect=RuntimeError('installer reached')):
+                with self.assertRaisesRegex(RuntimeError, 'installer reached'):
+                    app_install(release, {'appHashes': {}}, lambda *a, **k: None)
+            idle.assert_called_once()
+            snapshot.assert_called_once_with(db, release / 'rollback-app/desktop.db')
+
+    def test_product_identity_is_independent_from_upstream(self):
+        self.assertEqual(PRODUCT_IDENTITY['productName'], 'imc')
+        self.assertEqual(PRODUCT_IDENTITY['binaryName'], 'imc')
+        self.assertEqual(PRODUCT_IDENTITY['bundleIdentifier'], 'com.imece.desktop')
+        self.assertEqual(PRODUCT_IDENTITY['hostDirectory'], '.imece-host')
+        self.assertEqual(PRODUCT_IDENTITY['hostPort'], 3775)
+        self.assertEqual(package_identity({'identity': dict(PRODUCT_IDENTITY)}), PRODUCT_IDENTITY)
+
+    def test_legacy_or_changed_package_identity_cannot_install(self):
+        for manifest in ({}, {'identity': dict(PRODUCT_IDENTITY, productName='MonoCode')}):
+            with self.assertRaises(RuntimeError):
+                package_identity(manifest)
+
+    def test_frozen_native_identity_and_updater_match_coordinator(self):
+        config = {'productName': 'imc', 'mainBinaryName': 'imc', 'identifier': 'com.imece.desktop',
+                  'plugins': {'updater': {'endpoints': []}}, 'bundle': {'createUpdaterArtifacts': False}}
+        files = {name: json.dumps(config).encode() for name in
+                 ('src-tauri/tauri.conf.json', 'src-tauri/tauri.fork.conf.json', 'src-tauri/tauri.fork.macos.conf.json')}
+        for windows in (True, False):
+            self.assertEqual(validate_product_identity(files, windows), PRODUCT_IDENTITY)
+        unsafe = dict(config, mainBinaryName='monocode')
+        files['src-tauri/tauri.fork.conf.json'] = json.dumps(unsafe).encode()
+        with self.assertRaises(RuntimeError):
+            validate_product_identity(files, True)
+        config['plugins']['updater']['endpoints'] = ['https://upstream.invalid/feed']
+        files['src-tauri/tauri.fork.conf.json'] = json.dumps(config).encode()
+        with self.assertRaises(RuntimeError):
+            validate_product_identity(files, True)
+
+    def test_missing_existing_host_database_is_not_a_fresh_install(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            release = root/'release'
+            (release/'host').mkdir(parents=True)
+            base = root/'.imece-host'
+            base.mkdir()
+            (base/'runtime-path').write_text('existing-runtime')
+            manifest = {'version': '1.0.0', 'platform': 'test', 'id': 'test', 'hostHashes': {}}
+            with patch('local_install.BASE', base), patch('local_install.run') as command:
+                with self.assertRaisesRegex(RuntimeError, 'database is missing'):
+                    host_install(release, manifest, lambda *args, **kwargs: None)
+            command.assert_not_called()
+
     def test_terminal_install_job_does_not_block_on_reused_pid(self):
         with patch('local_update.alive', return_value=True) as liveness:
             for state in ('installed', 'failed'):
@@ -189,8 +253,8 @@ class LocalUpdateTests(unittest.TestCase):
             root = pathlib.Path(folder)
             release = root/'release'
             release.mkdir()
-            write_json(release/'manifest.json', {'id': 'same'})
-            base = root/'.monocode-host/update-jobs'
+            write_json(release/'manifest.json', {'id': 'same', 'identity': dict(PRODUCT_IDENTITY)})
+            base = root/'.imece-host/update-jobs'
             for component in ('host', 'app'):
                 write_json(base/(component+'.json'), {'id': 'same', 'pid': 123})
             with patch('local_update.pathlib.Path.home', return_value=root), patch('local_update.alive', return_value=True), patch('local_update.subprocess.Popen') as spawn:
@@ -202,8 +266,8 @@ class LocalUpdateTests(unittest.TestCase):
             root = pathlib.Path(folder)
             release = root/'release'
             release.mkdir()
-            write_json(release/'manifest.json', {'id': 'new'})
-            write_json(root/'.monocode-host/update-jobs/host.json', {'id': 'old', 'pid': 123})
+            write_json(release/'manifest.json', {'id': 'new', 'identity': dict(PRODUCT_IDENTITY)})
+            write_json(root/'.imece-host/update-jobs/host.json', {'id': 'old', 'pid': 123})
             with patch('local_update.pathlib.Path.home', return_value=root), patch('local_update.alive', return_value=True), patch('local_update.subprocess.Popen') as spawn:
                 with self.assertRaises(RuntimeError):
                     queue_install(release)

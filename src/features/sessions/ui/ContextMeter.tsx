@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   contextRatio,
   contextTooltip,
@@ -40,6 +40,28 @@ export function ContextMeter({
   const [hovered, setHovered] = useState(false);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const hoverCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function cancelHoverClose() {
+    if (hoverCloseTimer.current !== null) {
+      clearTimeout(hoverCloseTimer.current);
+      hoverCloseTimer.current = null;
+    }
+  }
+  function enterHover() {
+    cancelHoverClose();
+    setHovered(true);
+  }
+  function leaveHover() {
+    cancelHoverClose();
+    // Give the pointer time to cross the gap to the portalled popover.
+    hoverCloseTimer.current = setTimeout(() => setHovered(false), 200);
+  }
+  function closeActions() {
+    cancelHoverClose();
+    setHovered(false);
+    setOpen(false);
+  }
+  useEffect(() => () => cancelHoverClose(), []);
   const ratio = contextRatio(usage);
   if (!usage || ratio === null) return null;
 
@@ -49,14 +71,14 @@ export function ContextMeter({
     `${headline}, ${detail}`,
     ...(session ? [session.headline, ...session.details] : []),
   ].join(". ");
-  const actionsOpen = open && onCompact != null;
+  const actionsOpen = (hovered || open) && onCompact != null;
 
   return (
     <div
       ref={root}
       className="relative shrink-0"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={enterHover}
+      onMouseLeave={leaveHover}
     >
       {onCompact ? (
         <button
@@ -77,7 +99,9 @@ export function ContextMeter({
           anchor={root}
           side="top"
           align="end"
-          onDismiss={onCompact ? () => setOpen(false) : undefined}
+          onDismiss={onCompact ? closeActions : undefined}
+          onMouseEnter={enterHover}
+          onMouseLeave={leaveHover}
           className={`w-max px-2.5 py-1.5 ${actionsOpen ? "" : "pointer-events-none"}`}
         >
           <div className="text-[12px] leading-4 text-content">{headline}</div>
@@ -107,7 +131,7 @@ export function ContextMeter({
                   : "Compact this conversation's context"
               }
               onClick={() => {
-                setOpen(false);
+                closeActions();
                 onCompact?.();
               }}
               className="mt-1.5 w-full rounded-md bg-content/10 px-2 py-1 text-[11px] text-content hover:bg-content/15 disabled:cursor-not-allowed disabled:opacity-40"

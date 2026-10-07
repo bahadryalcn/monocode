@@ -46,6 +46,7 @@ import {
  */
 const SETTINGS_KEY = "monocode.groupLock";
 const UNLOCKED_KEY = "monocode.groupLock.unlocked";
+const HIDDEN_KEY = "monocode.groupLock.hiddenGroups.v1";
 const ATTEMPTS_KEY = "monocode.groupLock.attempts";
 const CHANNEL_NAME = "monocode.groupLock";
 const GROUPS_KEY = "monocode.projectGroups";
@@ -58,6 +59,9 @@ export type GroupLockView = {
   hasPassword: boolean;
   settings: Omit<GroupLockSettings, "record">;
   groups: readonly ProjectGroup[];
+  hiddenGroupIds: ReadonlySet<string>;
+  savedHiddenGroupIds: ReadonlySet<string>;
+  hiddenGroupsAuthorized: boolean;
 };
 
 export type VerifyResult =
@@ -94,6 +98,9 @@ let unlocked: UnlockedGroups = initialUnlocked(
   parseUnlockedIds(readItem(UNLOCKED_KEY)),
 );
 let view: GroupLockView | null = null;
+let hiddenGroups = new Set(parseUnlockedIds(readItem(HIDDEN_KEY)));
+let temporarilyVisible = new Set<string>();
+let hiddenGroupsAuthorized = false;
 let previousLock: LockSnapshot | null = null;
 const listeners = new Set<() => void>();
 let channel: BroadcastChannel | null = null;
@@ -109,11 +116,20 @@ function currentView(): GroupLockView {
   if (view) return view;
   const groups = loadProjectGroups();
   const hasPassword = settings.record !== null;
+  const savedHiddenGroupIds = new Set(
+    groups
+      .filter((group) => hiddenGroups.has(group.id))
+      .map((group) => group.id),
+  );
+  const hiddenGroupIds = new Set(
+    [...savedHiddenGroupIds].filter((id) => !temporarilyVisible.has(id)),
+  );
   let lock = computeLockSnapshot({
     groups,
     assignments: loadProjectGroupAssignments(groups),
     hasPassword,
     unlocked,
+    hiddenGroupIds,
   });
   // Keep the object when nothing changed so hooks that read only the lock
   // state do not re-render for unrelated rail edits.
@@ -126,7 +142,15 @@ function currentView(): GroupLockView {
   }
   previousLock = lock;
   const { record: _record, ...options } = settings;
-  view = { lock, hasPassword, settings: options, groups };
+  view = {
+    lock,
+    hasPassword,
+    settings: options,
+    groups,
+    hiddenGroupIds,
+    savedHiddenGroupIds,
+    hiddenGroupsAuthorized,
+  };
   return view;
 }
 
@@ -148,6 +172,20 @@ export function isProjectLocked(path: string): boolean {
   return isProjectLockedIn(currentView().lock, path);
 }
 
+/** Execution policy uses password locks only; hiding is a visibility preference. */
+export function isProjectPasswordLocked(path: string): boolean {
+  const groups = loadProjectGroups();
+  return isProjectLockedIn(
+    computeLockSnapshot({
+      groups,
+      assignments: loadProjectGroupAssignments(groups),
+      hasPassword: settings.record !== null,
+      unlocked,
+    }),
+    path,
+  );
+}
+
 /** Drops the items that belong to a locked group. */
 export function visibleProjects<T>(
   items: readonly T[],
@@ -164,15 +202,26 @@ function persistUnlocked() {
 }
 
 function dispatch(action: LockAction) {
+  if (action.type === "lock" || action.type === "lockAll") {
+    hiddenGroupsAuthorized = false;
+    if (action.type === "lockAll") temporarilyVisible.clear();
+    else for (const id of action.groupIds) temporarilyVisible.delete(id);
+  }
   unlocked = lockReducer(unlocked, action);
   persistUnlocked();
-  channel?.postMessage({ type: "state", groupIds: [...unlocked] });
+  channel?.postMessage({
+    type: "state",
+    groupIds: [...unlocked],
+    visibleHiddenIds: [...temporarilyVisible],
+  });
   invalidate();
 }
 
 function saveSettings(next: GroupLockSettings) {
-  const recordChanged = JSON.stringify(settings.record) !== JSON.stringify(next.record);
+  const recordChanged =
+    JSON.stringify(settings.record) !== JSON.stringify(next.record);
   settings = next;
+  if (recordChanged) hiddenGroupsAuthorized = false;
   writeItem(SETTINGS_KEY, JSON.stringify(next));
   persistUnlocked();
   invalidate();
@@ -200,7 +249,10 @@ export function applyRemoteLockRecord(record: PasswordRecord | null): void {
   if (JSON.stringify(settings.record) === JSON.stringify(record)) return;
   applyingRemoteLock = true;
   try {
-    if (!record) unlocked = new Set();
+    if (!record) {
+      unlocked = new Set();
+      temporarilyVisible.clear();
+    }
     saveSettings({ ...settings, record });
   } finally {
     applyingRemoteLock = false;
@@ -278,6 +330,8 @@ export async function changeLockPassword(
 
 /** Forgets the password and un-marks every group; their projects stay put. */
 function clearPassword() {
+  temporarilyVisible.clear();
+  hiddenGroupsAuthorized = false;
   saveProjectGroups(
     loadProjectGroups().map(({ lockable: _lockable, ...group }) => group),
   );
@@ -304,6 +358,61 @@ export function resetForgottenPassword() {
 }
 
 // ---- groups ----------------------------------------------------------------
+
+/** Hiding is a device preference; it does not change group membership or jobs. */
+export function hideGroup(groupId: string): boolean {
+  if (!loadProjectGroups().some((group) => group.id === groupId)) return false;
+  const next = new Set([...hiddenGroups, groupId]);
+  try {
+    localStorage.setItem(HIDDEN_KEY, JSON.stringify([...next]));
+  } catch {
+    return false;
+  }
+  hiddenGroups = next;
+  temporarilyVisible.delete(groupId);
+  hiddenGroupsAuthorized = false;
+  dispatch({ type: "replace", groupIds: [...unlocked] });
+  return true;
+}
+
+export async function authorizeHiddenGroups(
+  password: string,
+): Promise<VerifyResult> {
+  const result = await verifyLockPassword(password);
+  if (result.ok) {
+    hiddenGroupsAuthorized = true;
+    invalidate();
+  }
+  return result;
+}
+
+export function closeHiddenGroups() {
+  hiddenGroupsAuthorized = false;
+  invalidate();
+}
+
+/** Restore only this group, even when the unlock-all preference is enabled. */
+export function restoreHiddenGroup(
+  groupId: string,
+  temporary = false,
+): boolean {
+  if (settings.record && !hiddenGroupsAuthorized) return false;
+  if (!hiddenGroups.has(groupId)) return false;
+  if (temporary) temporarilyVisible.add(groupId);
+  else {
+    const next = new Set(hiddenGroups);
+    next.delete(groupId);
+    try {
+      localStorage.setItem(HIDDEN_KEY, JSON.stringify([...next]));
+    } catch {
+      return false;
+    }
+    hiddenGroups = next;
+    temporarilyVisible.delete(groupId);
+  }
+  dispatch({ type: "unlock", groupIds: [groupId] });
+  return true;
+}
 
 /** Marks the group lockable, leaving it open until it is locked. */
 export function makeGroupLockable(groupId: string) {
@@ -371,12 +480,26 @@ function onStorage(event: StorageEvent) {
   if (key === null) {
     // localStorage was cleared.
     settings = parseGroupLockSettings(readItem(SETTINGS_KEY));
+    hiddenGroups = new Set(parseUnlockedIds(readItem(HIDDEN_KEY)));
+    temporarilyVisible.clear();
+    hiddenGroupsAuthorized = false;
     invalidate();
     return;
   }
   if (key === SETTINGS_KEY) {
+    hiddenGroupsAuthorized = false;
     settings = parseGroupLockSettings(event.newValue);
-    if (!settings.record) unlocked = new Set();
+    if (!settings.record) {
+      unlocked = new Set();
+      temporarilyVisible.clear();
+    }
+    invalidate();
+  } else if (key === HIDDEN_KEY) {
+    hiddenGroups = new Set(parseUnlockedIds(event.newValue));
+    temporarilyVisible = new Set(
+      [...temporarilyVisible].filter((id) => hiddenGroups.has(id)),
+    );
+    hiddenGroupsAuthorized = false;
     invalidate();
   } else if (key === UNLOCKED_KEY && !settings.relockOnLaunch) {
     unlocked = lockReducer(unlocked, {
@@ -391,10 +514,23 @@ function onStorage(event: StorageEvent) {
 
 function onChannelMessage(event: MessageEvent) {
   const message = event.data as
-    { type?: string; groupIds?: unknown } | undefined;
+    | { type?: string; groupIds?: unknown; visibleHiddenIds?: unknown }
+    | undefined;
   if (message?.type === "hello") {
-    channel?.postMessage({ type: "state", groupIds: [...unlocked] });
+    channel?.postMessage({
+      type: "state",
+      groupIds: [...unlocked],
+      visibleHiddenIds: [...temporarilyVisible],
+    });
   } else if (message?.type === "state" && Array.isArray(message.groupIds)) {
+    hiddenGroupsAuthorized = false;
+    temporarilyVisible = new Set(
+      Array.isArray(message.visibleHiddenIds)
+        ? message.visibleHiddenIds.filter(
+            (id): id is string => typeof id === "string",
+          )
+        : [],
+    );
     unlocked = lockReducer(unlocked, {
       type: "replace",
       groupIds: message.groupIds.filter(

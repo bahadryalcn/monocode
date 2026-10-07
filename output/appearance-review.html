@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>İmece appearance review</title></head><body><div id="root"></div>
+<script type="module">
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import '/src/styles/index.css';
+import '/src/features/settings/ui/ImeceSettings.css';
+import { AppearancePage } from '/src/features/settings/ui/AppearanceSettings.tsx';
+import { useAppearanceSettings } from '/src/features/settings/ui/useAppearanceSettings.tsx';
+import { applyAppearancePreferences, loadAppearancePreferences } from '/src/features/settings/model/appearancePreferences.ts';
+applyAppearancePreferences(loadAppearancePreferences());
+function Review() {
+  const appearance = useAppearanceSettings();
+  return React.createElement('main', { style: { containerType:'inline-size', containerName:'settings', height:'100vh', overflowY:'auto', maxWidth: '1060px', margin:'0 auto', padding:'32px 24px 64px' } },
+    React.createElement('h1', { className:'mb-2 text-xl font-semibold' }, 'Appearance'),
+    React.createElement('p', { className:'mb-8 text-sm text-content/50' }, 'Make the workspace comfortable to read. Changes are saved automatically.'),
+    React.createElement('div', {className:'imece-settings-workbench'}, React.createElement('div', {className:'imece-settings-form',style:{padding:0}}, React.createElement(AppearancePage, {appearance}))));
+}
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(Review));
+</script></body></html>
