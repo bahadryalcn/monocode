@@ -180,6 +180,11 @@ import { useCliCommands } from "./useCliCommands";
 import { useComposerSkills } from "./useComposerSkills";
 import { Popover } from "../../../shared/ui/Popover";
 import { UsageLimitNotice } from "./UsageLimitNotice";
+import { ProviderAccountMenu } from "./ProviderAccountMenu";
+import {
+  supportsProviderAccounts,
+  type ProviderAccountProvider,
+} from "../../providers/model/providerAccounts";
 import { consumePlanCommand, PLAN_COMMAND } from "../model/plan";
 import {
   consumeOperatorCommand,
@@ -360,6 +365,12 @@ type Props = {
   onUsageLimitResume?: () => void;
   onUsageLimitResumeAtReset?: (enabled: boolean) => void;
   onUsageLimitDismiss?: () => void;
+  /** The session's resolved claude/codex account, for the account controls. */
+  providerAccountId?: string;
+  onSelectProviderAccount?: (
+    provider: ProviderAccountProvider,
+    accountId: string,
+  ) => void;
   onOpenFile?: (path: string) => void;
   onDraftChange?: (text: string) => void;
   onRecallLastTurnReady?: (recall: () => void) => void;
@@ -704,6 +715,8 @@ export const Composer = memo(function Composer({
   onUsageLimitResume,
   onUsageLimitResumeAtReset,
   onUsageLimitDismiss,
+  providerAccountId,
+  onSelectProviderAccount,
   onOpenFile,
   onDraftChange,
   onRecallLastTurnReady,
@@ -712,6 +725,10 @@ export const Composer = memo(function Composer({
 }: Props) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [inputResize] = useState(createComposerResizeFrame);
+  const [modelPickerRequest, setModelPickerRequest] = useState(0);
+  const accountProvider = supportsProviderAccounts(harness)
+    ? harness
+    : undefined;
   useEffect(() => () => inputResize.cancel(), [inputResize]);
   const boxRef = useRef<HTMLDivElement>(null);
   const plusRef = useRef<HTMLDivElement>(null);
@@ -2522,8 +2539,16 @@ export const Composer = memo(function Composer({
       {usageLimit ? (
         <UsageLimitNotice
           limit={usageLimit}
+          provider={accountProvider}
+          accountId={providerAccountId}
           onResume={onUsageLimitResume}
           onResumeAtReset={onUsageLimitResumeAtReset}
+          onSwitchAccount={
+            accountProvider && onSelectProviderAccount
+              ? (accountId) => onSelectProviderAccount(accountProvider, accountId)
+              : undefined
+          }
+          onSwitchModel={() => setModelPickerRequest((count) => count + 1)}
           onDismiss={onUsageLimitDismiss}
         />
       ) : null}
@@ -3158,12 +3183,24 @@ export const Composer = memo(function Composer({
                   project={cwd}
                   hideSettings={controlsBeside}
                   hotkeys={hotkeys && enabled}
+                  openRequest={modelPickerRequest}
                   onChange={onModelChange}
                   onSettingsChange={(settings) =>
                     onModelSettingsChange?.(settings)
                   }
                   onClose={() => ref.current?.focus()}
                 />
+                {accountProvider && onSelectProviderAccount ? (
+                  <ProviderAccountMenu
+                    variant="pill"
+                    provider={accountProvider}
+                    accountId={providerAccountId}
+                    onSelect={(accountId) =>
+                      onSelectProviderAccount(accountProvider, accountId)
+                    }
+                    onClose={() => ref.current?.focus()}
+                  />
+                ) : null}
                 {controlsBeside ? (
                   <ModelControlPills
                     harness={harness}

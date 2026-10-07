@@ -359,6 +359,7 @@ import {
   handoffTurnCard,
   isPreparingHandoff,
   pendingHandoff,
+  withHarnessChoice,
   planComposerSwitch,
   sessionChildHarnesses,
   sessionThroughTurn,
@@ -484,10 +485,13 @@ import { shouldGenerateSessionTitle } from "../features/sessions/model/sessionTi
 import {
   DEFAULT_PROVIDER_ACCOUNT_ID,
   providerAccountExists,
-  selectedProviderAccountId,
+  providerAccountLabel,
+  sessionProviderAccountId,
   supportsProviderAccounts,
   type ProviderAccountProvider,
 } from "../features/providers/model/providerAccounts";
+import { switchSessionAccount } from "../features/sessions/model/accountSwitch";
+import { transferProviderSession } from "../platform/tauri/providerSessionTransfer";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -554,7 +558,6 @@ import {
   exhaustedWindowResetAt,
   type RateLimitProvider,
 } from "../features/providers/model/rateLimits";
-import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
   discardDraftSessionRecord,
   deleteSession,
@@ -991,33 +994,6 @@ function userTurnCards(
   return {
     ...(secondOpinion ? { secondOpinion } : {}),
     ...(noteCard ? { noteCard: noteCardMeta(noteCard) } : {}),
-  };
-}
-
-function withHarnessChoice(
-  session: Session,
-  harness: HarnessId,
-  model: string,
-  modelSettings: Record<string, string>,
-): Session {
-  return {
-    ...session,
-    harness,
-    model,
-    modelSettings,
-    title:
-      session.blocks.length === 0
-        ? HARNESS_LABEL[harness]
-        : formatSessionTitle(
-            harness,
-            sessionDisplayTitle(session.title, session.harness),
-          ),
-    ...(session.model === model
-      ? {}
-      : { context: dropContextWindow(session.context) }),
-    ...(session.harness === harness
-      ? {}
-      : { providerSessionId: undefined, providerAccountId: undefined }),
   };
 }
 
@@ -2668,44 +2644,6 @@ function Workspace({
       setTabs((prev) => insertBesideActive(prev, tab, cwd));
     },
     [insertBesideActive],
-  );
-
-  const onSelectProviderAccount = useCallback(
-    (provider: ProviderAccountProvider, accountId: string) => {
-      if (!active || active.harness !== provider) return;
-      const currentId = active.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID;
-      if (currentId === accountId) return;
-
-      if (active.blocks.length === 0 && !active.busy) {
-        setSessions((current) =>
-          current.map((session) =>
-            session.id === active.id
-              ? { ...session, providerAccountId: accountId }
-              : session,
-          ),
-        );
-        return;
-      }
-
-      // Provider thread ids are account-owned. Keep the current conversation
-      // pinned to its account and open a clean one for the selected profile.
-      const session = {
-        ...newSession(
-          active.harness,
-          active.cwd,
-          active.model,
-          active.runtimeMode,
-          active.modelSettings,
-        ),
-        providerAccountId: accountId,
-      };
-      const tab = newTab(session.id);
-      setSessions((current) => [...current, session]);
-      appendTab(tab, active.cwd);
-      setActiveTabId(tab.id);
-      setComposerFocused(true);
-    },
-    [active, appendTab],
   );
 
   const onOpenWhatsNew = useCallback((version: string) => {
@@ -7701,8 +7639,7 @@ function Workspace({
         ? current.harness
         : undefined;
       const providerAccountId = accountProvider
-        ? (current.providerAccountId ??
-          selectedProviderAccountId(accountProvider, current.cwd))
+        ? sessionProviderAccountId(accountProvider, current)
         : undefined;
       if (
         accountProvider &&
@@ -8550,6 +8487,7 @@ function Workspace({
                     wrap.from,
                     turnPrompt.trim() || CONTINUE_PROMPT,
                     earlier,
+                    wrap.to,
                   )
                 : turnPrompt,
             ),
@@ -9396,6 +9334,45 @@ function Workspace({
     );
   }, []);
 
+  /** Move one session to another account of its provider, keeping the conversation. */
+  const onSwitchSessionAccount = useCallback(
+    async (
+      sessionId: string,
+      provider: ProviderAccountProvider,
+      accountId: string,
+    ) => {
+      const result = await switchSessionAccount(sessionId, provider, accountId, {
+        transfer: transferProviderSession,
+        forget: forgetHarnessSession,
+        bind: bindHarnessSession,
+        latest: (id) => sessionsRef.current.find((s) => s.id === id),
+        label: providerAccountLabel,
+        removing: (id) => removingSessionIds.current.has(id),
+      });
+      const say = (text: string) => {
+        enqueueHarnessEvent(sessionId, { type: "status", text });
+        flushHarnessEvents();
+      };
+      if (result.kind === "refused") {
+        say(result.status);
+        return;
+      }
+      if (result.kind !== "switched") return;
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? result.update(s) : s)),
+      );
+      if (result.status) say(result.status);
+    },
+    [enqueueHarnessEvent, flushHarnessEvents],
+  );
+
+  const onSelectProviderAccount = useCallback(
+    (provider: ProviderAccountProvider, accountId: string) => {
+      if (active) void onSwitchSessionAccount(active.id, provider, accountId);
+    },
+    [active?.id, onSwitchSessionAccount],
+  );
+
   const onUsageLimitResumeAtReset = useCallback(
     (sessionId: string, enabled: boolean) => {
       setSessions((prev) =>
@@ -9483,7 +9460,7 @@ function Workspace({
       // must not each ask the provider, which rate-limits this request.
       void loadFreshRateLimits(
         provider,
-        session.providerAccountId,
+        sessionProviderAccountId(provider, session),
         60_000,
       ).then((limits) => {
         const resetsAt = exhaustedWindowResetAt(limits);
@@ -10275,8 +10252,7 @@ function Workspace({
             model: current.model,
             modelSettings: current.modelSettings,
             providerAccountId: supportsProviderAccounts(current.harness)
-              ? (current.providerAccountId ??
-                selectedProviderAccountId(current.harness, current.cwd))
+              ? sessionProviderAccountId(current.harness, current)
               : undefined,
             runtimeMode: current.runtimeMode,
             onEvent: (event) => {
@@ -12587,6 +12563,7 @@ function Workspace({
     onUsageLimitResume,
     onUsageLimitResumeAtReset,
     onUsageLimitDismiss,
+    onSelectProviderAccount: onSwitchSessionAccount,
     onInboxCardDismiss,
     onLinkedWorkItemUpdateCardDismiss,
     onNoteCardDismiss,

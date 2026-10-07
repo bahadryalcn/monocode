@@ -1,6 +1,7 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Loader, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
+import { Check, Loader, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Popover } from "../../../shared/ui/Popover";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 
 import { loginHarness } from "../../../integrations/harness/core/auth";
@@ -14,9 +15,13 @@ import {
   removeProviderAccount,
   renameProviderAccount,
   setDefaultProviderAccount,
+  setProviderAccountColor,
+  providerAccountColor,
+  PROVIDER_ACCOUNT_COLORS,
   DEFAULT_PROVIDER_ACCOUNT_ID,
   subscribeProviderAccounts,
   type ProviderAccount,
+  type ProviderAccountColor,
   type ProviderAccountProvider,
 } from "../../providers/model/providerAccounts";
 import {
@@ -28,11 +33,13 @@ import {
   registerProviderAccount,
 } from "../../providers/model/providerAccountRegistration";
 import {
+  duplicateAccountSignIns,
   identityKey,
   identityOrganizationTag,
   useProviderAccountIdentities,
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
+import { AccountColorDot } from "../../providers/ui/AccountColorDot";
 
 import {
   accountStatus,
@@ -235,7 +242,7 @@ export function ProviderAccountsSettings() {
     <Group
       id="provider-accounts"
       title="Accounts"
-      description="Separate sign-ins per provider. The default is used for new conversations without a project account selection."
+      description="Separate sign-ins per provider. New conversations use the default account; each conversation can pick its own account from the composer."
       action={
         <AccountUsageRefresh
           usage={{
@@ -256,6 +263,7 @@ export function ProviderAccountsSettings() {
         {PROVIDER_ACCOUNT_PROVIDERS.map((provider) => {
           const accounts = providerAccounts(provider);
           const adding = editor?.provider === provider && !editor.accountId;
+          const duplicates = duplicateAccountSignIns(accounts, identities);
           return (
             <div
               key={provider}
@@ -298,6 +306,8 @@ export function ProviderAccountsSettings() {
                   const identity = identities[identityKey(account)];
                   const orgTag = identityOrganizationTag(identity);
                   const limits = usage.usage[accountUsageKey(account)];
+                  const signedOut = Boolean(limits && canSignIn(limits));
+                  const duplicateOf = duplicates[identityKey(account)];
                   return editing ? (
                     <ProviderAccountEditor
                       key={account.id}
@@ -318,9 +328,18 @@ export function ProviderAccountsSettings() {
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 items-center gap-1.5">
+                          <AccountColorPicker
+                            account={account}
+                            disabled={Boolean(working)}
+                          />
                           <span className="truncate text-[12px] text-content/85">
                             {account.label}
                           </span>
+                          {account.isDefault ? (
+                            <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium uppercase leading-4 tracking-wide text-accent">
+                              Default
+                            </span>
+                          ) : null}
                           {orgTag ? (
                             <span className="max-w-[8rem] shrink-0 truncate rounded bg-content/[0.07] px-1 text-[9px] leading-4 text-content/50">
                               {orgTag}
@@ -328,10 +347,20 @@ export function ProviderAccountsSettings() {
                           ) : null}
                         </div>
                         <div className="mt-0.5 flex min-w-0 items-center gap-2.5 text-[10px]">
-                          <AccountStatusLabel
-                            status={accountStatus(limits, usage.now)}
-                            className="shrink-0"
-                          />
+                          {signedOut ? (
+                            <span className="inline-flex shrink-0 items-center gap-1.5 text-amber-600 dark:text-amber-300">
+                              <span
+                                className="size-1.5 rounded-full bg-amber-400"
+                                aria-hidden
+                              />
+                              Signed out
+                            </span>
+                          ) : (
+                            <AccountStatusLabel
+                              status={accountStatus(limits, usage.now)}
+                              className="shrink-0"
+                            />
+                          )}
                           <ProviderAccountSubtitle
                             identity={identity}
                             fallback={
@@ -342,6 +371,15 @@ export function ProviderAccountsSettings() {
                             className="truncate text-content/30"
                           />
                         </div>
+                        {duplicateOf ? (
+                          <p
+                            className="mt-1 truncate text-[10px] leading-4 text-amber-600 dark:text-amber-300"
+                            role="note"
+                          >
+                            Same sign-in as {duplicateOf.label}. Remove this
+                            account if you do not need it separately.
+                          </p>
+                        ) : null}
                       </div>
                       <AccountUsageMeters limits={limits} now={usage.now} />
                       <div className="flex min-w-24 shrink-0 items-center justify-end gap-1">
@@ -351,7 +389,11 @@ export function ProviderAccountsSettings() {
                             disabled={Boolean(working)}
                             aria-label={`Sign in to ${account.label}`}
                             onClick={() => void signInAccount(account)}
-                            className="mr-1 flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2 text-[11px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
+                            className={`mr-1 flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-transform duration-150 active:scale-[0.97] disabled:cursor-default disabled:opacity-40 ${
+                              signedOut
+                                ? "border-amber-400/40 bg-amber-400/10 text-amber-700 hover:bg-amber-400/20 dark:text-amber-300"
+                                : "border-content/10 text-content/70 hover:bg-content/10 hover:text-content"
+                            }`}
                           >
                             {signingIn ? (
                               <Loader
@@ -362,19 +404,15 @@ export function ProviderAccountsSettings() {
                             {signingIn ? "Signing in…" : "Sign in"}
                           </button>
                         ) : null}
-                        {account.isDefault ? (
-                          <span className="mr-1 text-[10px] font-medium uppercase tracking-wide text-content/30">
-                            Default
-                          </span>
-                        ) : (
+                        {account.isDefault ? null : (
                           <button
                             type="button"
                             disabled={Boolean(working)}
                             aria-label={`Use ${account.label} by default`}
                             onClick={() => makeDefault(account)}
-                            className="rounded-md px-2 py-1 text-[11px] text-content/60 hover:bg-content/10 disabled:opacity-35"
+                            className="rounded-md border border-content/10 px-2 py-1 text-[11px] text-content/60 hover:bg-content/10 hover:text-content disabled:opacity-35"
                           >
-                            Use by default
+                            Make default
                           </button>
                         )}
                         <button
@@ -448,6 +486,94 @@ export function canSignIn(limits: ProviderRateLimits): boolean {
   return (
     needsProviderLogin(limits) &&
     !limits.error?.toLowerCase().includes("cli not found")
+  );
+}
+
+/** Dot that opens a swatch popover to colour one account. */
+function AccountColorPicker({
+  account,
+  disabled,
+}: {
+  account: ProviderAccount;
+  disabled: boolean;
+}) {
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const current = providerAccountColor(account);
+  const pick = (color: ProviderAccountColor | undefined) => {
+    setProviderAccountColor(account.provider, account.id, color);
+    setOpen(false);
+  };
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        disabled={disabled}
+        title="Account color"
+        aria-label={`Color for ${account.label}: ${current.label}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((value) => !value)}
+        className="grid size-5 shrink-0 place-items-center rounded-full hover:bg-content/10 disabled:opacity-40"
+      >
+        <AccountColorDot account={account} className="size-2.5" />
+      </button>
+      {open ? (
+        <Popover
+          anchor={trigger}
+          side="bottom"
+          align="start"
+          autoFocus
+          onDismiss={() => setOpen(false)}
+          role="dialog"
+          aria-label={`Color for ${account.label}`}
+          tabIndex={-1}
+          className="p-2"
+        >
+          <div className="flex items-center gap-1">
+            {PROVIDER_ACCOUNT_COLORS.map((color) => {
+              const selected = current.id === color.id;
+              return (
+                <button
+                  key={color.id}
+                  type="button"
+                  title={color.label}
+                  aria-label={color.label}
+                  aria-pressed={selected}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => pick(color.id)}
+                  className="grid size-6 place-items-center rounded-full hover:bg-content/10"
+                >
+                  <span
+                    className="grid size-4 place-items-center rounded-full"
+                    style={{ background: color.value }}
+                  >
+                    {selected ? (
+                      <Check
+                        className="size-2.5 text-white"
+                        strokeWidth={3}
+                        aria-hidden
+                      />
+                    ) : null}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {account.color ? (
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => pick(undefined)}
+              className="mt-1.5 w-full rounded-md px-2 py-1 text-left text-[11px] text-content/55 hover:bg-content/10 hover:text-content"
+            >
+              Use automatic color
+            </button>
+          ) : null}
+        </Popover>
+      ) : null}
+    </>
   );
 }
 

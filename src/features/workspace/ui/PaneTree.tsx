@@ -31,6 +31,7 @@ import type {
   UserQuestionReply,
 } from "../../../integrations/harness";
 import type { EditorNavigationTarget } from "../../search/model/search";
+import type { ProviderAccountProvider } from "../../providers/model/providerAccounts";
 import {
   layoutLeaves,
   layoutSashes,
@@ -138,6 +139,11 @@ type Shared = {
   onUsageLimitResume: (sessionId: string) => void;
   onUsageLimitResumeAtReset: (sessionId: string, enabled: boolean) => void;
   onUsageLimitDismiss: (sessionId: string) => void;
+  onSelectProviderAccount?: (
+    sessionId: string,
+    provider: ProviderAccountProvider,
+    accountId: string,
+  ) => void;
   onInboxCardDismiss?: (sessionId: string) => void;
   onLinkedWorkItemUpdateCardDismiss?: (sessionId: string) => void;
   onNoteCardDismiss?: (sessionId: string) => void;
@@ -266,6 +272,7 @@ function PaneTreeComponent({
   onUsageLimitResume,
   onUsageLimitResumeAtReset,
   onUsageLimitDismiss,
+  onSelectProviderAccount,
   onInboxCardDismiss,
   onLinkedWorkItemUpdateCardDismiss,
   onNoteCardDismiss,
@@ -679,6 +686,7 @@ function PaneTreeComponent({
                   onUsageLimitResume={onUsageLimitResume}
                   onUsageLimitResumeAtReset={onUsageLimitResumeAtReset}
                   onUsageLimitDismiss={onUsageLimitDismiss}
+                  onSelectProviderAccount={onSelectProviderAccount}
                   onInboxCardDismiss={onInboxCardDismiss}
                   onLinkedWorkItemUpdateCardDismiss={
                     onLinkedWorkItemUpdateCardDismiss

@@ -40,8 +40,8 @@ import {
   providerAccountExists,
   providerAccounts,
   saveProviderAccount,
-  selectProviderAccount,
-  selectedProviderAccountId,
+  defaultProviderAccountId,
+  sessionProviderAccountId,
   subscribeProviderAccounts,
   type ProviderAccountProvider,
 } from "../../features/providers/model/providerAccounts";
@@ -54,6 +54,7 @@ export type UsageFooterSession = {
   model?: string;
   authRequired?: boolean;
   providerAccountId?: string;
+  providerSessionId?: string;
 };
 
 export function UsageFooter({
@@ -93,14 +94,15 @@ export function UsageFooter({
   const [refreshing, setRefreshing] = useState(false);
   const [, setAccountsVersion] = useState(0);
   const inflight = useRef<Promise<void> | null>(null);
+  // A legacy thread without a pin runs on "default", not the current default.
   const claudeAccountId =
-    session?.harness === "claude" && session.providerAccountId
-      ? session.providerAccountId
-      : selectedProviderAccountId("claude", project);
+    session?.harness === "claude"
+      ? sessionProviderAccountId("claude", session)
+      : defaultProviderAccountId("claude");
   const codexAccountId =
-    session?.harness === "codex" && session.providerAccountId
-      ? session.providerAccountId
-      : selectedProviderAccountId("codex", project);
+    session?.harness === "codex"
+      ? sessionProviderAccountId("codex", session)
+      : defaultProviderAccountId("codex");
   const claudeAccounts = providerAccounts("claude");
   const codexAccounts = providerAccounts("codex");
   const claudeAccountAvailable = providerAccountExists(
@@ -281,10 +283,9 @@ export function UsageFooter({
 
   const selectAccount = useCallback(
     (provider: ProviderAccountProvider, accountId: string) => {
-      selectProviderAccount(provider, project, accountId);
       onSelectAccount?.(provider, accountId);
     },
-    [onSelectAccount, project],
+    [onSelectAccount],
   );
 
   const addAccount = useCallback(

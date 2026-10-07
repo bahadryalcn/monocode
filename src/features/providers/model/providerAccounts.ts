@@ -1,9 +1,7 @@
-import { pathKey } from "../../../shared/lib/paths";
 import type { HarnessId } from "../../sessions/model/session";
 
 const LEGACY_ACCOUNTS_KEY = "monocode.providerAccounts.v1";
 const ACCOUNTS_KEY = "monocode.providerAccounts.v2";
-const SELECTIONS_KEY = "monocode.providerAccountSelections.v1";
 const CHANGE_EVENT = "monocode-provider-accounts-changed";
 
 export const DEFAULT_PROVIDER_ACCOUNT_ID = "default";
@@ -35,19 +33,62 @@ export function supportsProviderAccounts(
   return PROVIDER_ACCOUNT_PROVIDERS.some((candidate) => candidate === provider);
 }
 
+/**
+ * Fixed palette for telling accounts apart. Values match the tab-group palette
+ * so they read on both light and dark themes.
+ */
+export const PROVIDER_ACCOUNT_COLORS = [
+  { id: "blue", label: "Blue", value: "hsl(211 92% 62%)" },
+  { id: "coral", label: "Coral", value: "hsl(12 80% 58%)" },
+  { id: "amber", label: "Amber", value: "hsl(45 90% 55%)" },
+  { id: "green", label: "Green", value: "hsl(142 55% 50%)" },
+  { id: "pink", label: "Pink", value: "hsl(330 70% 62%)" },
+  { id: "purple", label: "Purple", value: "hsl(280 55% 62%)" },
+  { id: "teal", label: "Teal", value: "hsl(175 55% 48%)" },
+  { id: "slate", label: "Slate", value: "hsl(210 8% 58%)" },
+] as const;
+
+export type ProviderAccountColor =
+  (typeof PROVIDER_ACCOUNT_COLORS)[number]["id"];
+
 export type ProviderAccount = {
   id: string;
   provider: ProviderAccountProvider;
   label: string;
   isDefault?: boolean;
+  /** Palette token; unset accounts get a stable colour derived from the id. */
+  color?: ProviderAccountColor;
 };
+
+function validAccountColor(value: unknown): value is ProviderAccountColor {
+  return PROVIDER_ACCOUNT_COLORS.some((color) => color.id === value);
+}
+
+/** Palette entry for an account: its own pick, else stable by provider and id. */
+export function providerAccountColor(
+  account: Pick<ProviderAccount, "id" | "provider" | "color">,
+): (typeof PROVIDER_ACCOUNT_COLORS)[number] {
+  const picked = PROVIDER_ACCOUNT_COLORS.find(
+    (color) => color.id === account.color,
+  );
+  if (picked) return picked;
+  const key = `${account.provider}:${account.id}`;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  return PROVIDER_ACCOUNT_COLORS[hash % PROVIDER_ACCOUNT_COLORS.length];
+}
+
+/** CSS colour for an account's dot. */
+export function providerAccountColorValue(
+  account: Pick<ProviderAccount, "id" | "provider" | "color">,
+): string {
+  return providerAccountColor(account).value;
+}
 
 type StoredAccounts = Partial<
   Record<ProviderAccountProvider, ProviderAccount[]>
->;
-type StoredSelections = Record<
-  string,
-  Partial<Record<ProviderAccountProvider, string>>
 >;
 
 export function providerAccounts(
@@ -81,6 +122,9 @@ export function providerAccounts(
         provider,
         label,
         ...(authoritative && account.isDefault ? { isDefault: true } : {}),
+        ...(authoritative && validAccountColor(account.color)
+          ? { color: account.color }
+          : {}),
       },
     ];
   });
@@ -125,6 +169,8 @@ export function saveProviderAccount(account: ProviderAccount): void {
   if (!label) return;
   const stored = readRecord<StoredAccounts>(ACCOUNTS_KEY);
   const accounts = providerAccounts(account.provider);
+  const color =
+    account.color ?? accounts.find((entry) => entry.id === account.id)?.color;
   const next = accounts.filter((entry) => entry.id !== account.id);
   stored[account.provider] = serializeProviderAccounts([
     ...next,
@@ -132,6 +178,7 @@ export function saveProviderAccount(account: ProviderAccount): void {
       id: account.id,
       provider: account.provider,
       label,
+      ...(color ? { color } : {}),
       ...(next.length === 0 ||
       accounts.find((entry) => entry.id === account.id)?.isDefault
         ? { isDefault: true }
@@ -178,16 +225,6 @@ export function removeProviderAccount(
     accounts.filter((account) => account.id !== accountId),
   );
   writeJson(ACCOUNTS_KEY, stored);
-
-  const selections = readRecord<StoredSelections>(SELECTIONS_KEY);
-  for (const [key, selection] of Object.entries(selections)) {
-    if (!isRecord(selection) || selection[provider] !== accountId) continue;
-    const nextSelection = { ...selection };
-    delete nextSelection[provider];
-    if (Object.keys(nextSelection).length === 0) delete selections[key];
-    else selections[key] = nextSelection;
-  }
-  writeJson(SELECTIONS_KEY, selections);
   announceChange();
   return true;
 }
@@ -204,12 +241,39 @@ function serializeProviderAccounts(
         provider: account.provider,
         label,
         ...(account.isDefault ? { isDefault: true } : {}),
+        ...(validAccountColor(account.color) ? { color: account.color } : {}),
       },
     ];
   });
 }
 
-/** Change the fallback for new sessions without moving credentials or existing selections. */
+/**
+ * Pick (or clear, with undefined) an account's colour. Works for the implicit
+ * default too: like any other edit, it materializes the list into the
+ * authoritative store with the default entry kept as-is.
+ */
+export function setProviderAccountColor(
+  provider: ProviderAccountProvider,
+  accountId: string,
+  color: ProviderAccountColor | undefined,
+): boolean {
+  if (color !== undefined && !validAccountColor(color)) return false;
+  const accounts = providerAccounts(provider);
+  if (!accounts.some((account) => account.id === accountId)) return false;
+  const stored = readRecord<StoredAccounts>(ACCOUNTS_KEY);
+  stored[provider] = serializeProviderAccounts(
+    accounts.map((account) => {
+      if (account.id !== accountId) return account;
+      const { color: _previous, ...rest } = account;
+      return color ? { ...rest, color } : rest;
+    }),
+  );
+  writeJson(ACCOUNTS_KEY, stored);
+  announceChange();
+  return true;
+}
+
+/** Change the fallback for new sessions without moving credentials or existing sessions. */
 export function setDefaultProviderAccount(
   provider: ProviderAccountProvider,
   accountId: string,
@@ -236,31 +300,34 @@ export function providerAccountExists(
   );
 }
 
-export function selectedProviderAccountId(
+/**
+ * Account a session without an explicit choice runs under. Choices live on the
+ * session itself, so changing the default never moves an existing conversation.
+ */
+export function defaultProviderAccountId(
   provider: ProviderAccountProvider,
-  project: string | undefined,
 ): string {
-  const selections = readRecord<StoredSelections>(SELECTIONS_KEY);
-  const id = selections[selectionKey(project)]?.[provider];
-  return providerAccounts(provider).some((account) => account.id === id)
-    ? id!
-    : (providerAccounts(provider).find((account) => account.isDefault)?.id ??
-        DEFAULT_PROVIDER_ACCOUNT_ID);
+  return (
+    providerAccounts(provider).find((account) => account.isDefault)?.id ??
+    DEFAULT_PROVIDER_ACCOUNT_ID
+  );
 }
 
-export function selectProviderAccount(
+/**
+ * Account a session runs under: its own pin, else the provider default. A
+ * session that already has a provider thread but no pin predates account ids
+ * and belongs to the legacy default profile.
+ */
+export function sessionProviderAccountId(
   provider: ProviderAccountProvider,
-  project: string | undefined,
-  accountId: string,
-): void {
-  if (!providerAccounts(provider).some((account) => account.id === accountId)) {
-    return;
-  }
-  const selections = readRecord<StoredSelections>(SELECTIONS_KEY);
-  const key = selectionKey(project);
-  selections[key] = { ...selections[key], [provider]: accountId };
-  writeJson(SELECTIONS_KEY, selections);
-  announceChange();
+  session: { providerAccountId?: string; providerSessionId?: string },
+): string {
+  return (
+    session.providerAccountId ??
+    (session.providerSessionId
+      ? DEFAULT_PROVIDER_ACCOUNT_ID
+      : defaultProviderAccountId(provider))
+  );
 }
 
 export function providerAccountLabel(
@@ -283,8 +350,7 @@ export function subscribeProviderAccounts(listener: () => void): () => void {
     if (
       event.key === null ||
       event.key === ACCOUNTS_KEY ||
-      event.key === LEGACY_ACCOUNTS_KEY ||
-      event.key === SELECTIONS_KEY
+      event.key === LEGACY_ACCOUNTS_KEY
     )
       listener();
   };
@@ -294,10 +360,6 @@ export function subscribeProviderAccounts(listener: () => void): () => void {
     window.removeEventListener(CHANGE_EVENT, local);
     window.removeEventListener("storage", storage);
   };
-}
-
-function selectionKey(project: string | undefined): string {
-  return pathKey(project?.trim() || "~");
 }
 
 function cleanLabel(value: unknown): string {

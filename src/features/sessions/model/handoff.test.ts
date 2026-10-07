@@ -16,6 +16,8 @@ import {
   sessionThroughTurn,
   shouldAskOutgoingAgent,
   userMessagesAfterHandoff,
+  withAccountHandoff,
+  withTransferredAccount,
   wrapHandoffPrompt,
 } from "./handoff";
 import { newSession, type Block, type Session } from "./session";
@@ -380,5 +382,84 @@ describe("wrapHandoffPrompt", () => {
     expect(buildOutgoingHandoffPrompt("add dark mode")).not.toContain(
       "Goal (the user request)",
     );
+  });
+});
+
+describe("account switch within one harness", () => {
+  const limited = (extra?: Partial<Session>) =>
+    sessionWith(
+      [
+        { id: "u1", role: "user", text: "fix the parser" },
+        { id: "a1", role: "assistant", text: "Parser fixed in two places." },
+      ],
+      {
+        harness: "claude",
+        providerSessionId: "thread-1",
+        providerAccountId: "account-a",
+        usageLimit: {},
+        ...extra,
+      },
+    );
+
+  it("keeps the provider thread when the transcript moved with the account", () => {
+    const next = withTransferredAccount(limited(), "account-b");
+    expect(next.providerAccountId).toBe("account-b");
+    expect(next.providerSessionId).toBe("thread-1");
+    expect(next.usageLimit).toBeUndefined();
+    expect(pendingHandoff(next)).toBeNull();
+  });
+
+  it("falls back to a deterministic recap that rides the next send", () => {
+    const next = withAccountHandoff(limited(), "account-b");
+    expect(next.providerAccountId).toBe("account-b");
+    expect(next.providerSessionId).toBeUndefined();
+    expect(next.usageLimit).toBeUndefined();
+    const pending = pendingHandoff(next);
+    expect(pending).toMatchObject({ from: "claude", to: "claude" });
+    expect(pending?.text).toContain("fix the parser");
+    expect(pending?.text).toContain("Parser fixed in two places.");
+  });
+
+  it("names the account move rather than a harness handoff", () => {
+    const prompt = wrapHandoffPrompt("recap", "claude", "go on", [], "claude");
+    expect(prompt).toContain("moved to a different Claude Code account");
+    expect(wrapHandoffPrompt("recap", "claude", "go on")).toContain(
+      "handed off from Claude Code",
+    );
+  });
+});
+
+describe("handoff from a usage-limited harness", () => {
+  const edited = (extra?: Partial<Session>) =>
+    sessionWith(
+      [
+        { id: "u1", role: "user", text: "edit it" },
+        {
+          id: "t1",
+          role: "tool",
+          text: "Edit src/a.ts",
+          tool: { kind: "edit", title: "Edit src/a.ts" },
+        } as Block,
+      ],
+      { providerSessionId: "acp-1", ...extra },
+    );
+
+  it("asks the outgoing agent when it is healthy", () => {
+    expect(shouldAskOutgoingAgent(edited())).toBe(true);
+  });
+
+  it("never asks a limited agent, even after the limit was cleared by the switch", () => {
+    expect(shouldAskOutgoingAgent(edited({ usageLimit: {} }))).toBe(false);
+    const armed = planComposerSwitch(edited({ usageLimit: {} }), "fx");
+    expect(armed).toMatchObject({
+      kind: "arm",
+      pending: { fromUsageLimited: true },
+    });
+    if (armed.kind !== "arm") throw new Error("expected arm");
+    expect(
+      shouldAskOutgoingAgent(
+        edited({ harness: "fx", pendingSwitch: armed.pending }),
+      ),
+    ).toBe(false);
   });
 });

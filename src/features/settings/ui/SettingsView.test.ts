@@ -19,7 +19,7 @@ import {
 import {
   providerAccounts,
   saveProviderAccount,
-  selectedProviderAccountId,
+  defaultProviderAccountId,
 } from "../../providers/model/providerAccounts";
 import {
   clearCachedRateLimits,
@@ -531,7 +531,7 @@ describe("settings pages", () => {
         .querySelector<HTMLButtonElement>('[aria-label="Use Work by default"]')!
         .click(),
     );
-    expect(selectedProviderAccountId("codex", "/new-project")).toBe(
+    expect(defaultProviderAccountId("codex")).toBe(
       "account-work",
     );
     const remove = container.querySelectorAll<HTMLButtonElement>(
@@ -545,9 +545,53 @@ describe("settings pages", () => {
     expect(providerAccounts("codex").map((entry) => entry.id)).toEqual([
       "account-work",
     ]);
-    expect(selectedProviderAccountId("codex", "/new-project")).toBe(
+    expect(defaultProviderAccountId("codex")).toBe(
       "account-work",
     );
+  });
+
+  it("colours accounts, flags duplicate sign-ins and surfaces signed-out profiles", async () => {
+    saveProviderAccount({ id: "account-a", provider: "claude", label: "Max A" });
+    saveProviderAccount({ id: "account-b", provider: "claude", label: "Max B" });
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      const { accountId } = (args ?? {}) as { accountId?: string };
+      return command === "provider_account_identity" && accountId !== "default"
+        ? { email: "me@example.com", plan: "Max 20x" }
+        : undefined;
+    });
+    setCachedRateLimits("claude", "account-b", {
+      provider: "claude",
+      session: null,
+      weekly: null,
+      monthly: null,
+      resetCredits: null,
+      updatedAt: Date.now(),
+      error: "Claude not signed in",
+      status: "unavailable",
+    });
+    await render("providers");
+
+    expect(container.textContent).toContain("Same sign-in as Max A");
+    expect(container.textContent?.match(/Same sign-in as/g)).toHaveLength(1);
+    expect(container.textContent).toContain("Signed out");
+    expect(
+      container.querySelectorAll('[aria-label="Use Max A by default"]'),
+    ).toHaveLength(1);
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label^="Color for Max A:"]')!
+        .click(),
+    );
+    await act(async () =>
+      document.body
+        .querySelector<HTMLButtonElement>('[aria-label="Purple"]')!
+        .click(),
+    );
+    expect(
+      providerAccounts("claude").find((entry) => entry.id === "account-a")
+        ?.color,
+    ).toBe("purple");
   });
 
   it("locks account actions during confirmation and recovers from dialog errors", async () => {

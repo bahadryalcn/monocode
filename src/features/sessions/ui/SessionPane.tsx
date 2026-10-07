@@ -20,6 +20,11 @@ import {
 } from "react";
 import { Composer } from "./Composer";
 import type { OpenFileFn } from "../../search/model/search";
+import {
+  sessionProviderAccountId,
+  supportsProviderAccounts,
+  type ProviderAccountProvider,
+} from "../../providers/model/providerAccounts";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -198,6 +203,11 @@ export type SessionPaneProps = {
   onUsageLimitResume: (sessionId: string) => void;
   onUsageLimitResumeAtReset: (sessionId: string, enabled: boolean) => void;
   onUsageLimitDismiss: (sessionId: string) => void;
+  onSelectProviderAccount?: (
+    sessionId: string,
+    provider: ProviderAccountProvider,
+    accountId: string,
+  ) => void;
   onInboxCardDismiss?: (sessionId: string) => void;
   onLinkedWorkItemUpdateCardDismiss?: (sessionId: string) => void;
   onNoteCardDismiss?: (sessionId: string) => void;
@@ -362,6 +372,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onUsageLimitResume,
   onUsageLimitResumeAtReset,
   onUsageLimitDismiss,
+  onSelectProviderAccount,
   onInboxCardDismiss,
   onLinkedWorkItemUpdateCardDismiss,
   onNoteCardDismiss,
@@ -804,6 +815,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const composerUsageLimitDismiss = useStableCallback(() =>
     onUsageLimitDismiss(session.id),
   );
+  const composerSelectProviderAccount = useStableCallback(
+    (provider: ProviderAccountProvider, accountId: string) =>
+      onSelectProviderAccount?.(session.id, provider, accountId),
+  );
   const composerPromptHistory = useStableCallback(() =>
     userPromptHistory(session),
   );
@@ -983,6 +998,14 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onUsageLimitResume={composerUsageLimitResume}
       onUsageLimitResumeAtReset={composerUsageLimitResumeAtReset}
       onUsageLimitDismiss={composerUsageLimitDismiss}
+      providerAccountId={
+        supportsProviderAccounts(session.harness)
+          ? sessionProviderAccountId(session.harness, session)
+          : undefined
+      }
+      onSelectProviderAccount={
+        onSelectProviderAccount ? composerSelectProviderAccount : undefined
+      }
       onOpenFile={onOpenFile}
       busy={!!session.busy}
       backgroundOnly={isBackgroundOnly(

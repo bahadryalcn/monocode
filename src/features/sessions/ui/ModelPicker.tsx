@@ -73,6 +73,8 @@ type Props = {
   /** Limit provider tabs for surfaces that only support one harness. */
   allowedHarnesses?: readonly HarnessId[];
   hotkeys?: boolean;
+  /** Bump to open the picker from outside, e.g. a usage-limit notice. */
+  openRequest?: number;
   onChange: (harness: HarnessId, model: string) => void;
   onSettingsChange: (settings: Record<string, string>) => void;
   onClose?: () => void;
@@ -128,6 +130,7 @@ export function ModelPicker({
   hideSettings = false,
   allowedHarnesses,
   hotkeys = false,
+  openRequest = 0,
   onChange,
   onSettingsChange,
   onClose,
@@ -298,6 +301,12 @@ export function ModelPicker({
       openRecentMenu();
     }
   };
+
+  useEffect(() => {
+    if (openRequest === 0) return;
+    setRecentMenu(null);
+    setOpen(true);
+  }, [openRequest]);
 
   const toggleFromHotkey = () => {
     const now = performance.now();

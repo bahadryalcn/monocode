@@ -44,6 +44,7 @@ mod remote_ssh;
 mod search;
 mod session_import;
 mod session_store;
+mod session_transfer;
 mod skills;
 pub mod ssh_askpass;
 mod terminal_profiles;
@@ -365,6 +366,7 @@ pub fn run() {
             fs::resolve_project_location,
             fs::open_path_with_default_app,
             fs::claude_sessions,
+            session_transfer::provider_transfer_session,
             fs::list_dir,
             fs::list_project_files,
             fs::git_diff_stats,

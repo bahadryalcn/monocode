@@ -2,7 +2,9 @@ import { isEditTool } from "../../../integrations/harness/core/preview";
 import { compactCiRepairContext } from "../../inbox/model/ciRepair";
 import { limitSection } from "../../../shared/lib/jsonText";
 import { displayPath } from "../../../shared/lib/paths";
+import { dropContextWindow } from "./contextUsage";
 import {
+  HARNESS_LABEL,
   HARNESS_TITLE,
   type Block,
   type HarnessId,
@@ -10,6 +12,8 @@ import {
   type PendingHarnessSwitch,
   type SecondOpinionMeta,
   type Session,
+  formatSessionTitle,
+  sessionDisplayTitle,
 } from "./session";
 
 export const HANDOFF_TITLE = "Handoff";
@@ -108,7 +112,41 @@ export function planComposerSwitch(
       ...(session.providerAccountId
         ? { fromProviderAccountId: session.providerAccountId }
         : {}),
+      ...(session.usageLimit ? { fromUsageLimited: true } : {}),
     },
+  };
+}
+
+/** The composer's harness/model choice applied to a session. */
+export function withHarnessChoice(
+  session: Session,
+  harness: HarnessId,
+  model: string,
+  modelSettings: Record<string, string>,
+): Session {
+  return {
+    ...session,
+    harness,
+    model,
+    modelSettings,
+    title:
+      session.blocks.length === 0
+        ? HARNESS_LABEL[harness]
+        : formatSessionTitle(
+            harness,
+            sessionDisplayTitle(session.title, session.harness),
+          ),
+    ...(session.model === model
+      ? {}
+      : { context: dropContextWindow(session.context) }),
+    ...(session.harness === harness
+      ? {}
+      : {
+          providerSessionId: undefined,
+          providerAccountId: undefined,
+          // The limit belongs to the provider being left.
+          usageLimit: undefined,
+        }),
   };
 }
 
@@ -184,6 +222,36 @@ export function appendReadyHandoff(
   });
 }
 
+/**
+ * Same harness, new account, and the provider thread could not be carried
+ * over. The deterministic recap rides the next send; the old account is
+ * usually rate-limited, so it is never asked to write one.
+ */
+export function withAccountHandoff(
+  session: Session,
+  providerAccountId: string,
+): Session {
+  return appendReadyHandoff(
+    {
+      ...session,
+      providerSessionId: undefined,
+      providerAccountId,
+      usageLimit: undefined,
+    },
+    session.harness,
+    session.harness,
+    buildDeterministicHandoff(session),
+  );
+}
+
+/** The provider thread now exists under `providerAccountId`: resume it there. */
+export function withTransferredAccount(
+  session: Session,
+  providerAccountId: string,
+): Session {
+  return { ...session, providerAccountId, usageLimit: undefined };
+}
+
 export function completeHandoff(session: Session, text: string): Session {
   const last = lastHandoffBlock(session.blocks);
   if (!last?.handoff) return session;
@@ -239,6 +307,10 @@ export function hasSessionEdits(session: Session): boolean {
 }
 
 export function shouldAskOutgoingAgent(session: Session): boolean {
+  // A rate-limited agent cannot write the brief; go straight to the packet.
+  if (session.usageLimit || session.pendingSwitch?.fromUsageLimited) {
+    return false;
+  }
   const liveId =
     session.pendingSwitch?.fromProviderSessionId ?? session.providerSessionId;
   return !!liveId && hasSessionEdits(session);
@@ -385,8 +457,10 @@ export function wrapHandoffPrompt(
   from: HarnessId,
   userText: string,
   earlierRequests: string[] = [],
+  to?: HarnessId,
 ): string {
   const fromTitle = HARNESS_TITLE[from];
+  const sameHarness = from === to;
   const request = userText.trim();
   const body = stripGoalSections(brief);
   const earlier = earlierRequests.map((text) => text.trim()).filter(Boolean);
@@ -394,7 +468,10 @@ export function wrapHandoffPrompt(
     earlier.length > 0
       ? `\n\nAfter the switch, before this message, the user also sent:\n\n${earlier.join("\n\n")}`
       : "";
-  const lead = `You are continuing an existing conversation handed off from ${fromTitle}. This is not a new session. Do not say you have no prior context.\n\n${request}${earlierBlock}`;
+  const origin = sameHarness
+    ? `moved to a different ${fromTitle} account`
+    : `handed off from ${fromTitle}`;
+  const lead = `You are continuing an existing conversation ${origin}. This is not a new session. Do not say you have no prior context.\n\n${request}${earlierBlock}`;
   if (!body) {
     return `${lead}\n\nContinue from a ${fromTitle} session. Do not invent prior work.`;
   }

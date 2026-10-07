@@ -74,3 +74,31 @@ export function useProviderAccountIdentities(
 
   return identities;
 }
+
+/** Same person and org; Claude lets one email hold several organizations. */
+function signInKey(identity: ProviderAccountIdentity | null | undefined) {
+  const email = identity?.email?.trim().toLowerCase();
+  if (!email) return null;
+  return `${email}|${identity?.organization?.trim().toLowerCase() ?? ""}`;
+}
+
+/**
+ * Accounts of one provider that resolve to the same sign-in as an earlier
+ * account in the list, keyed by `identityKey` of the later one.
+ */
+export function duplicateAccountSignIns(
+  accounts: ProviderAccount[],
+  identities: Record<string, ProviderAccountIdentity | null | undefined>,
+): Record<string, ProviderAccount> {
+  const firstSeen = new Map<string, ProviderAccount>();
+  const duplicates: Record<string, ProviderAccount> = {};
+  for (const account of accounts) {
+    const key = signInKey(identities[identityKey(account)]);
+    if (!key) continue;
+    const scoped = `${account.provider}|${key}`;
+    const original = firstSeen.get(scoped);
+    if (original) duplicates[identityKey(account)] = original;
+    else firstSeen.set(scoped, account);
+  }
+  return duplicates;
+}

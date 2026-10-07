@@ -1,20 +1,32 @@
 import { useEffect, useState } from "react";
-import { Clock, Gauge, Play, X } from "../../../shared/ui/icons";
+import { Clock, Gauge, Play, Replace, X } from "../../../shared/ui/icons";
+import type { ProviderAccountProvider } from "../../providers/model/providerAccounts";
 import type { UsageLimit } from "../model/session";
 import { formatUsageLimitReset } from "../model/usageLimit";
+import { ProviderAccountMenu } from "./ProviderAccountMenu";
 
 const BUTTON =
   "flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content";
 
 export function UsageLimitNotice({
   limit,
+  provider,
+  accountId,
   onResume,
   onResumeAtReset,
+  onSwitchAccount,
+  onSwitchModel,
   onDismiss,
 }: {
   limit: UsageLimit;
+  /** Set for claude/codex; with `accountId`, other accounts can take over. */
+  provider?: ProviderAccountProvider;
+  accountId?: string;
   onResume?: () => void;
   onResumeAtReset?: (enabled: boolean) => void;
+  onSwitchAccount?: (accountId: string) => void;
+  /** Opens the composer's model picker to continue on another model. */
+  onSwitchModel?: () => void;
   onDismiss?: () => void;
 }) {
   const [now, setNow] = useState(Date.now);
@@ -38,6 +50,25 @@ export function UsageLimitNotice({
               ? `Resets ${formatUsageLimitReset(limit.resetsAt, now)}`
               : "Limit has reset"}
         </span>
+        {provider && onSwitchAccount ? (
+          <ProviderAccountMenu
+            variant="notice"
+            provider={provider}
+            accountId={accountId}
+            onSelect={onSwitchAccount}
+          />
+        ) : null}
+        {onSwitchModel ? (
+          <button
+            type="button"
+            title="Continue this conversation with another model"
+            onClick={onSwitchModel}
+            className={BUTTON}
+          >
+            <Replace className="size-3.5" />
+            Switch model
+          </button>
+        ) : null}
         {!waiting ? (
           <button type="button" onClick={onResume} className={BUTTON}>
             <Play className="size-3.5" />

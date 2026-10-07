@@ -537,6 +537,8 @@ export type PendingHarnessSwitch = {
   fromSettings: Record<string, string>;
   fromProviderSessionId?: string;
   fromProviderAccountId?: string;
+  /** The harness being left had hit its usage limit; never ask it for a recap. */
+  fromUsageLimited?: boolean;
 };
 
 export const HARNESS_LABEL: Record<HarnessId, string> = {

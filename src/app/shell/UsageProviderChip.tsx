@@ -54,6 +54,7 @@ import {
   type ProviderAccountIdentity,
 } from "../../features/providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../features/providers/ui/ProviderAccountSubtitle";
+import { AccountColorDot } from "../../features/providers/ui/AccountColorDot";
 import { useShowRemainingUsage } from "../../features/settings/model/displayPrefs";
 
 type UsageWindowEntry = {
@@ -249,8 +250,11 @@ export function UsageProviderChip({
         ) : (
           <>
             {accounts.length > 1 && activeAccount ? (
-              <span className="max-w-24 truncate text-content/45">
-                {activeAccount.label}
+              <span className="inline-flex min-w-0 items-center gap-1">
+                <AccountColorDot account={activeAccount} className="size-1.5" />
+                <span className="max-w-24 truncate text-content/45">
+                  {activeAccount.label}
+                </span>
               </span>
             ) : null}
             {tightest ? <MiniBar usedPct={tightest.usedPercent} /> : null}
@@ -326,6 +330,7 @@ export function UsageProviderChip({
             <>
               {canManageAccounts ? (
                 <AccountSwitchRow
+                  account={activeAccount}
                   accountLabel={activeAccountLabel}
                   onClick={() => setAccountView("accounts")}
                 />
@@ -366,6 +371,12 @@ export function UsageProviderChip({
                         aria-label={`Switch ${providerLabel} account`}
                         onClick={() => setAccountView("accounts")}
                       />
+                      {activeAccount ? (
+                        <AccountColorDot
+                          account={activeAccount}
+                          className="size-1.5"
+                        />
+                      ) : null}
                       <span className="max-w-[60%] shrink-0 truncate">
                         {activeAccountLabel}
                       </span>
@@ -459,9 +470,11 @@ export function UsageProviderChip({
 }
 
 function AccountSwitchRow({
+  account,
   accountLabel,
   onClick,
 }: {
+  account?: ProviderAccount;
   accountLabel: string;
   onClick: () => void;
 }) {
@@ -473,6 +486,7 @@ function AccountSwitchRow({
         aria-label={`Switch account from ${accountLabel}`}
         onClick={onClick}
       >
+        {account ? <AccountColorDot account={account} /> : null}
         <span className="min-w-0 flex-1 truncate">{accountLabel}</span>
         <span className="text-[10px] text-content/40">Switch</span>
         <ChevronRight
@@ -523,7 +537,7 @@ function ProviderAccountPicker({
         <h2 className="text-[13px] font-medium">{providerLabel} accounts</h2>
       </div>
       <p className="mt-1 px-1 text-[10px] leading-4 text-content/40">
-        Each conversation stays pinned to the account that started it.
+        Applies to this conversation only; new ones use the default account.
       </p>
       <div
         className="mt-2 flex flex-col gap-1"
@@ -555,7 +569,8 @@ function ProviderAccountPicker({
                 onClick={() => onSelect(account.id)}
               />
               <span className="min-w-0 flex-1 py-0.5">
-                <span className="flex min-w-0 items-baseline gap-1.5">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <AccountColorDot account={account} />
                   <span className="shrink-0 truncate">{account.label}</span>
                   <ProviderAccountSubtitle
                     identity={identity}
@@ -648,6 +663,7 @@ function SwitchSuggestion({
           {exhausted ? "Out of usage" : "Running low"} · switch to
         </p>
         <p className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px]">
+          <AccountColorDot account={account} />
           <span className="min-w-0 truncate font-medium">{account.label}</span>
           <AccountStatusLabel
             status={accountStatus(limits, now)}

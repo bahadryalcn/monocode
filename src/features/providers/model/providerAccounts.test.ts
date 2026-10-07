@@ -9,9 +9,12 @@ import {
   removeProviderAccount,
   renameProviderAccount,
   saveProviderAccount,
-  selectedProviderAccountId,
-  selectProviderAccount,
+  defaultProviderAccountId,
+  PROVIDER_ACCOUNT_COLORS,
+  providerAccountColor,
+  sessionProviderAccountId,
   setDefaultProviderAccount,
+  setProviderAccountColor,
 } from "./providerAccounts";
 
 beforeEach(() => {
@@ -64,10 +67,7 @@ describe("provider accounts", () => {
       ]);
     }
 
-    localStorage.setItem("monocode.providerAccountSelections.v1", "null");
-    expect(selectedProviderAccountId("claude", "/repo")).toBe(
-      DEFAULT_PROVIDER_ACCOUNT_ID,
-    );
+    expect(defaultProviderAccountId("claude")).toBe(DEFAULT_PROVIDER_ACCOUNT_ID);
   });
 
   it("replaces malformed provider storage when saving an account", () => {
@@ -116,21 +116,28 @@ describe("provider accounts", () => {
     ]);
   });
 
-  it("remembers a selection per project and ignores unknown ids", () => {
-    const work = {
+  it("resolves a session to its own pin, else the provider default", () => {
+    saveProviderAccount({
       id: "account-work",
-      provider: "codex" as const,
+      provider: "codex",
       label: "Work",
-    };
-    saveProviderAccount(work);
-    selectProviderAccount("codex", "/repo/one", work.id);
-
-    expect(selectedProviderAccountId("codex", "/repo/one")).toBe(work.id);
-    expect(selectedProviderAccountId("codex", "/repo/two")).toBe(
+    });
+    expect(sessionProviderAccountId("codex", {})).toBe(
       DEFAULT_PROVIDER_ACCOUNT_ID,
     );
-    selectProviderAccount("codex", "/repo/one", "missing");
-    expect(selectedProviderAccountId("codex", "/repo/one")).toBe(work.id);
+    expect(
+      sessionProviderAccountId("codex", { providerAccountId: "account-work" }),
+    ).toBe("account-work");
+    setDefaultProviderAccount("codex", "account-work");
+    expect(sessionProviderAccountId("codex", {})).toBe("account-work");
+    // An existing conversation keeps its pin when the default moves.
+    expect(
+      sessionProviderAccountId("codex", { providerAccountId: "default" }),
+    ).toBe("default");
+    // A thread from before account ids belongs to the legacy profile.
+    expect(
+      sessionProviderAccountId("codex", { providerSessionId: "thread-1" }),
+    ).toBe(DEFAULT_PROVIDER_ACCOUNT_ID);
   });
 
   it("renames a named account without changing its identity or order", () => {
@@ -159,24 +166,17 @@ describe("provider accounts", () => {
     ]);
   });
 
-  it("removes named account metadata and every project selection", () => {
+  it("removes named account metadata", () => {
     const work = {
       id: "account-work",
       provider: "claude" as const,
       label: "Work",
     };
     saveProviderAccount(work);
-    selectProviderAccount("claude", "/repo/one", work.id);
-    selectProviderAccount("claude", "/repo/two", work.id);
 
     expect(removeProviderAccount("claude", work.id)).toBe(true);
     expect(providerAccountExists("claude", work.id)).toBe(false);
-    expect(selectedProviderAccountId("claude", "/repo/one")).toBe(
-      DEFAULT_PROVIDER_ACCOUNT_ID,
-    );
-    expect(selectedProviderAccountId("claude", "/repo/two")).toBe(
-      DEFAULT_PROVIDER_ACCOUNT_ID,
-    );
+    expect(defaultProviderAccountId("claude")).toBe(DEFAULT_PROVIDER_ACCOUNT_ID);
   });
 
   it("removes the CLI profile without recreating it from legacy storage", () => {
@@ -193,26 +193,24 @@ describe("provider accounts", () => {
     expect(providerAccounts("codex")).toEqual([
       { id: "account-new", provider: "codex", label: "New", isDefault: true },
     ]);
-    expect(selectedProviderAccountId("codex", "/repo")).toBe("account-new");
+    expect(defaultProviderAccountId("codex")).toBe("account-new");
   });
 
-  it("uses the assigned default for unselected projects and preserves explicit selections", () => {
+  it("uses the assigned default for sessions without a choice", () => {
     saveProviderAccount({
       id: "account-work",
       provider: "codex",
       label: "Work",
     });
-    selectProviderAccount("codex", "/explicit", "default");
     setDefaultProviderAccount("codex", "account-work");
-    expect(selectedProviderAccountId("codex", "/new")).toBe("account-work");
-    expect(selectedProviderAccountId("codex", "/explicit")).toBe("default");
+    expect(defaultProviderAccountId("codex")).toBe("account-work");
     expect(
       providerAccounts("codex")
         .filter((entry) => entry.isDefault)
         .map((entry) => entry.id),
     ).toEqual(["account-work"]);
     removeProviderAccount("codex", "account-work");
-    expect(selectedProviderAccountId("codex", "/new")).toBe("default");
+    expect(defaultProviderAccountId("codex")).toBe("default");
   });
 
   it("reports persistence failures instead of announcing success", () => {
@@ -241,5 +239,95 @@ describe("provider accounts", () => {
     removeProviderAccount("claude", "account-work");
 
     expect(providerAccounts("claude")[0]?.label).toBe("Primary");
+  });
+
+  it("persists an account colour and keeps it across renames and saves", () => {
+    saveProviderAccount({ id: "account-work", provider: "claude", label: "Work" });
+    expect(setProviderAccountColor("claude", "account-work", "teal")).toBe(true);
+    expect(
+      providerAccounts("claude").find((entry) => entry.id === "account-work")
+        ?.color,
+    ).toBe("teal");
+    renameProviderAccount("claude", "account-work", "Work 2");
+    saveProviderAccount({ id: "account-work", provider: "claude", label: "Work 3" });
+    const work = providerAccounts("claude").find(
+      (entry) => entry.id === "account-work",
+    );
+    expect(work).toMatchObject({ label: "Work 3", color: "teal" });
+    setProviderAccountColor("claude", "account-work", undefined);
+    expect(
+      providerAccounts("claude").find((entry) => entry.id === "account-work")
+        ?.color,
+    ).toBeUndefined();
+  });
+
+  it("colours the implicit default account without breaking default logic", () => {
+    saveProviderAccount({ id: "account-work", provider: "codex", label: "Work" });
+    localStorage.removeItem("monocode.providerAccounts.v2");
+    localStorage.setItem(
+      "monocode.providerAccounts.v1",
+      JSON.stringify({
+        codex: [
+          { id: "default", provider: "codex", label: "Personal" },
+          { id: "account-work", provider: "codex", label: "Work" },
+        ],
+      }),
+    );
+
+    expect(setProviderAccountColor("codex", "default", "pink")).toBe(true);
+    expect(providerAccounts("codex")).toEqual([
+      {
+        id: "default",
+        provider: "codex",
+        label: "Personal",
+        isDefault: true,
+        color: "pink",
+      },
+      { id: "account-work", provider: "codex", label: "Work" },
+    ]);
+    expect(defaultProviderAccountId("codex")).toBe("default");
+    expect(sessionProviderAccountId("codex", {})).toBe("default");
+    // Still switchable and removable afterwards.
+    setDefaultProviderAccount("codex", "account-work");
+    expect(defaultProviderAccountId("codex")).toBe("account-work");
+    expect(providerAccounts("codex")[0]?.color).toBe("pink");
+  });
+
+  it("rejects unknown accounts and colours", () => {
+    expect(setProviderAccountColor("claude", "account-missing", "blue")).toBe(
+      false,
+    );
+    expect(
+      setProviderAccountColor("claude", "default", "chartreuse" as never),
+    ).toBe(false);
+    localStorage.setItem(
+      "monocode.providerAccounts.v2",
+      JSON.stringify({
+        claude: [
+          { id: "default", provider: "claude", label: "A", isDefault: true, color: "nope" },
+        ],
+      }),
+    );
+    expect(providerAccounts("claude")[0]?.color).toBeUndefined();
+  });
+
+  it("derives a stable fallback colour per account id", () => {
+    const first = providerAccountColor({ id: "account-a", provider: "claude" });
+    expect(providerAccountColor({ id: "account-a", provider: "claude" })).toBe(
+      first,
+    );
+    expect(PROVIDER_ACCOUNT_COLORS).toContain(first);
+    expect(
+      providerAccountColor({ id: "default", provider: "claude" }),
+    ).toBe(providerAccountColor({ id: "default", provider: "claude" }));
+    const ids = Array.from({ length: 40 }, (_, index) => `account-${index}`);
+    const used = new Set(
+      ids.map((id) => providerAccountColor({ id, provider: "codex" }).id),
+    );
+    expect(used.size).toBeGreaterThan(3);
+    expect(
+      providerAccountColor({ id: "account-a", provider: "claude", color: "slate" })
+        .id,
+    ).toBe("slate");
   });
 });
