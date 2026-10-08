@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useMemo, useState } from "react";
 import {
   gitConflictStages,
@@ -32,6 +33,7 @@ type Load =
  * Resolving happens in the editor or from the row; nothing here writes.
  */
 export function GitConflictCompare({ cwd, relative, onClose }: Props) {
+  useLocale();
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [pair, setPair] = useState<CompareId>("sides");
   const [retry, setRetry] = useState(0);
@@ -102,7 +104,7 @@ export function GitConflictCompare({ cwd, relative, onClose }: Props) {
       toolbar={
         <div
           role="tablist"
-          aria-label="Versions to compare"
+          aria-label={t("Versions to compare")}
           className="flex items-center gap-1"
         >
           {comparisons.map((entry) => (
@@ -129,7 +131,7 @@ export function GitConflictCompare({ cwd, relative, onClose }: Props) {
       {load.status === "loading" ? (
         <div
           role="status"
-          aria-label="Loading conflict versions"
+          aria-label={t("Loading conflict versions")}
           className="grid flex-1 place-items-center text-content/40"
         >
           <Loader className="size-4 animate-spin" strokeWidth={1.75} />
@@ -138,12 +140,10 @@ export function GitConflictCompare({ cwd, relative, onClose }: Props) {
         <div className="grid flex-1 place-items-center p-6 text-center">
           <div>
             <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
-            <p className="text-[13px] text-content">
-              Couldn’t load the versions
-            </p>
+            <p className="text-[13px] text-content">{t("Couldn’t load the versions")}</p>
             <p className="mt-1 text-[12px] text-content/50">{load.message}</p>
             <GitFeedback
-              title="Conflict versions unavailable"
+              title={t("Conflict versions unavailable")}
               onRetry={() => setRetry((value) => value + 1)}
             />
           </div>

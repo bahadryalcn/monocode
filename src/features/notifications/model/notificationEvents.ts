@@ -1,3 +1,4 @@
+import { t } from "../../../shared/i18n";
 /** Which moments notify, and whether the taskbar button signals them. */
 export type NotificationEventSetting =
   "finished" | "input" | "failed" | "taskbar";
@@ -9,24 +10,23 @@ export const NOTIFICATION_EVENT_SETTINGS: ReadonlyArray<{
 }> = [
   {
     id: "finished",
-    label: "Agent finished",
-    description: "A turn ended, or only background commands are left running.",
+    get label() { return t("Agent finished"); },
+    get description() { return t("A turn ended, or only background commands are left running."); },
   },
   {
     id: "input",
-    label: "Needs your input",
-    description: "An approval or a question is waiting.",
+    get label() { return t("Needs your input"); },
+    get description() { return t("An approval or a question is waiting."); },
   },
   {
     id: "failed",
-    label: "Failed or usage limit",
-    description: "A turn errored or the provider's usage limit was reached.",
+    get label() { return t("Failed or usage limit"); },
+    get description() { return t("A turn errored or the provider's usage limit was reached."); },
   },
   {
     id: "taskbar",
-    label: "Taskbar badge and flash",
-    description:
-      "On Windows, count sessions that need you on the taskbar button.",
+    get label() { return t("Taskbar badge and flash"); },
+    get description() { return t("On Windows, count sessions that need you on the taskbar button."); },
   },
 ];
 

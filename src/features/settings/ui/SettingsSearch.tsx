@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { Search, X } from "../../../shared/ui/icons";
 import {
   useEffect,
@@ -22,12 +23,13 @@ export function SettingsSearch({
 }: {
   onReveal: (section: SettingsSectionId, settingId: string | null) => void;
 }) {
+  const locale = useLocale();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const listId = useId();
-  const results = useMemo(() => searchSettings(query), [query]);
+  const results = useMemo(() => searchSettings(query), [query, locale]);
   const open = query.trim().length > 0;
 
   useEffect(() => setActive(0), [query]);
@@ -66,8 +68,8 @@ export function SettingsSearch({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Search settings"
-          aria-label="Search settings"
+          placeholder={t("Search settings")}
+          aria-label={t("Search settings")}
           aria-expanded={open}
           aria-controls={listId}
           aria-autocomplete="list"
@@ -79,7 +81,7 @@ export function SettingsSearch({
         {query ? (
           <button
             type="button"
-            aria-label="Clear settings search"
+            aria-label={t("Clear settings search")}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
               setQuery("");
@@ -104,13 +106,11 @@ export function SettingsSearch({
           }}
           id={listId}
           role="listbox"
-          aria-label="Settings search results"
+          aria-label={t("Settings search results")}
           className="overflow-y-auto overscroll-contain p-1"
         >
           {results.length === 0 ? (
-            <p className="px-2 py-1.5 text-[12px] text-content/45">
-              No matching settings
-            </p>
+            <p className="px-2 py-1.5 text-[12px] text-content/45">{t("No matching settings")}</p>
           ) : (
             results.map((result, index) => (
               <button
@@ -130,7 +130,7 @@ export function SettingsSearch({
               >
                 <span className="min-w-0 flex-1 truncate">{result.label}</span>
                 <span className="shrink-0 text-[11px] text-content/40">
-                  {result.settingId ? result.sectionLabel : "Page"}
+                  {result.settingId ? result.sectionLabel : t("Page")}
                 </span>
               </button>
             ))

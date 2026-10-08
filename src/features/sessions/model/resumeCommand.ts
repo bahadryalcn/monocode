@@ -1,3 +1,4 @@
+import { t } from "../../../shared/i18n";
 import type { BuiltinSkill } from "../../skills/model/skills";
 
 /**
@@ -10,8 +11,7 @@ export const RESUME_COMMAND: BuiltinSkill = {
   kind: "builtin",
   name: "resume",
   invocation: "resume",
-  description:
-    "Import and continue a Claude Code or Codex conversation in this project.",
+  get description() { return t("Import and continue a Claude Code or Codex conversation in this project."); },
   scope: "builtin",
   source: "monocode",
 };

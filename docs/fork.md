@@ -1,24 +1,24 @@
-# İmece bağımsız ürün kimliği
+# imc code bağımsız ürün kimliği
 
-İmece, [MonoCode by Nick](https://github.com/hardbeat920/monocode) kod tabanından türetilmiştir. MIT lisansı, telif bildirimleri ve upstream katkıların atıfları korunur.
+imc code, [MonoCode by Nick](https://github.com/hardbeat920/monocode) kod tabanından türetilmiştir. MIT lisansı, telif bildirimleri ve upstream katkıların atıfları korunur.
 
-| Alan | İmece |
+| Alan | imc code |
 | --- | --- |
-| Görünür marka | İmece |
-| Kurulum paket adı | Imece |
+| Görünür marka | imc code |
+| Kurulum paket adı | imc code |
 | Bundle kimliği | `com.imece.desktop` |
 | Geliştirme kimliği | `com.imece.desktop.dev` |
-| Windows kurulum dizini | `%LOCALAPPDATA%\Imece` |
-| Mac bundle | `/Applications/Imece.app` |
+| Windows kurulum dizini | `%LOCALAPPDATA%\imc code` |
+| Mac bundle | `/Applications/imc code.app` |
 | Host dizini | `~/.imece-host` |
 | Mac host servisi | `com.imece.host` |
 | Linux host servisi | `imece-host.service` |
 | Windows host görevi | `Imece Host-<SID>` |
 | Varsayılan host portu | `3775` |
 
-İmece eski MonoCode servislerini, kimlik bilgilerini ve kullanıcı verilerini otomatik taşımaz. Windows masaüstü verileri `%APPDATA%\com.imece.desktop`, Mac verileri `~/Library/Application Support/com.imece.desktop` altında tutulur. Rust executable adı ve bazı veri dosyası/protokol anahtarları iç uyumluluk için korunur.
+imc code eski MonoCode servislerini, kimlik bilgilerini ve kullanıcı verilerini otomatik taşımaz. Windows masaüstü verileri `%APPDATA%\com.imece.desktop`, Mac verileri `~/Library/Application Support/com.imece.desktop` altında tutulur. Rust executable adı ve bazı veri dosyası/protokol anahtarları iç uyumluluk için korunur.
 
-Yerel Windows/Mac build ve kurulum için [paylaşılan koordinatörü](local-update.md) kullanın. Windows artefaktı `target/release/bundle/nsis/Imece_<version>_x64-setup.exe` olur. Geliştirme, installer ve host paketleri bağımsız kimlik taşır.
+Yerel Windows/Mac build ve kurulum için [paylaşılan koordinatörü](local-update.md) kullanın. Windows artefaktı `target/release/bundle/nsis/imc code_<version>_x64-setup.exe` olur. Geliştirme, installer ve host paketleri bağımsız kimlik taşır.
 
 ## Yayın ve updater
 

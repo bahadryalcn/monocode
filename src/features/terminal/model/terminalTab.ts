@@ -22,6 +22,21 @@ export function defaultTerminalTitle(cwd: string): string {
   return name;
 }
 
+/** General terminal commands follow the active session's available worktree. */
+export function newTerminalCwd({
+  activeFile,
+  session,
+  fallback,
+}: {
+  activeFile?: Pick<FilePaneTab, "cwd">;
+  session?: { cwd: string; worktreeCwd?: string; worktreeRemoved?: boolean };
+  fallback: string;
+}): string {
+  if (session?.worktreeCwd && !session.worktreeRemoved)
+    return session.worktreeCwd;
+  return activeFile?.cwd ?? session?.cwd ?? fallback;
+}
+
 /** Tab label: dynamic title (process or directory) stored on `path`. */
 export function terminalTabLabel(file: FilePaneTab): string {
   return file.path?.trim() || defaultTerminalTitle(file.cwd);

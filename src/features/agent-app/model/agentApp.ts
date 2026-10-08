@@ -30,6 +30,7 @@ import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
 import { pathKey } from "../../../shared/lib/paths";
 import type { SplitDir } from "../../workspace/model/layout";
+import type { HtmlArtifactSummary } from "../../artifacts/types";
 import { consumeOperatorCommand } from "../../sessions/model/operatorCommand";
 import {
   sessionConversationPage,
@@ -78,6 +79,7 @@ export type AgentAppHost = {
   notes(): Promise<Note[]>;
   note(id: string): Promise<Note | null>;
   saveNote(note: NoteUpsert): Promise<Note>;
+  publishHtml?(source: Session, input: { title: string; path: string; messageId?: string; requestId: string }): Promise<HtmlArtifactSummary>;
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -115,6 +117,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["notes.list", ["limit", "offset"]],
   ["notes.read", ["id"]],
   ["notes.write", ["id", "title", "body", "tags"]],
+  ["html_artifact_publish", ["title", "path", "messageId"]],
 ]);
 
 const WAIT_POLL_MS = 500;
@@ -213,7 +216,7 @@ function startLaunch(
     throw new Error("Unknown harness; run models.list for available providers");
   const chosenHarness = harness as HarnessId;
   if (!isHarnessAvailable(chosenHarness))
-    throw new Error(`${chosenHarness} is not available in imc`);
+    throw new Error(`${chosenHarness} is not available in imc code`);
   const requestedModel = optionalString(input.model, "model");
   const model = requestedModel
     ? modelsFor(chosenHarness).find((entry) => entry.id === requestedModel)
@@ -300,6 +303,15 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, input);
   switch (action) {
+    case "html_artifact_publish": {
+      requireProject(source);
+      if (!host.publishHtml) throw new Error("HTML publishing is unavailable on this app host");
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId)) throw new Error("Invalid request ID");
+      const title = requiredString(input.title, "title", 200);
+      const path = requiredString(input.path, "path", 4096);
+      const messageId = optionalString(input.messageId, "messageId", 128);
+      return host.publishHtml(source, { title, path, messageId, requestId });
+    }
     case "models.list":
       return {
         runtimeModes: RUNTIME_MODES.map((id) => ({

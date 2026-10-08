@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useCallback, useState } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronRight, Plus } from "../../../shared/ui/icons";
@@ -60,6 +61,7 @@ export function GitStashSection({
   hasChanges,
   onOpenCommit,
 }: Props) {
+  useLocale();
   const supported = useRemoteSupports(cwd, GIT_ACTIONS) === true;
   const active = enabled && !!cwd && cwd !== "~" && supported;
   const [open, setOpen] = useState(stashOpen);
@@ -80,12 +82,12 @@ export function GitStashSection({
       await withGitOperation(cwd, "Updating stash…", work);
       setGitFeedback(cwd, {
         kind: "success",
-        title: "Stash operation complete",
+        get title() { return t("Stash operation complete"); },
       });
     } catch (error) {
       setGitFeedback(cwd, {
         kind: "error",
-        title: "Couldn’t update stash",
+        get title() { return t("Couldn’t update stash"); },
         detail: errorText(error),
       });
     } finally {
@@ -124,17 +126,15 @@ export function GitStashSection({
               strokeWidth={1.75}
             />
           )}
-          <span className="min-w-0 truncate text-[10px] font-semibold tracking-[0.04em] text-content/55 uppercase">
-            Stashes
-          </span>
+          <span className="min-w-0 truncate text-[10px] font-semibold tracking-[0.04em] text-content/55 uppercase">{t("Stashes")}</span>
           <span className="text-[10px] tabular-nums text-content/40">
             {entries.length}
           </span>
         </button>
         <button
           type="button"
-          title="Stash all changes, including untracked files"
-          aria-label="Stash all changes"
+          title={t("Stash all changes, including untracked files")}
+          aria-label={t("Stash all changes")}
           disabled={!!busy || !hasChanges}
           onClick={() => void run(() => gitStash(cwd))}
           className="grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content disabled:opacity-40"
@@ -144,7 +144,7 @@ export function GitStashSection({
       </div>
       {error ? (
         <GitFeedback
-          title="Couldn’t load stashes"
+          title={t("Couldn’t load stashes")}
           detail={error}
           stale={data !== null}
           onRetry={refresh}
@@ -155,7 +155,7 @@ export function GitStashSection({
       ) : null}
       {open ? (
         entries.length === 0 && !loading && !error ? (
-          <p className="px-3 pb-2 text-[12px] text-content/45">No stashes</p>
+          <p className="px-3 pb-2 text-[12px] text-content/45">{t("No stashes")}</p>
         ) : (
           <ul className="max-h-40 overflow-y-auto pb-1">
             {entries.map((entry) => (
@@ -174,33 +174,27 @@ export function GitStashSection({
                 <button
                   type="button"
                   disabled={!!busy}
-                  title="Apply and keep the stash"
+                  title={t("Apply and keep the stash")}
                   onClick={() =>
                     void run(() => gitStashAction(cwd, "apply", entry.index))
                   }
                   className={ACTION}
-                >
-                  Apply
-                </button>
+                >{t("Apply")}</button>
                 <button
                   type="button"
                   disabled={!!busy}
-                  title="Apply and remove the stash"
+                  title={t("Apply and remove the stash")}
                   onClick={() =>
                     void run(() => gitStashAction(cwd, "pop", entry.index))
                   }
                   className={ACTION}
-                >
-                  Pop
-                </button>
+                >{t("Pop")}</button>
                 <button
                   type="button"
                   disabled={!!busy}
                   onClick={() => void drop(entry)}
                   className={ACTION}
-                >
-                  Drop
-                </button>
+                >{t("Drop")}</button>
               </li>
             ))}
           </ul>

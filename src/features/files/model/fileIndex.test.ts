@@ -257,6 +257,73 @@ describe("loadProjectFiles", () => {
     expect(await second).toEqual(files);
   });
 
+  it("keeps both worktree indexes during repeated tab switches", async () => {
+    const other = "/Users/me/project-worktree";
+    const otherFiles = [{ ...extra, path: `${other}/pasted.ts` }];
+    list.mockImplementation(async (path) =>
+      path === cwd ? files : otherFiles,
+    );
+
+    for (let index = 0; index < 10; index++) {
+      expect(await loadProjectFiles(cwd)).toBe(files);
+      expect(await loadProjectFiles(other)).toBe(otherFiles);
+    }
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(peekProjectFiles(cwd)).toBe(files);
+    expect(peekProjectFiles(other)).toBe(otherFiles);
+  });
+
+  it("lets scans for separate worktrees finish independently", async () => {
+    const other = "/Users/me/project-worktree";
+    const first = deferred<ProjectFile[]>();
+    const second = deferred<ProjectFile[]>();
+    list.mockImplementationOnce(() => first.promise);
+    list.mockImplementationOnce(() => second.promise);
+    const firstScan = loadProjectFiles(cwd);
+    const secondScan = loadProjectFiles(other);
+    expect(loadProjectFiles(cwd)).toBe(firstScan);
+    expect(loadProjectFiles(other)).toBe(secondScan);
+    first.resolve(files);
+    second.resolve([extra]);
+    await Promise.all([firstScan, secondScan]);
+    expect(peekProjectFiles(cwd)).toBe(files);
+    expect(peekProjectFiles(other)).toEqual([extra]);
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidates one worktree without evicting or cancelling another", async () => {
+    const other = "/Users/me/project-worktree";
+    await loadProjectFiles(cwd);
+    await loadProjectFiles(other);
+    invalidateProjectFiles(cwd);
+    expect(peekProjectFiles(cwd)).toBeNull();
+    expect(await loadProjectFiles(other)).toBe(files);
+    expect(list).toHaveBeenCalledTimes(2);
+    await loadProjectFiles(cwd);
+    expect(list).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not let an invalidated scan restore its old listing", async () => {
+    const pending = deferred<ProjectFile[]>();
+    list.mockImplementationOnce(() => pending.promise);
+    const scan = loadProjectFiles(cwd);
+    invalidateProjectFiles(cwd);
+    pending.resolve(files);
+    await scan;
+    expect(peekProjectFiles(cwd)).toBeNull();
+  });
+
+  it("bounds retained worktrees and keeps recently revisited ones", async () => {
+    for (let index = 0; index < 8; index++) {
+      await loadProjectFiles(`/repo/tree-${index}`);
+    }
+    await loadProjectFiles("/repo/tree-0");
+    await loadProjectFiles("/repo/tree-8");
+    expect(peekProjectFiles("/repo/tree-0")).toBe(files);
+    expect(peekProjectFiles("/repo/tree-1")).toBeNull();
+    expect(list).toHaveBeenCalledTimes(9);
+  });
+
   it("notifies subscribers when the listing changes", async () => {
     const onChange = vi.fn();
     const stop = subscribeProjectFiles(onChange);

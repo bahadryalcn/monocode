@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import {
   AlertCircle,
@@ -233,6 +234,7 @@ export function ProjectRail({
   onOpenWhatsNew,
   onDismissUpdate,
 }: Props) {
+  useLocale();
   const resize = useDragResize({
     min: IS_MAC ? PROJECT_RAIL_MAC_MIN : PROJECT_RAIL_WIDTH_MIN,
     max: () =>
@@ -526,7 +528,7 @@ export function ProjectRail({
     pinned:
       pinnedProjects.length > 0 ? (
         <ProjectSection
-          label="Pinned"
+          label={t("Pinned")}
           items={pinnedProjects}
           muteStatuses={muteStatuses}
           cwd={cwd}
@@ -554,7 +556,7 @@ export function ProjectRail({
           className="reorder-item rail-reorder-block mb-2 shrink-0"
         >
           <ProjectSectionHeader
-            label="Groups"
+            label={t("Groups")}
             drag={rail.drag("groups")}
             onAddGroup={(x, y) => projectMenu.createGroup(x, y)}
           />
@@ -602,7 +604,7 @@ export function ProjectRail({
       ) : null,
     projects: (
       <ProjectSection
-        label="Projects"
+        label={t("Projects")}
         items={groupedProjectSections.ungrouped}
         muteStatuses={muteStatuses}
         emptyLabel={
@@ -635,7 +637,7 @@ export function ProjectRail({
   return (
     <nav
       ref={resize.setPaneRef}
-      aria-label="Projects"
+      aria-label={t("Projects")}
       className={`imece-project-rail sidebar-glass relative shrink-0 flex-col border-r border-stroke ${visible ? "flex" : "hidden"}`}
     >
       <div
@@ -673,14 +675,12 @@ export function ProjectRail({
           type="button"
           className="imece-settings-return"
           onClick={() => onCloseSettings?.()}
-        >
-          Back to workspace
-        </button>
+        >{t("Back to workspace")}</button>
       ) : (
         <>
           <div className="imece-rail-tools shrink-0">
             <RailSearch
-              label="Search"
+              label={t("Search")}
               icon={Search}
               onClick={onSearch}
               active={searchActive}
@@ -710,7 +710,7 @@ export function ProjectRail({
             />
             <div className="mt-0.5" />
             <RailAction
-              label="Inbox"
+              label={t("Inbox")}
               icon={Inbox}
               onClick={onOpenInbox}
               onOpenContextMenu={(x, y) => {
@@ -727,7 +727,7 @@ export function ProjectRail({
             />
             {notesEnabled ? (
               <RailAction
-                label="Notes"
+                label={t("Notes")}
                 icon={File}
                 onClick={onOpenNotes}
                 active={notesActive}
@@ -735,14 +735,14 @@ export function ProjectRail({
               />
             ) : null}
             <RailAction
-              label="Automations"
+              label={t("Automations")}
               icon={Zap}
               onClick={onOpenAutomations}
               active={automationsActive}
               ariaLabel="Automations"
             />
             <RailAction
-              label="Tasks"
+              label={t("Tasks")}
               icon={DashboardSquare}
               onClick={onOpenTasks}
               active={tasksActive}
@@ -774,7 +774,7 @@ export function ProjectRail({
             </div>
             <div className="flex items-center gap-1 @max-[140px]/rail:flex-col">
               <RailAction
-                label="Settings"
+                label={t("Settings")}
                 icon={Settings}
                 onClick={onOpenSettings}
                 shortcut={`${MOD},`}
@@ -782,8 +782,8 @@ export function ProjectRail({
               />
               <button
                 type="button"
-                aria-label="Manage hidden groups"
-                title="Manage hidden groups"
+                aria-label={t("Manage hidden groups")}
+                title={t("Manage hidden groups")}
                 disabled={!onOpenSettings || !onSelectSettingsSection}
                 onClick={() => {
                   onOpenSettings?.();
@@ -814,7 +814,7 @@ export function ProjectRail({
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize project sidebar"
+        aria-label={t("Resize project sidebar")}
         aria-valuenow={resize.width}
         aria-valuemin={PROJECT_RAIL_WIDTH_MIN}
         aria-valuemax={PROJECT_RAIL_WIDTH_MAX}
@@ -880,6 +880,7 @@ function ProjectSection({
   groupLogos: ReturnType<typeof useTabGroupLogos>;
   groupMascots: Record<string, string>;
 }) {
+  useLocale();
   return (
     <div
       ref={drag.setRef}
@@ -923,8 +924,8 @@ function ProjectSection({
                   title={remoteOnlyProjectHint(project, match)}
                   aria-label={
                     match
-                      ? `${project.name}, on ${match.target.name}. Open there`
-                      : `${project.name}, on a machine that is not connected`
+                      ? t("{p0}, on {p1}. Open there", { p0: project.name, p1: match.target.name })
+                      : t("{p0}, on a machine that is not connected", { p0: project.name })
                   }
                   onClick={() => void onOpenSynced(project.projectId, project.name)}
                   className="flex h-8 min-w-0 cursor-default items-center gap-2 rounded-md px-2 text-left opacity-40 hover:bg-content/8 hover:opacity-70 @max-[140px]/rail:justify-center @max-[140px]/rail:px-0"
@@ -951,12 +952,13 @@ function ProjectSectionHeader({
   onAdd?: () => void;
   onAddGroup?: (x: number, y: number) => void;
 }) {
+  useLocale();
   return (
     <div
       {...drag.headerProps}
       tabIndex={0}
       aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-      title="Drag to reorder"
+      title={t("Drag to reorder")}
       className={`${RAIL_SECTION_HEADER} ${RAIL_DRAG_HANDLE} rounded-md outline-none focus-visible:bg-content/8 @max-[140px]/rail:justify-center @max-[140px]/rail:px-0`}
     >
       <span className="min-w-0 flex-1 truncate px-1 text-xs font-medium text-content/70 @max-[140px]/rail:hidden">
@@ -966,8 +968,8 @@ function ProjectSectionHeader({
         <button
           type="button"
           data-no-drag
-          title="New project group"
-          aria-label="New project group"
+          title={t("New project group")}
+          aria-label={t("New project group")}
           onClick={(event) => {
             const rect = event.currentTarget.getBoundingClientRect();
             onAddGroup(rect.left, rect.bottom);
@@ -1034,6 +1036,7 @@ function ProjectGroupSection({
   groupLogos: ReturnType<typeof useTabGroupLogos>;
   groupMascots: Record<string, string>;
 }) {
+  useLocale();
   const sortable = useAnimatedReorder(
     items.map((item) => item.path),
     onReorder,
@@ -1137,8 +1140,8 @@ function ProjectGroupSection({
         <button
           type="button"
           aria-expanded={expanded}
-          aria-label={locked ? `${group.name}, locked` : `${group.name}, ${countLabel}`}
-          title={locked ? `${group.name} · Locked` : `${group.name} · ${countLabel}`}
+          aria-label={locked ? t("{p0}, locked", { p0: group.name }) : `${group.name}, ${countLabel}`}
+          title={locked ? t("{p0} · Locked", { p0: group.name }) : `${group.name} · ${countLabel}`}
           onClick={onToggleCollapsed}
           className="flex min-w-0 flex-1 cursor-grab items-center gap-2 text-left @max-[140px]/rail:justify-center"
         >
@@ -1176,14 +1179,13 @@ function ProjectGroupSection({
               role="img"
               aria-label={
                 linkStatus
-                  ? `Linked workspace file problem: ${linkStatus.message}`
-                  : `Linked to ${group.workspaceFile}`
+                  ? t("Linked workspace file problem: {p0}", { p0: linkStatus.message })
+                  : t("Linked to {p0}", { p0: group.workspaceFile })
               }
               title={
                 linkStatus
-                  ? `${linkStatus.message}
-The group was left as it is.`
-                  : `Linked to ${group.workspaceFile}`
+                  ? t("{p0}\nThe group was left as it is.", { p0: linkStatus.message })
+                  : t("Linked to {p0}", { p0: group.workspaceFile })
               }
               className={`grid size-4 shrink-0 place-items-center ${
                 linkStatus ? "text-amber-400" : "text-content/45"
@@ -1204,7 +1206,7 @@ The group was left as it is.`
             type="button"
             data-no-drag
             title={gitTitle}
-            aria-label={`${group.name} git overview, ${gitTitle}`}
+            aria-label={t("{p0} git overview, {p1}", { p0: group.name, p1: gitTitle })}
             aria-haspopup="dialog"
             aria-expanded={overviewOpen}
             onPointerDown={(event) => event.stopPropagation()}
@@ -1223,8 +1225,8 @@ The group was left as it is.`
         <button
           type="button"
           data-no-drag
-          title={locked ? "Unlock…" : "Lock group"}
-          aria-label={locked ? `Unlock ${group.name}` : `Lock ${group.name}`}
+          title={locked ? t("Unlock…") : t("Lock group")}
+          aria-label={locked ? t("Unlock {p0}", { p0: group.name }) : t("Lock {p0}", { p0: group.name })}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
@@ -1260,8 +1262,8 @@ The group was left as it is.`
         <button
           type="button"
           data-no-drag
-          title="Group options"
-          aria-label={`${group.name} group options`}
+          title={t("Group options")}
+          aria-label={t("{p0} group options", { p0: group.name })}
           aria-haspopup="menu"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
@@ -1363,6 +1365,7 @@ function ProjectCard({
   groupLogos: ReturnType<typeof useTabGroupLogos>;
   groupMascots: Record<string, string>;
 }) {
+  useLocale();
   const fallbackName = basename(item.path);
   const key = projectKey(item.path);
   const seed = projectName(item.path);
@@ -1473,8 +1476,8 @@ function ProjectCard({
           <span
             data-project-working-indicator
             role="img"
-            aria-label="Working"
-            title="Working"
+            aria-label={t("Working")}
+            title={t("Working")}
             className="shrink-0 text-accent @max-[140px]/rail:hidden"
           >
             <TerminalSpinner />
@@ -1500,9 +1503,8 @@ function ProjectCard({
         {remote ? (
           <span
             role={reconnectable ? "button" : "img"}
-            aria-label={reconnectable ? `${connection} Reconnect machine` : connection}
-            title={reconnectable ? `${connection}
-Click to reconnect` : undefined}
+            aria-label={reconnectable ? t("{p0} Reconnect machine", { p0: connection }) : connection}
+            title={reconnectable ? t("{p0}\nClick to reconnect", { p0: connection }) : undefined}
             data-no-drag={reconnectable ? "" : undefined}
             onPointerDown={reconnectable ? (event) => event.stopPropagation() : undefined}
             onClick={
@@ -1550,8 +1552,8 @@ Click to reconnect` : undefined}
       <button
         type="button"
         data-no-drag
-        title="Project options"
-        aria-label="Project options"
+        title={t("Project options")}
+        aria-label={t("Project options")}
         aria-haspopup="menu"
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
@@ -1570,8 +1572,8 @@ Click to reconnect` : undefined}
       <button
         type="button"
         data-no-drag
-        title={pinned ? "Unpin project" : "Pin project"}
-        aria-label={pinned ? "Unpin project" : "Pin project"}
+        title={pinned ? t("Unpin project") : t("Pin project")}
+        aria-label={pinned ? t("Unpin project") : t("Pin project")}
         onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => {
           event.stopPropagation();
@@ -1607,12 +1609,13 @@ function CompactLiveAgents({
   groupCustomColors: Record<string, string>;
   groupMascots: Record<string, string>;
 }) {
+  useLocale();
   if (!shouldShowLiveAgents(agents, activeSessionId)) return null;
   const working = agents.filter((agent) => !agent.done).length;
   const heading = working > 0 ? "Working" : "Finished";
   return (
     <section
-      aria-label={`${heading} agents`}
+      aria-label={t("{p0} agents", { p0: heading })}
       className="hidden shrink-0 flex-col items-center gap-px px-2 pb-1 @max-[140px]/rail:flex"
     >
       <div
@@ -1691,6 +1694,7 @@ function ProjectDiffStat({
   additions: number;
   deletions: number;
 }) {
+  useLocale();
   if (additions <= 0 && deletions <= 0) return null;
 
   const label = [
@@ -1702,7 +1706,7 @@ function ProjectDiffStat({
 
   return (
     <span
-      title={`${label} uncommitted`}
+      title={t("{p0} uncommitted", { p0: label })}
       className="flex shrink-0 items-center gap-1 font-sans text-[11px] font-semibold tabular-nums"
     >
       {additions > 0 ? (
@@ -1760,6 +1764,7 @@ function projectCardAriaLabel(
 
 /** Adds a folder on this computer, or one on a connected machine. */
 function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
+  useLocale();
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const item =
@@ -1770,8 +1775,8 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
         ref={anchor}
         type="button"
         data-no-drag
-        title="Open project"
-        aria-label="Open project"
+        title={t("Open project")}
+        aria-label={t("Open project")}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
@@ -1786,7 +1791,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
           width={290}
           onDismiss={() => setOpen(false)}
           role="menu"
-          aria-label="Open project"
+          aria-label={t("Open project")}
           className="p-1"
         >
           <button
@@ -1798,9 +1803,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
               onOpenFolder();
             }}
           >
-            <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />
-            Open folder…
-          </button>
+            <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />{t("Open folder…")}</button>
           <button
             type="button"
             role="menuitem"
@@ -1810,9 +1813,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
               window.dispatchEvent(new Event(OPEN_CODE_WORKSPACE_EVENT));
             }}
           >
-            <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />
-            Open VS Code workspace…
-          </button>
+            <FolderPlus className="size-3.5 shrink-0" strokeWidth={1.75} />{t("Open VS Code workspace…")}</button>
           <button
             type="button"
             role="menuitem"
@@ -1822,9 +1823,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
               window.dispatchEvent(new Event(OPEN_REMOTE_PROJECT_EVENT));
             }}
           >
-            <Internet className="size-3.5 shrink-0" strokeWidth={1.75} />
-            Open folder on a machine…
-          </button>
+            <Internet className="size-3.5 shrink-0" strokeWidth={1.75} />{t("Open folder on a machine…")}</button>
           <button
             type="button"
             role="menuitem"
@@ -1834,9 +1833,7 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
               window.dispatchEvent(new Event(OPEN_SESSION_IMPORT_EVENT));
             }}
           >
-            <Archive className="size-3.5 shrink-0" strokeWidth={1.75} />
-            Import Claude Code / Codex sessions…
-          </button>
+            <Archive className="size-3.5 shrink-0" strokeWidth={1.75} />{t("Import Claude Code / Codex sessions…")}</button>
         </Popover>
       ) : null}
     </>

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
 import { TemplatesSettings } from "./TemplatesSettings";
 
@@ -50,6 +51,7 @@ import { AppearancePage } from "./AppearanceSettings";
 import { KeybindingsPage } from "./ShortcutSettings";
 import { TerminalPage } from "./TerminalSettings";
 import { ProvidersPage } from "./ProviderSettings";
+import { GenericAcpSettings } from "../../providers/ui/GenericAcpSettings";
 import { UsagePage } from "../../usage/ui/UsagePage";
 import { ArchivePage } from "./ArchiveSettings";
 import { RemoteReconnectGroup } from "./ConnectionRecoverySettings";
@@ -115,6 +117,7 @@ export function SettingsView({
   collapsedProjectRailMode,
   onCollapsedProjectRailModeChange,
 }: Props) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const panelId = useId();
   const categoryRefs = useRef(new Map<SettingsSectionId, HTMLButtonElement>());
@@ -169,7 +172,7 @@ export function SettingsView({
   return (
     <div
       role="region"
-      aria-label="Settings"
+      aria-label={t("Settings")}
       data-app-settings
       className="imece-settings imece-settings-workbench flex min-h-0 min-w-0 flex-1 flex-col text-content"
     >
@@ -182,22 +185,22 @@ export function SettingsView({
           <button
             type="button"
             onClick={onClose}
-            aria-label="Back to workspace"
+            aria-label={t("Back to workspace")}
             data-tauri-drag-region="false"
             className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-content/70 hover:bg-content/10 hover:text-content"
           >
             <ArrowLeft className="size-3.5" aria-hidden="true" />
-            <span>Back to workspace</span>
+            <span>{t("Back to workspace")}</span>
           </button>
-          <span className="shrink-0 text-content/60">{section === "usage" ? "Usage / This machine" : "Settings"}</span>
+          <span className="shrink-0 text-content/60">{section === "usage" ? t("Usage / This machine") : t("Settings")}</span>
         </div>
         {IS_MAC ? null : <WindowControls />}
       </div>
 
       <header className="imece-settings-toolbar">
         <div className="imece-settings-toolbar-title">
-          <span>{section === "usage" ? "Usage" : "Workspace configuration"}</span>
-          <p>{section === "usage" ? "Provider limits and session activity" : "Application, agents and project preferences"}</p>
+          <span>{section === "usage" ? t("Usage") : t("Workspace configuration")}</span>
+          <p>{section === "usage" ? t("Provider limits and session activity") : t("Application, agents and project preferences")}</p>
         </div>
         <div className="imece-settings-toolbar-actions">
           <SettingsSearch onReveal={onReveal} />
@@ -207,14 +210,12 @@ export function SettingsView({
               onClick={appearance.restoreDefaults}
               className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-content/50 hover:bg-content/10 hover:text-content"
             >
-              <RotateCcw className="size-3.5" strokeWidth={1.75} />
-              Restore defaults
-            </button>
+              <RotateCcw className="size-3.5" strokeWidth={1.75} />{t("Restore defaults")}</button>
           ) : null}
         </div>
       </header>
 
-      <nav className="imece-settings-categories" role="tablist" aria-label="Settings categories">
+      <nav className="imece-settings-categories" role="tablist" aria-label={t("Settings categories")}>
         {SETTINGS_SECTIONS.map((category, index) => (
           <button key={category.id} ref={node => {
             if (node) categoryRefs.current.set(category.id, node);
@@ -287,7 +288,7 @@ export function SettingsView({
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
               {section === "providers" ? (
-                <ProvidersPage cwd={cwd} recents={recents} />
+                <><ProvidersPage cwd={cwd} recents={recents} /><GenericAcpSettings cwd={cwd} /></>
               ) : null}
               {section === "usage" ? <UsagePage /> : null}
               {section === "worktrees" ? (

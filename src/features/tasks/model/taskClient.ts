@@ -35,7 +35,7 @@ import {
 } from "./hostTasks";
 
 export const TASK_MACHINE_ERROR =
-  "This project’s machine isn’t connected, or its imc Host needs an update.";
+  "This project’s machine isn’t connected, or its imc code Host needs an update.";
 export const TASK_AGENT_ERROR =
   "This agent cannot run tasks in the background.";
 
@@ -107,7 +107,7 @@ export function missingMachinesNotice(
   );
   if (reach.outdated.length)
     parts.push(
-      `Update imc Host on ${reach.outdated.join(", ")} to see ${reach.outdated.length === 1 ? "its" : "their"} tasks.`,
+      `Update imc code Host on ${reach.outdated.join(", ")} to see ${reach.outdated.length === 1 ? "its" : "their"} tasks.`,
     );
   return parts.length ? parts.join(" ") : null;
 }
@@ -128,7 +128,7 @@ export function todoUnsupportedMessage(
   const machine = backgroundMachineFor(machines, cwd);
   if (!machine || todoCapable.some((entry) => entry.id === machine.id))
     return undefined;
-  return `Update imc Host on ${
+  return `Update imc code Host on ${
     isLocalSyncMachine(machine) ? "this computer" : machine.name
   } to add to-do items`;
 }

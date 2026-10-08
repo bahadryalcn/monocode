@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   memo,
   useCallback,
@@ -64,6 +65,7 @@ export const PromptOutline = memo(function PromptOutline({
   revealBlock,
   onOpenChange,
 }: Props) {
+  useLocale();
   const prompts = useMemo(() => promptBlocks(blocks), [blocks]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [stackBudget, setStackBudget] = useState(BAR_STACK_MAX_PX);
@@ -259,7 +261,7 @@ export const PromptOutline = memo(function PromptOutline({
     <div
       ref={rail}
       role="toolbar"
-      aria-label="Prompts"
+      aria-label={t("Prompts")}
       aria-orientation="vertical"
       style={{ width: BAR_WIDTH_LIFTED_PX }}
       onMouseEnter={() => {
@@ -321,7 +323,7 @@ export const PromptOutline = memo(function PromptOutline({
           gap={10}
           width={POPOVER_WIDTH}
           onDismiss={close}
-          aria-label="Prompt preview"
+          aria-label={t("Prompt preview")}
           className="pointer-events-none flex flex-col gap-1.5 p-3 font-sans"
         >
           <p className="line-clamp-2 text-sm leading-snug text-content">

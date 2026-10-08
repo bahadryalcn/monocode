@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useState, type ReactNode } from "react";
 
 export type MarkdownViewMode = "preview" | "source";
@@ -44,19 +45,20 @@ type ToggleProps = {
 };
 
 export function MarkdownModeToggle({ mode, onChange }: ToggleProps) {
+  useLocale();
   return (
     <div
       role="tablist"
-      aria-label="Markdown view"
+      aria-label={t("Markdown view")}
       className="flex rounded-md border border-content/10 bg-content/10 p-0.5 backdrop-blur-md"
     >
       <ModeTab
-        label="Preview"
+        label={t("Preview")}
         selected={mode === "preview"}
         onSelect={() => onChange("preview")}
       />
       <ModeTab
-        label="Source"
+        label={t("Source")}
         selected={mode === "source"}
         onSelect={() => onChange("source")}
       />
@@ -73,6 +75,7 @@ function ModeTab({
   selected: boolean;
   onSelect: () => void;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -105,6 +108,7 @@ export function MarkdownViewShell({
   source,
   actions,
 }: ShellProps) {
+  useLocale();
   return (
     <div className="markdown-view-shell relative min-h-0 min-w-0 flex-1">
       <div className="markdown-view-actions pointer-events-none absolute right-2 z-20">

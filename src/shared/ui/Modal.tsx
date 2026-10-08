@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { NativePopupHost } from "./NativePopupHost";
 import { X } from "./icons";
 import { useContext, useId, useRef, type ReactNode } from "react";
@@ -45,6 +46,7 @@ export function ModalPanel({
   fitViewport = true,
   children,
 }: Props) {
+  useLocale();
   const popupHost = useContext(NativePopupHost);
   const closeRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -59,8 +61,8 @@ export function ModalPanel({
       <div
         className={
           popupHost
-            ? "relative w-full"
-            : `absolute left-1/2 ${fitViewport ? "top-1/2 -translate-y-1/2" : TOP[size]} ${WIDTH[size]} -translate-x-1/2`
+            ? "relative z-[1] w-full"
+            : `absolute z-[1] left-1/2 ${fitViewport ? "top-1/2 -translate-y-1/2" : TOP[size]} ${WIDTH[size]} -translate-x-1/2`
         }
       >
         <div
@@ -73,7 +75,7 @@ export function ModalPanel({
           onMouseDown={(event) => event.stopPropagation()}
           className={`relative isolate flex flex-col overflow-hidden rounded-2xl border border-content/7 shadow-2xl ${fitViewport ? "max-h-[calc(100dvh-32px)]" : ""} ${className ?? ""}`}
         >
-          <GlassBackdrop className="bg-background-base/85" />
+          <GlassBackdrop className="bg-background-base dark:bg-background-base/85" />
           <div className="modal-panel relative z-[1] flex min-h-0 flex-1 flex-col">
             <header
               className={
@@ -103,7 +105,7 @@ export function ModalPanel({
               <button
                 ref={closeRef}
                 type="button"
-                aria-label="Close"
+                aria-label={t("Close")}
                 onClick={onClose}
                 className="grid size-7 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/8 hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
@@ -124,6 +126,7 @@ export function ModalPanel({
 }
 
 export function Modal(props: Props) {
+  useLocale();
   const host = useContext(NativePopupHost);
   if (host) return createPortal(<ModalPanel {...props} />, host);
   return createPortal(

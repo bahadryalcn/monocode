@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -139,6 +140,7 @@ import {
 
 import { GitFeedback } from "./GitFeedback";
 import { useGitResource } from "../hooks/useGitResource";
+import { GitGenerationSettings, useGitGenerationChoice } from "./GitGenerationSettings";
 
 export const GIT_POLL_MS = 15_000;
 
@@ -168,19 +170,19 @@ function announceGitChange(
 }
 
 const ACTION_LABEL: Record<IndexAction, string> = {
-  stage: "Staging…",
-  unstage: "Unstaging…",
-  discard: "Discarding…",
+  get stage() { return t("Staging…"); },
+  get unstage() { return t("Unstaging…"); },
+  get discard() { return t("Discarding…"); },
 };
 
 /** What the header says while `busy` is held and no step named itself. */
 function busyLabel(busy: string): string {
-  if (busy === "commit") return "Committing…";
-  if (busy === "pr") return "Creating pull request…";
-  if (busy === "sync") return "Syncing…";
-  if (busy === "generate") return "Generating message…";
+  if (busy === "commit") return t("Committing…");
+  if (busy === "pr") return t("Creating pull request…");
+  if (busy === "sync") return t("Syncing…");
+  if (busy === "generate") return t("Generating message…");
   if (busy in ACTION_LABEL) return ACTION_LABEL[busy as IndexAction];
-  return "Working…";
+  return t("Working…");
 }
 
 type Props = {
@@ -209,6 +211,7 @@ export function GitChangesPanel({
   onOpenAllChanges,
   onOpenCommit,
 }: Props) {
+  useLocale();
   const {
     index,
     reload,
@@ -305,7 +308,7 @@ export function GitChangesPanel({
 
   if (!cwd || cwd === "~") {
     return (
-      <p className="px-3 py-2 text-[12px] text-content/50">No project folder</p>
+      <p className="px-3 py-2 text-[12px] text-content/50">{t("No project folder")}</p>
     );
   }
 
@@ -315,7 +318,7 @@ export function GitChangesPanel({
       className="flex h-full min-h-0 flex-1 flex-col overflow-hidden"
     >
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-stroke px-3">
-        <span className="text-[12px] font-medium text-content">Changes</span>
+        <span className="text-[12px] font-medium text-content">{t("Changes")}</span>
         {busy ? (
           <span
             role="status"
@@ -337,8 +340,8 @@ export function GitChangesPanel({
         <div className="ml-auto flex min-w-0 items-center gap-1">
           <button
             type="button"
-            aria-label="Refresh source control"
-            title="Refresh source control"
+            aria-label={t("Refresh source control")}
+            title={t("Refresh source control")}
             disabled={!enabled || !!busy || loading}
             className="rounded p-1 text-content/60 hover:bg-content/10 hover:text-content disabled:opacity-40"
             onClick={() => {
@@ -399,7 +402,7 @@ export function GitChangesPanel({
                       .catch((error) =>
                         setGitFeedback(cwd, {
                           kind: "error",
-                          title: "Retry failed",
+                          get title() { return t("Retry failed"); },
                           detail: String(error),
                           retry: feedback.retry,
                         }),
@@ -416,16 +419,14 @@ export function GitChangesPanel({
                   setGitFeedback(cwd, { ...feedback, detail: String(error) }),
                 )
               }
-            >
-              Open pull request
-            </button>
+            >{t("Open pull request")}</button>
           ) : null}
         </>
       ) : null}
       {fetchError ? (
         <GitFeedback
           kind="warning"
-          title="Automatic fetch failed; sync counts may be outdated"
+          title={t("Automatic fetch failed; sync counts may be outdated")}
           detail={fetchError}
           onDismiss={() => setFetchError(null)}
         />
@@ -552,6 +553,7 @@ function ChangedFiles({
   onOpenAllChanges: (kind: GitFileDiffKind) => void;
   onMutated: (paths?: string[], scope?: GitChangeScope) => void;
 }) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const failure = useRemoteLoadFailure(cwd, "changes");
   const menuRef = useRef<HTMLDivElement>(null);
@@ -563,6 +565,7 @@ function ChangedFiles({
   const [generating, setGenerating] = useGitPanelState(cwd, "generating");
   const fileActions = runtime.fileActions;
   const [message, setMessage] = useGitPanelState(cwd, "message");
+  const [generationChoice, setGenerationChoice] = useGitGenerationChoice(cwd);
   const [amendTarget, setAmendTarget] = useGitPanelState(cwd, "amendTarget");
   const amend = amendTarget !== null;
   const [menuOpen, setMenuOpen] = useState(false);
@@ -670,7 +673,7 @@ function ChangedFiles({
     const text = error instanceof Error ? error.message : String(error);
     setGitFeedback(cwd, {
       kind: "error",
-      title: "Git operation failed",
+      get title() { return t("Git operation failed"); },
       detail: text,
     });
   };
@@ -730,8 +733,6 @@ function ChangedFiles({
     if (queue.size > 0) return;
     // Reloading earlier would put back the rows of actions still queued.
     onMutated(queue.paths.splice(0), "index");
-    if (gitPanelRuntime(cwd).state.feedback?.kind !== "error")
-      setGitFeedback(cwd, { kind: "success", title: "File changes updated" });
     setBusy(null);
     setPending(null);
   };
@@ -763,15 +764,6 @@ function ChangedFiles({
       if (action === "stage") await gitStageAll(cwd);
       else if (action === "unstage") await gitUnstageAll(cwd);
       else await gitDiscardAll(cwd);
-      setGitFeedback(cwd, {
-        kind: "success",
-        title:
-          action === "stage"
-            ? "Changes staged"
-            : action === "unstage"
-              ? "Changes unstaged"
-              : "Changes discarded",
-      });
       onMutated(discarded, "index");
     } catch (error) {
       onMutated(discarded, "index");
@@ -808,8 +800,6 @@ function ChangedFiles({
     if (queue.size > 0) return;
     // Also refresh after failure: Git may have partially changed the index.
     onMutated(queue.paths.splice(0), "index");
-    if (gitPanelRuntime(cwd).state.feedback?.kind !== "error")
-      setGitFeedback(cwd, { kind: "success", title: "File changes updated" });
     setBusy(null);
     setPending(null);
   };
@@ -819,13 +809,15 @@ function ChangedFiles({
     const controller = new AbortController();
     generateAbortRef.current = controller;
     setGenerating(true);
+    setGitFeedback(cwd, null);
     try {
-      const generated = await generateCommitMessage(
-        cwd,
-        textHarness,
-        controller.signal,
-      );
-      if (!controller.signal.aborted) setMessage(generated);
+      const generated = generationChoice
+        ? await generateCommitMessage(cwd, textHarness, controller.signal, generationChoice)
+        : await generateCommitMessage(cwd, textHarness, controller.signal);
+      if (!controller.signal.aborted) {
+        if (!generated.trim()) throw new Error("The provider returned an empty commit message. Retry generation.");
+        setMessage(generated);
+      }
     } catch (error) {
       if (!controller.signal.aborted) fail(error);
     } finally {
@@ -925,11 +917,7 @@ function ChangedFiles({
         setPending("Creating pull request…");
         await openCreatedPr();
         reloadPr();
-      } else
-        setGitFeedback(cwd, {
-          kind: "success",
-          title: push ? "Commit created and pushed" : "Commit created",
-        });
+      }
     } catch (error) {
       if (committed)
         setGitFeedback(cwd, {
@@ -967,7 +955,7 @@ function ChangedFiles({
     setBusy("sync");
     try {
       await gitSync(cwd);
-      setGitFeedback(cwd, { kind: "success", title: "Sync complete" });
+      setGitFeedback(cwd, { kind: "success", get title() { return t("Sync complete"); } });
       if (pushesCommits) recordPrActivity();
       onMutated();
       reloadPr();
@@ -982,7 +970,9 @@ function ChangedFiles({
   const openCreatedPr = async () => {
     const content = isRemoteProjectPath(cwd)
       ? await remotePrContent(cwd)
-      : await generatePrContent(cwd, textHarness);
+      : generationChoice
+        ? await generatePrContent(cwd, textHarness, generationChoice)
+        : await generatePrContent(cwd, textHarness);
     if (!content) throw new Error("Could not prepare pull request content");
     const url = await gitPrCreate(
       cwd,
@@ -998,13 +988,13 @@ function ChangedFiles({
       await openUrl(url.trim());
       setGitFeedback(cwd, {
         kind: "success",
-        title: "Pull request created",
+        get title() { return t("Pull request created"); },
         url: url.trim(),
       });
     } catch (error) {
       setGitFeedback(cwd, {
         kind: "warning",
-        title: "Pull request created; couldn’t open the link",
+        get title() { return t("Pull request created; couldn’t open the link"); },
         detail: String(error),
         url: url.trim(),
       });
@@ -1036,12 +1026,12 @@ function ChangedFiles({
             if (existing?.state === "open")
               setGitFeedback(cwd, {
                 kind: "success",
-                title: "Pull request already exists",
+                get title() { return t("Pull request already exists"); },
                 url: existing.url,
               });
             else await openCreatedPr();
           } else
-            setGitFeedback(cwd, { kind: "success", title: "Push complete" });
+            setGitFeedback(cwd, { kind: "success", get title() { return t("Push complete"); } });
         },
       );
     } catch (error) {
@@ -1102,6 +1092,7 @@ function ChangedFiles({
       className={`flex min-h-0 min-w-0 flex-col ${fill ? "flex-1" : "shrink-0"}`}
     >
       <div className="shrink-0 border-b border-stroke p-2">
+        {!isRemoteProjectPath(cwd) && <GitGenerationSettings cwd={cwd} preferred={textHarness} choice={generationChoice} onChange={setGenerationChoice} disabled={generating || committing} />}
         <div className="relative">
           <textarea
             ref={messageRef}
@@ -1109,8 +1100,8 @@ function ChangedFiles({
             value={message}
             placeholder={
               amend
-                ? `Amend message (${MOD}↩ to amend)`
-                : `Message (${MOD}↩ to commit)`
+                ? t("Amend message ({p0}↩ to amend)", { p0: MOD })
+                : t("Message ({p0}↩ to commit)", { p0: MOD })
             }
             disabled={!canEditMessage}
             onChange={(event) => setMessage(event.target.value)}
@@ -1130,13 +1121,13 @@ function ChangedFiles({
             type="button"
             title={
               generating
-                ? "Cancel commit message generation"
-                : "Generate commit message"
+                ? t("Cancel commit message generation")
+                : t("Generate commit message")
             }
             aria-label={
               generating
-                ? "Cancel commit message generation"
-                : "Generate commit message"
+                ? t("Cancel commit message generation")
+                : t("Generate commit message")
             }
             disabled={!generating && !canGenerate}
             onClick={() => (generating ? cancelGenerate() : void generate())}
@@ -1158,12 +1149,12 @@ function ChangedFiles({
             )}
           </button>
         </div>
-        <div ref={menuRef} className="relative mt-1.5 flex">
+        <div ref={menuRef} className="relative mt-1.5 flex gap-1.5">
           <button
             type="button"
             disabled={!canCommit}
             onClick={() => void commit(false)}
-            className={`flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-l-md text-[12px] font-medium ${
+            className={`flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md text-[12px] font-medium ${
               canCommit
                 ? "bg-content text-background-base"
                 : "bg-content/40 text-background-base"
@@ -1182,19 +1173,19 @@ function ChangedFiles({
             ) : (
               <>
                 <Check className="size-3.5" strokeWidth={2} />
-                {amend ? "Amend Commit" : "Commit"}
+                {amend ? t("Amend Commit") : t("Commit")}
               </>
             )}
           </button>
 
           <button
             type="button"
-            title="Commit options"
-            aria-label="Commit options"
+            title={t("Commit options")}
+            aria-label={t("Commit options")}
             aria-expanded={menuOpen}
             disabled={!canOpenMenu}
             onClick={() => setMenuOpen((open) => !open)}
-            className={`grid h-7 w-7 shrink-0 place-items-center rounded-r-md border-l border-background-base/10 ${
+            className={`grid h-7 w-7 shrink-0 place-items-center rounded-md ${
               canCommit
                 ? "bg-content text-background-base hover:bg-content/80"
                 : "bg-content/40 text-background-base hover:bg-content"
@@ -1205,7 +1196,7 @@ function ChangedFiles({
           {menuOpen ? (
             <div
               role="menu"
-              aria-label="Commit options"
+              aria-label={t("Commit options")}
               className="absolute top-full right-0 z-30 mt-1 min-w-48 rounded-md border border-content/10 bg-background-base py-1 shadow-lg"
             >
               <button
@@ -1214,18 +1205,14 @@ function ChangedFiles({
                 disabled={!canCommitPush}
                 onClick={() => void commit(true)}
                 className="flex h-7 w-full items-center px-3 text-left text-[12px] text-content hover:bg-content/10 disabled:opacity-40"
-              >
-                Commit & Push
-              </button>
+              >{t("Commit & Push")}</button>
               <button
                 type="button"
                 role="menuitem"
                 disabled={!canCommitPushPr}
                 onClick={() => void commit(true, true)}
                 className="flex h-7 w-full items-center px-3 text-left text-[12px] text-content hover:bg-content/10 disabled:opacity-40"
-              >
-                Commit, Push & Create PR
-              </button>
+              >{t("Commit, Push & Create PR")}</button>
               <div className="my-1 border-t border-content/10" />
               <button
                 type="button"
@@ -1233,9 +1220,7 @@ function ChangedFiles({
                 aria-checked={amend}
                 onClick={() => void toggleAmend()}
                 className="flex h-7 w-full items-center justify-between gap-2 px-3 text-left text-[12px] text-content hover:bg-content/10"
-              >
-                Amend Last Commit
-                <span className="grid size-3.5 shrink-0 place-items-center">
+              >{t("Amend Last Commit")}<span className="grid size-3.5 shrink-0 place-items-center">
                   {amend ? (
                     <Check className="size-3.5" strokeWidth={2} />
                   ) : null}
@@ -1273,31 +1258,27 @@ function ChangedFiles({
         ) : null}
       </div>
       {prLoading ? (
-        <p role="status" className="px-3 py-1 text-[11px] text-content/50">
-          Checking pull request…
-        </p>
+        <p role="status" className="px-3 py-1 text-[11px] text-content/50">{t("Checking pull request…")}</p>
       ) : prError ? (
         <GitFeedback
-          title="Couldn’t check pull request"
+          title={t("Couldn’t check pull request")}
           detail={prError}
           onRetry={reloadPr}
         />
       ) : null}
       {loadError && !failure ? (
         <GitFeedback
-          title="Couldn’t load Git changes"
+          title={t("Couldn’t load Git changes")}
           detail={loadError}
           stale={!!index}
           onRetry={() => onMutated()}
         />
       ) : null}
       {index?.repository === false ? (
-        <GitFeedback kind="info" title="This folder is not a Git repository" />
+        <GitFeedback kind="info" title={t("This folder is not a Git repository")} />
       ) : null}
       {loading && index ? (
-        <p role="status" className="px-3 py-1 text-[11px] text-content/50">
-          Refreshing changes…
-        </p>
+        <p role="status" className="px-3 py-1 text-[11px] text-content/50">{t("Refreshing changes…")}</p>
       ) : null}
       {failure ? (
         <RemoteLoadError
@@ -1318,16 +1299,16 @@ function ChangedFiles({
               : index
                 ? index.ahead > 0 || index.behind > 0
                   ? syncStatusLabel(index)
-                  : "No uncommitted changes"
+                  : t("No uncommitted changes")
                 : failure || loadError
                   ? ""
-                  : "Loading changes…"}
+                  : t("Loading changes…")}
           </p>
         ) : (
           <>
             {conflicts.length > 0 ? (
               <FileSection
-                title="Merge Conflicts"
+                title={t("Merge Conflicts")}
                 count={conflicts.length}
                 open={conflictsExpanded}
                 onToggle={() => {
@@ -1336,14 +1317,14 @@ function ChangedFiles({
                 }}
                 headerActions={[
                   {
-                    title: "Accept All Current",
-                    label: "All Current",
+                    get title() { return t("Accept All Current"); },
+                    get label() { return t("All Current"); },
                     onClick: () =>
                       void conflictActions.acceptAll(conflicts, "ours"),
                   },
                   {
-                    title: "Accept All Incoming",
-                    label: "All Incoming",
+                    get title() { return t("Accept All Incoming"); },
+                    get label() { return t("All Incoming"); },
                     onClick: () =>
                       void conflictActions.acceptAll(conflicts, "theirs"),
                   },
@@ -1372,7 +1353,7 @@ function ChangedFiles({
             ) : null}
             {staged.length > 0 ? (
               <FileSection
-                title="Staged Changes"
+                title={t("Staged Changes")}
                 count={staged.length}
                 open={stagedExpanded}
                 onToggle={() => {
@@ -1383,12 +1364,12 @@ function ChangedFiles({
                 onToggleView={toggleView}
                 headerActions={[
                   {
-                    title: "Open All Changes",
+                    get title() { return t("Open All Changes"); },
                     icon: <FileDiff className="size-3.5" strokeWidth={1.75} />,
                     onClick: () => onOpenAllChanges("staged"),
                   },
                   {
-                    title: "Unstage All Changes",
+                    get title() { return t("Unstage All Changes"); },
                     icon: <Minus className="size-3.5" strokeWidth={1.75} />,
                     onClick: () => void runAll("unstage"),
                   },
@@ -1410,7 +1391,7 @@ function ChangedFiles({
             ) : null}
             {unstaged.length > 0 ? (
               <FileSection
-                title="Changes"
+                title={t("Changes")}
                 count={unstaged.length}
                 open={changesExpanded}
                 onToggle={() => {
@@ -1421,17 +1402,17 @@ function ChangedFiles({
                 onToggleView={toggleView}
                 headerActions={[
                   {
-                    title: "Open All Changes",
+                    get title() { return t("Open All Changes"); },
                     icon: <FileDiff className="size-3.5" strokeWidth={1.75} />,
                     onClick: () => onOpenAllChanges("unstaged"),
                   },
                   {
-                    title: "Discard All Changes",
+                    get title() { return t("Discard All Changes"); },
                     icon: <Undo2 className="size-3.5" strokeWidth={1.75} />,
                     onClick: () => void runAll("discard"),
                   },
                   {
-                    title: "Stage All Changes",
+                    get title() { return t("Stage All Changes"); },
                     icon: <Plus className="size-3.5" strokeWidth={1.75} />,
                     onClick: () => void runAll("stage"),
                   },
@@ -1492,17 +1473,17 @@ function usePrStatus(
 
 function syncStatusLabel(index: GitDiffIndex): string {
   if (index.ahead > 0 && index.behind > 0) {
-    return `Diverged from ${index.upstream ?? "upstream"}`;
+    return t("Diverged from {p0}", { p0: index.upstream ?? "upstream" });
   }
   if (index.ahead > 0) {
     const n = index.ahead;
-    return `${n} unpushed commit${n === 1 ? "" : "s"}`;
+    return t(n === 1 ? "{p0} unpushed commit" : "{p0} unpushed commits", { p0: n });
   }
   if (index.behind > 0) {
     const n = index.behind;
-    return `${n} incoming commit${n === 1 ? "" : "s"}`;
+    return t(n === 1 ? "{p0} incoming commit" : "{p0} incoming commits", { p0: n });
   }
-  return "No files";
+  return t("No files");
 }
 
 function GitSyncActions({
@@ -1534,6 +1515,7 @@ function GitSyncActions({
   onCreatePr: () => void;
   onViewPr: () => void;
 }) {
+  useLocale();
   if (!hasRemote) return null;
   const ahead = index.ahead;
   const behind = index.behind;
@@ -1582,7 +1564,7 @@ function GitSyncActions({
           ) : (
             <CloudUpload className="size-3.5 shrink-0" strokeWidth={1.75} />
           )}
-          <span className="min-w-0 truncate">Publish Branch</span>
+          <span className="min-w-0 truncate">{t("Publish Branch")}</span>
         </button>
       ) : canSync ? (
         <button
@@ -1596,7 +1578,7 @@ function GitSyncActions({
             className={`size-3.5 shrink-0 ${syncing ? "animate-spin" : ""}`}
             strokeWidth={1.75}
           />
-          <span className="min-w-0 truncate">Sync Changes</span>
+          <span className="min-w-0 truncate">{t("Sync Changes")}</span>
           {behind > 0 ? (
             <span className="shrink-0 tabular-nums text-content/55">
               ↓{behind}
@@ -1624,9 +1606,7 @@ function GitSyncActions({
             />
           ) : (
             <GitPullRequest className="size-3.5 shrink-0" strokeWidth={1.75} />
-          )}
-          Create PR
-        </button>
+          )}{t("Create PR")}</button>
       ) : null}
       {showViewPr ? (
         <button
@@ -1638,7 +1618,7 @@ function GitSyncActions({
         >
           <ExternalLink className="size-3.5 shrink-0" strokeWidth={1.75} />
           <span className="min-w-0 truncate">
-            {pr?.number ? `View PR #${pr.number}` : "View PR"}
+            {pr?.number ? t("View PR #{p0}", { p0: pr.number }) : t("View PR")}
           </span>
         </button>
       ) : null}
@@ -1672,6 +1652,7 @@ export function FileSection({
   }[];
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <div>
       <div className="flex h-7 items-center gap-1 px-1.5">
@@ -1700,7 +1681,7 @@ export function FileSection({
         </button>
         {view && onToggleView ? (
           <IconAction
-            title={view === "tree" ? "View as List" : "View as Tree"}
+            title={view === "tree" ? t("View as List") : t("View as Tree")}
             onClick={onToggleView}
           >
             {view === "tree" ? (
@@ -1782,6 +1763,7 @@ type ChangeRowProps = {
 };
 
 export function ChangeList({ files, view, ...rest }: ChangeRowProps) {
+  useLocale();
   const tree = useMemo(() => buildChangeTree(files), [files]);
   if (view === "tree") {
     return <ChangeDirChildren dir={tree} depth={0} {...rest} />;
@@ -1821,6 +1803,7 @@ function ChangeDirChildren({
   dir: ChangeDir;
   depth: number;
 }) {
+  useLocale();
   return (
     <>
       {dir.dirs.map((child) => (
@@ -1864,6 +1847,7 @@ function ChangeDirRow({
   dir: ChangeDir;
   depth: number;
 }) {
+  useLocale();
   const key = `${kind}:${dir.path}`;
   const [open, setOpen] = useState(() => !collapsedDirs.has(key));
   const toggle = () => {
@@ -1882,7 +1866,7 @@ function ChangeDirRow({
           title={dir.path}
           aria-expanded={open}
           onClick={toggle}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
         >
           <span className="grid size-4 shrink-0 place-items-center text-content/50">
             {open ? (
@@ -1898,7 +1882,7 @@ function ChangeDirRow({
         </button>
         <div className="hidden shrink-0 items-center group-focus-within:flex group-hover:flex">
           <IconAction
-            title={`${kind === "staged" ? "Unstage" : "Stage"} Changes in ${dir.path}`}
+            title={t((kind === "staged" ? "Unstage Changes in {p1}" : "Stage Changes in {p1}"), { p1: dir.path })}
             disabled={rest.busy !== null}
             onClick={() =>
               rest.onFolderAction(
@@ -2015,6 +1999,7 @@ function ChangeRow({
     action: "stage" | "unstage" | "discard",
   ) => void;
 }) {
+  useLocale();
   const name = basename(file.relative);
   const tree = depth !== undefined;
   const dir = tree ? "" : dirname(file.relative);
@@ -2038,7 +2023,7 @@ function ChangeRow({
         ? [
             {
               id: "discard",
-              label: "Discard Changes",
+              get label() { return t("Discard Changes"); },
               danger: true,
               disabled: busy,
               run: () => onAction(file, "discard"),
@@ -2068,7 +2053,7 @@ function ChangeRow({
           onDoubleClick={() => {
             if (canOpen) onOpenFile(file.path, kind, true);
           }}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left"
         >
           {tree ? <span className="size-4 shrink-0" /> : null}
           <FileTypeIcon name={name} isDir={false} size={16} />
@@ -2081,7 +2066,7 @@ function ChangeRow({
         </button>
         {busy ? (
           <Loader
-            aria-label="Working"
+            aria-label={t("Working")}
             className="size-3.5 shrink-0 animate-spin text-content/55"
             strokeWidth={1.75}
           />
@@ -2097,7 +2082,7 @@ function ChangeRow({
         >
           {kind === "unstaged" ? (
             <IconAction
-              title="Discard Changes"
+              title={t("Discard Changes")}
               disabled={busy}
               onClick={() => onAction(file, "discard")}
             >
@@ -2106,7 +2091,7 @@ function ChangeRow({
           ) : null}
           {kind === "staged" ? (
             <IconAction
-              title="Unstage Changes"
+              title={t("Unstage Changes")}
               disabled={busy}
               onClick={() => onAction(file, "unstage")}
             >
@@ -2114,7 +2099,7 @@ function ChangeRow({
             </IconAction>
           ) : (
             <IconAction
-              title="Stage Changes"
+              title={t("Stage Changes")}
               disabled={busy}
               onClick={() => onAction(file, "stage")}
             >
@@ -2144,6 +2129,7 @@ function IconAction({
   onClick: () => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"

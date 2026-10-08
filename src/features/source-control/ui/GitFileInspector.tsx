@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import { GitFeedback } from "./GitFeedback";
 import { Loader } from "../../../shared/ui/icons";
@@ -44,13 +45,14 @@ function errorText(error: unknown): string {
 }
 
 function shortDate(timestamp: number): string {
-  return timestamp > 0 ? new Date(timestamp * 1000).toLocaleDateString() : "";
+  return timestamp > 0 ? new Date(timestamp * 1000).toLocaleDateString(getLocale()) : "";
 }
 
 const UNCOMMITTED = /^0+$/;
 
 /** Hosts the file history and blame dialogs opened from the explorer menu. */
 export function GitFileInspector({ onOpenCommit }: Props) {
+  useLocale();
   const [request, setRequest] = useState<GitFileInspectRequest | null>(null);
 
   useEffect(() => {
@@ -97,18 +99,18 @@ type DialogProps = {
 };
 
 function Loading() {
+  useLocale();
   return (
     <div
       role="status"
       className="flex items-center gap-2 p-4 text-[12px] text-content/50"
     >
-      <Loader className="size-3.5 animate-spin" strokeWidth={1.75} />
-      Loading…
-    </div>
+      <Loader className="size-3.5 animate-spin" strokeWidth={1.75} />{t("Loading…")}</div>
   );
 }
 
 function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
+  useLocale();
   const [commits, setCommits] = useState<GitHistoryCommit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
@@ -128,7 +130,7 @@ function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
 
   return (
     <Modal
-      title="File history"
+      title={t("File history")}
       description={request.relative}
       size="md"
       fitViewport
@@ -136,16 +138,14 @@ function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
     >
       {error ? (
         <GitFeedback
-          title="Couldn’t load file information"
+          title={t("Couldn’t load file information")}
           detail={error}
           onRetry={() => setRetry((value) => value + 1)}
         />
       ) : !commits ? (
         <Loading />
       ) : commits.length === 0 ? (
-        <p className="p-4 text-[12px] text-content/50">
-          No commits touch this file
-        </p>
+        <p className="p-4 text-[12px] text-content/50">{t("No commits touch this file")}</p>
       ) : (
         <ul className="min-h-0 overflow-y-auto p-1.5">
           {commits.map((commit) => (
@@ -177,6 +177,7 @@ function FileHistoryDialog({ request, onClose, onOpenCommit }: DialogProps) {
 }
 
 function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
+  useLocale();
   const [data, setData] = useState<{
     blame: GitBlameLine[];
     lines: string[];
@@ -203,7 +204,7 @@ function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
 
   return (
     <Modal
-      title="Blame"
+      title={t("Blame")}
       description={request.relative}
       size="md"
       fitViewport
@@ -211,7 +212,7 @@ function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
     >
       {error ? (
         <GitFeedback
-          title="Couldn’t load file information"
+          title={t("Couldn’t load file information")}
           detail={error}
           onRetry={() => setRetry((value) => value + 1)}
         />
@@ -233,7 +234,7 @@ function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
                   disabled={uncommitted}
                   title={
                     uncommitted
-                      ? "Not committed yet"
+                      ? t("Not committed yet")
                       : `${entry.shortSha} ${entry.summary}`
                   }
                   onClick={() =>
@@ -252,7 +253,7 @@ function BlameDialog({ request, onClose, onOpenCommit }: DialogProps) {
                 >
                   {first
                     ? uncommitted
-                      ? "Not committed yet"
+                      ? t("Not committed yet")
                       : `${entry.author} · ${shortDate(entry.timestamp)} · ${entry.summary}`
                     : ""}
                 </button>

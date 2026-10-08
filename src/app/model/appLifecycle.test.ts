@@ -397,9 +397,9 @@ describe("confirming reload", () => {
   it("allows reload after unsaved changes are confirmed", async () => {
     await expect(confirmReload(true)).resolves.toBe(true);
     expect(ask).toHaveBeenCalledWith(
-      "Reload imc and discard unsaved changes?",
+      "Reload imc code and discard unsaved changes?",
       {
-        title: "imc",
+        title: "imc code",
         kind: "warning",
         okLabel: "Reload",
       },

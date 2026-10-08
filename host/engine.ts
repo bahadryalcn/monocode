@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute } from "node:path";
+import { basename, isAbsolute, dirname } from "node:path";
+import { HandoffHistoryStore } from "./handoff-history";
+import { buildBudgetedHandoff, handoffHistory } from "../src/features/sessions/model/handoffBudget";
 import { renameHostWorktreeBranch, resolveHostWorktree } from "./git-worktrees";
 import {
   applyHarnessEvent,
@@ -442,7 +444,7 @@ export class HostEngine {
     const id = snapshot.session.id;
     if (snapshot.status === "running")
       throw new Error(
-        "This session is running in MonoCode on that computer. Wait for it to finish.",
+        "This session is running in imc code on that computer. Wait for it to finish.",
       );
     const provider = this.provider(snapshot.session.harness);
     const saved = this.store.transaction(() => {
@@ -860,8 +862,16 @@ export class HostEngine {
             const handoff = pendingHandoff(value.session);
             handoffText = handoff?.text;
             handoffFrom = handoff?.from as RemoteProvider | undefined;
-            if (handoffText)
+            if (handoffText) {
+              const archive = new HandoffHistoryStore(dirname(this.store.attachmentDir)).saveSync(handoffHistory(value.session));
+              handoffText = buildBudgetedHandoff(value.session, {
+                contextWindow: resolveModel(value.session.harness, value.session.model).contextWindow,
+                request: command.text,
+                brief: handoffText,
+                historyPath: archive.path,
+              }).text;
               value = { ...value, session: consumeHandoff(value.session) };
+            }
           }
           const shellRuns =
             command.type === "send"

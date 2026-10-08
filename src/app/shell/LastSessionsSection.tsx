@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../shared/i18n";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Check,
@@ -139,6 +140,7 @@ export function LastSessionsSection({
   /** Reports whether the section is on screen: it has nothing to show without sessions. */
   onShownChange?: (shown: boolean) => void;
 } & Appearance) {
+  useLocale();
   const { prefs, update, rows, hasRows, togglePin } = useLastSessionsRows({
     source,
     projectKeys,
@@ -154,7 +156,7 @@ export function LastSessionsSection({
     <div ref={drag?.setRef} className="reorder-item rail-reorder-block mb-2 shrink-0">
       <div
         {...drag?.headerProps}
-        title={drag ? "Drag to reorder" : undefined}
+        title={drag ? t("Drag to reorder") : undefined}
         className={`${RAIL_SECTION_HEADER} ${drag ? RAIL_DRAG_HANDLE : ""}`}
       >
         <button
@@ -175,7 +177,7 @@ export function LastSessionsSection({
             }`}
             strokeWidth={1.75}
           />
-          <span className="truncate">Last sessions</span>
+          <span className="truncate">{t("Last sessions")}</span>
         </button>
         {prefs.collapsed ? null : (
           <CountPicker
@@ -184,7 +186,7 @@ export function LastSessionsSection({
           />
         )}
         {drag ? (
-          <SectionMenuButton label="Last sessions" onOpen={drag.openMenu} />
+          <SectionMenuButton label={t("Last sessions")} onOpen={drag.openMenu} />
         ) : null}
       </div>
       {prefs.collapsed ? null : (
@@ -222,6 +224,7 @@ export function LastSessionsRows({
   onTogglePin: (row: RecentSessionRow) => void;
   className?: string;
 } & Appearance) {
+  useLocale();
   const [menu, setMenu] = useState<{
     x: number;
     y: number;
@@ -234,7 +237,7 @@ export function LastSessionsRows({
     <>
       <div
         role="list"
-        aria-label="Last sessions"
+        aria-label={t("Last sessions")}
         className={`flex-col gap-px overflow-y-auto px-2 ${className ?? ""}`}
       >
         {rows.map((row) => (
@@ -256,7 +259,7 @@ export function LastSessionsRows({
           y={menu.y}
           ariaLabel="Session actions"
           items={[
-            { kind: "item", id: "open", label: "Open" },
+            { kind: "item", id: "open", get label() { return t("Open"); } },
             ...(menuRow.pinnable
               ? [
                   {
@@ -266,7 +269,7 @@ export function LastSessionsRows({
                   },
                 ]
               : []),
-            { kind: "item", id: "project", label: "Open project" },
+            { kind: "item", id: "project", get label() { return t("Open project"); } },
           ]}
           onPick={(id) => {
             setMenu(null);
@@ -288,6 +291,7 @@ function CountPicker({
   count: RecentSessionsPrefs["count"];
   onChange: (count: RecentSessionsPrefs["count"]) => void;
 }) {
+  useLocale();
   const anchor = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   return (
@@ -296,14 +300,14 @@ function CountPicker({
         ref={anchor}
         type="button"
         data-no-drag
-        title="Sessions shown"
-        aria-label={`Sessions shown: ${recentCountLabel(count)}`}
+        title={t("Sessions shown")}
+        aria-label={t("Sessions shown: {p0}", { p0: recentCountLabel(count) })}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         className="flex h-5 shrink-0 items-center gap-0.5 rounded-md px-1 text-[11px] font-semibold tabular-nums text-content/50 hover:bg-content/8 hover:text-content aria-expanded:bg-content/8 aria-expanded:text-content"
       >
-        {count === 50 ? "All" : count}
+        {count === 50 ? t("All") : count}
         <ChevronDown className="size-3" strokeWidth={1.75} />
       </button>
       {open ? (
@@ -313,7 +317,7 @@ function CountPicker({
           width={180}
           onDismiss={() => setOpen(false)}
           role="menu"
-          aria-label="Sessions shown"
+          aria-label={t("Sessions shown")}
           className="p-1"
         >
           {RECENT_SESSION_COUNTS.map((option) => (
@@ -360,6 +364,7 @@ function SessionRow({
   onTogglePin: () => void;
   onOpenMenu: (x: number, y: number) => void;
 } & Appearance) {
+  useLocale();
   const key = projectKey(row.cwd);
   const seed = projectName(row.cwd);
   const project = resolveTabGroupLabel(key, groupLabels, basename(row.cwd));
@@ -378,7 +383,7 @@ function SessionRow({
     model ? `${agent} · ${model}` : agent,
     status
       ? STATUS_LABEL[status]
-      : time && `Last activity ${new Date(row.updatedAt).toLocaleString()}`,
+      : time && `Last activity ${new Date(row.updatedAt).toLocaleString(getLocale())}`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -450,7 +455,7 @@ function SessionRow({
           <span className="flex min-w-0 items-center gap-1">
             {row.pinned ? (
               <Pin
-                aria-label="Pinned"
+                aria-label={t("Pinned")}
                 className="size-3 shrink-0 text-content/45"
                 strokeWidth={1.75}
               />
@@ -462,7 +467,7 @@ function SessionRow({
           <span className="flex min-w-0 items-center gap-1 text-[11px] leading-tight text-content/45">
             {row.remote ? (
               <Internet
-                aria-label="On another machine"
+                aria-label={t("On another machine")}
                 className="size-3 shrink-0"
                 strokeWidth={1.75}
               />
@@ -493,8 +498,8 @@ function SessionRow({
       {row.pinnable ? (
         <button
           type="button"
-          title={row.pinned ? "Unpin session" : "Pin session"}
-          aria-label={row.pinned ? "Unpin session" : "Pin session"}
+          title={row.pinned ? t("Unpin session") : t("Pin session")}
+          aria-label={row.pinned ? t("Unpin session") : t("Pin session")}
           onClick={(event) => {
             event.stopPropagation();
             onTogglePin();

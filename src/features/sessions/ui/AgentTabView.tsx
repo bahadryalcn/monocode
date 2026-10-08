@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { AgentTranscript } from "./AgentTranscript";
 import { TranscriptFind } from "./TranscriptFind";
@@ -39,6 +40,7 @@ export function AgentTabView({
   focused?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
+  useLocale();
   // The shell's copy lags behind by streamed text; the store has the live one.
   const session = useSession(shellSession?.id) ?? shellSession;
   const navigateBlockRef = useRef<
@@ -107,10 +109,7 @@ export function AgentTabView({
   if (!session) {
     return (
       <div className="grid h-full place-items-center px-6 text-center">
-        <p className="max-w-sm text-[12px] leading-5 text-content/45">
-          This agent is no longer running. Its work is summarised in the
-          orchestrator's conversation.
-        </p>
+        <p className="max-w-sm text-[12px] leading-5 text-content/45">{t("This agent is no longer running. Its work is summarised in the orchestrator's conversation.")}</p>
       </div>
     );
   }
@@ -144,9 +143,7 @@ export function AgentTabView({
         <span className="min-w-0 truncate" title={title}>
           {model} · {HARNESS_TITLE[session.harness]}
         </span>
-        <span className="ml-auto shrink-0">
-          Run by the orchestrator · read-only
-        </span>
+        <span className="ml-auto shrink-0">{t("Run by the orchestrator · read-only")}</span>
       </footer>
     </div>
   );

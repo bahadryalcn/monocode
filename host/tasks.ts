@@ -382,6 +382,35 @@ export class HostTasks {
   }
 
   /** Re-evaluate existing work and acceptance blockers without a worker rerun. */
+  queueDeliveryFollowup(id: string, prompt: string, eventId: string): boolean {
+    const signature = JSON.stringify({ type: "delivery.followup", id, prompt });
+    if (this.store.receipt(eventId, signature)) return true;
+    const task = this.find(id);
+    // Never override owner stops, active reviews, merged work or exhausted repair budgets.
+    if (!task || !["done", "review"].includes(task.status) || task.merged ||
+        task.repairStop || task.needsInput || this.delivering.has(id) ||
+        (task.repairAttempts ?? 0) >= MAX_REPAIR_ATTEMPTS) return false;
+    const sessionId = task.sessionId;
+    if (!sessionId) return false;
+    const session = this.store.session(sessionId);
+    if (session.status !== "idle" || session.archived || session.session.pendingQuestion ||
+        session.session.blocks.some(block => block.role === "approval" && block.approval && !block.approval.decided))
+      return false;
+    this.store.transaction(() => {
+      this.write({ ...task, status: "queued", sessionId: undefined, runId: undefined,
+        startedAt: undefined, completedAt: undefined, reviewer: undefined,
+        verification: undefined, reviewOnly: undefined, awaitingOwnerRestart: undefined,
+        error: undefined, needsInput: undefined,
+        repairAttempts: (task.repairAttempts ?? 0) + 1,
+        retryFeedback: [task.retryFeedback, prompt,
+          "Continue the existing task and working copy. Run its original checks and review. This PR event grants no additional push, merge or publication authority."].filter(Boolean).join("\n\n"),
+        updatedAt: this.now() });
+      this.store.recordReceipt(signature, { commandId: eventId, sessionId, revision: session.revision });
+    });
+    return true;
+  }
+
+  /** Re-evaluate existing work and acceptance blockers without a worker rerun. */
   recheckReview(id: string): HostTask {
     const task = this.find(id);
     if (

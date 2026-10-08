@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   remoteRequest,
   useRemoteMachines,
@@ -19,6 +20,7 @@ import { Group, Row, Select } from "./settingsControls";
 
 /** Which shell new terminals open in, and `!commands` run in. */
 export function TerminalPage() {
+  useLocale();
   const [listed, setListed] = useState<ShellProfiles | null>(null);
   const [scanning, setScanning] = useState(false);
   const chosen = useTerminalProfile();
@@ -40,8 +42,8 @@ export function TerminalPage() {
   return (
     <>
       <Group
-        title="This computer · Default profile"
-        description="New terminals on this computer open in this shell, and local `!commands` run in it. A terminal already open keeps the shell it started with."
+        title={t("This computer · Default profile")}
+        description={t("New terminals on this computer open in this shell, and local `!commands` run in it. A terminal already open keeps the shell it started with.")}
         action={
           <button
             type="button"
@@ -49,21 +51,21 @@ export function TerminalPage() {
             onClick={() => scan(true)}
             className="h-7 rounded-md px-2.5 text-[12px] text-content/60 hover:bg-content/10 hover:text-content disabled:opacity-50"
           >
-            {scanning ? "Looking…" : "Look again"}
+            {scanning ? t("Looking…") : t("Look again")}
           </button>
         }
       >
         <Row
           id="terminal-default-profile"
-          label="Default terminal profile"
+          label={t("Default terminal profile")}
           description={
             missing
-              ? "The shell you picked is no longer installed, so the system default is used."
-              : "Automatic follows the system: PowerShell on Windows, your login shell elsewhere."
+              ? t("The shell you picked is no longer installed, so the system default is used.")
+              : t("Automatic follows the system: PowerShell on Windows, your login shell elsewhere.")
           }
         >
           <Select
-            label="Default terminal profile"
+            label={t("Default terminal profile")}
             value={chosen && !missing ? chosen : ""}
             options={[
               {
@@ -82,29 +84,27 @@ export function TerminalPage() {
         </Row>
       </Group>
       <Group
-        title="This computer · Available shells"
-        description="Found on this computer. Git Bash runs bash commands such as ls, grep and && chains on Windows. Sessions on this computer use this choice even when you type the command on another machine."
+        title={t("This computer · Available shells")}
+        description={t("Found on this computer. Git Bash runs bash commands such as ls, grep and && chains on Windows. Sessions on this computer use this choice even when you type the command on another machine.")}
       >
         {listed === null ? (
-          <Row label="Looking for shells…" />
+          <Row label={t("Looking for shells…")} />
         ) : listed.profiles.length === 0 ? (
           <Row
-            label="No shells found"
-            description="Install PowerShell, Git for Windows or another shell, then look again."
+            label={t("No shells found")}
+            description={t("Install PowerShell, Git for Windows or another shell, then look again.")}
           />
         ) : (
           listed.profiles.map((profile) => (
             <Row key={profile.id} label={profile.name} description={profile.path}>
               {profile.id === current ? (
-                <span className="text-[12px] text-content/45">Default</span>
+                <span className="text-[12px] text-content/45">{t("Default")}</span>
               ) : (
                 <button
                   type="button"
                   onClick={() => saveTerminalProfile(profile.id)}
                   className="h-7 rounded-md bg-content/10 px-2.5 text-[12px] text-content hover:bg-content/15"
-                >
-                  Set as default
-                </button>
+                >{t("Set as default")}</button>
               )}
             </Row>
           ))
@@ -117,6 +117,7 @@ export function TerminalPage() {
 
 /** Each connected machine runs `!commands` for its sessions in its own shell. */
 export function RemoteMachineShells() {
+  useLocale();
   const { machines } = useRemoteMachines();
   if (machines.length === 0) return null;
   return (
@@ -129,6 +130,7 @@ export function RemoteMachineShells() {
 }
 
 export function RemoteMachineShell({ machine }: { machine: RemoteMachine }) {
+  useLocale();
   const local = isLocalSyncMachine(machine);
   const [listed, setListed] = useState<ShellProfiles | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -187,26 +189,26 @@ export function RemoteMachineShell({ machine }: { machine: RemoteMachine }) {
       }
       description={
         local
-          ? "`!commands` in this computer's synced sessions run on this computer, using the shell selected here."
-          : "`!commands` in this server's sessions run on the remote server, using the shell selected here, even when you type them on this computer."
+          ? t("`!commands` in this computer's synced sessions run on this computer, using the shell selected here.")
+          : t("`!commands` in this server's sessions run on the remote server, using the shell selected here, even when you type them on this computer.")
       }
     >
       <Row
-        label="Default shell"
+        label={t("Default shell")}
         description={
           problem ??
           (listed
             ? (listed.profiles.find((profile) => profile.id === (chosen || listed.defaultId))
                 ?.path ?? undefined)
-            : "Asking the machine…")
+            : t("Asking the machine…"))
         }
       >
         {listed ? (
           <Select
             label={
               local
-                ? "Default shell on this computer (local sync)"
-                : `Default shell on remote server ${machine.name}`
+                ? t("Default shell on this computer (local sync)")
+                : t("Default shell on remote server {p0}", { p0: machine.name })
             }
             value={chosen}
             options={[

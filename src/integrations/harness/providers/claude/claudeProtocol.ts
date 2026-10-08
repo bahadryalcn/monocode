@@ -71,6 +71,7 @@ export type ClaudeMappedLine = {
 };
 
 export type ClaudeCliSettings = {
+  env?: Record<string, string>;
   alwaysThinkingEnabled?: boolean;
   fastMode?: boolean;
   ultracode?: boolean;
@@ -246,6 +247,7 @@ function normalizeImageMime(mime: string): string {
 
 export function buildClaudeSpawnArgs(input: {
   model?: string;
+  advisor?: string;
   effort?: string;
   permissionMode?: ClaudePermissionMode;
   resume?: string;
@@ -275,6 +277,7 @@ export function buildClaudeSpawnArgs(input: {
   // whatever the caller decided so `~/.claude` hooks keep working.
   const settings: ClaudeCliSettings = {
     ...input.settings,
+    ...(input.advisor === "off" ? { env: { ...input.settings?.env, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1" } } : {}),
     ...(input.isolated ? { disableAllHooks: true } : {}),
   };
   if (input.isolated) {
@@ -287,6 +290,7 @@ export function buildClaudeSpawnArgs(input: {
     args.push("--settings", JSON.stringify(settings));
   }
   if (input.model) args.push("--model", input.model);
+  if (input.advisor && input.advisor !== "default" && input.advisor !== "off") args.push("--advisor", input.advisor);
   if (input.effort) args.push("--effort", input.effort);
   if (input.permissionMode) {
     args.push("--permission-mode", input.permissionMode);
@@ -1121,6 +1125,7 @@ export function summarizeToolRequest(
 
 export function claudeSettingsKey(input: {
   model: string;
+  advisor?: string;
   effort?: string;
   fast?: string;
   thinking?: string;
@@ -1134,6 +1139,7 @@ export function claudeSettingsKey(input: {
     input.fast ?? "",
     input.thinking ?? "",
     input.context ?? "",
+    input.advisor ?? "default",
     input.runtimeMode,
     input.hooks === false ? "nohooks" : "hooks",
   ].join("|");

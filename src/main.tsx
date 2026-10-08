@@ -1,3 +1,4 @@
+import { t, useLocale, languageReady } from "./shared/i18n";
 import { PRODUCT_IDENTITY } from "./shared/lib/productIdentity";
 import React, { useLayoutEffect } from "react";
 import ReactDOM from "react-dom/client";
@@ -79,6 +80,7 @@ function BootGate({
   children: React.ReactNode;
   transferred: boolean;
 }) {
+  useLocale();
   useLayoutEffect(() => {
     dismissBootSplash();
     if (!transferred) return;
@@ -125,8 +127,8 @@ appRoot.render(
   <BootGate transferred={false}>
     <div role="status" aria-live="polite" style={{ height: "100vh", display: "grid", placeContent: "center", gap: 12, textAlign: "center" }}>
       <strong>{PRODUCT_IDENTITY.displayName}</strong>
-      <span>Restoring your workspace and saved drafts...</span>
-      <button type="button" onClick={() => window.location.reload()}>Retry loading</button>
+      <span>{t("Restoring your workspace and saved drafts...")}</span>
+      <button type="button" onClick={() => window.location.reload()}>{t("Retry loading")}</button>
     </div>
   </BootGate>,
 );
@@ -143,6 +145,7 @@ void bootstrap(
       // Saved drafts are in the cache before the first composer mounts.
       hydrateComposerDrafts(),
       appLoaded,
+      languageReady,
     ]),
   ([
     ,

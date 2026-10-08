@@ -10,6 +10,8 @@ import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { GenericAcpService } from "./generic-acp";
+import type { GenericAcpConfig } from "../src/features/providers/model/genericAcp";
 import {
   saveHostGeneratedImage,
   deleteHostGeneratedImages,
@@ -27,15 +29,38 @@ import {
 } from "./provider-lines";
 
 const exec = promisify(execFile);
-const ALLOWED_EXEC_ARGS = new Set([
-  "--version",
-  "--list-models",
-  "models --verbose",
-  "models --json",
-  "models",
-  "status --json",
-  "agent list",
-]);
+const ALLOWED_EXEC_ARGS: readonly (readonly string[])[] = [
+  ["--version"],
+  ["--list-models"],
+  ["models", "--verbose"],
+  ["models", "--json"],
+  ["models"],
+  ["status", "--json"],
+  ["agent", "list"],
+];
+// OpenCode 2.x runs as a background service; other providers' CLIs may give
+// these subcommands unrelated meanings, so they stay OpenCode-only.
+const OPENCODE_EXEC_ARGS: readonly (readonly string[])[] = [
+  ["service", "status"],
+  ["service", "start"],
+  ["service", "get", "password"],
+];
+
+function execArgsAllowed(provider: RemoteProvider, args: string[]): boolean {
+  const matches = (allowed: readonly string[]) =>
+    allowed.length === args.length &&
+    allowed.every((arg, index) => arg === args[index]);
+  return (
+    ALLOWED_EXEC_ARGS.some(matches) ||
+    (provider === "opencode" && OPENCODE_EXEC_ARGS.some(matches)) ||
+    (provider === "grok" &&
+      args.length === 4 &&
+      args[0] === "--no-auto-update" &&
+      args[1] === "sessions" &&
+      args[2] === "delete" &&
+      /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(args[3]))
+  );
+}
 
 function loopbackUrl(value: unknown): string {
   const url = new URL(String(value));
@@ -51,6 +76,8 @@ function loopbackUrl(value: unknown): string {
 
 /** Native process implementation for the headless execution proof. */
 export class HostChildBackend implements ChildBackend {
+  private genericAcp?: GenericAcpService;
+  setGenericAcpService(service: GenericAcpService): void { this.genericAcp = service; }
   private events = new EventEmitter();
   private children = new Map<string, ChildProcessWithoutNullStreams>();
   private streams = new Map<string, AbortController>();
@@ -91,6 +118,19 @@ export class HostChildBackend implements ChildBackend {
     args: Record<string, unknown> = {},
   ): Promise<T> {
     const id = String(args.sessionId ?? "");
+    if (command.startsWith("generic_acp_")) {
+      const service = this.genericAcp;
+      if (!service) throw new Error("Generic ACP management is unavailable on this host");
+      switch (command) {
+        case "generic_acp_list": return await service.list() as T;
+        case "generic_acp_save": await service.save(args.config as GenericAcpConfig); return undefined as T;
+        case "generic_acp_remove": await service.remove(String(args.id)); return undefined as T;
+        case "generic_acp_registry": return await service.registry(args.refresh === true) as T;
+        case "generic_acp_install": await service.install(String(args.id), String(args.version)); return undefined as T;
+        case "generic_acp_cancel_install": service.cancelInstall(String(args.id)); return undefined as T;
+        default: throw new Error("Unknown generic ACP command");
+      }
+    }
     if (command.startsWith("harness_resolve_")) {
       const provider = command.slice("harness_resolve_".length);
       if (!isRemoteProvider(provider))
@@ -123,7 +163,7 @@ export class HostChildBackend implements ChildBackend {
           args.command !== commandPath ||
           !Array.isArray(args.args) ||
           !args.args.every((arg) => typeof arg === "string") ||
-          !ALLOWED_EXEC_ARGS.has(args.args.join(" "))
+          !execArgsAllowed(provider, args.args as string[])
         )
           throw new Error("Unsupported headless catalog command");
         const launch = await providerLaunch(commandPath, args.args as string[]);
@@ -295,6 +335,13 @@ export class HostChildBackend implements ChildBackend {
     args: Record<string, unknown>,
   ): Promise<number> {
     if (this.closing) throw new Error("Host is stopping");
+    let genericEnv: Record<string, string> = {};
+    if (args.genericAcpId) {
+      if (!this.genericAcp) throw new Error("Generic ACP management is unavailable");
+      const config = await this.genericAcp.get(String(args.genericAcpId));
+      args = { ...args, command: config.command, args: config.args };
+      genericEnv = config.env ?? {};
+    }
     await this.kill(id);
     if (this.closing) throw new Error("Host is stopping");
     const account = args.account as { id?: string } | undefined;
@@ -319,7 +366,7 @@ export class HostChildBackend implements ChildBackend {
         stdio: ["pipe", "pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsHide: true,
-        env: { ...process.env, MONOCODE_HOST: "1" },
+        env: { ...process.env, ...genericEnv, MONOCODE_HOST: "1" },
       },
     );
     this.children.set(id, child);
@@ -365,7 +412,7 @@ export class HostChildBackend implements ChildBackend {
       (line) => this.emit(`harness-${stream}`, { sessionId: id, line }),
       () =>
         onOverflow(
-          `Provider ${stream} message exceeded the ${maxBytes / 1024 / 1024} MiB limit; MonoCode host stopped the process.`,
+          `Provider ${stream} message exceeded the ${maxBytes / 1024 / 1024} MiB limit; imc code host stopped the process.`,
         ),
     );
     child[stream].setEncoding("utf8");

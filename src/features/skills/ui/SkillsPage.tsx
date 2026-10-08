@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   useEffect,
@@ -84,6 +85,7 @@ export function SkillsPage({
   cwd: string;
   header?: ReactNode;
 }): ReactNode {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const previewId = useId();
   const previewOpener = useRef<string | null>(null);
@@ -429,9 +431,9 @@ export function SkillsPage({
     canDeleteSkill(skill) ? (
       <button
         type="button"
-        aria-label={`Delete ${skill.name}`}
+        aria-label={t("Delete {p0}", { p0: skill.name })}
         title={
-          deleting === skill.path ? "Deleting…" : "Delete skill permanently"
+          deleting === skill.path ? t("Deleting…") : t("Delete skill permanently")
         }
         disabled={deleting !== null || transferring !== null}
         onClick={() => void onDelete(skill, machine)}
@@ -452,7 +454,7 @@ export function SkillsPage({
         {failure}
       </p>
     ) : all == null ? (
-      <p className="text-[12px] text-content/45">Loading skills…</p>
+      <p className="text-[12px] text-content/45">{t("Loading skills…")}</p>
     ) : (
       // About ten rows tall; a longer list scrolls inside its own box so one
       // machine's skills never push the next machine off the page.
@@ -460,8 +462,8 @@ export function SkillsPage({
         {shown.length === 0 ? (
           <p className="px-3 py-3 text-[12px] text-content/45">
             {all.length === 0
-              ? "No skills yet. Add skill creates a starter SKILL.md."
-              : "No matching skills"}
+              ? t("No skills yet. Add skill creates a starter SKILL.md.")
+              : t("No matching skills")}
           </p>
         ) : (
           shown.map((skill) => {
@@ -477,7 +479,7 @@ export function SkillsPage({
                           <button
                             type="button"
                             className="mr-auto min-w-0 truncate rounded text-left font-sans text-[12px] text-content hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                            title={`Preview ${skill.name}`}
+                            title={t("Preview {p0}", { p0: skill.name })}
                             ref={registerPreviewButton(`name:${skill.path}`)}
                             aria-controls={previewOpen ? previewId : undefined}
                             aria-expanded={previewSkill?.path === skill.path}
@@ -487,10 +489,10 @@ export function SkillsPage({
                           </button>
                           <span className="shrink-0 rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-content/60">
                             {skill.scope === "user"
-                              ? "Personal"
+                              ? t("Personal")
                               : skill.scope === "builtin"
                                 ? `${PRODUCT_IDENTITY.displayName}`
-                                : "Project"}
+                                : t("Project")}
                           </span>
                           <span className="w-20 shrink-0 truncate text-right font-sans text-[11px] text-content/40">
                             {skill.source}
@@ -498,7 +500,7 @@ export function SkillsPage({
                           <button
                             type="button"
                             role="switch"
-                            aria-label={`Include ${skill.name} in ${PRODUCT_IDENTITY.displayName} catalog`}
+                            aria-label={t("Include {p0} in {p1} catalog", { p0: skill.name, p1: PRODUCT_IDENTITY.displayName })}
                             aria-checked={!disabled}
                             onClick={() => onToggle(skill.path, disabled)}
                             className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${disabled ? "bg-content/20" : "bg-accent"}`}
@@ -525,8 +527,8 @@ export function SkillsPage({
                           </p>
                           <button
                             type="button"
-                            aria-label={`Preview skill ${skill.name}`}
-                            title="Preview skill"
+                            aria-label={t("Preview skill {p0}", { p0: skill.name })}
+                            title={t("Preview skill")}
                             ref={registerPreviewButton(`icon:${skill.path}`)}
                             aria-controls={previewOpen ? previewId : undefined}
                             aria-expanded={previewSkill?.path === skill.path}
@@ -541,8 +543,8 @@ export function SkillsPage({
                           </button>
                           <button
                             type="button"
-                            aria-label={`Copy path of ${skill.name}`}
-                            title="Copy path"
+                            aria-label={t("Copy path of {p0}", { p0: skill.name })}
+                            title={t("Copy path")}
                             onClick={() => onCopyPath(skill.path)}
                             className="grid size-5 shrink-0 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content"
                           >
@@ -553,17 +555,17 @@ export function SkillsPage({
                               type="button"
                               aria-label={
                                 transferring === skill.path
-                                  ? `Copying ${skill.name}…`
+                                  ? t("Copying {p0}…", { p0: skill.name })
                                   : machines.length === 1
-                                    ? `Copy ${skill.name} to ${machines[0].name}`
-                                    : `Copy ${skill.name} to another machine`
+                                    ? t("Copy {p0} to {p1}", { p0: skill.name, p1: machines[0].name })
+                                    : t("Copy {p0} to another machine", { p0: skill.name })
                               }
                               title={
                                 transferring === skill.path
-                                  ? "Copying…"
+                                  ? t("Copying…")
                                   : machines.length === 1
-                                    ? `Copy to ${machines[0].name}`
-                                    : "Copy to another machine"
+                                    ? t("Copy to {p0}", { p0: machines[0].name })
+                                    : t("Copy to another machine")
                               }
                               aria-haspopup={machines.length > 1 ? "menu" : undefined}
                               disabled={transferring !== null || deleting !== null}
@@ -579,8 +581,8 @@ export function SkillsPage({
                           ) : null}
                           <button
                             type="button"
-                            aria-label={`Reveal ${skill.name} in file explorer`}
-                            title="Reveal in file manager"
+                            aria-label={t("Reveal {p0} in file explorer", { p0: skill.name })}
+                            title={t("Reveal in file manager")}
                             onClick={() => onReveal(skill.path)}
                             className="grid size-5 shrink-0 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content"
                           >
@@ -609,13 +611,13 @@ export function SkillsPage({
         </p>
       );
     if (all == null)
-      return <p className="text-[12px] text-content/45">Loading skills…</p>;
+      return <p className="text-[12px] text-content/45">{t("Loading skills…")}</p>;
     return (
       // About ten compact rows; a longer list scrolls inside its own box.
       <div className="max-h-80 overflow-y-auto overscroll-contain rounded-lg border border-content/10">
         {shown.length === 0 ? (
           <p className="px-3 py-3 text-[12px] text-content/45">
-            {all.length === 0 ? "No skills on this machine." : "No matching skills"}
+            {all.length === 0 ? t("No skills on this machine.") : t("No matching skills")}
           </p>
         ) : (
           shown.map((skill) => (
@@ -626,7 +628,7 @@ export function SkillsPage({
               <button
                 type="button"
                 className="mr-auto min-w-0 truncate rounded text-left font-sans text-[12px] text-content hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                title={skill.description || `Open ${skill.name}`}
+                title={skill.description || t("Open {p0}", { p0: skill.name })}
                 ref={registerPreviewButton(`name:${skill.path}`)}
                 aria-controls={previewOpen ? previewId : undefined}
                 aria-expanded={previewSkill?.path === skill.path}
@@ -635,7 +637,7 @@ export function SkillsPage({
                 {skill.name}
               </button>
               <span className="shrink-0 text-[11px] text-content/40">
-                {skill.scope === "user" ? "Personal" : "Project"} · {skill.source}
+                {skill.scope === "user" ? t("Personal") : t("Project")} · {skill.source}
               </span>
               {renderDelete(skill, machine)}
               {canTransferSkill(skill) ? (
@@ -643,17 +645,17 @@ export function SkillsPage({
                   type="button"
                   aria-label={
                     transferring === skill.path
-                      ? `Copying ${skill.name}…`
-                      : `Copy ${skill.name} to this computer`
+                      ? t("Copying {p0}…", { p0: skill.name })
+                      : t("Copy {p0} to this computer", { p0: skill.name })
                   }
                   title={
-                    transferring === skill.path ? "Copying…" : "Copy to this computer"
+                    transferring === skill.path ? t("Copying…") : t("Copy to this computer")
                   }
                   disabled={transferring !== null || deleting !== null}
                   onClick={() => void onTransfer(skill, machine, null)}
                   className="shrink-0 rounded-md border border-content/10 px-2 py-0.5 text-[11px] text-content/70 hover:bg-content/10 disabled:opacity-40"
                 >
-                  {transferring === skill.path ? "Copying…" : "Transfer"}
+                  {transferring === skill.path ? t("Copying…") : t("Transfer")}
                 </button>
               ) : null}
             </div>
@@ -687,8 +689,8 @@ export function SkillsPage({
                     ref={filterInput}
                     value={query}
                     onChange={(event) => setQuery(event.target.value)}
-                    placeholder="Filter"
-                    aria-label="Filter skills"
+                    placeholder={t("Filter")}
+                    aria-label={t("Filter skills")}
                     spellCheck={false}
                     autoComplete="off"
                     className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
@@ -696,8 +698,8 @@ export function SkillsPage({
                 </label>
                 <button
                   type="button"
-                  aria-label="Refresh skills"
-                  title="Rescan skill folders"
+                  aria-label={t("Refresh skills")}
+                  title={t("Rescan skill folders")}
                   disabled={skills === null && !error}
                   onClick={() => {
                     invalidateSkills();
@@ -712,7 +714,7 @@ export function SkillsPage({
               <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  aria-label={adding ? "Close skill form" : "Add skill"}
+                  aria-label={adding ? t("Close skill form") : t("Add skill")}
                   ref={addSkillButton}
                   disabled={busy}
                   className="rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 hover:bg-content/10 disabled:opacity-40"
@@ -720,9 +722,9 @@ export function SkillsPage({
                     setAdding((value) => !value);
                     setCreateError(null);
                   }}
-                  title="Create a starter SKILL.md you can edit"
+                  title={t("Create a starter SKILL.md you can edit")}
                 >
-                  {adding ? "Close" : "Add skill"}
+                  {adding ? t("Close") : t("Add skill")}
                 </button>
               </div>
             </div>
@@ -753,13 +755,11 @@ export function SkillsPage({
             ) : null}
 
             {machines.length > 0 ? (
-              <h3 className="pb-2 text-[12px] font-medium text-content/60">
-                This computer
-              </h3>
+              <h3 className="pb-2 text-[12px] font-medium text-content/60">{t("This computer")}</h3>
             ) : null}
             {renderSkills(skills, filtered, error)}
             {machineShown.map(({ machine, all, shown }) => (
-              <section key={machine.environmentId} aria-label={`Skills on ${machine.name}`}>
+              <section key={machine.environmentId} aria-label={t("Skills on {p0}", { p0: machine.name })}>
                 <h3 className="pt-6 pb-2 text-[12px] font-medium text-content/60">
                   {machine.name}
                 </h3>
@@ -767,20 +767,14 @@ export function SkillsPage({
               </section>
             ))}
 
-            <p className="pt-3 text-[12px] text-content/40">
-              Hidden skills stay on disk and are excluded from {PRODUCT_IDENTITY.displayName}'s
-              file-skill catalog. Provider-managed skills and native commands
-              are unaffected. Skills live in{" "}
-              <span className="font-sans">.agents/skills</span> for this project
-              and <span className="font-sans">~/.agents/skills</span> for you
-              personally; harness folders are also picked up.
-            </p>
+            <p className="pt-3 text-[12px] text-content/40">{t("Hidden skills stay on disk and are excluded from ")}{PRODUCT_IDENTITY.displayName}{t("'s file-skill catalog. Provider-managed skills and native commands are unaffected. Skills live in")}{" "}
+              <span className="font-sans">{t(".agents/skills")}</span>{t(" for this project and ")}<span className="font-sans">{"~/.agents/skills"}</span>{t(" for you personally; harness folders are also picked up.")}</p>
           </div>
         </div>
         {previewSkill ? (
           <aside
             id={previewId}
-            aria-label="Skill preview"
+            aria-label={t("Skill preview")}
             className="flex min-h-0 min-w-0 flex-1 flex-col border-t border-stroke @3xl/skills:max-w-[720px] @3xl/skills:border-t-0 @3xl/skills:border-l"
           >
             <header className="flex shrink-0 items-start gap-2 px-4 pt-4 pb-2">
@@ -792,25 +786,25 @@ export function SkillsPage({
                   type="button"
                   aria-label={
                     transferring === previewSkill.path
-                      ? `Copying ${previewSkill.name}…`
-                      : `Copy ${previewSkill.name} to this computer`
+                      ? t("Copying {p0}…", { p0: previewSkill.name })
+                      : t("Copy {p0} to this computer", { p0: previewSkill.name })
                   }
-                  title="Copy to this computer"
+                  title={t("Copy to this computer")}
                   disabled={transferring !== null || deleting !== null}
                   onClick={() =>
                     void onTransfer(previewSkill, previewMachine, null)
                   }
                   className="shrink-0 rounded-md border border-content/10 px-2 py-0.5 text-[12px] text-content/70 hover:bg-content/10 disabled:opacity-40"
                 >
-                  {transferring === previewSkill.path ? "Copying…" : "Transfer"}
+                  {transferring === previewSkill.path ? t("Copying…") : t("Transfer")}
                 </button>
               ) : null}
               {renderDelete(previewSkill, previewMachine)}
               <button
                 ref={closePreview}
                 type="button"
-                aria-label="Close skill preview"
-                title="Close preview (Escape)"
+                aria-label={t("Close skill preview")}
+                title={t("Close preview (Escape)")}
                 onClick={() => setPreviewSkill(null)}
                 className="grid size-6 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
@@ -844,9 +838,7 @@ export function SkillsPage({
                 <p
                   role="status"
                   className="px-4 py-5 text-[12px] text-content/50"
-                >
-                  Loading skill…
-                </p>
+                >{t("Loading skill…")}</p>
               ) : previewMode === "preview" ? (
                 <SkillDocumentPreview text={previewText} />
               ) : (
@@ -863,7 +855,7 @@ export function SkillsPage({
           width={220}
           onDismiss={() => setCopyMenu(null)}
           role="menu"
-          aria-label={`Copy ${copyMenu.skill.name} to`}
+          aria-label={t("Copy {p0} to", { p0: copyMenu.skill.name })}
           className="p-1"
         >
           {machines.map((machine) => (

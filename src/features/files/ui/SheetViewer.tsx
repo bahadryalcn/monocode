@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useId, useState } from "react";
 import { documentErrorMessage } from "../model/documentViewer";
 import { loadSpreadsheet } from "../model/spreadsheetClient";
@@ -11,6 +12,7 @@ type State =
   | { status: "error"; message: string };
 
 export default function SheetViewer({ bytes }: { bytes: Uint8Array }) {
+  useLocale();
   const [state, setState] = useState<State>({ status: "loading" });
   const [active, setActive] = useState(0);
   const id = useId();
@@ -36,21 +38,19 @@ export default function SheetViewer({ bytes }: { bytes: Uint8Array }) {
       <div
         role="status"
         className="ui-secondary-text grid h-full place-items-center"
-      >
-        Reading spreadsheet…
-      </div>
+      >{t("Reading spreadsheet…")}</div>
     );
   }
   if (state.status === "error") {
     return (
-      <DocumentMessage title="Couldn’t read this spreadsheet" error>
+      <DocumentMessage title={t("Couldn’t read this spreadsheet")} error>
         {state.message}
       </DocumentMessage>
     );
   }
   const names = state.book.sheets.map((sheet) => sheet.name);
   if (names.length === 0) {
-    return <DocumentMessage title="This workbook has no sheets" />;
+    return <DocumentMessage title={t("This workbook has no sheets")} />;
   }
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -67,14 +67,12 @@ export default function SheetViewer({ bytes }: { bytes: Uint8Array }) {
         />
       </div>
       {state.book.omittedSheets > 0 ? (
-        <p role="status" className="px-3 text-xs text-content/70">
-          Only the first 100 sheets are previewed.
-        </p>
+        <p role="status" className="px-3 text-xs text-content/70">{t("Only the first 100 sheets are previewed.")}</p>
       ) : null}
       {names.length > 1 ? (
         <div
           role="tablist"
-          aria-label="Workbook sheets"
+          aria-label={t("Workbook sheets")}
           className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-t border-stroke px-2 text-[11px]"
         >
           {names.map((name, index) => (

@@ -20,6 +20,7 @@ const ACTION_LABELS: Record<string, string> = {
   "notes.list": "List notes",
   "notes.read": "Read a note",
   "notes.write": "Write a note",
+  "html_artifact_publish": "Save an HTML visual",
 };
 
 /** Conservatively parse one shell invocation; compound commands use the shell row. */

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import { RefreshCw, Terminal } from "../../shared/ui/icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
@@ -87,6 +88,7 @@ export function UsageFooter({
   ) => void;
   onManageAccounts?: (provider: ProviderAccountProvider) => void;
 }) {
+  useLocale();
   const wantClaude = providers.includes("claude");
   const wantCodex = providers.includes("codex");
   const wantOpencode = providers.includes("opencode");
@@ -364,8 +366,8 @@ export function UsageFooter({
           <button
             type="button"
             className="grid size-4.5 shrink-0 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content disabled:opacity-50"
-            aria-label="Refresh usage"
-            title="Refresh usage"
+            aria-label={t("Refresh usage")}
+            title={t("Refresh usage")}
             disabled={refreshing}
             onClick={() => void refresh()}
           >
@@ -401,7 +403,7 @@ export function UsageFooter({
               onClick={onTerminalClick}
             >
               <Terminal className="size-3.5" strokeWidth={1.75} aria-hidden />
-              <span>Terminal</span>
+              <span>{t("Terminal")}</span>
             </button>
           ) : null}
         </div>
@@ -411,6 +413,7 @@ export function UsageFooter({
 }
 
 function TerminalLiveMark() {
+  useLocale();
   return (
     <span className="terminal-live shrink-0" aria-hidden>
       <span className="terminal-live-bar" />
@@ -421,6 +424,7 @@ function TerminalLiveMark() {
 }
 
 function SessionChip({ session }: { session: UsageFooterSession }) {
+  useLocale();
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [loginState, setLoginState] = useState<ProviderSignInState>("idle");
@@ -476,18 +480,16 @@ function SessionChip({ session }: { session: UsageFooterSession }) {
         ref={trigger}
         type="button"
         className="-mx-1 inline-flex h-5 min-w-0 shrink-0 items-center gap-1.5 whitespace-nowrap rounded px-1 text-content/55 transition-[background-color,color,transform] duration-150 ease-out hover:bg-content/10 hover:text-content focus-visible:outline-2 focus-visible:outline-accent active:scale-[0.97]"
-        aria-label={`${HARNESS_TITLE[session.harness]} sign-in required`}
+        aria-label={t("{p0} sign-in required", { p0: HARNESS_TITLE[session.harness] })}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={`${HARNESS_TITLE[session.harness]} sign-in required`}
+        title={t("{p0} sign-in required", { p0: HARNESS_TITLE[session.harness] })}
         onClick={() => setOpen((value) => !value)}
       >
         <HarnessIcon harness={session.harness} className="size-3 shrink-0" />
         <span>{HARNESS_LABEL[session.harness]}</span>
         {authRequired ? (
-          <span className="text-[10px] text-amber-600 dark:text-amber-300">
-            sign in
-          </span>
+          <span className="text-[10px] text-amber-600 dark:text-amber-300">{t("sign in")}</span>
         ) : null}
       </button>
       {open ? (
@@ -500,7 +502,7 @@ function SessionChip({ session }: { session: UsageFooterSession }) {
           autoFocus
           onDismiss={dismiss}
           role="dialog"
-          aria-label={`${HARNESS_TITLE[session.harness]} sign-in`}
+          aria-label={t("{p0} sign-in", { p0: HARNESS_TITLE[session.harness] })}
           tabIndex={-1}
           className="text-content"
         >
@@ -525,6 +527,7 @@ function RunningTerminalChip({
   open: boolean;
   onToggle?: (fileId: string) => void;
 }) {
+  useLocale();
   const root = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const label = runningTerminalChipLabel(terminals);
@@ -579,7 +582,7 @@ function RunningTerminalChip({
           autoFocus
           onDismiss={() => setMenuOpen(false)}
           role="menu"
-          aria-label="Running terminals"
+          aria-label={t("Running terminals")}
           className="min-w-[12rem] p-1"
         >
           {terminals.map((terminal) => (

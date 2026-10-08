@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useMemo } from "react";
 import { GitBranch, Globe } from "../../../shared/ui/icons";
 import { historyItemGraph, type HistoryItemViewModel } from "../model/gitGraph";
@@ -23,6 +24,7 @@ export function refTitle(ref: GraphRefChip): string {
 
 /** The lane drawing of one row. Neighbouring rows rely on its overflow. */
 export function GraphLane({ row }: { row: HistoryItemViewModel }) {
+  useLocale();
   const graph = historyItemGraph(row);
   return (
     <svg
@@ -65,10 +67,11 @@ export function GraphAvatar({
   size?: number;
   className?: string;
 }) {
+  useLocale();
   return (
     <span
       aria-hidden
-      title={name || "Unknown author"}
+      title={name || t("Unknown author")}
       className={`grid shrink-0 place-items-center rounded-full font-semibold leading-none select-none ${className}`}
       style={{
         width: size,
@@ -84,6 +87,7 @@ export function GraphAvatar({
 }
 
 function TagGlyph() {
+  useLocale();
   return (
     <svg
       aria-hidden
@@ -101,6 +105,7 @@ function TagGlyph() {
 }
 
 export function RefPill({ refInfo }: { refInfo: GraphRefChip }) {
+  useLocale();
   return (
     <span
       title={refTitle(refInfo)}
@@ -146,6 +151,7 @@ export function RefPills({
   maxWidth: string;
   className?: string;
 }) {
+  useLocale();
   const { shown, hidden } = useMemo(
     () => splitRefsForBudget(refs, budgetPx, PILL_MAX_PX),
     [refs, budgetPx],
@@ -182,13 +188,14 @@ export function GraphSearchInput({
   onChange: (value: string) => void;
   onEscape?: () => void;
 }) {
+  useLocale();
   return (
     <input
       type="text"
       value={value}
       autoFocus={autoFocus}
-      placeholder="Message, author, branch, or commit ID"
-      aria-label="Search commits"
+      placeholder={t("Message, author, branch, or commit ID")}
+      aria-label={t("Search commits")}
       spellCheck={false}
       autoComplete="off"
       onChange={(event) => onChange(event.target.value)}

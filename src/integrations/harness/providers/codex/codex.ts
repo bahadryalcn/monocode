@@ -40,7 +40,12 @@ import {
   deleteHarnessGeneratedImages as deleteGeneratedImages,
   saveHarnessGeneratedImage as saveGeneratedImage,
 } from "../../core/generatedImages";
-import { codexQuestions, codexQuestionResponse } from "./codexQuestions";
+import {
+  codexAsyncQuestions,
+  codexAsyncQuestionResponse,
+  codexQuestions,
+  codexQuestionResponse,
+} from "./codexQuestions";
 import { codexMcpConfirmation } from "./codexElicitation";
 import {
   parseCodexGoalCommand,
@@ -69,8 +74,11 @@ type PendingApproval = {
 };
 
 type PendingQuestion = {
-  rpcId: JsonRpcId;
+  /** Async agentMessage questions have no pending server request. */
+  rpcId: JsonRpcId | null;
   threadId: string;
+  turnId?: string;
+  sending?: boolean;
   event: Extract<HarnessEvent, { type: "question.asked" }>;
   isBlocking: boolean;
   timer?: ReturnType<typeof setTimeout>;
@@ -108,6 +116,7 @@ type Live = {
   emittedAssistantByItem: Map<string, string>;
   emittedReasoningByItem: Map<string, string>;
   emittedGeneratedImages: Set<string>;
+  emittedAsyncQuestions: Set<string>;
   turnGeneration: number;
   notificationQueue: Promise<void> | null;
   /** Child thread id -> the agent tool row that spawned it. */
@@ -338,7 +347,45 @@ export function respondCodexQuestion(
   requestId: number,
   reply: UserQuestionReply,
 ): void {
-  liveByThread.get(sessionId)?.questions.get(requestId)?.resolve(reply);
+  const live = liveByThread.get(sessionId);
+  const pending = live?.questions.get(requestId);
+  if (!live || !pending || pending.sending) return;
+  if (pending.rpcId !== null || reply.kind === "skipped") {
+    pending.resolve(reply);
+    return;
+  }
+  const text = codexAsyncQuestionResponse(pending.event.questions, reply);
+  if (!text) {
+    pending.resolve({ kind: "skipped" });
+    return;
+  }
+  const turnId = pending.turnId;
+  if (!turnId || live.activeTurnId !== turnId) {
+    pending.resolve("cancelled");
+    return;
+  }
+  pending.sending = true;
+  keepCodexQuestionOpen(sessionId, requestId);
+  void live.rpc
+    .request(
+      "turn/steer",
+      buildTurnSteerParams({
+        threadId: pending.threadId,
+        expectedTurnId: turnId,
+        prompt: text,
+      }),
+    )
+    .then(() => {
+      if (live.questions.get(requestId) === pending) pending.resolve(reply);
+    })
+    .catch((error: unknown) => {
+      pending.sending = false;
+      if (live.questions.get(requestId) !== pending) return;
+      live.onEvent({
+        type: "status",
+        text: `Could not send your answer to Codex: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    });
 }
 
 export function keepCodexQuestionOpen(
@@ -681,12 +728,13 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       turnDone: null,
       turnFailed: null,
       turnEndPending: false,
-      emittedAssistantByItem: new Map(),
-      emittedReasoningByItem: new Map(),
-      emittedGeneratedImages: new Set(),
-      turnGeneration: 0,
-      notificationQueue: null,
-      subagentThreads: new Map(),
+       emittedAssistantByItem: new Map(),
+       emittedReasoningByItem: new Map(),
+       emittedGeneratedImages: new Set(),
+       emittedAsyncQuestions: new Set(),
+       turnGeneration: 0,
+       notificationQueue: null,
+       subagentThreads: new Map(),
       pendingSubagent: new Map(),
       openAgentRows: new Map(),
       rateLimits: new Map(),
@@ -776,6 +824,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   live.emittedAssistantByItem.clear();
   live.emittedReasoningByItem.clear();
   live.emittedGeneratedImages.clear();
+  live.emittedAsyncQuestions.clear();
   live.turnGeneration += 1;
 
   const turnPromise = new Promise<void>((resolve, reject) => {
@@ -922,6 +971,7 @@ function handleNotification(
     }
     live.onEvent(event);
   }
+  if (method === "item/completed") showCodexAsyncQuestion(live, rec);
   // Metadata and steps can arrive before the spawn. Create its row first.
   let replay: Promise<void> | undefined;
   for (const childId of codexSubagentThreadIds(asRecord(rec?.item) ?? {})) {
@@ -967,6 +1017,69 @@ function handleNotification(
   };
   if (pending) return pending.then(afterImages);
   return afterImages();
+}
+
+function showCodexAsyncQuestion(
+  live: Live,
+  rec: Record<string, unknown> | null,
+): void {
+  const item = asRecord(rec?.item);
+  const itemId = stringField(item, "id");
+  const turnId = stringField(rec, "turnId") ?? live.activeTurnId;
+  if (
+    !itemId ||
+    !turnId ||
+    turnId !== live.activeTurnId ||
+    live.emittedAsyncQuestions.has(itemId)
+  )
+    return;
+  let questions;
+  try {
+    questions = codexAsyncQuestions(item);
+  } catch (error) {
+    live.onEvent({
+      type: "status",
+      text: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  if (!questions.length) return;
+  live.emittedAsyncQuestions.add(itemId);
+  const uiId = live.nextApprovalUiId++;
+  const event: Extract<HarnessEvent, { type: "question.asked" }> = {
+    type: "question.asked",
+    requestId: uiId,
+    title: questionPromptTitle(questions),
+    questions,
+    callId: itemId,
+  };
+  const outcome = new Promise<UserQuestionReply | "cancelled">((resolve) => {
+    live.questions.set(uiId, {
+      rpcId: null,
+      threadId: live.threadId,
+      turnId,
+      event,
+      isBlocking: false,
+      resolve,
+    });
+  }).finally(() => {
+    clearTimeout(live.questions.get(uiId)?.timer);
+    live.questions.delete(uiId);
+  });
+  showNextQuestion(live);
+  void outcome.then((reply) => {
+    live.onEvent({
+      type: "question.resolved",
+      requestId: uiId,
+      decision:
+        reply === "cancelled"
+          ? "cancelled"
+          : reply.kind === "answered"
+            ? "answered"
+            : "skipped",
+    });
+    showNextQuestion(live);
+  });
 }
 
 async function materializeGeneratedImage(
@@ -1233,6 +1346,7 @@ function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
   live.emittedAssistantByItem.clear();
   live.emittedReasoningByItem.clear();
   live.emittedGeneratedImages.clear();
+  live.emittedAsyncQuestions.clear();
   live.subagentThreads.clear();
   live.pendingSubagent.clear();
   for (const event of extraEvents) {

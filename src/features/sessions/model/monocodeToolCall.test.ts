@@ -114,8 +114,8 @@ describe("MonoCode CLI tool calls", () => {
       shell("monocode app --help"),
       shell("monocode app notes.list"),
     ];
-    expect(monoCodeWorkSummary(calls, true)).toBe("Using imc");
-    expect(monoCodeWorkSummary(calls, false)).toBe("Used imc");
+    expect(monoCodeWorkSummary(calls, true)).toBe("Using imc code");
+    expect(monoCodeWorkSummary(calls, false)).toBe("Used imc code");
     expect(
       monoCodeWorkSummary([...calls, shell("git status")], true),
     ).toBeUndefined();

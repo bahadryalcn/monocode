@@ -132,59 +132,114 @@ describe("settings pages", () => {
     localStorage.setItem("monocode.themeSaturation", "31");
     await render("appearance");
     expect(container.textContent).toContain("Your custom colors are active");
-    expect(container.querySelectorAll('.appearance-palette[aria-pressed="true"]')).toHaveLength(0);
-    const ocean = Array.from(container.querySelectorAll<HTMLButtonElement>(".appearance-palette")).find(button => button.textContent?.includes("Tide"))!;
+    expect(
+      container.querySelectorAll('.appearance-palette[aria-pressed="true"]'),
+    ).toHaveLength(0);
+    const ocean = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".appearance-palette"),
+    ).find((button) => button.textContent?.includes("Tide"))!;
     await act(async () => ocean.click());
     expect(localStorage.getItem("monocode.themeHue")).toBe("205");
     expect(localStorage.getItem("monocode.accentColor")).toBe("#65b4db");
     expect(ocean.getAttribute("aria-pressed")).toBe("true");
-    expect(container.querySelector("#appearance-advanced")?.hasAttribute("hidden")).toBe(true);
+    expect(
+      container.querySelector("#appearance-advanced")?.hasAttribute("hidden"),
+    ).toBe(true);
   });
 
   it("persists typography and restores the appearance defaults", async () => {
     await render("appearance");
-    const trigger = container.querySelector<HTMLButtonElement>('[data-setting-id="interface-font"] [aria-haspopup="listbox"]')!;
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-setting-id="interface-font"] [aria-haspopup="listbox"]',
+    )!;
     await act(async () => trigger.click());
-    const option = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="option"]')).find(node => node.textContent === "Verdana")!;
+    const option = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+    ).find((node) => node.textContent === "Verdana")!;
     await act(async () => option.click());
-    expect(document.documentElement.style.getPropertyValue("--font-sans")).toBe('"Verdana", sans-serif');
+    expect(document.documentElement.style.getPropertyValue("--font-sans")).toBe(
+      '"Verdana", sans-serif',
+    );
     await render("chat");
     await render("appearance");
-    expect(container.querySelector('[data-setting-id="interface-font"] [aria-haspopup="listbox"]')?.getAttribute("aria-label")).toBe("Interface font: Verdana");
-    const reset = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(node => node.textContent?.includes("Restore defaults"))!;
+    expect(
+      container
+        .querySelector(
+          '[data-setting-id="interface-font"] [aria-haspopup="listbox"]',
+        )
+        ?.getAttribute("aria-label"),
+    ).toBe("Interface font: Verdana");
+    const reset = Array.from(
+      container.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((node) => node.textContent?.includes("Restore defaults"))!;
     await act(async () => reset.click());
-    expect(document.documentElement.style.getPropertyValue("--font-sans")).toBe("");
-    expect(JSON.parse(localStorage.getItem("monocode.appearancePreferences.v1")!).interfaceFont).toBe("System");
+    expect(document.documentElement.style.getPropertyValue("--font-sans")).toBe(
+      "",
+    );
+    expect(
+      JSON.parse(localStorage.getItem("monocode.appearancePreferences.v1")!)
+        .interfaceFont,
+    ).toBe("System");
   });
 
   it("exposes every category in a horizontal tab navigation with a linked content panel", async () => {
     await render("general");
-    const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-    expect(tabs.map(tab => tab.textContent?.trim())).toEqual(SETTINGS_SECTIONS.map(section => section.label));
-    const selected = tabs.find(tab => tab.getAttribute("aria-selected") === "true")!;
+    const tabs = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    );
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(
+      SETTINGS_SECTIONS.map((section) => section.label),
+    );
+    const selected = tabs.find(
+      (tab) => tab.getAttribute("aria-selected") === "true",
+    )!;
     expect(selected.textContent?.trim()).toBe("General");
     expect(selected.tabIndex).toBe(0);
-    expect(tabs.filter(tab => tab.tabIndex === 0)).toHaveLength(1);
+    expect(tabs.filter((tab) => tab.tabIndex === 0)).toHaveLength(1);
     const panel = container.querySelector('[role="tabpanel"]')!;
     expect(panel.id).toBe(selected.getAttribute("aria-controls"));
     expect(panel.getAttribute("aria-labelledby")).toBe(selected.id);
-    expect(container.querySelector('.imece-settings-toolbar [aria-label="Search settings"]')).not.toBeNull();
-    const appearance = tabs.find(tab => tab.textContent?.trim() === "Appearance")!;
+    expect(
+      container.querySelector(
+        '.imece-settings-toolbar [aria-label="Search settings"]',
+      ),
+    ).not.toBeNull();
+    const appearance = tabs.find(
+      (tab) => tab.textContent?.trim() === "Appearance",
+    )!;
     await act(async () => appearance.click());
     expect(onSelectSection).toHaveBeenCalledWith("appearance");
   });
 
   it("navigates category tabs with arrows and boundary keys while retaining focus", async () => {
     await render("general");
-    const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const tabs = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[role="tab"]'),
+    );
     tabs[0]!.focus();
-    await act(async () => tabs[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    await act(async () =>
+      tabs[0]!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+      ),
+    );
     expect(onSelectSection).toHaveBeenLastCalledWith("connections");
     expect(document.activeElement).toBe(tabs[1]);
-    await act(async () => tabs[1]!.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
-    expect(onSelectSection).toHaveBeenLastCalledWith(SETTINGS_SECTIONS.at(-1)!.id);
+    await act(async () =>
+      tabs[1]!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "End", bubbles: true }),
+      ),
+    );
+    expect(onSelectSection).toHaveBeenLastCalledWith(
+      SETTINGS_SECTIONS.at(-1)!.id,
+    );
     expect(document.activeElement).toBe(tabs.at(-1));
-    await act(async () => tabs.at(-1)!.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })));
+    await act(async () =>
+      tabs
+        .at(-1)!
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Home", bubbles: true }),
+        ),
+    );
     expect(onSelectSection).toHaveBeenLastCalledWith("general");
     expect(document.activeElement).toBe(tabs[0]);
   });
@@ -192,7 +247,9 @@ describe("settings pages", () => {
   it("returns to the workspace from its back button without invoking category changes", async () => {
     const onClose = vi.fn();
     await render("general", { onClose });
-    const back = container.querySelector<HTMLButtonElement>('[aria-label="Back to workspace"]')!;
+    const back = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Back to workspace"]',
+    )!;
     expect(back.getAttribute("data-tauri-drag-region")).toBe("false");
     await act(async () => back.click());
     expect(onClose).toHaveBeenCalledOnce();
@@ -221,8 +278,12 @@ describe("settings pages", () => {
     const hold = container.querySelector<HTMLButtonElement>(
       '[aria-label="Stay awake after an agent ends: When it ends"]',
     )!;
-    expect(hold.closest(".settings-row")).not.toBe(toggle.closest(".settings-row"));
-    expect(hold.closest(".settings-row")?.textContent).toContain("After agents finish");
+    expect(hold.closest(".settings-row")).not.toBe(
+      toggle.closest(".settings-row"),
+    );
+    expect(hold.closest(".settings-row")?.textContent).toContain(
+      "After agents finish",
+    );
     expect(hold.disabled).toBe(true);
 
     await act(async () => toggle.click());
@@ -306,19 +367,10 @@ describe("settings pages", () => {
     ).toHaveLength(2);
   });
 
-  it("shows remaining usage and masked emails until the options are turned off", async () => {
-    vi.mocked(invoke).mockImplementation(async (command) =>
-      command === "provider_account_identity"
-        ? { email: "user@example.com", plan: "Pro" }
-        : undefined,
-    );
+  it("moves usage controls and quotas out of provider settings", async () => {
     setCachedRateLimits("claude", "default", {
       provider: "claude",
-      session: {
-        usedPercent: 23,
-        windowMinutes: 300,
-        resetsAt: Date.now() + 3_600_000,
-      },
+      session: { usedPercent: 23, windowMinutes: 300, resetsAt: null },
       weekly: null,
       monthly: null,
       resetCredits: null,
@@ -326,17 +378,18 @@ describe("settings pages", () => {
       error: null,
       status: "ok",
     });
-
     await render("providers");
-
-    const remaining = container.querySelector(
-      '[aria-label="5h limit remaining"]',
-    );
-    expect(remaining?.getAttribute("aria-valuenow")).toBe("77");
+    expect(container.querySelector('[role="meter"]')).toBeNull();
     expect(
-      container.querySelectorAll('[aria-label="Reveal email"]').length,
-    ).toBeGreaterThan(0);
-
+      container.querySelector('[aria-label="Show remaining usage"]'),
+    ).toBeNull();
+    expect(container.querySelector('[data-setting-id="provider-usage"]')).toBeNull();
+    await render("usage");
+    expect(
+      container
+        .querySelector('[aria-label="Default account session remaining"]')
+        ?.getAttribute("aria-valuenow"),
+    ).toBe("77");
     await act(async () =>
       container
         .querySelector<HTMLButtonElement>(
@@ -344,45 +397,71 @@ describe("settings pages", () => {
         )!
         .click(),
     );
+    expect(
+      container
+        .querySelector('[aria-label="Default account session used"]')
+        ?.getAttribute("aria-valuenow"),
+    ).toBe("23");
+    expect(container.querySelectorAll('[data-setting-id="provider-usage"]')).toHaveLength(1);
     await act(async () =>
       container
         .querySelector<HTMLButtonElement>('[aria-label="Mask account emails"]')!
         .click(),
     );
-
-    const used = container.querySelector('[aria-label="5h limit used"]');
-    expect(used?.getAttribute("aria-valuenow")).toBe("23");
-    expect(used?.querySelector("span")?.getAttribute("style")).toBe(
-      "width: 23%;",
-    );
-    expect(container.textContent).toContain("user@example.com");
+    await render("providers");
     expect(container.querySelector('[aria-label="Reveal email"]')).toBeNull();
+    for (const id of [
+      "show-remaining-usage",
+      "mask-emails",
+      "provider-usage",
+    ]) {
+      expect(SETTINGS_INDEX.find((entry) => entry.id === id)?.section).toBe(
+        "usage",
+      );
+    }
   });
 
-  it("shows account usage bars as remaining capacity", async () => {
-    setCachedRateLimits("claude", "default", {
+  it("sets separate orange and pink colors for two Claude accounts", async () => {
+    saveProviderAccount({
+      id: "account-work",
       provider: "claude",
-      session: {
-        usedPercent: 23,
-        windowMinutes: 300,
-        resetsAt: Date.now() + 3_600_000,
-      },
-      weekly: null,
-      monthly: null,
-      resetCredits: null,
-      updatedAt: Date.now(),
-      error: null,
-      status: "ok",
+      label: "Work",
     });
-
     await render("providers");
-
-    const bar = container.querySelector('[aria-label="5h limit remaining"]');
-    expect(bar?.getAttribute("aria-valuenow")).toBe("77");
-    expect(bar?.querySelector("span")?.getAttribute("style")).toBe(
-      "width: 77%;",
-    );
-    expect(bar?.parentElement?.textContent).toContain("77% left");
+    const pick = async (label: string, color: string) => {
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            `[aria-label^="Color for ${label}:"]`,
+          )!
+          .click(),
+      );
+      await act(async () =>
+        document
+          .querySelector<HTMLButtonElement>(`[aria-label="${color}"]`)!
+          .click(),
+      );
+    };
+    await pick("Default account", "Orange");
+    await pick("Work", "Pink");
+    expect(
+      providerAccounts("claude").find((account) => account.id === "default")
+        ?.color,
+    ).toBe("orange");
+    expect(
+      providerAccounts("claude").find(
+        (account) => account.id === "account-work",
+      )?.color,
+    ).toBe("pink");
+    await render("usage");
+    expect(
+      container.querySelector(
+        '[aria-label="Color for Default account: Orange"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[aria-label="Color for Work: Pink"]'),
+    ).not.toBeNull();
   });
 
   it("shows background effect choices above scope when artwork is available", async () => {
@@ -531,9 +610,7 @@ describe("settings pages", () => {
         .querySelector<HTMLButtonElement>('[aria-label="Use Work by default"]')!
         .click(),
     );
-    expect(defaultProviderAccountId("codex")).toBe(
-      "account-work",
-    );
+    expect(defaultProviderAccountId("codex")).toBe("account-work");
     const remove = container.querySelectorAll<HTMLButtonElement>(
       '[aria-label="Remove Default account"]',
     );
@@ -545,14 +622,20 @@ describe("settings pages", () => {
     expect(providerAccounts("codex").map((entry) => entry.id)).toEqual([
       "account-work",
     ]);
-    expect(defaultProviderAccountId("codex")).toBe(
-      "account-work",
-    );
+    expect(defaultProviderAccountId("codex")).toBe("account-work");
   });
 
   it("colours accounts, flags duplicate sign-ins and surfaces signed-out profiles", async () => {
-    saveProviderAccount({ id: "account-a", provider: "claude", label: "Max A" });
-    saveProviderAccount({ id: "account-b", provider: "claude", label: "Max B" });
+    saveProviderAccount({
+      id: "account-a",
+      provider: "claude",
+      label: "Max A",
+    });
+    saveProviderAccount({
+      id: "account-b",
+      provider: "claude",
+      label: "Max B",
+    });
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       const { accountId } = (args ?? {}) as { accountId?: string };
       return command === "provider_account_identity" && accountId !== "default"
@@ -624,6 +707,7 @@ describe("settings pages", () => {
   it("validates and stores Codex and OpenCode binary overrides", async () => {
     let failAutoCodex = false;
     vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "generic_acp_list") return [];
       const payload = args as { binaryPath?: string } | undefined;
       if (command === "harness_resolve_configured") {
         return { path: payload?.binaryPath };
@@ -1458,7 +1542,9 @@ describe("providers scope inheritance", () => {
     await act(async () => trigger.click());
     const option = Array.from(
       document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
-    ).find((node) => node.querySelector(".truncate")?.textContent?.trim() === label);
+    ).find(
+      (node) => node.querySelector(".truncate")?.textContent?.trim() === label,
+    );
     expect(option).toBeTruthy();
     await act(async () => option!.click());
   }

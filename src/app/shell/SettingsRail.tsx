@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import {
   Archive,
   ArrowLeft,
@@ -47,13 +48,14 @@ type Props = {
 
 /** Body of the project rail while settings are open. */
 export function SettingsNav({ section, onSelect, onClose }: Props) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
 
   return (
     <>
       <div
         ref={lockOverscroll}
-        aria-label="Settings"
+        aria-label={t("Settings")}
         className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto overscroll-none px-2 py-3"
       >
         {settingsSectionsByGroup().map((group) => (
@@ -74,7 +76,7 @@ export function SettingsNav({ section, onSelect, onClose }: Props) {
         ))}
       </div>
       <div className="flex shrink-0 flex-col gap-px p-2">
-        <NavRow label="Back" icon={ArrowLeft} onClick={onClose} />
+        <NavRow label={t("Back")} icon={ArrowLeft} onClick={onClose} />
       </div>
     </>
   );
@@ -91,6 +93,7 @@ function NavRow({
   active?: boolean;
   onClick: () => void;
 }) {
+  useLocale();
   return (
     <button
       type="button"

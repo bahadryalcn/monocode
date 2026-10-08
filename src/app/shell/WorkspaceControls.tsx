@@ -1,8 +1,10 @@
+import { t, useLocale } from "../../shared/i18n";
 import { GitPullRequest, RefreshCw, Settings } from "../../shared/ui/icons";
 
 export const WORKSPACE_REFRESH_EVENT = "monocode:refresh-workspace-view";
 
 export function UsageIcon({ className }: { className?: string }) {
+  useLocale();
   return (
     <svg
       viewBox="0 0 24 24"
@@ -31,19 +33,20 @@ export function WorkspaceControls({
   onUsage: () => void;
   active?: "settings" | "pullRequests" | "usage";
 }) {
+  useLocale();
   const actions = [
-    { id: "settings", label: "Settings", icon: Settings, onClick: onSettings },
+    { id: "settings", get label() { return t("Settings"); }, icon: Settings, onClick: onSettings },
     {
       id: "pullRequests",
-      label: "Pull requests",
+      get label() { return t("Pull requests"); },
       icon: GitPullRequest,
       onClick: onPullRequests,
     },
-    { id: "usage", label: "Usage", icon: UsageIcon, onClick: onUsage },
+    { id: "usage", get label() { return t("Usage"); }, icon: UsageIcon, onClick: onUsage },
   ] as const;
   return (
     <nav
-      aria-label="Workspace controls"
+      aria-label={t("Workspace controls")}
       className="ml-auto flex h-7 shrink-0 items-center justify-end gap-1 px-2 text-content/50"
     >
       {actions.map(({ id, label, icon: Icon, onClick }) => (
@@ -63,8 +66,8 @@ export function WorkspaceControls({
       <button
         type="button"
         disabled={!canRefresh}
-        title="Refresh current view"
-        aria-label="Refresh current view"
+        title={t("Refresh current view")}
+        aria-label={t("Refresh current view")}
         onClick={() => window.dispatchEvent(new Event(WORKSPACE_REFRESH_EVENT))}
         className="grid size-6 place-items-center rounded-md hover:bg-content/10 hover:text-content focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-30 disabled:cursor-default"
       >

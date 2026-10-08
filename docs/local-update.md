@@ -19,6 +19,10 @@ Sürüm zaten doğruysa `-Version` gerekmez. Komut mevcut çalışma ağacını 
 
 `-InstallOnly` bu akışın son paketini kullanır; yeni kaynak kopyası oluşturmaz ve derlemez. `-Platforms windows` / `-Platforms mac` tek bilgisayar seçer. Mac üzerinde kendi mevcut checkout'undan yalnız Mac güncellemesi: `sh scripts/update-local.sh`.
 
+`-Components host` veya `-Components app` yalnız seçilen bileşenin kurulum işini başlatır. Varsayılan ikisidir. Örneğin uygulama aktif sohbetleri beklerken farklı bir host paketi, uygulama yardımcısını durdurmadan kurulabilir; seçilen bileşenin kendi aktif işi varsa aynı paket/çift yardımcı kuralları geçerlidir.
+
+Başka oturumlar çalışma ağacında değişiklik yaparken, yalnız tamamlanan dosyaları son doğrulanmış kaynak üzerine almak için `-BaseSnapshot <coordinator-request.json> -SourcePaths host/device-host.ts,host/device-host.test.ts` kullanılabilir. Kaynak arşivinin checksum ve fingerprint'i doğrulanır; yalnız açıkça seçilen, repoya ait dosyalar değişir. Yeni kaynak yine aynı koordinatörle sabitlenir ve derlenir. Bu seçenek `-SnapshotRequest`, `-InstallOnly` veya sürüm değişimiyle birleştirilemez.
+
 `-BuildOnly` iki makinenin uygulama ve host paketlerini derler ve doğrular; kurulum yardımcılarını başlatmaz. `-InstallOnly` ile birlikte kullanılmaz. Mac için aynı seçenek `sh scripts/update-local.sh --build-only` komutudur.
 
 ## Süreyi azaltan davranışlar
@@ -50,7 +54,7 @@ Veritabanı yedeklemeleri 15 saniyeyle sınırlıdır ve bağlantılar açık b�
 
 Loglar, süreler, immutable payload ve manifest: `~/.imece-build/runs/<kaynak-id>-<mod>/`. Bekleyen/bitmiş/başarısız kurulum durumları: `~/.imece-host/update-jobs/{host,app}.json`; `-Status` bunları iki bilgisayardan okur. Mac build logu koordinatörün `.imece-build/mac-<id>.log` dosyasındadır. Kurulum yardımcıları komut bittikten sonra çalışmaya devam eder; "scheduled" güncellemenin tamamlandığı anlamına gelmez.
 
-Ön koşullar: Python 3.12+, mevcut Node/pnpm 12.8.2/Rust/Tauri araçları, İmece host araçları, `macbook` SSH bağlantısı. Script ek araç kurmaz, Intel Mac veya tüm host platformlarını gereksiz yere derlemez.
+Ön koşullar: Python 3.12+, mevcut Node/pnpm 12.8.2/Rust/Tauri araçları, imc code host araçları, `macbook` SSH bağlantısı. Script ek araç kurmaz, Intel Mac veya tüm host platformlarını gereksiz yere derlemez.
 
 ## Build almadan doğrulama
 
@@ -64,14 +68,14 @@ Bu kontroller derleme/kurulum/SSH başlatmaz. Kaynak arşivinin kökü, eski kay
 
 Yerel güncellemeler ve CI/release workflowları `pnpm-lock.yaml` kullanır. `package-lock.json` mevcut sürüm değiştirme scripti ve eski kilit kaydı için korunur; kurulum kararına katılmaz.
 
-## imc kurulum kimliği
+## imc code kurulum kimliği
 
-Paket adı ve görünür marka `imc`, geliştirme adı `imc Dev` olur. Mevcut verileri korumak için bundle kimliği `com.imece.desktop` ve geliştirme kimliği `com.imece.desktop.dev` olarak kalır. Windows kurulum dizini `%LOCALAPPDATA%\imc`, Mac bundle `/Applications/imc.app` olur. Paketlenen executable adı `imc.exe` / `imc` olarak ayrıdır; Rust crate adı uyumluluk için `monocode` kalır. Ayrı executable adı zorunludur: NSIS sessiz kurulumu çalışan uygulamayı dosya adıyla bulup kapattığından, eski MonoCode ile aynı adı kullanmak aktif eski uygulamayı da kapatabilir. Koordinatör `mainBinaryName` değerini derlemeden önce doğrular.
+Paket adı ve görünür marka `imc code`, geliştirme adı `imc code Dev` olur. Mevcut verileri korumak için bundle kimliği `com.imece.desktop` ve geliştirme kimliği `com.imece.desktop.dev` olarak kalır. Windows kurulum dizini `%LOCALAPPDATA%\imc code`, Mac bundle `/Applications/imc code.app` olur. Paketlenen executable adı `imc.exe` / `imc` olarak ayrıdır; Rust crate adı uyumluluk için `monocode` kalır. Ayrı executable adı zorunludur: NSIS sessiz kurulumu çalışan uygulamayı dosya adıyla bulup kapattığından, eski MonoCode ile aynı adı kullanmak aktif eski uygulamayı da kapatabilir. Koordinatör `mainBinaryName` değerini derlemeden önce doğrular.
 
 İlk uygulama kurulumundan önce oturum verileri aktarılmış olabilir. Koordinatör bu durumda mevcut veritabanının boşta olmasını bekler ve yedeğini alır; henüz bulunmayan eski executable veya bundle için rollback kopyası aramaz.
 
 Host `~/.imece-host`, servis `com.imece.host` / `imece-host.service`, Windows görevi `Imece Host-<SID>`, varsayılan port `3775` ve launcher `imece-host(.cmd)` kullanır. Önceki MonoCode veri ve servislerine dokunulmaz; otomatik veri aktarımı yoktur. Host ve masaüstü veritabanı dosyalarının iç adları uyumluluk için korunur.
 
-Yeni paket manifesti tam bağımsız kimliği taşır. Eski veya kimliği farklı paketler `-InstallOnly` ile kurulamaz; yeni İmece paketi derlenmelidir. İlk kurulumda yalnız İmece dizinleri kullanılır. Mevcut İmece servis/bundle kaydı varken veritabanının eksik olması boşta sayılmaz ve kurtarma gerektirir.
+Yeni paket manifesti tam bağımsız kimliği taşır. Eski veya kimliği farklı paketler `-InstallOnly` ile kurulamaz; yeni imc code paketi derlenmelidir. İlk kurulumda yalnız imc code dizinleri kullanılır. Mevcut imc code servis/bundle kaydı varken veritabanının eksik olması boşta sayılmaz ve kurtarma gerektirir.
 
 Otomatik updater kapalıdır: eski MonoCode feed veya signing key kullanılmaz, `.sig` artefaktı beklenmez. Bağımsız anahtar, feed ve yayın iş akışı ayrıca onaylanıp doğrulanmadan yayın yapılmamalıdır. Yerel build/kurulum bu kayıtta çalıştırılmadı.

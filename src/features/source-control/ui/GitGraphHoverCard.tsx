@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { GitHistoryCommit } from "../../../platform/tauri/fs";
 import { Check, Copy } from "../../../shared/ui/icons";
@@ -28,6 +29,7 @@ export function GitGraphHoverCard({
   onEnter: () => void;
   onLeave: () => void;
 }) {
+  useLocale();
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -58,7 +60,7 @@ export function GitGraphHoverCard({
       width={CARD_WIDTH}
       maxHeight={320}
       role="group"
-      aria-label="Commit details"
+      aria-label={t("Commit details")}
       onMouseEnter={onEnter}
       onMouseLeave={onLeave}
       className="space-y-2 p-3 text-[12px] text-content"
@@ -68,7 +70,7 @@ export function GitGraphHoverCard({
       </p>
       <div className="flex items-center gap-2 text-content/70">
         <GraphAvatar name={commit.author} size={18} />
-        <span className="min-w-0 truncate">{commit.author || "Unknown author"}</span>
+        <span className="min-w-0 truncate">{commit.author || t("Unknown author")}</span>
       </div>
       <p className="text-content/55">
         {formatAbsoluteTime(commit.timestamp)} (
@@ -78,8 +80,8 @@ export function GitGraphHoverCard({
         <code className="font-mono text-[11px] text-content/70">{commit.shortSha}</code>
         <button
           type="button"
-          title="Copy commit ID"
-          aria-label="Copy commit ID"
+          title={t("Copy commit ID")}
+          aria-label={t("Copy commit ID")}
           onClick={copy}
           className="grid size-5 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content"
         >
@@ -99,7 +101,7 @@ export function GitGraphHoverCard({
       ) : null}
       {commit.parents.length > 0 ? (
         <p className="text-content/55">
-          {commit.parents.length > 1 ? "Parents" : "Parent"}{" "}
+          {commit.parents.length > 1 ? t("Parents") : t("Parent")}{" "}
           <code className="font-mono text-[11px]">
             {commit.parents.map((parent) => parent.slice(0, 7)).join(", ")}
           </code>

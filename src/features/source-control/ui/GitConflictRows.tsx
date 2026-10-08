@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { basename } from "../../../platform/tauri/fs";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import {
@@ -45,6 +46,7 @@ export function GitConflictRows({
   onChoose,
   onMarkResolved,
 }: Props) {
+  useLocale();
   return (
     <>
       {rows.map((row) => {
@@ -64,7 +66,7 @@ export function GitConflictRows({
               <div className="flex h-7 w-full items-center gap-1 leading-none">
                 <button
                   type="button"
-                  title={hasFile ? `Open ${row.relative} in the editor` : row.relative}
+                  title={hasFile ? t("Open {p0} in the editor", { p0: row.relative }) : row.relative}
                   disabled={!hasFile}
                   onClick={() => onOpen(row)}
                   onDoubleClick={() => onOpen(row, true)}
@@ -89,29 +91,25 @@ export function GitConflictRows({
               <div
                 className="flex flex-wrap items-center gap-x-0.5 pb-1 pl-[22px]"
                 role="group"
-                aria-label={`Resolve ${row.relative}`}
+                aria-label={t("Resolve {p0}", { p0: row.relative })}
               >
                 {hasFile ? (
                   <button
                     type="button"
-                    title="Open the file in the editor to resolve each block"
+                    title={t("Open the file in the editor to resolve each block")}
                     disabled={disabled}
                     onClick={() => onOpen(row, true)}
                     className={ACTION}
-                  >
-                    Open
-                  </button>
+                  >{t("Open")}</button>
                 ) : null}
                 {canCompare && conflictCanCompare(row.kind) ? (
                   <button
                     type="button"
-                    title="Compare the current and incoming versions with the base, read-only"
+                    title={t("Compare the current and incoming versions with the base, read-only")}
                     disabled={disabled}
                     onClick={() => onCompare(row)}
                     className={ACTION}
-                  >
-                    Compare
-                  </button>
+                  >{t("Compare")}</button>
                 ) : null}
                 {conflictChoices(row.kind).map((choice) => (
                   <button
@@ -128,12 +126,12 @@ export function GitConflictRows({
                 {hasFile ? (
                   <button
                     type="button"
-                    title="Stage the file as it is now"
+                    title={t("Stage the file as it is now")}
                     disabled={disabled}
                     onClick={() => onMarkResolved(row)}
                     className={ACTION}
                   >
-                    {working ? "Working…" : "Mark Resolved"}
+                    {working ? t("Working…") : t("Mark Resolved")}
                   </button>
                 ) : null}
               </div>

@@ -154,7 +154,7 @@ export function panelNotes(
 
 /**
  * The note to show: the one last used here if it is still offered, then the
- * session's newest note, then the project's most recently edited one.
+ * session's newest note. Project notes are only opened by explicit selection.
  */
 export function pickPanelNote(
   offered: PanelNotes,
@@ -163,7 +163,7 @@ export function pickPanelNote(
   const all = [...offered.session, ...offered.project];
   return (
     (preferredId ? all.find((note) => note.id === preferredId) : undefined) ??
-    all[0] ??
+    offered.session[0] ??
     null
   );
 }

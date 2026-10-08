@@ -171,14 +171,12 @@ describe("panelNotes and pickPanelNote", () => {
     expect(panelNotes(notes, "none", "")).toEqual({ session: [], project: [] });
   });
 
-  it("picks the remembered note, else the session's newest, else the project's", () => {
+  it("picks an explicit selection or a session note, never defaults to a project note", () => {
     const offered = panelNotes(notes, "s1", "/p");
     expect(pickPanelNote(offered, "project-old")?.id).toBe("project-old");
     expect(pickPanelNote(offered, "deleted")?.id).toBe("new-session");
     expect(pickPanelNote(offered)?.id).toBe("new-session");
-    expect(pickPanelNote(panelNotes(notes, "s9", "/p"))?.id).toBe(
-      "project-new",
-    );
+    expect(pickPanelNote(panelNotes(notes, "s9", "/p"))).toBeNull();
     expect(pickPanelNote(panelNotes([], "s1", "/p"))).toBeNull();
   });
 });

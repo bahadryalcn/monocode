@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -19,7 +20,6 @@ import { hasActiveOverlay } from "../../../shared/ui/overlay";
 import { shortcutMatches } from "../../settings/model/settings";
 import { quickComposerShortcutLabel } from "../../quick-composer/model/quickComposerShortcut";
 import {
-  ChevronDown,
   CodeBlock,
   FolderOpen,
   Globe,
@@ -51,29 +51,34 @@ const emptyAction = (): ProjectAction => ({
   url: "",
 });
 const buttonClass =
-  "flex h-7 items-center gap-1.5 rounded px-2 text-xs text-content/65 hover:bg-content/10 hover:text-content focus-visible:outline focus-visible:outline-accent";
+  "grid size-6 shrink-0 place-items-center rounded text-content/65 hover:bg-content/10 hover:text-content focus-visible:outline focus-visible:outline-accent";
 
 export function ProjectQuickActions({
   cwd,
+  actionsCwd = cwd,
   onRun,
+  shortcutsEnabled = true,
 }: {
   cwd: string;
+  actionsCwd?: string;
   onRun?: (action: ProjectAction) => void;
+  shortcutsEnabled?: boolean;
 }) {
+  useLocale();
   const [menu, setMenu] = useState<{
     kind: "open" | "actions";
     anchor: HTMLElement;
   } | null>(null);
   const [editors, setEditors] = useState<ExternalEditor[]>([]);
   const [loading, setLoading] = useState(false);
-  const [actions, setActions] = useState(() => loadProjectActions(cwd));
+  const [actions, setActions] = useState(() => loadProjectActions(actionsCwd));
   const [draft, setDraft] = useState<ProjectAction | null>(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const local = isLocalProject(cwd);
 
   useEffect(() => {
-    const reload = () => setActions(loadProjectActions(cwd));
+    const reload = () => setActions(loadProjectActions(actionsCwd));
     reload();
     setMenu(null);
     setDraft(null);
@@ -84,7 +89,7 @@ export function ProjectQuickActions({
       window.removeEventListener(PROJECT_ACTIONS_CHANGED, reload);
       window.removeEventListener("storage", reload);
     };
-  }, [cwd]);
+  }, [cwd, actionsCwd]);
 
   useEffect(() => {
     if (menu?.kind !== "open") return;
@@ -109,7 +114,7 @@ export function ProjectQuickActions({
   }, [menu?.kind]);
 
   useEffect(() => {
-    if (!local) return;
+    if (!local || !shortcutsEnabled) return;
     const onKey = (event: KeyboardEvent) => {
       if (
         event.defaultPrevented ||
@@ -137,12 +142,12 @@ export function ProjectQuickActions({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [local, actions, onRun]);
+  }, [local, actions, onRun, shortcutsEnabled]);
 
   if (!local) return null;
   const persist = (values: ProjectAction[]) => {
     try {
-      saveProjectActions(cwd, values);
+      saveProjectActions(actionsCwd, values);
       setActions(values);
       setDraft(null);
       setError("");
@@ -171,7 +176,7 @@ export function ProjectQuickActions({
           {
             kind: "item" as const,
             id: "loading",
-            label: "Finding installed editors…",
+            get label() { return t("Finding installed editors…"); },
             disabled: true,
           },
         ]
@@ -200,13 +205,13 @@ export function ProjectQuickActions({
           {
             kind: "item" as const,
             id: `run:${action.id}`,
-            label: "Run action",
+            get label() { return t("Run action"); },
             disabled: Boolean(action.command.trim() && !onRun),
           },
           {
             kind: "item" as const,
             id: `edit:${action.id}`,
-            label: "Edit action",
+            get label() { return t("Edit action"); },
           },
         ],
       };
@@ -215,7 +220,7 @@ export function ProjectQuickActions({
     {
       kind: "item",
       id: "add",
-      label: "Add action…",
+      get label() { return t("Add action…"); },
       icon: <Plus className="size-4" />,
     },
   ];
@@ -223,24 +228,25 @@ export function ProjectQuickActions({
   const SelectedIcon = selected ? ICONS[selected.icon] : Play;
   return (
     <div
-      className="flex items-center gap-1 px-1"
+      className="flex shrink-0 items-center gap-1"
+      data-no-drag
       data-tauri-drag-region="false"
     >
       {selected ? (
         <button
           className={buttonClass}
-          title={selected.command || selected.url}
-          aria-label={`Run ${selected.name}`}
+          title={`${selected.name}\n${selected.command || selected.url}\n${cwd}`}
+          aria-label={t("Run {p0}", { p0: selected.name })}
           disabled={Boolean(selected.command.trim() && !onRun)}
           onClick={() => run(selected)}
         >
           <SelectedIcon className="size-3.5 text-accent" />
-          <span className="max-w-24 truncate">{selected.name}</span>
         </button>
       ) : null}
       <button
         className={buttonClass}
-        aria-label="Project actions"
+        aria-label={t("Project actions")}
+        title={`${t("Project actions")}\n${cwd}`}
         aria-haspopup="menu"
         aria-expanded={menu?.kind === "actions"}
         onClick={(event) => {
@@ -253,12 +259,11 @@ export function ProjectQuickActions({
         }}
       >
         <Play className="size-3.5" />
-        {!selected ? <span>Actions</span> : null}
-        <ChevronDown className="size-3" />
       </button>
       <button
         className={buttonClass}
-        aria-label="Open project in"
+        aria-label={t("Open project in")}
+        title={`${t("Open project in")}\n${cwd}`}
         aria-haspopup="menu"
         aria-expanded={menu?.kind === "open"}
         onClick={(event) => {
@@ -271,8 +276,6 @@ export function ProjectQuickActions({
         }}
       >
         <FolderOpen className="size-3.5" />
-        <span>Open</span>
-        <ChevronDown className="size-3" />
       </button>
       {menu ? (
         <ExplorerMenu
@@ -310,7 +313,7 @@ export function ProjectQuickActions({
       ) : null}
       {error && !draft ? (
         <Modal
-          title="Project action failed"
+          title={t("Project action failed")}
           onClose={() => setError("")}
           size="sm"
         >

@@ -1,4 +1,4 @@
-/** Original 24-unit imc chrome drawings: inset rails, clipped corners, open seams. */
+/** Original 24-unit imc code chrome drawings: inset rails, clipped corners, open seams. */
 const frame = "M8 3.5h9l3.5 3.5v10a3.5 3.5 0 0 1-3.5 3.5H7A3.5 3.5 0 0 1 3.5 17V7A3.5 3.5 0 0 1 7 3.5";
 const circle = "M17 4.5a9 9 0 1 1-10 0M9 3.5h6";
 const file = "M8 3.5h6l5 5V18a2.5 2.5 0 0 1-2.5 2.5h-9A2.5 2.5 0 0 1 5 18V6a2.5 2.5 0 0 1 2.5-2.5M14 4v5h4";

@@ -8,7 +8,22 @@ import {
   parseOsc7Cwd,
   scanOscCwd,
   terminalTabLabel,
+  newTerminalCwd,
 } from "./terminalTab";
+
+describe("newTerminalCwd", () => {
+  it("prefers an active worktree over a pane in another checkout", () => {
+    expect(newTerminalCwd({ activeFile: { cwd: "/main" },
+      session: { cwd: "/main", worktreeCwd: "/worktree" }, fallback: "/fallback" })).toBe("/worktree");
+  });
+  it("excludes removed worktrees and retains the focused pane fallback", () => {
+    expect(newTerminalCwd({ activeFile: { cwd: "/pane" },
+      session: { cwd: "/main", worktreeCwd: "/removed", worktreeRemoved: true },
+      fallback: "/fallback" })).toBe("/pane");
+    expect(newTerminalCwd({ session: { cwd: "/main" }, fallback: "/fallback" })).toBe("/main");
+    expect(newTerminalCwd({ fallback: "/fallback" })).toBe("/fallback");
+  });
+});
 
 describe("defaultTerminalTitle", () => {
   it("uses the directory basename", () => {

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { INBOX_VISIBLE_POLL_MS } from "../model/inboxPolling";
 import { hasActiveOverlay } from "../../../shared/ui/overlay";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -175,6 +176,7 @@ function InboxSourceTab({
   selected: boolean;
   onSelect: (source: InboxSource) => void;
 }) {
+  useLocale();
   const label = INBOX_SOURCE_LABELS[source];
   return (
     <button
@@ -242,6 +244,7 @@ export function InboxView({
   target = null,
   onOpenIntegrations,
 }: Props) {
+  useLocale();
   const [discussionOpen, setDiscussionOpen] = useState(false);
   const listLock = useLockOverscroll<HTMLDivElement>();
   const listScrollRef = useRef<HTMLDivElement>(null);
@@ -771,7 +774,7 @@ export function InboxView({
         {visibleSources.length > 0 ? (
           <div
             role="tablist"
-            aria-label="Inbox source"
+            aria-label={t("Inbox source")}
             className="flex min-w-0 basis-0 items-center gap-px"
             style={{ flexGrow: visibleSources.length }}
           >
@@ -789,10 +792,10 @@ export function InboxView({
           <button
             ref={connectButtonRef}
             type="button"
-            aria-label="Connect an inbox source"
+            aria-label={t("Connect an inbox source")}
             aria-haspopup="menu"
             aria-expanded={connectMenuOpen}
-            title="Connect an inbox source"
+            title={t("Connect an inbox source")}
             onClick={() => setConnectMenuOpen((open) => !open)}
             className={`flex h-6 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 text-[12px] leading-none ${
               connectMenuOpen
@@ -801,7 +804,7 @@ export function InboxView({
             }`}
           >
             <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />
-            <span className="min-w-0 truncate">Add connection</span>
+            <span className="min-w-0 truncate">{t("Add connection")}</span>
           </button>
         ) : null}
       </div>
@@ -812,8 +815,8 @@ export function InboxView({
             <input
               value={searchInput}
               onChange={(event) => setSearchInput(event.target.value)}
-              placeholder={pullRequestsOnly ? "Search pull requests" : "Filter inbox"}
-              aria-label={pullRequestsOnly ? "Search pull requests" : "Filter inbox"}
+              placeholder={pullRequestsOnly ? t("Search pull requests") : t("Filter inbox")}
+              aria-label={pullRequestsOnly ? t("Search pull requests") : t("Filter inbox")}
               spellCheck={false}
               autoComplete="off"
               className="h-7 w-full rounded-md bg-transparent pl-7 pr-2 text-[12px] text-content outline-none placeholder:text-content/40"
@@ -821,8 +824,8 @@ export function InboxView({
           </div>
           <button
             type="button"
-            title="Filter inbox"
-            aria-label="Filter inbox"
+            title={t("Filter inbox")}
+            aria-label={t("Filter inbox")}
             aria-expanded={!!filterMenu}
             aria-haspopup="menu"
             onClick={onFilterButtonClick}
@@ -834,8 +837,8 @@ export function InboxView({
           </button>
           <button
             type="button"
-            title="Mark all as read"
-            aria-label="Mark all as read"
+            title={t("Mark all as read")}
+            aria-label={t("Mark all as read")}
             disabled={!sourceHasUnseen}
             onClick={() => setReadStatusError(
               markInboxItemsSeen(sourceEntries)
@@ -848,7 +851,7 @@ export function InboxView({
           </button>
           <button
             type="button"
-            aria-label="Refresh"
+            aria-label={t("Refresh")}
             onClick={() => setRefresh((value) => value + 1)}
             className="grid size-6 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content"
           >
@@ -874,7 +877,7 @@ export function InboxView({
       >
         {noSourcesConnected ? (
           <p className="px-3 py-3 text-[12px] text-content/50">
-            {pullRequestsOnly ? "Connect GitHub, GitLab or Azure DevOps to view pull requests." : "Add a connection to start using the Inbox."}
+            {pullRequestsOnly ? t("Connect GitHub, GitLab or Azure DevOps to view pull requests.") : t("Add a connection to start using the Inbox.")}
           </p>
         ) : sourceError && visibleItems.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/50">{sourceError}</p>
@@ -883,34 +886,34 @@ export function InboxView({
             <LoaderCircle className="size-4 animate-spin" strokeWidth={1.75} />
           </div>
         ) : pullRequestsOnly && visibleItems.length === 0 ? (
-          <p className="px-3 py-2 text-[12px] text-content/50">{projects.length === 0 ? "Add a project to see its repository's pull requests." : narrowedByUser ? "No pull requests match these filters." : "No pull requests in this workspace."}</p>
+          <p className="px-3 py-2 text-[12px] text-content/50">{projects.length === 0 ? t("Add a project to see its repository's pull requests.") : narrowedByUser ? t("No pull requests match these filters.") : t("No pull requests in this workspace.")}</p>
         ) : visibleItems.length === 0 ? (
           <p className="px-3 py-2 text-[12px] text-content/50">
             {narrowedByUser
               ? searchNarrowed
                 ? isTrackerSource(source)
-                  ? `No matching ${INBOX_SOURCE_LABELS[source]} issues`
+                  ? t("No matching {p0} issues", { p0: INBOX_SOURCE_LABELS[source] })
                   : source === "gitlab"
-                    ? "No matching issues or merge requests"
-                    : "No matching issues or pull requests"
+                    ? t("No matching issues or merge requests")
+                    : t("No matching issues or pull requests")
                 : isTrackerSource(source)
-                  ? `No ${INBOX_SOURCE_LABELS[source]} issues match these filters`
+                  ? t("No {p0} issues match these filters", { p0: INBOX_SOURCE_LABELS[source] })
                   : source === "gitlab" || source === "azuredevops"
                     ? activeFilters.assignedToMe
-                      ? "Nothing needs your attention"
+                      ? t("Nothing needs your attention")
                       : source === "gitlab"
-                        ? "No GitLab items match these filters"
-                        : "No ADO items match these filters"
-                    : "No issues or pull requests match these filters"
+                        ? t("No GitLab items match these filters")
+                        : t("No ADO items match these filters")
+                    : t("No issues or pull requests match these filters")
               : isTrackerSource(source)
-                ? `No ${INBOX_SOURCE_LABELS[source]} issues`
+                ? t("No {p0} issues", { p0: INBOX_SOURCE_LABELS[source] })
                 : source === "gitlab"
                   ? projects.length === 0
-                    ? "Open a project to fill the inbox"
-                    : "No matching issues or merge requests"
+                    ? t("Open a project to fill the inbox")
+                    : t("No matching issues or merge requests")
                   : projects.length === 0
-                    ? "Open a project to fill the inbox"
-                    : "No matching issues or pull requests"}
+                    ? t("Open a project to fill the inbox")
+                    : t("No matching issues or pull requests")}
           </p>
         ) : (
           <ul className="flex flex-col gap-0.5 p-1.5">
@@ -955,7 +958,7 @@ export function InboxView({
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize inbox list"
+        aria-label={t("Resize inbox list")}
         className={`absolute inset-y-0 -right-px z-10 w-1.5 cursor-col-resize touch-none ${
           resize.dragging ? "bg-content/15" : "hover:bg-content/10"
         }`}
@@ -997,7 +1000,7 @@ export function InboxView({
   return (
     <div
       role="region"
-      aria-label="Inbox"
+      aria-label={t("Inbox")}
       data-app-inbox
       className="imece-inbox flex min-h-0 min-w-0 flex-1 flex-col text-content"
     >
@@ -1015,7 +1018,7 @@ export function InboxView({
             className="size-3.5 shrink-0 text-content/45"
             strokeWidth={1.75}
           />
-          <span className="min-w-0 truncate text-content">{pullRequestsOnly ? "Pull Requests" : "Inbox"}</span>
+          <span className="min-w-0 truncate text-content">{pullRequestsOnly ? t("Pull Requests") : t("Inbox")}</span>
         </div>
         {IS_MAC ? null : <WindowControls />}
       </div>
@@ -1023,12 +1026,12 @@ export function InboxView({
       <header className="imece-workspace-heading">
         <div className="imece-heading-mark" aria-hidden="true"><Inbox className="size-6" /></div>
         <div className="min-w-0 flex-1">
-          <h1>{pullRequestsOnly ? "Pull Requests" : "Find the next step"}</h1>
-          <p>{pullRequestsOnly ? "Search repository reviews, check CI and open the related conversation." : "Bring requests, conversations and reviews into your workspace."}</p>
+          <h1>{pullRequestsOnly ? t("Pull Requests") : t("Find the next step")}</h1>
+          <p>{pullRequestsOnly ? t("Search repository reviews, check CI and open the related conversation.") : t("Bring requests, conversations and reviews into your workspace.")}</p>
         </div>
-        <div className="imece-heading-count"><strong>{visibleItems.length}</strong><span>items</span></div>
-        {pullRequestsOnly && projects.length === 0 && onOpenProject ? <button type="button" onClick={() => void onOpenProject()} className="rounded-md bg-accent px-3 py-1.5 text-xs text-white">Add project</button> : null}
-        {pullRequestsOnly ? <select aria-label="Sort pull requests" value={prSort} onChange={event => setPrSort(event.target.value)} className="rounded-md border border-stroke bg-background px-2 py-1 text-xs"><option value="updated">Recently updated</option><option value="title">Title</option></select> : null}
+        <div className="imece-heading-count"><strong>{visibleItems.length}</strong><span>{t("items")}</span></div>
+        {pullRequestsOnly && projects.length === 0 && onOpenProject ? <button type="button" onClick={() => void onOpenProject()} className="rounded-md bg-accent px-3 py-1.5 text-xs text-white">{t("Add project")}</button> : null}
+        {pullRequestsOnly ? <select aria-label={t("Sort pull requests")} value={prSort} onChange={event => setPrSort(event.target.value)} className="rounded-md border border-stroke bg-background px-2 py-1 text-xs"><option value="updated">{t("Recently updated")}</option><option value="title">{t("Title")}</option></select> : null}
       </header>
 
       <div className="flex min-h-0 min-w-0 flex-1">
@@ -1088,6 +1091,7 @@ export function LinkedWorkItemPanel({
   visible?: boolean;
   onClose: () => void;
 }) {
+  useLocale();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const logos = useTabGroupLogos();
@@ -1170,7 +1174,7 @@ export function LinkedWorkItemPanel({
   return (
     <aside
       ref={resize.setPaneRef}
-      aria-label={`Linked ${kindLabel.toLowerCase()} #${target.number}`}
+      aria-label={t("Linked {p0} #{p1}", { p0: kindLabel.toLowerCase(), p1: target.number })}
       aria-busy={loading}
       aria-hidden={!visible}
       inert={!visible || undefined}
@@ -1181,7 +1185,7 @@ export function LinkedWorkItemPanel({
     >
       <div
         role="separator"
-        aria-label={`Resize linked ${kindLabel.toLowerCase()} panel`}
+        aria-label={t("Resize linked {p0} panel", { p0: kindLabel.toLowerCase() })}
         aria-orientation="vertical"
         onPointerDown={resize.onPointerDown}
         onDoubleClick={resize.onDoubleClick}
@@ -1191,7 +1195,7 @@ export function LinkedWorkItemPanel({
       />
       <div className="absolute top-[5px] right-2 z-30">
         <IconButton
-          label={`Close ${kindLabel.toLowerCase()} panel`}
+          label={t("Close {p0} panel", { p0: kindLabel.toLowerCase() })}
           onClick={onClose}
         >
           <PanelLeft className="size-3.5" strokeWidth={1.75} />
@@ -1224,9 +1228,7 @@ export function LinkedWorkItemPanel({
               onClick={() => void openUrl(target.url)}
               className={ACTION_OUTLINE}
             >
-              <ExternalLink className="size-3.5" strokeWidth={1.75} />
-              Open on GitHub
-            </button>
+              <ExternalLink className="size-3.5" strokeWidth={1.75} />{t("Open on GitHub")}</button>
           </div>
         ) : (
           <div className="flex h-full items-center justify-center text-content/40">
@@ -1263,11 +1265,12 @@ function InboxDetailBody({
   onOpenSession?: (sessionId: string) => void | Promise<void>;
   onItemChange?: (item: InboxItem) => void;
 }) {
+  useLocale();
   if (!item) {
     return (
       <div className="flex h-full flex-col items-center justify-center px-6 text-center">
         <Inbox className="mb-3 size-6 text-content/30" strokeWidth={1.75} />
-        <p className="text-[13px] text-content/45">Select an inbox item</p>
+        <p className="text-[13px] text-content/45">{t("Select an inbox item")}</p>
       </div>
     );
   }
@@ -1306,6 +1309,7 @@ function InboxCard({
   relatedSessionCount: number;
   onSelect: () => void;
 }) {
+  useLocale();
   useInboxSeenTick();
   const status = inboxStatusMark(item);
   const kindLabel =
@@ -1363,7 +1367,7 @@ function InboxCard({
           <span className="flex shrink-0 items-center gap-1.5">
             {relatedSessionCount > 0 ? (
               <span
-                title={`${relatedSessionCount} related ${relatedSessionCount === 1 ? "thread" : "threads"}`}
+                title={t((relatedSessionCount === 1 ? "{p0} related thread" : "{p0} related threads"), { p0: relatedSessionCount })}
                 className="inline-flex items-center gap-0.5 text-[11px] tabular-nums text-accent"
               >
                 <MessageMultiple className="size-3" strokeWidth={1.75} />

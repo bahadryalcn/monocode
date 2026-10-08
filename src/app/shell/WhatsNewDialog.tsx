@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import {
   formatReleaseDate,
   presentReleaseNotes,
@@ -14,6 +15,7 @@ type Props = {
 };
 
 export function WhatsNewBody({ version }: { version: string }) {
+  useLocale();
   const notes = presentReleaseNotes(version);
   const title = releaseNotesTitle(version);
 
@@ -26,9 +28,7 @@ export function WhatsNewBody({ version }: { version: string }) {
           streaming={false}
         />
       ) : (
-        <p className="text-[13px] text-content/60">
-          Release notes for this version have not been added yet.
-        </p>
+        <p className="text-[13px] text-content/60">{t("Release notes for this version have not been added yet.")}</p>
       )}
       {PRODUCT_IDENTITY.releaseNotesUrl ? (
         <AgentMarkdown
@@ -42,13 +42,14 @@ export function WhatsNewBody({ version }: { version: string }) {
 }
 
 export function WhatsNewDialog({ version, onClose }: Props) {
+  useLocale();
   const notes = presentReleaseNotes(version);
   const date = notes?.date ? formatReleaseDate(notes.date) : null;
 
   return (
     <Modal
       onClose={onClose}
-      title="What's new"
+      title={t("What's new")}
       description={`${appName()} ${version}${date ? ` · ${date}` : ""}`}
       size="md"
       className="h-[min(72vh,640px)]"

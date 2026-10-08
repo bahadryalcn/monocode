@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import type { HarnessId } from "../model/session";
 import { HARNESS_TITLE } from "../model/session";
 import { HarnessIcon } from "./HarnessIcon";
@@ -26,6 +27,7 @@ export function ProviderSignInPanel({
   idleTitle?: string;
   completeDescription?: string;
 }) {
+  useLocale();
   const title = HARNESS_TITLE[harness];
   const complete = state === "complete";
 
@@ -38,14 +40,14 @@ export function ProviderSignInPanel({
         <HarnessIcon harness={harness} className="size-9" />
       </span>
       <h2 className="mt-3.5 text-[15px] font-medium leading-5 text-content">
-        {complete ? `Signed in to ${title}` : idleTitle}
+        {complete ? t("Signed in to {p0}", { p0: title }) : idleTitle}
       </h2>
       <p className="mt-1 max-w-56 text-[11px] leading-4 text-content/45">
         {complete
           ? completeDescription
           : harness === "gemini"
-            ? "Sign in with your Google account. Your browser will open to complete authentication."
-            : `Sign in to continue using ${title}.`}
+            ? t("Sign in with your Google account. Your browser will open to complete authentication.")
+            : t("Sign in to continue using {p0}.", { p0: title })}
       </p>
       <button
         type="button"
@@ -60,12 +62,12 @@ export function ProviderSignInPanel({
           <Check className="size-3.5" aria-hidden />
         ) : null}
         {state === "running"
-          ? "Waiting for browser…"
+          ? t("Waiting for browser…")
           : complete
-            ? (completeActionLabel ?? "Signed in")
+            ? (completeActionLabel ?? t("Signed in"))
             : harness === "gemini"
-              ? "Sign in with Google"
-              : `Sign in to ${title}`}
+              ? t("Sign in with Google")
+              : t("Sign in to {p0}", { p0: title })}
       </button>
       {state === "error" && error ? (
         <p

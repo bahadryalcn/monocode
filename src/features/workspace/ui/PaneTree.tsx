@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   memo,
   useCallback,
@@ -31,6 +32,7 @@ import type {
   UserQuestionReply,
 } from "../../../integrations/harness";
 import type { EditorNavigationTarget } from "../../search/model/search";
+import type { ProjectAction } from "../../projects/model/projectActions";
 import type { ProviderAccountProvider } from "../../providers/model/providerAccounts";
 import {
   layoutLeaves,
@@ -208,6 +210,7 @@ type Shared = {
     position: TitleTabDropPosition,
   ) => void;
   onNewTerminal: (sessionId: string) => void;
+  onRunProjectAction?: (sessionId: string, action: ProjectAction) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
   transcriptPool?: TranscriptPool;
 };
@@ -300,9 +303,11 @@ function PaneTreeComponent({
   onDetachPane,
   onPopOutPane,
   onNewTerminal,
+  onRunProjectAction,
   onTerminalMetaChange,
   transcriptPool,
 }: Props) {
+  useLocale();
   const treeRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -592,13 +597,13 @@ function PaneTreeComponent({
             }}
           >
             {leaf.tabIds && leaf.tabIds.length > 1 ? (
-              <div role="tablist" aria-label="Pane sessions" className="flex shrink-0 overflow-x-auto border-b border-stroke bg-surface">
+              <div role="tablist" aria-label={t("Pane sessions")} className="flex shrink-0 overflow-x-auto border-b border-stroke bg-surface">
                 {leaf.tabIds.map((id) => (
                   <button key={id} type="button" role="tab" aria-selected={id === leaf.id}
                     className={`max-w-48 shrink-0 truncate border-r border-stroke px-3 py-1.5 text-xs ${id === leaf.id ? "bg-accent/15 text-content" : "text-content/60"}`}
                     onClick={() => onFocus(id)} onPointerDown={paneDragStartFor(id)}
-                    title={sessions.find((entry) => entry.id === id)?.title || "Session"}>
-                    {sessions.find((entry) => entry.id === id)?.title || editorPanes.find((pane) => pane.id === id)?.files[0]?.path.split(/[\\/]/).pop() || "Session"}
+                    title={sessions.find((entry) => entry.id === id)?.title || t("Session")}>
+                    {sessions.find((entry) => entry.id === id)?.title || editorPanes.find((pane) => pane.id === id)?.files[0]?.path.split(/[\\/]/).pop() || t("Session")}
                   </button>
                 ))}
               </div>
@@ -711,6 +716,7 @@ function PaneTreeComponent({
                   onBtwStop={onBtwStop}
                   onBtwModelChange={onBtwModelChange}
                   onNewTerminal={onNewTerminal}
+                  onRunProjectAction={onRunProjectAction}
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
                 />
@@ -760,9 +766,10 @@ function paneEnterFrom({ rect, axis }: LayoutLeaf): PaneEnterFrom {
 }
 
 function PaneDropHint({ edge }: { edge: PaneEdge }) {
+  useLocale();
   if (edge === "center") return (
     <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded border-2 border-accent bg-accent/15">
-      <span className="rounded bg-surface px-3 py-2 text-xs text-content">Add as pane tab</span>
+      <span className="rounded bg-surface px-3 py-2 text-xs text-content">{t("Add as pane tab")}</span>
     </div>
   );
   const wash =
@@ -802,6 +809,7 @@ function Sash({
   onCommit: (ratio: number) => void;
   onCancel: () => void;
 }) {
+  useLocale();
   const row = sash.dir === "right";
   const boundary = sash.sizes
     .slice(0, sash.index + 1)

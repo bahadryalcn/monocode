@@ -193,15 +193,15 @@ export function buildTurnStartParams(input: {
     approvalPolicy: config.approvalPolicy,
     approvalsReviewer: config.approvalsReviewer,
     sandboxPolicy: config.sandboxPolicy,
-    collaborationMode: {
+    ...(input.model?.trim() ? { collaborationMode: {
       mode: input.intent === "plan" ? "plan" : "default",
       settings: {
-        model: input.model ?? null,
+        model: input.model.trim(),
         reasoning_effort: input.effort ?? null,
         developer_instructions: null,
       },
-    },
-    ...(input.model ? { model: input.model } : {}),
+    } } : {}),
+    ...(input.model?.trim() ? { model: input.model.trim() } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
     ...(input.serviceTier && input.serviceTier !== "default"
       ? { serviceTier: input.serviceTier }

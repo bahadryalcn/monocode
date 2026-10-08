@@ -22,7 +22,7 @@ export type HarnessEvent =
       model?: string;
       modelSettings?: Record<string, string>;
     }
-  | { type: "status"; text: string }
+  | { type: "status"; text: string; key?: string }
   /** The provider refused the turn until its usage window resets (epoch ms). */
   | { type: "usage.limited"; resetsAt?: number }
   /**
@@ -164,6 +164,9 @@ export type HarnessEvent =
   | ({ type: "turn.metrics" } & TurnMetrics);
 
 export type ApprovalDecision = "allow" | "deny";
+
+/** The provider cannot accept a follow-up until the active turn is ready. */
+export class TurnNotReadyError extends Error {}
 
 export type HarnessSessionInput = {
   sessionId: string;

@@ -25,6 +25,8 @@ describe("classifyRemoteError", () => {
       "Host rejected request: Unsupported host method",
       "Unsupported remote operation",
       "Update MonoCode Host in Connections settings to use this project’s files.",
+      "Update imc Host in Connections settings to use this project’s files.",
+      "Update imc code Host in Connections settings to use this project’s files.",
     ])
       expect(classifyRemoteError(text).kind).toBe("outdated");
   });

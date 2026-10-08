@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useState, type FormEvent } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Check, GitBranch, Plus } from "../../../shared/ui/icons";
@@ -43,6 +44,7 @@ type Editing = { kind: "create" } | { kind: "rename"; from: string };
 
 /** Switch to, merge, rebase, create, rename, and delete branches. Needs git.actions on a project on another machine. */
 export function BranchManagerDialog({ cwd, onClose }: Props) {
+  useLocale();
   const { branches } = useProjectBranchesState(cwd, true);
   const [localBusy, setBusy] = useState(false);
   const [checkoutBusy] = useGitPanelState(cwd, "busy");
@@ -143,9 +145,7 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
         disabled={busy}
         onClick={() => setEditing(null)}
         className={ACTION}
-      >
-        Cancel
-      </button>
+      >{t("Cancel")}</button>
     </form>
   );
 
@@ -187,47 +187,39 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
             disabled={busy}
             title={
               branch.remote
-                ? `Check out ${reference} as a local branch`
-                : `Switch to ${reference}`
+                ? t("Check out {p0} as a local branch", { p0: reference })
+                : t("Switch to {p0}", { p0: reference })
             }
             onClick={() => void checkout(branch)}
             className={ACTION}
-          >
-            Checkout
-          </button>
+          >{t("Checkout")}</button>
         )}
         {current && !isCurrent ? (
           <>
             <button
               type="button"
               disabled={busy}
-              title={`Merge ${reference} into ${current}`}
+              title={t("Merge {p0} into {p1}", { p0: reference, p1: current })}
               onClick={() => void run(() => gitMerge(cwd, reference))}
               className={ACTION}
-            >
-              Merge
-            </button>
+            >{t("Merge")}</button>
             <button
               type="button"
               disabled={busy}
-              title={`Rebase ${current} onto ${reference}`}
+              title={t("Rebase {p0} onto {p1}", { p0: current, p1: reference })}
               onClick={() => void run(() => gitRebase(cwd, reference))}
               className={ACTION}
-            >
-              Rebase
-            </button>
+            >{t("Rebase")}</button>
           </>
         ) : null}
         {branch.remote ? (
           <button
             type="button"
             disabled={busy}
-            title={`Delete ${branch.name} from ${branch.remote}`}
+            title={t("Delete {p0} from {p1}", { p0: branch.name, p1: branch.remote })}
             onClick={() => void removeRemote(branch)}
             className={ACTION}
-          >
-            Delete
-          </button>
+          >{t("Delete")}</button>
         ) : (
           <>
             <button
@@ -237,20 +229,16 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
                 startEditing({ kind: "rename", from: branch.name })
               }
               className={ACTION}
-            >
-              Rename
-            </button>
+            >{t("Rename")}</button>
             <button
               type="button"
               disabled={busy || isCurrent}
-              title={isCurrent ? "Cannot delete the current branch" : undefined}
+              title={isCurrent ? t("Cannot delete the current branch") : undefined}
               onClick={() =>
                 void run(() => deleteLocalBranch(cwd, branch.name))
               }
               className={ACTION}
-            >
-              Delete
-            </button>
+            >{t("Delete")}</button>
           </>
         )}
       </li>
@@ -269,11 +257,11 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
 
   return (
     <Modal
-      title="Branches"
+      title={t("Branches")}
       description={
         current
-          ? `Switch branches, or merge into or rebase ${current}.`
-          : "Switch, create, rename, and delete branches."
+          ? t("Switch branches, or merge into or rebase {p0}.", { p0: current })
+          : t("Switch, create, rename, and delete branches.")
       }
       size="md"
       fitViewport
@@ -286,8 +274,8 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
           <input
             type="text"
             value={query}
-            placeholder="Filter branches"
-            aria-label="Filter branches"
+            placeholder={t("Filter branches")}
+            aria-label={t("Filter branches")}
             spellCheck={false}
             autoComplete="off"
             onChange={(event) => setQuery(event.target.value)}
@@ -299,9 +287,7 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
             onClick={() => startEditing({ kind: "create" })}
             className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-content/10 px-2 text-[12px] text-content hover:bg-content/15 disabled:opacity-40"
           >
-            <Plus className="size-3.5" strokeWidth={1.75} />
-            New Branch…
-          </button>
+            <Plus className="size-3.5" strokeWidth={1.75} />{t("New Branch…")}</button>
         </div>
         {editing?.kind === "create"
           ? renderForm("New branch name", "Create")
@@ -316,7 +302,7 @@ export function BranchManagerDialog({ cwd, onClose }: Props) {
         ) : null}
         {listed.length === 0 ? (
           <p className="px-1 py-2 text-[12px] text-content/45">
-            {needle ? "No branches match" : "No branches"}
+            {needle ? t("No branches match") : t("No branches")}
           </p>
         ) : (
           <ul className="min-h-0 overflow-y-auto">

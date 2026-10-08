@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -169,13 +170,13 @@ function fileLinkMenuItems(
     {
       kind: "item",
       id: "open-monocode",
-      label: `Open in ${PRODUCT_IDENTITY.displayName}`,
+      get label() { return t("Open in {p0}", { p0: PRODUCT_IDENTITY.displayName }); },
       disabled: !canOpenInMonoCode,
     },
     {
       kind: "item",
       id: "open-default",
-      label: "Open in Default App",
+      get label() { return t("Open in Default App"); },
       disabled: remote,
     },
     {
@@ -187,13 +188,13 @@ function fileLinkMenuItems(
       ? [{ kind: "item" as const, id: "reveal-local", label: REVEAL_LABEL }]
       : []),
     { kind: "sep" },
-    { kind: "item", id: "copy-path", label: "Copy Path" },
+    { kind: "item", id: "copy-path", get label() { return t("Copy Path"); } },
     ...(canCopyRelativePath
       ? [
           {
             kind: "item" as const,
             id: "copy-relative-path",
-            label: "Copy Relative Path",
+            get label() { return t("Copy Relative Path"); },
           },
         ]
       : []),
@@ -277,6 +278,7 @@ function MarkdownLink({
   dir,
   ...props
 }: MarkdownLinkProps) {
+  useLocale();
   const allowRemoteMedia = useContext(RemoteMediaContext);
   const { cwd, onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
   const file = href ? resolveWorkspaceFileReference(href, cwd) : undefined;
@@ -321,13 +323,14 @@ function MarkdownLink({
 }
 
 function FileRevealButton({ path }: { path: string }) {
+  useLocale();
   const { onRevealFile } = useContext(FileOpenContext);
   if (!onRevealFile) return null;
   return (
     <button
       type="button"
-      aria-label="Open containing folder"
-      title={`Open containing folder: ${path}`}
+      aria-label={t("Open containing folder")}
+      title={t("Open containing folder: {p0}", { p0: path })}
       className="ml-1 inline-flex size-5 shrink-0 items-center justify-center rounded text-content/55 align-middle hover:bg-content/10 hover:text-content focus-visible:outline focus-visible:outline-accent"
       onClick={(event) => {
         event.preventDefault();
@@ -349,6 +352,7 @@ function MarkdownCode({
   onContextMenu,
   ...props
 }: MarkdownCodeProps) {
+  useLocale();
   const incomplete = useIsCodeFenceIncomplete();
   const block = Object.prototype.hasOwnProperty.call(props, "data-block");
   const { cwd, onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
@@ -474,6 +478,7 @@ function MarkdownCode({
 }
 
 function MarkdownCodeShell({ code, children }: { code: string; children: ReactNode }) {
+  useLocale();
   const [collapsed, setCollapsed] = useState(false);
   const contentId = useId();
   const label = collapsed ? "Expand code block" : "Collapse code block";
@@ -492,7 +497,7 @@ function MarkdownCodeShell({ code, children }: { code: string; children: ReactNo
       dir="ltr"
       tabIndex={0}
       role="region"
-      aria-label="Code block"
+      aria-label={t("Code block")}
       onPointerDown={(event) => {
         if (event.target instanceof Element && event.target.closest('[data-streamdown="code-block-body"]')) {
           event.currentTarget.focus({ preventScroll: true });
@@ -535,7 +540,7 @@ function MarkdownCodeShell({ code, children }: { code: string; children: ReactNo
         >
           <span className="markdown-code-summary-preview" dir="auto">{summary.preview}</span>
           <span className="markdown-code-summary-count">
-            {summary.lineCount} {summary.lineCount === 1 ? "line" : "lines"}
+            {summary.lineCount} {summary.lineCount === 1 ? t("line") : t("lines")}
           </span>
         </button>
       ) : null}
@@ -545,6 +550,7 @@ function MarkdownCodeShell({ code, children }: { code: string; children: ReactNo
 }
 
 function CodeCopyButton({ code }: { code: string }) {
+  useLocale();
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const timer = useRef<number | null>(null);
@@ -560,8 +566,8 @@ function CodeCopyButton({ code }: { code: string }) {
   return (
     <button
       type="button"
-      title={failed ? "Copy failed — try again" : copied ? "Copied" : "Copy code"}
-      aria-label={failed ? "Copy failed — try again" : copied ? "Copied" : "Copy code"}
+      title={failed ? t("Copy failed — try again") : copied ? t("Copied") : t("Copy code")}
+      aria-label={failed ? t("Copy failed — try again") : copied ? t("Copied") : t("Copy code")}
       className={`markdown-code-copy ${copied ? "is-copied" : ""} ${failed ? "is-failed" : ""}`}
       onClick={() => {
         setFailed(false);
@@ -576,7 +582,7 @@ function CodeCopyButton({ code }: { code: string }) {
       }}
     >
       <span className="sr-only" role="status" aria-live="polite">
-        {failed ? "Copy failed. Try again." : copied ? "Code copied." : ""}
+        {failed ? t("Copy failed. Try again.") : copied ? t("Code copied.") : ""}
       </span>
       <svg viewBox="0 0 20 20" aria-hidden="true">
         <g className="markdown-code-copy-pages">
@@ -601,6 +607,7 @@ function NoteAssetImage({
   alt,
   ...props
 }: Omit<MarkdownImageProps, "src" | "node"> & { asset: string }) {
+  useLocale();
   const [src, setSrc] = useState(() => noteImageSrcCache.get(asset));
 
   useEffect(() => {
@@ -636,6 +643,7 @@ function MarkdownImage({
   node: _node,
   ...props
 }: MarkdownImageProps) {
+  useLocale();
   const allowRemoteMedia = useContext(RemoteMediaContext);
   const url = typeof src === "string" ? src.trim() : "";
   if (url.startsWith("data:image/")) {
@@ -663,6 +671,7 @@ const MARKDOWN_COMPONENTS = {
  * comes from the block inside it.
  */
 function DirectionalBlock({ dir, ...props }: BlockProps) {
+  useLocale();
   const ctx = useContext(BlockPluginContext);
   // Only the block still being written fades its words: it is the only one
   // whose text changes, and a block that has been passed is re-parsed once,
@@ -719,6 +728,7 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   /** Show a newline inside a block as a line break, as a document does (#591). */
   hardBreaks?: boolean;
 }) {
+  useLocale();
   const [fileMenu, setFileMenu] = useState<FileLinkMenu | null>(null);
   const [fileActionError, setFileActionError] = useState<string | null>(null);
   const [remoteFolder, setRemoteFolder] = useState<string>();
@@ -954,6 +964,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
   header?: ReactNode;
   hardBreaks?: boolean;
 }) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
 
   return (
@@ -961,7 +972,7 @@ export const MarkdownPreview = memo(function MarkdownPreview({
       ref={lockOverscroll}
       tabIndex={0}
       role="region"
-      aria-label="Markdown preview"
+      aria-label={t("Markdown preview")}
       className="markdown-preview h-full overflow-y-auto overscroll-none [overflow-anchor:none]"
     >
       <div className="px-6 py-8">
@@ -983,6 +994,7 @@ export const MarkdownSource = memo(function MarkdownSource({
 }: {
   text: string;
 }) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
 
   return (
@@ -990,7 +1002,7 @@ export const MarkdownSource = memo(function MarkdownSource({
       ref={lockOverscroll}
       tabIndex={0}
       role="region"
-      aria-label="Markdown source"
+      aria-label={t("Markdown source")}
       className="markdown-preview h-full overflow-y-auto overscroll-none [overflow-anchor:none]"
     >
       <pre className="min-h-full min-w-0 whitespace-pre-wrap wrap-break-word px-4 py-3 font-mono text-[13px] leading-5 text-content/85">
@@ -1001,6 +1013,7 @@ export const MarkdownSource = memo(function MarkdownSource({
 });
 
 export function MarkdownSourceHighlight({ text }: { text: string }) {
+  useLocale();
   if (!text) return null;
   return (
     <>
@@ -1026,6 +1039,7 @@ function MermaidBlock({
   code: string;
   incomplete: boolean;
 }) {
+  useLocale();
   const [svg, setSvg] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const colorScheme = useColorScheme();
@@ -1174,6 +1188,7 @@ function MarkdownCodePath({
   path: string;
   startLine?: number;
 }) {
+  useLocale();
   const { cwd, onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
   const file = resolveWorkspaceFileReference(path, cwd);
   if (!file || !onOpenFile) {

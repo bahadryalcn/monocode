@@ -16,6 +16,7 @@ export const REMOTE_PROVIDERS = [
   "hermes",
   "antigravity",
   "gemini",
+  "acp",
 ] as const;
 export type RemoteProvider = (typeof REMOTE_PROVIDERS)[number];
 export type HostDescriptor = {
@@ -85,7 +86,7 @@ export type HostSessionSummary = Omit<
   worktreeCwd?: string;
   repo?: string;
   draft?: boolean;
-  /** Set when the session lives in the imc app on the host machine, not yet adopted by the host. */
+  /** Set when the session lives in the imc code app on the host machine, not yet adopted by the host. */
   origin?: "desktop";
 };
 
@@ -324,7 +325,7 @@ export function requireHostDescriptor(value: HostDescriptor): HostDescriptor {
     !Array.isArray(value.providers) ||
     !value.providers.every(isRemoteProvider)
   ) {
-    throw new Error("This machine is running an incompatible imc Host");
+    throw new Error("This machine is running an incompatible imc code Host");
   }
   return value;
 }

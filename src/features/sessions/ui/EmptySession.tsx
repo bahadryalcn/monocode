@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { type ReactNode, useSyncExternalStore } from "react";
 import { basename } from "../../../platform/tauri/fs";
 import { projectKey } from "../../../shared/lib/paths";
@@ -23,6 +24,7 @@ type Props = {
 };
 
 export function EmptySession({ cwd, composer, hasChatBackground }: Props) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const coffeehouseEnabled = useSyncExternalStore(
     subscribeCoffeehouseSceneEnabled,
@@ -43,8 +45,8 @@ export function EmptySession({ cwd, composer, hasChatBackground }: Props) {
     getProjectLabel,
   );
   const title = project
-    ? `Work on ${project}.`
-    : "Start a new task.";
+    ? t("Work on {p0}.", { p0: project })
+    : t("Start a new task.");
 
   return (
     <div
@@ -60,7 +62,7 @@ export function EmptySession({ cwd, composer, hasChatBackground }: Props) {
               <img src={PRODUCT_IDENTITY.logoSrc} alt="" />
               <span>{PRODUCT_IDENTITY.displayName}</span>
             </div>
-            <span className="imece-entry-context" title={cwd}> {project ?? "Workspace"} / new task</span>
+            <span className="imece-entry-context" title={cwd}> {project ?? t("Workspace")}{t(" / new task")}</span>
           </div>
           <div className="imece-task-brief pointer-events-auto">
             <h1
@@ -69,7 +71,7 @@ export function EmptySession({ cwd, composer, hasChatBackground }: Props) {
             >
               {title}
             </h1>
-            <p>Set the objective, select your tools, and review the changes in your workspace.</p>
+            <p>{t("Set the objective, select your tools, and review the changes in your workspace.")}</p>
           </div>
 
           <div className="imece-entry-composer pointer-events-auto w-full">{composer}</div>

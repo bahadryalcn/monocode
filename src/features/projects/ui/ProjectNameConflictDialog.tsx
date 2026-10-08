@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { LAYER } from "../../../shared/lib/layers";
@@ -25,6 +26,7 @@ export function ProjectNameConflictDialog({
   onConfirm,
   onCancel,
 }: Props) {
+  useLocale();
   const [value, setValue] = useState(suggested);
   const [error, setError] = useState<string | null>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -51,7 +53,7 @@ export function ProjectNameConflictDialog({
       <form
         role="dialog"
         aria-modal="true"
-        aria-label="Rename project"
+        aria-label={t("Rename project")}
         onMouseDown={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
@@ -62,20 +64,15 @@ export function ProjectNameConflictDialog({
         className="absolute left-1/2 top-[22%] flex w-[min(420px,calc(100vw-24px))] -translate-x-1/2 flex-col gap-3 rounded-lg border border-content/10 bg-content/5 p-4 shadow-xl backdrop-blur-xl"
       >
         <div className="flex flex-col gap-1">
-          <h2 className="text-[13px] font-medium leading-tight text-content">
-            Rename project
-          </h2>
-          <p className="text-[12px] leading-snug text-content/55">
-            A project named "{name}" already exists. Give this one a different
-            name.
-          </p>
+          <h2 className="text-[13px] font-medium leading-tight text-content">{t("Rename project")}</h2>
+          <p className="text-[12px] leading-snug text-content/55">{t("A project named \"")}{name}{t("\" already exists. Give this one a different name.")}</p>
           <p className="truncate text-[11px] leading-tight text-content/40">
             {prettyCwd(path)}
           </p>
         </div>
         <input
           ref={input}
-          aria-label="Project name"
+          aria-label={t("Project name")}
           aria-invalid={error ? true : undefined}
           value={value}
           spellCheck={false}
@@ -95,17 +92,13 @@ export function ProjectNameConflictDialog({
           <button
             type="button"
             onClick={onCancel}
-            title={`Keep "${suggested}"`}
+            title={t("Keep \"{p0}\"", { p0: suggested })}
             className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
-          >
-            Cancel
-          </button>
+          >{t("Cancel")}</button>
           <button
             type="submit"
             className="rounded-md bg-selection px-3 py-1.5 text-[12px] font-medium hover:bg-selection-hover"
-          >
-            Rename
-          </button>
+          >{t("Rename")}</button>
         </div>
       </form>
     </div>,

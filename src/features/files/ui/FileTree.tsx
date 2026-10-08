@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   ChevronDown,
   ChevronRight,
@@ -209,56 +210,56 @@ function explorerItems(
     !!clip?.isDir &&
     (pasteParent === clip.path || pasteParent.startsWith(`${clip.path}/`));
   return [
-    { kind: "item", id: "new-file", label: "New File" },
-    { kind: "item", id: "new-folder", label: "New Folder" },
+    { kind: "item", id: "new-file", get label() { return t("New File"); } },
+    { kind: "item", id: "new-folder", get label() { return t("New Folder"); } },
     { kind: "sep" },
     {
       kind: "item",
       id: "cut",
-      label: "Cut",
+      get label() { return t("Cut"); },
       shortcut: `${MOD}X`,
       disabled: target.isRoot,
     },
     {
       kind: "item",
       id: "copy",
-      label: "Copy",
+      get label() { return t("Copy"); },
       shortcut: `${MOD}C`,
       disabled: target.isRoot,
     },
     {
       kind: "item",
       id: "paste",
-      label: "Paste",
+      get label() { return t("Paste"); },
       shortcut: `${MOD}V`,
       disabled: pasteBlocked,
     },
     {
       kind: "item",
       id: "duplicate",
-      label: "Duplicate",
+      get label() { return t("Duplicate"); },
       disabled: target.isRoot,
     },
     { kind: "sep" },
     {
       kind: "item",
       id: "copy-path",
-      label: "Copy Path",
+      get label() { return t("Copy Path"); },
       shortcut: `${MOD}${SHIFT}C`,
     },
-    { kind: "item", id: "copy-relative-path", label: "Copy Relative Path" },
+    { kind: "item", id: "copy-relative-path", get label() { return t("Copy Relative Path"); } },
     { kind: "sep" },
     {
       kind: "item",
       id: "rename",
-      label: "Rename",
+      get label() { return t("Rename"); },
       shortcut: "F2",
       disabled: target.isRoot,
     },
     {
       kind: "item",
       id: "delete",
-      label: "Delete",
+      get label() { return t("Delete"); },
       shortcut: "⌫",
       disabled: target.isRoot,
       danger: true,
@@ -266,8 +267,8 @@ function explorerItems(
     { kind: "sep" },
     ...(canInspectGit && !target.isDir
       ? [
-          { kind: "item" as const, id: "git-history", label: "File History" },
-          { kind: "item" as const, id: "git-blame", label: "Blame" },
+          { kind: "item" as const, id: "git-history", get label() { return t("File History"); } },
+          { kind: "item" as const, id: "git-blame", get label() { return t("Blame"); } },
           { kind: "sep" as const },
         ]
       : []),
@@ -276,7 +277,7 @@ function explorerItems(
           {
             kind: "item" as const,
             id: "open-terminal",
-            label: "Open in Terminal",
+            get label() { return t("Open in Terminal"); },
           },
         ]
       : []),
@@ -296,6 +297,7 @@ export const FileTree = memo(function FileTree({
   onSearch,
   gitStatuses,
 }: Props) {
+  useLocale();
   const [expanded, setExpanded] = useState(() => loadExpanded(cwd));
   const [selectedPath, setSelectedPath] = useState(() => loadSelected(cwd));
   const [children, setChildren] = useState<FsEntry[] | null>(() =>
@@ -769,6 +771,126 @@ export const FileTree = memo(function FileTree({
     openMenu({ path: cwd, isDir: true, isRoot: true }, e.clientX, e.clientY);
   };
 
+  const visibleRows = () =>
+    Array.from(
+      rootRef.current?.querySelectorAll<HTMLElement>(
+        "[data-explorer-root], [role='treeitem']",
+      ) ?? [],
+    );
+
+  const focusRow = (row: HTMLElement | undefined) => {
+    if (!row) return;
+    onSelect(row.title);
+    row.focus({ preventScroll: true });
+    row.scrollIntoView?.({ block: "nearest" });
+  };
+
+  const typeahead = useRef({ text: "", at: 0 });
+
+  // VS Code-style list navigation. Rows are read from the DOM so the order
+  // always matches what's rendered (folders first, excluded files hidden).
+  const onNavigationKey = (
+    e: ReactKeyboardEvent<HTMLDivElement>,
+    path: string,
+    isDir: boolean,
+  ): boolean => {
+    if (e.altKey || e.ctrlKey || (e.metaKey && e.key !== "ArrowDown")) {
+      return false;
+    }
+    const rows = visibleRows();
+    const index = rows.findIndex((row) => row.title === path);
+    const open = path === cwd ? rootOpen : expanded.has(path);
+    const pageSize = () => {
+      const scroller = rootRef.current?.querySelector(".overflow-y-auto");
+      const rowHeight = rows[rows.length - 1]?.offsetHeight || 30;
+      return Math.max(
+        1,
+        Math.floor((scroller?.clientHeight ?? 0) / rowHeight) - 1,
+      );
+    };
+    const step = (delta: number) =>
+      focusRow(
+        rows[
+          index < 0
+            ? delta > 0
+              ? 0
+              : rows.length - 1
+            : Math.min(rows.length - 1, Math.max(0, index + delta))
+        ],
+      );
+    const activate = (keepFocus: boolean) => {
+      if (isDir) {
+        toggle(path);
+        return;
+      }
+      onOpenFile(path, undefined, { exact: true });
+      if (keepFocus) {
+        const row = rows[index];
+        requestAnimationFrame(() => row?.focus({ preventScroll: true }));
+      }
+    };
+
+    switch (e.key) {
+      case "ArrowDown":
+        // Cmd+Down opens, as in VS Code on macOS.
+        if (e.metaKey) activate(false);
+        else step(1);
+        return true;
+      case "ArrowUp":
+        step(-1);
+        return true;
+      case "PageDown":
+        step(pageSize());
+        return true;
+      case "PageUp":
+        step(-pageSize());
+        return true;
+      case "Home":
+        focusRow(rows[0]);
+        return true;
+      case "End":
+        focusRow(rows[rows.length - 1]);
+        return true;
+      case "ArrowRight":
+        if (!isDir) return true;
+        if (!open) toggle(path);
+        else if (rows[index + 1] && parentPath(rows[index + 1].title) === path)
+          focusRow(rows[index + 1]);
+        return true;
+      case "ArrowLeft":
+        if (isDir && open) toggle(path);
+        else if (path !== cwd)
+          focusRow(rows.find((row) => row.title === parentPath(path)));
+        return true;
+      case "Enter":
+        activate(false);
+        return true;
+      case " ":
+        activate(true);
+        return true;
+    }
+
+    // Type a name prefix to jump to the next matching row.
+    if (e.metaKey || e.key.length !== 1 || e.key === " ") return false;
+    const now = performance.now();
+    const buffer = typeahead.current;
+    buffer.text = now - buffer.at > 700 ? e.key : buffer.text + e.key;
+    buffer.at = now;
+    // Repeating one letter cycles through its matches instead of narrowing.
+    const lower = buffer.text.toLowerCase();
+    const cycling = [...lower].every((ch) => ch === lower[0]);
+    const needle = cycling ? lower[0] : lower;
+    const start = cycling ? index + 1 : Math.max(index, 0);
+    const ordered = [...rows.slice(start), ...rows.slice(0, start)];
+    const match = ordered.find(
+      (row) =>
+        row.title !== cwd &&
+        basename(row.title).toLowerCase().startsWith(needle),
+    );
+    if (match) focusRow(match);
+    return true;
+  };
+
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest("input")) return;
     if (
@@ -782,6 +904,10 @@ export const FileTree = memo(function FileTree({
     const path = selectedPath ?? cwd;
     const isRoot = path === cwd;
     const isDir = isDirAt(cwd, path);
+    if (onNavigationKey(e, path, isDir)) {
+      e.preventDefault();
+      return;
+    }
     const mod = e.metaKey || e.ctrlKey;
     const key = shortcutLetter(e);
     if (mod && !e.altKey && e.shiftKey && key === "c") {
@@ -1046,17 +1172,17 @@ export const FileTree = memo(function FileTree({
           className="flex h-9 shrink-0 items-center gap-px overflow-visible border-b border-stroke px-2"
           onContextMenu={(e) => e.stopPropagation()}
         >
-          <HeaderIcon label="New File" onClick={() => startCreate(false)}>
+          <HeaderIcon label={t("New File")} onClick={() => startCreate(false)}>
             <FilePlus className="size-3.5" strokeWidth={1.75} />
           </HeaderIcon>
-          <HeaderIcon label="New Folder" onClick={() => startCreate(true)}>
+          <HeaderIcon label={t("New Folder")} onClick={() => startCreate(true)}>
             <FolderPlus className="size-3.5" strokeWidth={1.75} />
           </HeaderIcon>
           <HeaderIcon label={REVEAL_LABEL} onClick={() => void run(() => revealPath(cwd))}>
             <FolderOpen className="size-3.5" strokeWidth={1.75} />
           </HeaderIcon>
           <HeaderIcon
-            label="Collapse All"
+            label={t("Collapse All")}
             onClick={() => {
               setCreating(null);
               setRenaming(null);
@@ -1069,7 +1195,7 @@ export const FileTree = memo(function FileTree({
           </HeaderIcon>
           {onSearch ? (
             <HeaderIcon
-              label={`Search in files (${MOD}Shift+F)`}
+              label={t("Search in files ({p0}Shift+F)", { p0: MOD })}
               onClick={onSearch}
             >
               <Search className="size-3.5" strokeWidth={1.75} />
@@ -1095,7 +1221,7 @@ export const FileTree = memo(function FileTree({
                 e.clientY,
               );
             }}
-            className={`flex min-w-0 flex-1 items-center gap-1 h-full pl-2 text-left ${
+            className={`flex min-w-0 flex-1 items-center gap-1 h-full pl-2 text-left outline-none focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-accent/40 ${
               dragOverPath === cwd ? "bg-selection" : ""
             }`}
           >
@@ -1131,7 +1257,7 @@ export const FileTree = memo(function FileTree({
           {rootOpen ? (
             <div
               role="tree"
-              aria-label={`${name} files`}
+              aria-label={t("{p0} files", { p0: name })}
               className={connectionFailure ? "opacity-60" : undefined}
             >
               <TreeChildren
@@ -1180,6 +1306,7 @@ function HeaderIcon({
   active?: boolean;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -1214,6 +1341,7 @@ function TreeChildren({
   statusLabel: string;
   onRefresh: () => void;
 }) {
+  useLocale();
   const ctx = useTreeState();
   const actions = useTreeActions();
   const creating = ctx.creating;
@@ -1284,16 +1412,13 @@ function TreeChildren({
             type="button"
             className="hover:text-content"
             onClick={() => setLimit((n) => n + TREE_WINDOW_CHUNK)}
-          >
-            Show {Math.min(TREE_WINDOW_CHUNK, hidden)} more…
-          </button>
+          >{t("Show ")}{Math.min(TREE_WINDOW_CHUNK, hidden)}{t(" more…")}</button>
           {hidden > TREE_WINDOW_CHUNK ? (
             <button
               type="button"
               className="hover:text-content"
               onClick={() => setLimit(Number.POSITIVE_INFINITY)}
-            >
-              Show all {hidden}
+            >{t("Show all ")}{hidden}
             </button>
           ) : null}
         </p>
@@ -1321,6 +1446,7 @@ const TreeNode = memo(function TreeNode({
   dragOver: boolean;
   gitStatus: string | undefined;
 }) {
+  useLocale();
   const {
     onToggle,
     onSelect,
@@ -1471,7 +1597,7 @@ const TreeNode = memo(function TreeNode({
           }}
           onContextMenu={(e) => onItemContextMenu(entry, e)}
           style={{ paddingLeft: 8 + depth * 12 }}
-          className={`flex h-7.5 w-full cursor-default items-center gap-1 pr-2 text-left text-[14px] leading-none data-[explorer-dragging]:opacity-50 ${
+          className={`flex h-7.5 w-full cursor-default items-center gap-1 pr-2 text-left text-[14px] outline-none focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-accent/40 leading-none data-[explorer-dragging]:opacity-50 ${
             selected
               ? "bg-selection text-content"
               : "text-content hover:bg-content/5"
@@ -1529,6 +1655,7 @@ export function NameRow({
   onCommit: (raw: string) => Promise<void>;
   onCancel: () => void;
 }) {
+  useLocale();
   const inputRef = useRef<HTMLInputElement>(null);
   const finished = useRef(false);
   const [value, setValue] = useState(initial);
@@ -1600,7 +1727,7 @@ export function NameRow({
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
-          aria-label="Type file name. Press Enter to confirm or Escape to cancel."
+          aria-label={t("Type file name. Press Enter to confirm or Escape to cancel.")}
           onChange={(e) => {
             setValue(e.target.value);
             setSubmitError(null);
@@ -1637,6 +1764,7 @@ function NameIssueView({
   issue: NameIssue | null;
   fallback: string | null;
 }) {
+  useLocale();
   let body: ReactNode = null;
   if (fallback) {
     body = fallback;
@@ -1650,18 +1778,12 @@ function NameIssueView({
         break;
       case "exists":
         body = (
-          <>
-            A file or folder <span className="font-semibold">{issue.name}</span>{" "}
-            already exists at this location. Please choose a different name.
-          </>
+          <>{t("A file or folder ")}<span className="font-semibold">{issue.name}</span>{" "}{t("already exists at this location. Please choose a different name.")}</>
         );
         break;
       case "invalid":
         body = (
-          <>
-            The name <span className="font-semibold">{issue.name}</span> is not
-            valid as a file or folder name. Please choose a different name.
-          </>
+          <>{t("The name ")}<span className="font-semibold">{issue.name}</span>{t(" is not valid as a file or folder name. Please choose a different name.")}</>
         );
         break;
       case "whitespace":

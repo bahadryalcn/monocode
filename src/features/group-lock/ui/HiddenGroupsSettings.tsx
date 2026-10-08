@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { EyeOff, Lock } from "../../../shared/ui/icons";
@@ -16,6 +17,7 @@ export function HiddenGroupsSettings({
 }: {
   controls: Pick<GroupLockControls, "Group" | "Row">;
 }) {
+  useLocale();
   const privacy = useGroupLock();
   const [prompt, setPrompt] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,7 +44,7 @@ export function HiddenGroupsSettings({
           Hidden groups
         </span>
       }
-      description="Keep personal projects out of view. Restore them here at any time."
+      description={t("Keep personal projects out of view. Restore them here at any time.")}
     >
       {!authorized ? (
         <Row
@@ -52,16 +54,14 @@ export function HiddenGroupsSettings({
               Group names are concealed
             </span>
           }
-          description="Enter your password to view and restore hidden groups."
+          description={t("Enter your password to view and restore hidden groups.")}
         >
-          <SecondaryButton onClick={() => setPrompt(true)}>
-            Manage hidden groups…
-          </SecondaryButton>
+          <SecondaryButton onClick={() => setPrompt(true)}>{t("Manage hidden groups…")}</SecondaryButton>
         </Row>
       ) : groups.length === 0 ? (
         <Row
-          label="No hidden groups"
-          description="Right-click a project group and choose Hide group to hide it on this device."
+          label={t("No hidden groups")}
+          description={t("Right-click a project group and choose Hide group to hide it on this device.")}
         />
       ) : (
         groups.map((group) => (
@@ -70,15 +70,13 @@ export function HiddenGroupsSettings({
             label={group.name}
             description={
               privacy.hiddenGroupIds.has(group.id)
-                ? "Hidden on this device"
-                : "Visible until restart or Lock all groups"
+                ? t("Hidden on this device")
+                : t("Visible until restart or Lock all groups")
             }
           >
             <div className="flex flex-wrap items-center gap-2">
               {privacy.hiddenGroupIds.has(group.id) ? (
-                <SecondaryButton onClick={() => restore(group.id, true)}>
-                  Show temporarily
-                </SecondaryButton>
+                <SecondaryButton onClick={() => restore(group.id, true)}>{t("Show temporarily")}</SecondaryButton>
               ) : (
                 <SecondaryButton
                   onClick={() =>
@@ -88,29 +86,20 @@ export function HiddenGroupsSettings({
                         : "Could not save visibility. Please try again.",
                     )
                   }
-                >
-                  Hide again
-                </SecondaryButton>
+                >{t("Hide again")}</SecondaryButton>
               )}
-              <SecondaryButton onClick={() => restore(group.id, false)}>
-                Make visible
-              </SecondaryButton>
+              <SecondaryButton onClick={() => restore(group.id, false)}>{t("Make visible")}</SecondaryButton>
             </div>
           </Row>
         ))
       )}
       {authorized && privacy.hasPassword ? (
         <div className="privacy-hidden-footer">
-          <SecondaryButton onClick={closeHiddenGroups}>
-            Conceal group names
-          </SecondaryButton>
+          <SecondaryButton onClick={closeHiddenGroups}>{t("Conceal group names")}</SecondaryButton>
         </div>
       ) : null}
       {authorized && groups.length > 0 ? (
-        <p className="privacy-inline-note">
-          Temporary visibility ends on restart. Make visible restores the group
-          permanently.
-        </p>
+        <p className="privacy-inline-note">{t("Temporary visibility ends on restart. Make visible restores the group permanently.")}</p>
       ) : null}
       {error ? (
         <p role="alert" className="text-sm text-red-400">
@@ -119,8 +108,8 @@ export function HiddenGroupsSettings({
       ) : null}
       {prompt ? (
         <PasswordPromptDialog
-          title="Manage hidden groups"
-          description="Enter your lock password to view hidden group names."
+          title={t("Manage hidden groups")}
+          description={t("Enter your lock password to view hidden group names.")}
           submitLabel="Continue"
           verify={authorizeHiddenGroups}
           onDone={() => setPrompt(false)}

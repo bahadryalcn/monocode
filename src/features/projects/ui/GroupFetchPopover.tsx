@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import {
   basename,
@@ -30,6 +31,7 @@ export function GroupFetchPopover({
   paths: readonly string[];
   onClose: () => void;
 }) {
+  useLocale();
   const [results, setResults] = useState<readonly FetchAllResult[]>([]);
   const [current, setCurrent] = useState(0);
   const [done, setDone] = useState(false);
@@ -69,17 +71,17 @@ export function GroupFetchPopover({
       gap={0}
       width={320}
       role="dialog"
-      aria-label={`Fetch all in ${name}`}
+      aria-label={t("Fetch all in {p0}", { p0: name })}
       aria-live="polite"
       onDismiss={onClose}
       className="overflow-y-auto p-1"
     >
       <p className="px-2.5 pb-1 pt-1.5 text-xs text-content/50">
         {paths.length === 0
-          ? "No projects to fetch"
+          ? t("No projects to fetch")
           : done
-            ? `Fetched ${results.filter((r) => r.status === "fetched").length} of ${paths.length}`
-            : `Fetching ${Math.min(current + 1, paths.length)} of ${paths.length}…`}
+            ? t("Fetched {p0} of {p1}", { p0: results.filter((r) => r.status === "fetched").length, p1: paths.length })
+            : t("Fetching {p0} of {p1}…", { p0: Math.min(current + 1, paths.length), p1: paths.length })}
       </p>
       <ul>
         {paths.map((path, index) => {
@@ -102,7 +104,7 @@ export function GroupFetchPopover({
                 }`}
                 title={result?.error}
               >
-                {result ? LABELS[result.status] : index === current && !done ? "Fetching…" : "Waiting"}
+                {result ? LABELS[result.status] : index === current && !done ? t("Fetching…") : t("Waiting")}
               </span>
             </li>
           );

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useId, useState } from "react";
 import { Modal } from "../../../shared/ui/Modal";
 import {
@@ -73,6 +74,7 @@ export function ProjectActionDialog({
   onDelete: () => void;
   onClose: () => void;
 }) {
+  useLocale();
   const [draft, setDraft] = useState(() => ({
     ...action,
     shortcut: action.shortcut ?? "",
@@ -98,8 +100,8 @@ export function ProjectActionDialog({
   const Icon = icons[draft.icon];
   return (
     <Modal
-      title={editing ? "Edit action" : "Add action"}
-      description="Actions are shortcuts for this project. Run a command from the top bar or a keybinding, and optionally open its web address."
+      title={editing ? t("Edit action") : t("Add action")}
+      description={t("Actions are shortcuts for this project. Run a command from the top bar or a keybinding, and optionally open its web address.")}
       size="md"
       onClose={onClose}
       className="[&_header]:px-6 [&_header]:pt-5"
@@ -121,7 +123,7 @@ export function ProjectActionDialog({
             <FolderOpen className="mt-0.5 size-4 shrink-0 text-content/50" />
             <div className="min-w-0">
               <p title={cwd} className="truncate text-xs text-content/65">
-                <span className="mr-2 text-content/45">Working folder</span>
+                <span className="mr-2 text-content/45">{t("Working folder")}</span>
                 <span className="font-mono">{prettyCwd(cwd)}</span>
               </p>
             </div>
@@ -129,7 +131,7 @@ export function ProjectActionDialog({
           {!editing ? (
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-content/50">Examples</span>
+                <span className="text-xs text-content/50">{t("Examples")}</span>
                 {presets.map((preset) => (
                   <button
                     type="button"
@@ -146,18 +148,17 @@ export function ProjectActionDialog({
             </div>
           ) : null}
           <div className="space-y-2">
-            <label htmlFor={`${uid}-name`} className={heading}>
-              Name{" "}
-              <span className="font-normal text-content/45">(required)</span>
+            <label htmlFor={`${uid}-name`} className={heading}>{t("Name")}{" "}
+              <span className="font-normal text-content/45">{t("(required)")}</span>
             </label>
             <div className="flex gap-2">
               <button
                 type="button"
-                aria-label={`Choose icon: ${labels[draft.icon]}`}
+                aria-label={t("Choose icon: {p0}", { p0: labels[draft.icon] })}
                 aria-expanded={choosingIcon}
                 onClick={() => setChoosingIcon(!choosingIcon)}
                 className="grid size-10 shrink-0 place-items-center rounded-lg border border-stroke bg-content/5 text-accent hover:border-accent focus-visible:outline-accent"
-                title="Choose action icon"
+                title={t("Choose action icon")}
               >
                 <Icon className="size-5" />
               </button>
@@ -167,7 +168,7 @@ export function ProjectActionDialog({
                 required
                 maxLength={80}
                 className={input}
-                placeholder="e.g. Start development server"
+                placeholder={t("e.g. Start development server")}
                 value={draft.name}
                 onChange={(event) =>
                   setDraft({ ...draft, name: event.target.value })
@@ -175,13 +176,11 @@ export function ProjectActionDialog({
                 aria-describedby={`${uid}-name-help`}
               />
             </div>
-            <p id={`${uid}-name-help`} className={help}>
-              Shown in the top bar. Click the icon to choose its symbol.
-            </p>
+            <p id={`${uid}-name-help`} className={help}>{t("Shown in the top bar. Click the icon to choose its symbol.")}</p>
           </div>
           {choosingIcon ? (
             <fieldset className="space-y-2">
-              <legend className={`${heading} mb-2`}>Icon</legend>
+              <legend className={`${heading} mb-2`}>{t("Icon")}</legend>
               <div className="grid grid-cols-5 gap-2">
                 {ACTION_ICONS.map((icon) => {
                   const Choice = icons[icon];
@@ -189,7 +188,7 @@ export function ProjectActionDialog({
                     <button
                       type="button"
                       key={icon}
-                      aria-label={`${labels[icon]} icon`}
+                      aria-label={t("{p0} icon", { p0: labels[icon] })}
                       aria-pressed={draft.icon === icon}
                       className={`flex flex-col items-center gap-1.5 rounded-lg border px-1 py-2.5 text-xs focus-visible:outline-accent ${draft.icon === icon ? "border-accent bg-accent/10 text-accent" : "border-stroke text-content/60 hover:bg-content/5"}`}
                       onClick={() => {
@@ -203,22 +202,19 @@ export function ProjectActionDialog({
                   );
                 })}
               </div>
-              <p className={help}>
-                Choose the symbol shown beside this action.
-              </p>
+              <p className={help}>{t("Choose the symbol shown beside this action.")}</p>
             </fieldset>
           ) : null}
           <div className="space-y-2">
-            <label htmlFor={`${uid}-shortcut`} className={heading}>
-              Keybinding{" "}
-              <span className="font-normal text-content/45">(optional)</span>
+            <label htmlFor={`${uid}-shortcut`} className={heading}>{t("Keybinding")}{" "}
+              <span className="font-normal text-content/45">{t("(optional)")}</span>
             </label>
             <div className="flex gap-2">
               <input
                 id={`${uid}-shortcut`}
                 readOnly
                 className={`${input} cursor-pointer`}
-                placeholder="Click here and press a shortcut"
+                placeholder={t("Click here and press a shortcut")}
                 value={
                   draft.shortcut
                     ? quickComposerShortcutLabel(draft.shortcut)
@@ -255,14 +251,9 @@ export function ProjectActionDialog({
                   setDraft({ ...draft, shortcut: "" });
                   setShortcutHint("");
                 }}
-              >
-                Clear
-              </button>
+              >{t("Clear")}</button>
             </div>
-            <p id={`${uid}-shortcut-help`} className={help}>
-              Press a shortcut; Backspace clears it. Works in this project. App
-              shortcuts are reserved.
-            </p>
+            <p id={`${uid}-shortcut-help`} className={help}>{t("Press a shortcut; Backspace clears it. Works in this project. App shortcuts are reserved.")}</p>
             {shortcutError || shortcutHint ? (
               <p role="status" className="text-xs text-amber-400">
                 {shortcutError || shortcutHint}
@@ -270,29 +261,23 @@ export function ProjectActionDialog({
             ) : null}
           </div>
           <div className="space-y-2">
-            <label htmlFor={`${uid}-command`} className={heading}>
-              Command
-            </label>
+            <label htmlFor={`${uid}-command`} className={heading}>{t("Command")}</label>
             <textarea
               id={`${uid}-command`}
               rows={2}
               className={`${input} resize-y font-mono leading-relaxed`}
-              placeholder="e.g. pnpm dev, npm run dev, or bun test"
+              placeholder={t("e.g. pnpm dev, npm run dev, or bun test")}
               value={draft.command}
               onChange={(event) =>
                 setDraft({ ...draft, command: event.target.value })
               }
               aria-describedby={`${uid}-command-help`}
             />
-            <p id={`${uid}-command-help`} className={help}>
-              Runs in a new terminal in this folder using your default shell.
-              Leave empty for a web link action.
-            </p>
+            <p id={`${uid}-command-help`} className={help}>{t("Runs in a new terminal in this folder using your default shell. Leave empty for a web link action.")}</p>
           </div>
           <div className="space-y-2">
-            <label htmlFor={`${uid}-url`} className={heading}>
-              Web address{" "}
-              <span className="font-normal text-content/45">(optional)</span>
+            <label htmlFor={`${uid}-url`} className={heading}>{t("Web address")}{" "}
+              <span className="font-normal text-content/45">{t("(optional)")}</span>
             </label>
             <input
               id={`${uid}-url`}
@@ -306,22 +291,15 @@ export function ProjectActionDialog({
               aria-describedby={`${uid}-url-help`}
               aria-invalid={!validActionUrl(draft.url)}
             />
-            <p id={`${uid}-url-help`} className={help}>
-              Add your local dev server or any HTTP/HTTPS page. Opens in your
-              default browser.
-            </p>
+            <p id={`${uid}-url-help`} className={help}>{t("Add your local dev server or any HTTP/HTTPS page. Opens in your default browser.")}</p>
           </div>
           <div className="flex items-center justify-between gap-4 rounded-lg bg-content/5 p-3">
             <div>
               <span
                 id={`${uid}-open-label`}
                 className="text-[13px] font-medium text-content"
-              >
-                Open web address when this action runs
-              </span>
-              <p id={`${uid}-open-help`} className={`${help} mt-1`}>
-                Opens immediately; a dev server may still be starting.
-              </p>
+              >{t("Open web address when this action runs")}</span>
+              <p id={`${uid}-open-help`} className={`${help} mt-1`}>{t("Opens immediately; a dev server may still be starting.")}</p>
             </div>
             <button
               type="button"
@@ -352,9 +330,7 @@ export function ProjectActionDialog({
               type="button"
               className="text-xs text-red-400 hover:underline"
               onClick={onDelete}
-            >
-              Delete action
-            </button>
+            >{t("Delete action")}</button>
           ) : null}
           <p
             aria-live="polite"
@@ -362,23 +338,19 @@ export function ProjectActionDialog({
           >
             {missing ||
               (draft.command.trim()
-                ? `Runs in a new terminal${draft.url.trim() && draft.openUrlOnRun ? " and opens your browser" : ""}.`
-                : "Opens the web address in your browser.")}
+                ? t((draft.url.trim() && draft.openUrlOnRun ? "Runs in a new terminal and opens your browser." : "Runs in a new terminal."))
+                : t("Opens the web address in your browser."))}
           </p>
           <button
             type="button"
             className="rounded-lg border border-stroke px-3 py-2 text-xs text-content/75 hover:bg-content/5"
             onClick={onClose}
-          >
-            Cancel
-          </button>
+          >{t("Cancel")}</button>
           <button
             type="submit"
             disabled={Boolean(missing)}
             className="rounded-lg bg-accent px-4 py-2 text-xs font-medium text-background-base hover:brightness-110 disabled:opacity-40"
-          >
-            Save action
-          </button>
+          >{t("Save action")}</button>
         </div>
       </form>
     </Modal>

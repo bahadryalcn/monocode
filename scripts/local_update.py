@@ -36,8 +36,28 @@ def fingerprint(files):
         value.update(name.encode() + b'\0' + hashlib.sha256(content).digest())
     return value.hexdigest()
 
-def snapshot(root, state):
-    files = inputs(root)
+def snapshot(root, state, base_request=None, source_paths=None):
+    if base_request:
+        archive = pathlib.Path(base_request['archive']).expanduser()
+        if digest(archive) != base_request['archiveHash']:
+            raise RuntimeError('Base snapshot checksum mismatch')
+        with tarfile.open(archive) as tar:
+            files = {}
+            for entry in tar.getmembers():
+                safe_child(root, entry.name)
+                if not entry.isfile():
+                    raise ValueError('Base snapshot must contain regular files only')
+                files[entry.name] = tar.extractfile(entry).read()
+        if fingerprint(files) != base_request['source']:
+            raise RuntimeError('Base source fingerprint mismatch')
+        current = inputs(root)
+        for name in source_paths or []:
+            safe_child(root, name)
+            if name not in current:
+                raise ValueError('Overlay must name an included source file: ' + name)
+            files[name] = current[name]
+    else:
+        files = inputs(root)
     source = fingerprint(files)
     out = state / 'incoming' / (source + '.tar.gz')
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -141,13 +161,15 @@ def stage(name, command, workspace, env, release, timings):
         timings[name] = round(time.monotonic() - started, 2)
         write_json(release / 'timings.json', timings)
 
-def queue_install(release):
+def queue_install(release, components=('host', 'app')):
+    if not components or not set(components) <= {'host', 'app'}:
+        raise ValueError('Components must be host and/or app')
     manifest = read_json(release / 'manifest.json')
     package_identity(manifest)
     base = pathlib.Path.home() / PRODUCT_IDENTITY['hostDirectory'] / 'update-jobs'
     base.mkdir(parents=True, exist_ok=True)
     results = {}
-    for component in ('host', 'app'):
+    for component in components:
         record = base / (component + '.json')
         old = read_json(record) if record.exists() else {}
         if old.get('id') == manifest['id'] and old.get('state') == 'installed':
@@ -185,11 +207,11 @@ def queue_install(release):
     write_json(release / 'install-jobs.json', results)
     print(f'[{sys.platform}] install jobs scheduled; state: {base}', flush=True)
 
-def finish_build(release, build_only=False):
+def finish_build(release, build_only=False, components=('host', 'app')):
     if build_only:
         print(f'[{sys.platform}] build-only package verified: {release}', flush=True)
     else:
-        queue_install(release)
+        queue_install(release, components)
 
 
 def worker(request):
@@ -201,15 +223,18 @@ def worker(request):
     legacy = legacy_updaters()
     if legacy:
         raise RuntimeError('Previous ad-hoc updater still running (PID '+','.join(legacy)+'); finish it before starting this pipeline')
+    components = request.get('components', ['host', 'app'])
+    if not components or not set(components) <= {'host', 'app'}:
+        raise ValueError('Components must be host and/or app')
     for component, old in status().items():
-        if install_job_active(old) and old.get('id') != request['id']:
+        if component in components and install_job_active(old) and old.get('id') != request['id']:
             raise RuntimeError(f'{component} has a pending package; see --status before starting another update')
     if request.get('installOnly'):
         # Reuse the immutable package with current installation bug fixes.
         # An already-running helper has imported its own code and keeps its job.
         for name in TOOLS:
             shutil.copy2(pathlib.Path(__file__).parent / name, release / name)
-        queue_install(release)
+        queue_install(release, components)
         return
     with lock(state / 'build.lock'):
         archive = pathlib.Path(request['archive']).expanduser()
@@ -341,13 +366,14 @@ def worker(request):
         write_json(release / 'manifest.json', manifest)
         write_json(cache_file, cache)
         write_json(state / 'latest.json', request)
-    finish_build(release, request.get('buildOnly', False))
+    finish_build(release, request.get('buildOnly', False), components)
 
 def main():
     if sys.version_info < (3, 12):
         raise RuntimeError('Python 3.12+ is required (no third-party packages)')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--platforms', default='windows,mac' if os.name == 'nt' else 'mac')
+    parser.add_argument('--components', default='host,app')
     parser.add_argument('--version')
     parser.add_argument('--plan', action='store_true')
     parser.add_argument('--install-only', action='store_true')
@@ -356,9 +382,16 @@ def main():
     parser.add_argument('--force-build', action='store_true')
     parser.add_argument('--worker')
     parser.add_argument('--snapshot-request', help='Reuse one frozen source across independent platform agents')
+    parser.add_argument('--base-snapshot', help='Overlay explicitly selected source files onto a verified previous snapshot')
+    parser.add_argument('--source-path', action='append', default=[])
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--status-worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if bool(args.base_snapshot) != bool(args.source_path) or (args.base_snapshot and (args.snapshot_request or args.install_only or args.version)):
+        raise ValueError('Use --base-snapshot with --source-path, without snapshot reuse, install-only or version changes')
+    components = args.components.split(',')
+    if not components or not set(components) <= {'host', 'app'}:
+        raise ValueError('Components must be host and/or app')
     if args.install_only and (args.version or args.release or args.force_build or args.build_only):
         raise ValueError('--install-only reuses the previous version/mode; do not combine it with build options')
     if args.worker:
@@ -389,7 +422,7 @@ def main():
                 print('Mac:', run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host, command], timeout=30))
         return
     if args.plan:
-        print(json.dumps({'platforms': platforms, 'mode': mode, 'build': not args.install_only,
+        print(json.dumps({'platforms': platforms, 'components': components, 'mode': mode, 'build': not args.install_only,
                           'version': args.version or read_json(ROOT / 'package.json')['version'],
                           'steps': (['reuse last manifest'] if args.install_only else ['freeze once', 'parallel cached builds']) +
                                    ['verify artifacts'] + ([] if args.build_only else ['independent idle host/app install jobs']),
@@ -409,14 +442,14 @@ def main():
         elif args.install_only:
             previous = read_json(state / 'coordinator-latest.json')
         else:
-            archive, source = snapshot(ROOT, state)
+            archive, source = snapshot(ROOT, state, read_json(args.base_snapshot) if args.base_snapshot else None, args.source_path)
             previous = {'archive': str(archive), 'archiveHash': digest(archive), 'source': source,
                         'id': source[:16] + '-' + mode, 'mode': mode}
             if args.force_build:
                 previous['id'] += '-' + str(time.time_ns())
         def update(platform):
             request = dict(previous, installOnly=args.install_only, buildOnly=args.build_only,
-                           forceBuild=args.force_build, stateRoot=config['stateRoot'])
+                           forceBuild=args.force_build, stateRoot=config['stateRoot'], components=components)
             machine = config[platform]
             if platform == 'windows' or sys.platform == 'darwin':
                 request['cargoTarget'] = str((ROOT / machine['cargoTarget']).resolve()) if not machine['cargoTarget'].startswith('~') else machine['cargoTarget']

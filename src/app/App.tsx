@@ -1,8 +1,10 @@
+import { t, useLocale } from "../shared/i18n";
 import {
   openSyncedProjectRemotely,
   subscribeSyncedProjectsAdded,
 } from "../features/sync/model/syncRemoteProjects";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
+import { hostFeatureRequest } from "../features/connections/model/hostFeatureClient";
 import { queueTerminalCommand } from "../features/terminal/model/terminalLaunchCommand";
 import {
   liveAgentsEqual,
@@ -13,9 +15,7 @@ import {
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import {
-  cancelScheduledFlush,
-  scheduleHarnessFlush,
-  type ScheduledFlush,
+  HarnessEventQueue,
 } from "./model/harnessFlush";
 import {
   handleAgentApp,
@@ -307,6 +307,7 @@ import {
 import {
   listRunningTerminals,
   terminalTabLabel,
+  newTerminalCwd,
   type TerminalMetaPatch,
 } from "../features/terminal/model/terminalTab";
 import {
@@ -369,6 +370,7 @@ import {
   wrapHandoffPrompt,
 } from "../features/sessions/model/handoff";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
+import { prepareBudgetedHandoff } from "./model/prepareHandoff";
 import {
   applyBtwHarnessEvent,
   btwTurnHarness,
@@ -692,6 +694,7 @@ import {
 
 import { PaneTree } from "../features/workspace/ui/PaneTree";
 import { SessionPane } from "../features/sessions/ui/SessionPane";
+import type { ProjectAction } from "../features/projects/model/projectActions";
 import { SessionSurface } from "../features/sessions/ui/SessionSurface";
 import { ProjectTerminalDock } from "../features/terminal/ui/ProjectTerminalDock";
 import { lazySurface } from "../shared/ui/lazySurface";
@@ -1103,6 +1106,7 @@ const LIVE_PERSIST_MS = 1_500;
 const USAGE_PROVIDERS: RateLimitProvider[] = ["claude", "codex", "opencode"];
 
 export default function App(props: AppProps) {
+  useLocale();
   return (
     <Suspense fallback={null}>
       <Workspace {...props} />
@@ -1117,6 +1121,7 @@ function Workspace({
   history: bootHistory = [],
   historyCwd: bootHistoryCwd = null,
 }: AppProps) {
+  useLocale();
   const [projectCwd, setProjectCwd] = useState(
     () =>
       windowTransfer?.projectCwd ??
@@ -1598,8 +1603,27 @@ function Workspace({
   const [transcriptPool] = useState(() => new TranscriptPool());
   // Tokens arrive many times per frame; apply them once so React/markdown aren't
   // recomputed for every delta.
-  const harnessQueued = useRef(new Map<string, HarnessEvent[]>());
-  const harnessFlush = useRef<ScheduledFlush | null>(null);
+  const [harnessQueue] = useState(() => new HarnessEventQueue(
+    (sessionId) => {
+      const tab = tabsRef.current.find((entry) => entry.id === activeTabIdRef.current);
+      return foregroundSurfaceRef.current.inboxSessionId === sessionId ||
+        (foregroundSurfaceRef.current.workspaceVisible && !!tab &&
+          (leafIds(tab.layout).includes(sessionId) || tab.editorPanes.some((pane) =>
+            pane.files.some((file) => file.id === pane.activeFileId &&
+              file.agent?.sessionId === sessionId))));
+    },
+    (batches) => {
+      const prev = sessionsRef.current;
+      const next = prev.map((session) => {
+        const events = batches.get(session.id);
+        return events ? applyHarnessEvents(session, events) : session;
+      });
+      if (!next.some((session, index) => session !== prev[index])) return;
+      sessionsRef.current = next;
+      if (!isTextOnlyChange(prev, next)) syncDockBadge(next);
+      setSessions(next);
+    },
+  ));
   const skipForgetSessionIds = useRef(new Set<string>());
   const movingTabIds = useRef(new Set<string>());
   const movingSessionIds = useRef(new Set<string>());
@@ -1632,23 +1656,7 @@ function Workspace({
     }
   }, [windowTransfer, resumed]);
 
-  const flushHarnessEvents = useCallback(() => {
-    cancelScheduledFlush(harnessFlush.current);
-    harnessFlush.current = null;
-    const batches = harnessQueued.current;
-    if (batches.size === 0) return;
-    harnessQueued.current = new Map();
-    const prev = sessionsRef.current;
-    const next = prev.map((session) => {
-      const events = batches.get(session.id);
-      return events ? applyHarnessEvents(session, events) : session;
-    });
-    if (!next.some((session, index) => session !== prev[index])) return;
-    sessionsRef.current = next;
-    // Streamed text cannot change who needs input; skip the scan of every block.
-    if (!isTextOnlyChange(prev, next)) syncDockBadge(next);
-    setSessions(next);
-  }, []);
+  const flushHarnessEvents = harnessQueue.flush;
 
   const stopSessionForRemoval = useCallback(
     async (sessionId: string): Promise<Session | undefined> => {
@@ -1671,71 +1679,7 @@ function Workspace({
     [flushHarnessEvents],
   );
 
-  const applyApprovalEvent = useCallback(
-    (sessionId: string, event: HarnessEvent) => {
-      const queued = harnessQueued.current.get(sessionId) ?? [];
-      harnessQueued.current.delete(sessionId);
-      const events = [...queued, event];
-      const prev = sessionsRef.current;
-      const next = prev.map((session) =>
-        session.id === sessionId
-          ? applyHarnessEvents(session, events)
-          : session,
-      );
-      if (!next.some((session, index) => session !== prev[index])) return;
-      sessionsRef.current = next;
-      syncDockBadge(next);
-      setSessions(next);
-    },
-    [],
-  );
-
-  const enqueueHarnessEvent = useCallback(
-    (sessionId: string, event: HarnessEvent) => {
-      if (
-        event.type === "approval.requested" ||
-        event.type === "approval.resolved" ||
-        event.type === "question.asked" ||
-        event.type === "question.resolved"
-      ) {
-        applyApprovalEvent(sessionId, event);
-        return;
-      }
-      const queued = harnessQueued.current;
-      const events = queued.get(sessionId);
-      if (events) events.push(event);
-      else queued.set(sessionId, [event]);
-      const tab = tabsRef.current.find(
-        (entry) => entry.id === activeTabIdRef.current,
-      );
-      const foreground =
-        !document.hidden &&
-        // Inbox owns its session surfaces outside the workspace tab tree.
-        (foregroundSurfaceRef.current.inboxSessionId === sessionId ||
-          (foregroundSurfaceRef.current.workspaceVisible &&
-            !!tab &&
-            (leafIds(tab.layout).includes(sessionId) ||
-              tab.editorPanes.some((pane) =>
-                pane.files.some(
-                  (file) =>
-                    file.id === pane.activeFileId &&
-                    file.agent?.sessionId === sessionId,
-                ),
-              ))));
-      // A visible stream must not wait for a background-only timer.
-      if (foreground && harnessFlush.current?.kind === "timeout") {
-        cancelScheduledFlush(harnessFlush.current);
-        harnessFlush.current = null;
-      }
-      if (!harnessFlush.current) {
-        harnessFlush.current = scheduleHarnessFlush(
-          flushHarnessEvents,
-          foreground,
-        );
-      }
-    },
-    [applyApprovalEvent, flushHarnessEvents],
-  );
+  const enqueueHarnessEvent = harnessQueue.enqueue;
 
   useEffect(() => {
     if (resumed?.sessions.length) bindResumedSessions(resumed.sessions);
@@ -1762,8 +1706,7 @@ function Workspace({
       window.removeEventListener("pagehide", reap);
       window.removeEventListener("beforeunload", reap);
       stopBridge();
-      cancelScheduledFlush(harnessFlush.current);
-      harnessFlush.current = null;
+      harnessQueue.cancelScheduled();
     };
   }, [resumed, readProjectReturnMemory]);
 
@@ -1902,6 +1845,7 @@ function Workspace({
     !historyFailed;
   const gitCwd =
     activeFile?.cwd ?? (active ? sessionWorkCwd(active) : sidebarCwd);
+  const terminalCwd = newTerminalCwd({ activeFile, session: active, fallback: sidebarCwd });
   const gitCwdBranches = useProjectBranches(
     gitCwd,
     Boolean(gitCwd) && gitCwd !== "~" && !isRemoteProjectPath(sidebarCwd),
@@ -2975,7 +2919,7 @@ function Workspace({
       occupySessionId?: string,
       profile?: string,
     ) => {
-      const workdir = cwd || gitCwd;
+      const workdir = cwd || terminalCwd;
       if (!isLocalProject(projectCwdRef.current) || !isLocalProject(workdir))
         return;
       if (openProjectTerminal(workdir, profile)) return;
@@ -3023,19 +2967,19 @@ function Workspace({
       );
       setComposerFocused(false);
     },
-    [gitCwd, activeTab, appendTab, openProjectTerminal, sidebarCwd],
+    [terminalCwd, activeTab, appendTab, openProjectTerminal, sidebarCwd],
   );
 
   const onNewTerminal = useCallback(() => {
-    onOpenTerminal(gitCwd);
-  }, [gitCwd, onOpenTerminal]);
+    onOpenTerminal(terminalCwd);
+  }, [terminalCwd, onOpenTerminal]);
 
   /** A terminal in a shell other than the default, picked from the profile menu. */
   const onNewTerminalWithProfile = useCallback(
     (profile: string) => {
-      onOpenTerminal(gitCwd, false, undefined, profile);
+      onOpenTerminal(terminalCwd, false, undefined, profile);
     },
-    [gitCwd, onOpenTerminal],
+    [terminalCwd, onOpenTerminal],
   );
 
   const onShowProjectTerminal = useCallback(() => {
@@ -3051,8 +2995,8 @@ function Workspace({
       focusProjectTerminal();
       return;
     }
-    onOpenTerminal(gitCwd);
-  }, [gitCwd, focusProjectTerminal, onOpenTerminal, projectCwd]);
+    onOpenTerminal(terminalCwd);
+  }, [terminalCwd, focusProjectTerminal, onOpenTerminal, projectCwd]);
 
   const onNewTerminalInSession = useCallback(
     (sessionId: string) => {
@@ -3069,11 +3013,27 @@ function Workspace({
     [onOpenTerminal, projectCwd],
   );
 
+  const onRunSessionProjectAction = useCallback(
+    (sessionId: string, action: ProjectAction) => {
+      const session = sessionsRef.current.find((entry) => entry.id === sessionId);
+      if (!session || session.worktreeRemoved) return;
+      const cwd = sessionWorkCwd(session);
+      if (!isLocalProject(cwd)) return;
+      const file = newTerminalFile(cwd, action.name, session.cwd, loadTerminalProfile());
+      queueTerminalCommand(file.id, action.command);
+      const tab = newTerminalWorkspaceTab(file);
+      appendTab(tab, session.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(false);
+    },
+    [appendTab],
+  );
+
   const onToggleProjectTerminal = useCallback(() => {
     if (!isLocalProject(projectCwd)) return;
     const dock = findProjectTerminal(projectTerminalsRef.current, projectCwd);
     if (!dock) {
-      openProjectTerminal(gitCwd);
+      openProjectTerminal(terminalCwd);
       return;
     }
     const nextOpen = !dock.open;
@@ -3084,7 +3044,7 @@ function Workspace({
     );
     if (nextOpen) focusProjectTerminal();
     else setProjectTerminalFocused(false);
-  }, [gitCwd, focusProjectTerminal, openProjectTerminal, projectCwd]);
+  }, [terminalCwd, focusProjectTerminal, openProjectTerminal, projectCwd]);
 
   const onHideProjectTerminal = useCallback(() => {
     setProjectTerminals((prev) =>
@@ -3253,8 +3213,8 @@ function Workspace({
   );
 
   const onNewTerminalTab = useCallback(() => {
-    onOpenTerminal(gitCwd, true);
-  }, [gitCwd, onOpenTerminal]);
+    onOpenTerminal(terminalCwd, true);
+  }, [terminalCwd, onOpenTerminal]);
 
   const onCloseTab = useCallback(
     (id: string, opts?: { confirmedTerminalIds?: string[] }) => {
@@ -3657,14 +3617,14 @@ function Workspace({
       ) {
         void message(
           "This conversation is also open in another tab. Close the duplicate tab before moving it to a new window.",
-          { title: "Move to new window" },
+          { get title() { return t("Move to new window"); } },
         );
         return;
       }
       // A shell cannot change windows: the source would kill the pty its
       // twin in the new window just respawned under the same id.
       if (filesInWorkspaceTabs(movingTabs).some((file) => file.terminal)) {
-        void message("Close terminal tabs before moving this workspace to another window.", { title: "Move tab" });
+        void message("Close terminal tabs before moving this workspace to another window.", { get title() { return t("Move tab"); } });
         return;
       }
       // A running turn lives in this window's harness listeners, so the
@@ -3695,7 +3655,7 @@ function Workspace({
             .map((file) => file.id),
         );
         if (dirtyIds.size > 0) {
-          void message("Save the unsaved files before moving this tab to another window.", { title: "Move tab" });
+          void message("Save the unsaved files before moving this tab to another window.", { get title() { return t("Move tab"); } });
           return;
         }
 
@@ -3749,7 +3709,7 @@ function Workspace({
           for (const id of sessionIds) skipForgetSessionIds.current.delete(id);
           void message(
             `Could not move the conversation to a new window. Your tab is still here.\n\n${error instanceof Error ? error.message : String(error)}`,
-            { title: "Move to new window" },
+            { get title() { return t("Move to new window"); } },
           );
           return;
         }
@@ -3815,7 +3775,7 @@ function Workspace({
             abortQuit();
             void message(
               `The tab was moved, but its empty window could not close.\n\n${String(error)}`,
-              { title: "Move tab" },
+              { get title() { return t("Move tab"); } },
             );
           }
         }
@@ -3887,7 +3847,7 @@ function Workspace({
       } catch (error) {
         void message(
           `Could not open the file in a new window. The original editor is still here.\n\n${error instanceof Error ? error.message : String(error)}`,
-          { title: "Open in new window" },
+          { get title() { return t("Open in new window"); } },
         );
       } finally {
         openingFileWindowIds.current.delete(fileId);
@@ -4631,7 +4591,7 @@ function Workspace({
       if (!source || movingTabIds.current.has(source.id)) return;
       const surface = findSurfacePane(source, paneId);
       if (surface && surfacePanes(source, surface.kind).find((pane) => pane.id === paneId)?.files.some((file) => dirtyFilesRef.current.has(file.id))) {
-        void message("Save the unsaved files before moving this pane to another window.", { title: "Move pane" });
+        void message("Save the unsaved files before moving this pane to another window.", { get title() { return t("Move pane"); } });
         return;
       }
       if (
@@ -5088,7 +5048,7 @@ function Workspace({
                   : undefined;
           session = {
             ...newDefaultSession(cwd),
-            title: `Ask · ${item.title}`,
+            get title() { return t("Ask · {p0}", { p0: item.title }); },
             inboxAsk: {
               key,
               title: item.title,
@@ -5375,7 +5335,7 @@ function Workspace({
       }
 
       if (sourceTab && filesInWorkspaceTabs([sourceTab]).some((file) => dirtyFilesRef.current.has(file.id))) {
-        void message("Save the unsaved files before moving this tab to another workspace tab.", { title: "Arrange workspace" });
+        void message("Save the unsaved files before moving this tab to another workspace tab.", { get title() { return t("Arrange workspace"); } });
         return;
       }
       const blankTarget = sessionsRef.current.find(
@@ -7674,7 +7634,7 @@ function Workspace({
         operatorCommand.matched || operatorEnabledInThread(current.blocks);
       const promptText = operatorCommand.matched
         ? operatorCommand.text.trim() ||
-          "Explain what you can do in imc with the app CLI."
+          "Explain what you can do in imc code with the app CLI."
         : submittedText;
       const rawCommand =
         !operatorCommand.matched &&
@@ -7900,7 +7860,7 @@ function Workspace({
             },
             settings: { choices: [], maxWorkers: 2 },
             status: "planning",
-            title: "Orchestration plan",
+            get title() { return t("Orchestration plan"); },
             summary: "",
             tasks: [],
           }
@@ -8477,6 +8437,16 @@ function Workspace({
               onEvent: routeTurnEvent,
             }).finally(finishDispatch);
           };
+          if (wrap && !rawCommand) {
+            const historySession = sessionsRef.current.find((session) => session.id === sessionId) ?? current;
+            const budgeted = await prepareBudgetedHandoff(
+              { ...historySession, model: current.model, harness: current.harness },
+              wrap.text,
+              [turnPrompt.trim() || CONTINUE_PROMPT, ...earlier].join("\n\n"),
+            );
+            if (turnGen.current.get(sessionId) !== gen) return;
+            wrap = { ...wrap, text: budgeted };
+          }
           let sendText = orchestrator.prompt(
             sessionId,
             inboxAskPrompt(
@@ -8520,11 +8490,12 @@ function Workspace({
           }
           if (turnGen.current.get(sessionId) !== gen) return;
           if (wrap) {
+            const deliveredHandoff = wrap;
             setSessions((prev) =>
               prev.map((s) => {
                 if (s.id !== sessionId) return s;
                 const ready = isPreparingHandoff(s)
-                  ? completeHandoff(s, wrap.text)
+                  ? completeHandoff(s, deliveredHandoff.text)
                   : s;
                 // A command owns its arguments; deliver the recap with the next chat prompt.
                 return rawCommand ? ready : consumeHandoff(ready);
@@ -9721,6 +9692,7 @@ function Workspace({
         model: model || undefined,
         modelSettings: input.thread.modelSettings ?? input.source.modelSettings,
         threadId: input.thread.providerThreadId,
+        ephemeral: false,
         onThreadId: (providerThreadId) => {
           if (controller.signal.aborted) return;
           updateBtwThread(
@@ -10853,7 +10825,7 @@ function Workspace({
           source.orchestrationLeadId ||
           orchestrator.run(source.id)
         )
-          throw new Error("This session cannot use the imc app CLI");
+          throw new Error("This session cannot use the imc code app CLI");
         const key = `${source.id}:${payload.requestId}`;
         const signature = JSON.stringify([payload.action, payload.input]);
         const previous = appReceipts.current.get(key);
@@ -10868,6 +10840,7 @@ function Workspace({
           payload.action,
           payload.input,
           {
+            publishHtml: (source, input) => hostFeatureRequest(source.cwd, "html.artifacts", "html_artifact_publish", { sessionId: source.id, ...input }),
             start: async (launch, id, placement) => {
               const open = sessionsRef.current.find(
                 (session) => session.id === id,
@@ -11244,7 +11217,7 @@ function Workspace({
       const elsewhere = liveAgents.find((agent) => agent.id === sessionId && agent.ownerWindowLabel);
       if (elsewhere) {
         void focusWindowLiveAgent(elsewhere).catch((error) => {
-          void message(String(error), { title: "Open conversation window" });
+          void message(String(error), { get title() { return t("Open conversation window"); } });
         });
         return;
       }
@@ -11616,7 +11589,7 @@ function Workspace({
       if (!session) {
         session = {
           ...newDefaultSession(cwd, sessionDefaults?.runtimeMode),
-          title: `Fix CI #${item.number}: ${item.title}`,
+          get title() { return t("Fix CI #{p0}: {p1}", { p0: item.number, p1: item.title }); },
           linkedWorkItem: linkedWorkItemFromInboxItem(item) ?? undefined,
         };
         const next = [...sessionsRef.current, session];
@@ -12487,7 +12460,7 @@ function Workspace({
             entry.id === shellId
               ? {
                   ...entry,
-                  title: "New remote session",
+                  get title() { return t("New remote session"); },
                   blocks: [],
                   busy: false,
                 }
@@ -12586,6 +12559,7 @@ function Workspace({
     onBtwStop,
     onBtwModelChange,
     onNewTerminal: onNewTerminalInSession,
+    onRunProjectAction: onRunSessionProjectAction,
   };
 
   const chromeSurfaceOpen =
@@ -12614,15 +12588,6 @@ function Workspace({
       tabs={titleTabs}
       activeId={activeTabId}
       cwd={sidebarCwd}
-      onRunProjectAction={(action) => {
-        if (!isLocalProject(sidebarCwd)) return;
-        const file = newTerminalFile(sidebarCwd, action.name, sidebarCwd, loadTerminalProfile());
-        queueTerminalCommand(file.id, action.command);
-        const tab = newTerminalWorkspaceTab(file);
-        appendTab(tab, sidebarCwd);
-        setActiveTabId(tab.id);
-        setComposerFocused(false);
-      }}
       projectRailOpen={!detachedSessionWindow && projectRailOpen}
       sessionSidebarOpen={!detachedSessionWindow && sessionSidebarOpen}
       compactRail={compactTitleBar}
@@ -13349,6 +13314,7 @@ function LiveSearchView({
 }: Omit<ComponentProps<typeof SearchView>, "sessions"> & {
   lockSnapshot: ReturnType<typeof useLockSnapshot>;
 }) {
+  useLocale();
   const live = useLiveSessions();
   const sessions = useMemo(
     () =>

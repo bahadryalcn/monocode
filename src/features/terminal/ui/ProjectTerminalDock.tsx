@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   ChevronDown,
   ChevronLeft,
@@ -62,10 +63,10 @@ type Props = {
 };
 
 const SIDE_ITEMS: { id: DockSide; label: string }[] = [
-  { id: "bottom", label: "Dock Bottom" },
-  { id: "top", label: "Dock Top" },
-  { id: "left", label: "Dock Left" },
-  { id: "right", label: "Dock Right" },
+  { id: "bottom", get label() { return t("Dock Bottom"); } },
+  { id: "top", get label() { return t("Dock Top"); } },
+  { id: "left", get label() { return t("Dock Left"); } },
+  { id: "right", get label() { return t("Dock Right"); } },
 ];
 
 function sideIcon(side: DockSide) {
@@ -99,6 +100,7 @@ export function ProjectTerminalDock({
   onReorderTerminals,
   onTerminalMetaChange,
 }: Props) {
+  useLocale();
   const vertical = isVerticalDock(dock.side);
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -220,7 +222,7 @@ export function ProjectTerminalDock({
       <div
         role="separator"
         aria-orientation={vertical ? "horizontal" : "vertical"}
-        aria-label="Resize terminal"
+        aria-label={t("Resize terminal")}
         aria-valuenow={dock.size}
         className={`${sash} ${dragging ? "bg-content/15" : "hover:bg-content/10"}`}
         onPointerDown={onResizePointerDown}
@@ -232,11 +234,11 @@ export function ProjectTerminalDock({
           commit();
         }}
       />
-      <aside className="terminal-sidebar" aria-label="Terminal controls">
+      <aside className="terminal-sidebar" aria-label={t("Terminal controls")}>
         <div className="terminal-toolbar">
           <div className="flex min-w-0 items-center gap-0.5">
             <IconButton
-              label={`New Terminal (${MOD}\`)`}
+              label={t("New Terminal ({p0}`)", { p0: MOD })}
               onClick={onAddTerminal}
             >
               <Plus className="size-3.5" strokeWidth={1.75} />
@@ -244,7 +246,7 @@ export function ProjectTerminalDock({
             {onAddTerminalWithProfile ? (
               <div ref={profileButton}>
                 <IconButton
-                  label="Launch Profile…"
+                  label={t("Launch Profile…")}
                   onClick={() => {
                     const rect = profileButton.current?.getBoundingClientRect();
                     if (!rect) return;
@@ -257,7 +259,7 @@ export function ProjectTerminalDock({
             ) : null}
             <div ref={sideButton}>
               <IconButton
-                label="Move Terminal"
+                label={t("Move Terminal")}
                 onClick={() => {
                   const rect = sideButton.current?.getBoundingClientRect();
                   if (!rect) return;
@@ -268,12 +270,12 @@ export function ProjectTerminalDock({
               </IconButton>
             </div>
             <IconButton
-              label="Close Active Terminal"
+              label={t("Close Active Terminal")}
               onClick={() => onCloseTerminal(dock.pane.activeFileId)}
             >
               <Trash2 className="size-3.5" strokeWidth={1.75} />
             </IconButton>
-            <IconButton label={`Hide Terminal (${MOD}J)`} onClick={onHide}>
+            <IconButton label={t("Hide Terminal ({p0}J)", { p0: MOD })} onClick={onHide}>
               <HideIcon className="size-3.5" strokeWidth={1.75} />
             </IconButton>
           </div>
@@ -281,7 +283,7 @@ export function ProjectTerminalDock({
         <div
           className="terminal-list"
           role="tablist"
-          aria-label="Terminals"
+          aria-label={t("Terminals")}
           aria-orientation="vertical"
         >
           {dock.pane.files.map((file, index) => (
@@ -390,11 +392,11 @@ export function ProjectTerminalDock({
           y={terminalMenu.y}
           ariaLabel="Terminal actions"
           items={[
-            { kind: "item", id: "close", label: "Close" },
+            { kind: "item", id: "close", get label() { return t("Close"); } },
             {
               kind: "item",
               id: "close-others",
-              label: "Close Others",
+              get label() { return t("Close Others"); },
               disabled: dock.pane.files.length < 2,
             },
           ]}
@@ -425,7 +427,7 @@ export function ProjectTerminalDock({
                   {
                     kind: "item" as const,
                     id: "none",
-                    label: "No shells found",
+                    get label() { return t("No shells found"); },
                     disabled: true,
                   },
                 ]
@@ -436,7 +438,7 @@ export function ProjectTerminalDock({
                   {
                     kind: "item" as const,
                     id: "default",
-                    label: "Select Default Profile…",
+                    get label() { return t("Select Default Profile…"); },
                   },
                 ]
               : []),

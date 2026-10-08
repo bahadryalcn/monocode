@@ -1,4 +1,5 @@
 import React from "react";
+import { languageReady } from "../../shared/i18n";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { IS_MAC } from "../../platform/tauri/platform";
@@ -37,7 +38,7 @@ function applyAppearance() {
 
 applyAppearance();
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+void languageReady.then(() => ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     {new URLSearchParams(window.location.search).get("popup") === "git" ? (
       <QuickGitPopup onShown={applyAppearance} />
@@ -45,4 +46,4 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       <QuickComposer onShown={applyAppearance} />
     )}
   </React.StrictMode>,
-);
+));

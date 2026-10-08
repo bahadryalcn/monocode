@@ -16,6 +16,8 @@ export type Note = {
   tags: string[];
   sourceSessionId?: string;
   sourceCwd?: string;
+  /** Generated for a blank title; finalized once when title editing finishes. */
+  slugPending?: boolean;
   createdAt: number;
   updatedAt: number;
 };
@@ -28,6 +30,7 @@ export type NoteUpsert = {
   sourceSessionId?: string;
   /** Omit on update to keep the saved project directory. */
   sourceCwd?: string;
+  finalizeSlug?: boolean;
 };
 
 /** Note chip shown in the composer and on the user turn in the thread. */
@@ -114,13 +117,30 @@ export async function getNote(id: string): Promise<Note | null> {
 
 export async function upsertNote(note: NoteUpsert): Promise<Note> {
   const saved = await invoke<Note>("notes_upsert", { note });
+  const previous = cache;
   invalidateNotes();
+  if (previous)
+    cache = [saved, ...previous.filter((item) => item.id !== saved.id)];
   return saved;
 }
 
 export async function deleteNote(id: string): Promise<void> {
   await invoke("notes_delete", { id });
+  const previous = cache;
   invalidateNotes();
+  if (previous) cache = previous.filter((item) => item.id !== id);
+}
+
+/** Explicitly associate an existing note with a session; ordinary saves preserve it. */
+export async function linkNoteToSession(
+  id: string,
+  sessionId: string,
+): Promise<Note> {
+  const saved = await invoke<Note>("notes_link_session", { id, sessionId });
+  const previous = cache;
+  invalidateNotes();
+  if (previous) cache = previous.map((item) => (item.id === id ? saved : item));
+  return saved;
 }
 
 export async function createNote(input: {

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import {
   AppWindow,
   CheckCircle,
@@ -50,8 +51,6 @@ import {
 } from "../model/windowTransferPopout";
 import { beginWindowTabDrag } from "../model/windowDragPreview";
 import { WindowControls } from "./WindowControls";
-import { ProjectQuickActions } from "../../features/projects/ui/ProjectQuickActions";
-import type { ProjectAction } from "../../features/projects/model/projectActions";
 import { IS_MAC, IS_WIN, MOD, SHIFT } from "../../platform/tauri/platform";
 import type { RecentProject } from "../../features/projects/model/recents";
 import {
@@ -123,7 +122,6 @@ type Props = {
   tabs: Tab[];
   activeId: string;
   cwd: string;
-  onRunProjectAction?: (action: ProjectAction) => void;
   projectRailOpen?: boolean;
   sessionSidebarOpen?: boolean;
   compactRail?: boolean;
@@ -176,7 +174,7 @@ export function tabCopy(tab: Tab): {
   const conversation = tab.title.trim();
   const file = tab.files[0] ?? "";
   const sessions = sessionMeta(tab);
-  const untitled = "New session";
+  const untitled = t("New session");
 
   let headline: string;
   const metaParts: string[] = [];
@@ -268,6 +266,7 @@ function TabHarnesses({
   doneHarnesses: HarnessId[];
   dimmed: boolean;
 }) {
+  useLocale();
   const shown = harnesses.slice(0, 3);
   const extra = harnesses.length - shown.length;
   const opacity = dimmed ? "opacity-55" : "opacity-100";
@@ -339,6 +338,7 @@ function TitleTabItem({
   onContextMenu: (id: string, event: ReactMouseEvent<HTMLDivElement>) => void;
   itemRef?: (el: HTMLDivElement | null) => void;
 }) {
+  useLocale();
   const { headline, meta, tooltip } = tabCopy(tab);
   const fileIcon = tab.files[0];
   const accessibleTooltip =
@@ -434,13 +434,13 @@ function TitleTabItem({
                 className="shrink-0 text-accent"
                 title={
                   tab.movingWindow
-                    ? "Opening new window…"
-                    : "Moves to a new window when the response finishes"
+                    ? t("Opening new window…")
+                    : t("Moves to a new window when the response finishes")
                 }
                 aria-label={
                   tab.movingWindow
-                    ? "Opening new window…"
-                    : "Moves to a new window when the response finishes"
+                    ? t("Opening new window…")
+                    : t("Moves to a new window when the response finishes")
                 }
               >
                 <AppWindow className="size-3" strokeWidth={1.75} />
@@ -449,8 +449,8 @@ function TitleTabItem({
             {tab.dirty ? (
               <span
                 className="size-1.5 shrink-0 rounded-full bg-content/70"
-                title="Unsaved changes"
-                aria-label="Unsaved changes"
+                title={t("Unsaved changes")}
+                aria-label={t("Unsaved changes")}
               />
             ) : null}
           </span>
@@ -464,8 +464,8 @@ function TitleTabItem({
       {closable ? (
         <button
           type="button"
-          title="Close Tab"
-          aria-label={`Close ${headline}`}
+          title={t("Close Tab")}
+          aria-label={t("Close {p0}", { p0: headline })}
           data-no-drag
           data-tauri-drag-region="false"
           onPointerDown={(event) => event.stopPropagation()}
@@ -489,6 +489,7 @@ function TabStripChevron({
   side: "left" | "right";
   onClick: () => void;
 }) {
+  useLocale();
   const label = side === "left" ? "Scroll tabs left" : "Scroll tabs right";
   const Icon = side === "left" ? ChevronLeft : ChevronRight;
   return (
@@ -525,6 +526,7 @@ export function IconButton({
   onOpenContextMenu?: (x: number, y: number) => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -581,19 +583,19 @@ export function IconButton({
 }
 
 export function DevModeLabel() {
+  useLocale();
   if (!import.meta.env.DEV) return null;
   return (
     <span
-      title="Development build"
+      title={t("Development build")}
       className="mr-1 min-w-0 truncate rounded-md bg-skill/15 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-skill"
-    >
-      Development
-    </span>
+    >{t("Development")}</span>
   );
 }
 
 /** Flex spacer that keeps the Development badge next to the visit arrows. */
 export function DevModeSlot() {
+  useLocale();
   return (
     <div className="flex min-w-0 flex-1 items-center justify-end">
       <DevModeLabel />
@@ -618,17 +620,18 @@ export function TabVisitNav({
   panelActive?: boolean;
   panelLabel?: string;
 }) {
+  useLocale();
   return (
     <div className="flex shrink-0 items-center">
       <IconButton
-        label={`Back (${MOD}[)`}
+        label={t("Back ({p0}[)", { p0: MOD })}
         disabled={!canGoBack}
         onClick={onGoBack}
       >
         <ChevronLeft className="size-3.5" strokeWidth={1.75} />
       </IconButton>
       <IconButton
-        label={`Forward (${MOD}])`}
+        label={t("Forward ({p0}])", { p0: MOD })}
         disabled={!canGoForward}
         onClick={onGoForward}
       >
@@ -655,17 +658,18 @@ export function OverlayNav({
   onBack?: () => void;
   onToggleSidebar?: () => void;
 }) {
+  useLocale();
   if (!onBack && !onToggleSidebar) return null;
   return (
     <div className="flex shrink-0 items-center px-1.5">
       {onBack ? (
-        <IconButton label={`Back (${MOD}[)`} onClick={onBack}>
+        <IconButton label={t("Back ({p0}[)", { p0: MOD })} onClick={onBack}>
           <ChevronLeft className="size-3.5" strokeWidth={1.75} />
         </IconButton>
       ) : null}
       {onToggleSidebar ? (
         <IconButton
-          label={`Toggle Sidebar (${MOD}B)`}
+          label={t("Toggle Sidebar ({p0}B)", { p0: MOD })}
           onClick={onToggleSidebar}
         >
           <PanelLeft className="size-3.5" strokeWidth={1.75} />
@@ -681,7 +685,6 @@ function TitleBarComponent({
   tabs,
   activeId,
   cwd,
-  onRunProjectAction,
   projectRailOpen = true,
   sessionSidebarOpen = true,
   compactRail = false,
@@ -711,6 +714,7 @@ function TitleBarComponent({
   onSelectProject,
   layout,
 }: Props) {
+  useLocale();
   const [layoutMenu, setLayoutMenu] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -967,7 +971,7 @@ function TitleBarComponent({
         {
           kind: "item",
           id: "close",
-          label: "Close Tab",
+          get label() { return t("Close Tab"); },
           shortcut: `${MOD}W`,
           disabled: !titleTabClosable(contextTab, tabs.length),
         },
@@ -977,13 +981,13 @@ function TitleBarComponent({
                 ? {
                     kind: "item" as const,
                     id: "cancel-new-window",
-                    label: "Cancel Move to New Window",
-                    description: "Waiting for the running response to finish",
+                    get label() { return t("Cancel Move to New Window"); },
+                    get description() { return t("Waiting for the running response to finish"); },
                   }
                 : {
                     kind: "item" as const,
                     id: "new-window",
-                    label: "Move to New Window",
+                    get label() { return t("Move to New Window"); },
                     disabled: !titleTabCanMoveToNewWindow(contextTab),
                     description: contextTab.movingWindow
                       ? "Opening new window…"
@@ -999,19 +1003,19 @@ function TitleBarComponent({
         {
           kind: "item",
           id: "others",
-          label: "Close Other Tabs",
+          get label() { return t("Close Other Tabs"); },
           disabled: contextCloseIds?.others.length === 0,
         },
         {
           kind: "item",
           id: "right",
-          label: "Close Tabs to the Right",
+          get label() { return t("Close Tabs to the Right"); },
           disabled: contextCloseIds?.right.length === 0,
         },
         {
           kind: "item",
           id: "left",
-          label: "Close Tabs to the Left",
+          get label() { return t("Close Tabs to the Left"); },
           disabled: contextCloseIds?.left.length === 0,
         },
         ...(contextTab.sessionCount > 0 && (onArchiveTab || onDeleteTab)
@@ -1022,7 +1026,7 @@ function TitleBarComponent({
                     {
                       kind: "item" as const,
                       id: "archive",
-                      label: "Archive",
+                      get label() { return t("Archive"); },
                       description:
                         contextTab.sessionCount > 1
                           ? `All ${contextTab.sessionCount} conversations in this tab`
@@ -1035,7 +1039,7 @@ function TitleBarComponent({
                     {
                       kind: "item" as const,
                       id: "delete",
-                      label: "Delete",
+                      get label() { return t("Delete"); },
                       description:
                         contextTab.sessionCount > 1
                           ? `Permanently delete all ${contextTab.sessionCount} conversations in this tab`
@@ -1095,7 +1099,6 @@ function TitleBarComponent({
   const trailingControls =
     showCurrentProject || showTrailingActions || showLayoutControl || !IS_MAC ? (
       <div className="flex h-full shrink-0 items-stretch">
-        {showCurrentProject ? <ProjectQuickActions cwd={cwd} onRun={onRunProjectAction} /> : null}
         {showLayoutControl ? (
           <div
             ref={layoutAnchorRef}
@@ -1104,8 +1107,8 @@ function TitleBarComponent({
           >
             <button
               type="button"
-              aria-label="Layout"
-              title="Split and arrange panes"
+              aria-label={t("Layout")}
+              title={t("Split and arrange panes")}
               className={`flex h-7 items-center gap-1.5 rounded px-2 text-xs ${layoutMenu != null ? "bg-content/10 text-content" : "text-content/60 hover:bg-content/10 hover:text-content"}`}
               onClick={() => {
                 if (layoutMenu) {
@@ -1121,34 +1124,34 @@ function TitleBarComponent({
               }}
             >
               <SplitSquare className="size-3.5" strokeWidth={1.75} />
-              {!layout?.canArrange ? <span>Layout</span> : null}
+              {!layout?.canArrange ? <span>{t("Layout")}</span> : null}
             </button>
           </div>
         ) : null}
         {showTrailingActions ? (
           <div className="flex items-center gap-0.5 px-2">
             {projectless && railClosed && onOpenInbox ? (
-              <IconButton label="Inbox" onClick={onOpenInbox}>
+              <IconButton label={t("Inbox")} onClick={onOpenInbox}>
                 <Inbox className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             ) : null}
             {projectless && railClosed && onOpenNotes ? (
-              <IconButton label="Notes" onClick={onOpenNotes}>
+              <IconButton label={t("Notes")} onClick={onOpenNotes}>
                 <StickyNote className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             ) : null}
             {!sessionSidebarOpen && !projectless ? (
               <>
-                <IconButton label={`Go to File (${MOD}P)`} onClick={onGoToFile}>
+                <IconButton label={t("Go to File ({p0}P)", { p0: MOD })} onClick={onGoToFile}>
                   <Search className="size-3.5" strokeWidth={1.75} />
                 </IconButton>
-                <IconButton label={`New session (${MOD}T)`} onClick={onNew}>
+                <IconButton label={t("New session ({p0}T)", { p0: MOD })} onClick={onNew}>
                   <Plus className="size-3.5" strokeWidth={1.75} />
                 </IconButton>
               </>
             ) : null}
             {!projectRailOpen && !showCurrentProject && onOpenSettings ? (
-              <IconButton label={`Settings (${MOD},)`} onClick={onOpenSettings}>
+              <IconButton label={t("Settings ({p0},)", { p0: MOD })} onClick={onOpenSettings}>
                 <Settings className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             ) : null}
@@ -1188,7 +1191,7 @@ function TitleBarComponent({
           <div className="w-[78px] shrink-0" />
           <div className="flex shrink-0 items-center px-1.5">
             <IconButton
-              label={`Toggle Sidebar (${MOD}B)`}
+              label={t("Toggle Sidebar ({p0}B)", { p0: MOD })}
               onClick={onToggleSidebar}
             >
               <PanelLeft className="size-3.5" strokeWidth={1.75} />
@@ -1202,7 +1205,7 @@ function TitleBarComponent({
             <div className="w-[70px] shrink-0" />
           ) : null}
           <IconButton
-            label={`Toggle Session Sidebar (${MOD}${SHIFT}B)`}
+            label={t("Toggle Session Sidebar ({p0}{p1}B)", { p0: MOD, p1: SHIFT })}
             onClick={onToggleSessionSidebar}
           >
             <DashboardSquare className="size-3.5" strokeWidth={1.75} />
@@ -1218,11 +1221,11 @@ function TitleBarComponent({
           onNewTerminal={onNewTerminal}
           buttonClassName="flex h-full min-w-0 max-w-64 shrink items-center gap-2 px-6 text-left text-sm font-medium leading-tight"
         >
-          <span className="min-w-0 truncate text-content/50">No project</span>
+          <span className="min-w-0 truncate text-content/50">{t("No project")}</span>
         </CwdPicker>
       ) : null}
 
-      <span className="imece-workbench-tag" aria-hidden="true">WORKBENCH</span>
+      <span className="imece-workbench-tag" aria-hidden="true">{"WORKBENCH"}</span>
       <div
         className={`flex min-w-0 flex-1 items-stretch${
           showProjectButton ? " border-l border-stroke" : ""
@@ -1334,9 +1337,7 @@ function TitleBarComponent({
         {detached && onReturnToMain ? (
           <button type="button" onClick={onReturnToMain}
             className="my-1 shrink-0 rounded px-3 text-xs text-content/70 hover:bg-content/10 hover:text-content"
-            title="Return all sessions to the main window; running responses finish before moving">
-            Return to main window
-          </button>
+            title={t("Return all sessions to the main window; running responses finish before moving")}>{t("Return to main window")}</button>
         ) : null}
         {trailingControls}
       </div>

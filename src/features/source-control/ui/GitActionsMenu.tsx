@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Loader, MoreHorizontal } from "../../../shared/ui/icons";
@@ -152,6 +153,7 @@ export function GitActionsMenu({
   onMutated,
   onOpenCommit,
 }: Props) {
+  useLocale();
   // Everything beyond Pull needs this computer or a host with `git.actions`.
   const supported = useRemoteSupports(cwd, GIT_ACTIONS);
   const actions = supported === true;
@@ -226,7 +228,7 @@ export function GitActionsMenu({
     } catch (error) {
       setGitFeedback(cwd, {
         kind: "error",
-        title: "Git operation failed",
+        get title() { return t("Git operation failed"); },
         detail: errorText(error),
       });
     } finally {
@@ -247,7 +249,7 @@ export function GitActionsMenu({
     } catch (error) {
       setGitFeedback(cwd, {
         kind: "error",
-        title: "Couldn’t load Git options",
+        get title() { return t("Couldn’t load Git options"); },
         detail: errorText(error),
         retry: async () => choose(load, dialog),
       });
@@ -310,8 +312,8 @@ export function GitActionsMenu({
       },
       {
         title,
-        placeholder: "Filter stashes",
-        emptyText: "No stashes",
+        get placeholder() { return t("Filter stashes"); },
+        get emptyText() { return t("No stashes"); },
         onPick: (id) => {
           setDialog(null);
           const entry = entries.find(
@@ -386,10 +388,10 @@ export function GitActionsMenu({
         return void changes.current?.runAll("discard");
       case "branch-merge":
         return choose(() => branchItems(false, true), {
-          title: "Merge Branch",
+          get title() { return t("Merge Branch"); },
           description: branch ? `Merge into ${branch}` : undefined,
-          placeholder: "Filter branches",
-          emptyText: "No other branches",
+          get placeholder() { return t("Filter branches"); },
+          get emptyText() { return t("No other branches"); },
           onPick: (ref) => {
             setDialog(null);
             void run(() => gitMerge(cwd, ref));
@@ -397,10 +399,10 @@ export function GitActionsMenu({
         });
       case "branch-rebase":
         return choose(() => branchItems(false, true), {
-          title: "Rebase Branch",
+          get title() { return t("Rebase Branch"); },
           description: branch ? `Rebase ${branch} onto` : undefined,
-          placeholder: "Filter branches",
-          emptyText: "No other branches",
+          get placeholder() { return t("Filter branches"); },
+          get emptyText() { return t("No other branches"); },
           onPick: (ref) => {
             setDialog(null);
             void run(() => gitRebase(cwd, ref));
@@ -409,26 +411,26 @@ export function GitActionsMenu({
       case "branch-create":
         return askName(
           {
-            title: "Create Branch",
-            description: "Create a branch at HEAD and switch to it.",
-            label: "Branch name",
-            placeholder: "feature/my-branch",
+            get title() { return t("Create Branch"); },
+            get description() { return t("Create a branch at HEAD and switch to it."); },
+            get label() { return t("Branch name"); },
+            get placeholder() { return t("feature/my-branch"); },
             submitLabel: "Create Branch",
           },
           (name) => gitCreateBranch(cwd, name),
         );
       case "branch-create-from":
         return choose(() => branchItems(false, false), {
-          title: "Create Branch From",
-          placeholder: "Filter branches",
-          emptyText: "No branches",
+          get title() { return t("Create Branch From"); },
+          get placeholder() { return t("Filter branches"); },
+          get emptyText() { return t("No branches"); },
           onPick: (ref) =>
             askName(
               {
-                title: "Create Branch",
-                description: `Create a branch from ${ref} and switch to it.`,
-                label: "Branch name",
-                placeholder: "feature/my-branch",
+                get title() { return t("Create Branch"); },
+                get description() { return t("Create a branch from {p0} and switch to it.", { p0: ref }); },
+                get label() { return t("Branch name"); },
+                get placeholder() { return t("feature/my-branch"); },
                 submitLabel: "Create Branch",
               },
               (name) => gitCreateBranchFrom(cwd, name, ref),
@@ -438,10 +440,10 @@ export function GitActionsMenu({
         if (!branch) return;
         return askName(
           {
-            title: "Rename Branch",
-            description: `Rename ${branch}.`,
-            label: "New name",
-            placeholder: "feature/my-branch",
+            get title() { return t("Rename Branch"); },
+            get description() { return t("Rename {p0}.", { p0: branch }); },
+            get label() { return t("New name"); },
+            get placeholder() { return t("feature/my-branch"); },
             submitLabel: "Rename",
             initialValue: branch,
           },
@@ -449,9 +451,9 @@ export function GitActionsMenu({
         );
       case "branch-delete":
         return choose(() => branchItems(true, true), {
-          title: "Delete Branch",
-          placeholder: "Filter branches",
-          emptyText: "No other local branches",
+          get title() { return t("Delete Branch"); },
+          get placeholder() { return t("Filter branches"); },
+          get emptyText() { return t("No other local branches"); },
           onPick: (name) => {
             setDialog(null);
             void run(() => deleteLocalBranch(cwd, name));
@@ -460,13 +462,13 @@ export function GitActionsMenu({
       case "remote-add":
         return askName(
           {
-            title: "Add Remote",
-            description: "Add a named remote to this repository.",
-            label: "Remote name",
-            placeholder: "origin",
+            get title() { return t("Add Remote"); },
+            get description() { return t("Add a named remote to this repository."); },
+            get label() { return t("Remote name"); },
+            get placeholder() { return t("origin"); },
             submitLabel: "Add Remote",
             extra: {
-              label: "Remote URL",
+              get label() { return t("Remote URL"); },
               placeholder: "https://github.com/owner/repo.git",
             },
           },
@@ -481,9 +483,9 @@ export function GitActionsMenu({
               detail: remote.url,
             })),
           {
-            title: "Remove Remote",
-            placeholder: "Filter remotes",
-            emptyText: "No remotes",
+            get title() { return t("Remove Remote"); },
+            get placeholder() { return t("Filter remotes"); },
+            get emptyText() { return t("No remotes"); },
             onPick: (name) => {
               setDialog(null);
               void (async () => {
@@ -547,9 +549,9 @@ export function GitActionsMenu({
         if (!head) return;
         return askName(
           {
-            title: "Create Tag",
-            description: "Tag the commit at HEAD.",
-            label: "Tag name",
+            get title() { return t("Create Tag"); },
+            get description() { return t("Tag the commit at HEAD."); },
+            get label() { return t("Tag name"); },
             placeholder: "v1.0.0",
             submitLabel: "Create Tag",
           },
@@ -564,9 +566,9 @@ export function GitActionsMenu({
               label: name,
             })),
           {
-            title: "Delete Tag",
-            placeholder: "Filter tags",
-            emptyText: "No tags",
+            get title() { return t("Delete Tag"); },
+            get placeholder() { return t("Filter tags"); },
+            get emptyText() { return t("No tags"); },
             onPick: (name) => {
               setDialog(null);
               void (async () => {
@@ -587,7 +589,7 @@ export function GitActionsMenu({
       <button
         type="button"
         aria-haspopup="menu"
-        aria-label="Branch actions"
+        aria-label={t("Branch actions")}
         aria-expanded={open}
         disabled={busy !== null}
         onClick={(event) => {

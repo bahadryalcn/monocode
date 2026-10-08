@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import {
   inboxHasUnseenItems,
@@ -33,6 +34,7 @@ export function InboxNotificationMenu({
   onOpenSettings,
   onClose,
 }: Props) {
+  useLocale();
   const notificationProjects = useNotificationProjects(projectPaths);
   const [saveError, setError] = useState<string | null>(null);
   const [customOpen, setCustomOpen] = useState(false);
@@ -54,27 +56,27 @@ export function InboxNotificationMenu({
     {
       kind: "item",
       id: "read-all",
-      label: "Mark all as read",
+      get label() { return t("Mark all as read"); },
       disabled: !hasUnread,
     },
     { kind: "sep" },
     {
       kind: "item",
       id: "mute",
-      label: "Mute all projects",
+      get label() { return t("Mute all projects"); },
       disabled: !allIds.length,
       submenu: notificationMuteActions(),
     },
     {
       kind: "item",
       id: "resume",
-      label: "Resume muted projects",
+      get label() { return t("Resume muted projects"); },
       disabled: !mutedIds.length,
     },
   ];
   if (onOpenSettings)
     items.push(
-      { kind: "item", id: "settings", label: "Notification settings…" },
+      { kind: "item", id: "settings", get label() { return t("Notification settings…"); } },
     );
 
   if (customOpen)
@@ -84,12 +86,12 @@ export function InboxNotificationMenu({
         gap={0}
         width={280}
         role="dialog"
-        aria-label="Mute project notifications"
+        aria-label={t("Mute project notifications")}
         onDismiss={onClose}
         className="space-y-1 overflow-y-auto p-3"
       >
         <div className="space-y-1">
-          <p className="px-1 text-xs font-medium text-content/85">Mute all projects</p>
+          <p className="px-1 text-xs font-medium text-content/85">{t("Mute all projects")}</p>
         </div>
         <NotificationMuteDatePicker
           projectIds={allIds}
@@ -109,11 +111,9 @@ export function InboxNotificationMenu({
       onClose={onClose}
       header={
         <div className="space-y-1 px-2 py-1.5">
-          <p className="text-xs font-medium text-content">
-            Inbox
-          </p>
+          <p className="text-xs font-medium text-content">{t("Inbox")}</p>
           <p role="status" className="text-xs text-content/50">
-            {`${allIds.length} ${allIds.length === 1 ? "project" : "projects"} · ${mutedIds.length} muted`}
+            {t((allIds.length === 1 ? "{p0} project · {p2} muted" : "{p0} projects · {p2} muted"), { p0: allIds.length, p2: mutedIds.length })}
           </p>
           {saveError ? (
             <p role="alert" className="text-xs text-red-400">

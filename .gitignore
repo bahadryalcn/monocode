@@ -57,6 +57,8 @@ Desktop.ini
 
 # Local agent work, machine-specific reports and generated Python caches.
 .scratch/
+test-results/
+playwright-report/
 .scratch-performance-*
 .claude/
 .superpowers/

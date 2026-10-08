@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useState, type FormEvent } from "react";
 import { Modal } from "../../../shared/ui/Modal";
 import type { LinkedWorkItem } from "../model/session";
@@ -14,6 +15,7 @@ export function LinkSessionWorkItemDialog({
   onSave: (item: LinkedWorkItem | undefined) => void;
   onClose: () => void;
 }) {
+  useLocale();
   const [url, setUrl] = useState(initial?.url ?? "");
   const [error, setError] = useState("");
 
@@ -29,21 +31,19 @@ export function LinkSessionWorkItemDialog({
 
   return (
     <Modal
-      title={initial ? "Edit GitHub link" : "Link GitHub issue or PR"}
+      title={initial ? t("Edit GitHub link") : t("Link GitHub issue or PR")}
       description={sessionTitle}
       size="sm"
       onClose={onClose}
     >
       <form onSubmit={submit} className="flex flex-col gap-4 p-4 text-[12px]">
         <label className="flex flex-col gap-1.5">
-          <span className="font-medium text-content/80">
-            Issue or pull request URL
-          </span>
+          <span className="font-medium text-content/80">{t("Issue or pull request URL")}</span>
           <input
             autoFocus
             type="url"
             value={url}
-            aria-label="GitHub issue or pull request URL"
+            aria-label={t("GitHub issue or pull request URL")}
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? "linked-work-item-error" : undefined}
             placeholder="https://github.com/owner/repo/pull/123"
@@ -64,10 +64,7 @@ export function LinkSessionWorkItemDialog({
               {error}
             </span>
           ) : (
-            <span className="text-[11px] text-content/45">
-              Paste the full github.com URL. The linked item will appear on the
-              session card.
-            </span>
+            <span className="text-[11px] text-content/45">{t("Paste the full github.com URL. The linked item will appear on the session card.")}</span>
           )}
         </label>
         <div className="flex items-center justify-end gap-2">
@@ -76,22 +73,18 @@ export function LinkSessionWorkItemDialog({
               type="button"
               onClick={() => onSave(undefined)}
               className="mr-auto rounded-md px-3 py-1.5 text-red-400 hover:bg-red-400/10 active:scale-[0.97]"
-            >
-              Remove link
-            </button>
+            >{t("Remove link")}</button>
           ) : null}
           <button
             type="button"
             onClick={onClose}
             className="rounded-md px-3 py-1.5 hover:bg-content/8 active:scale-[0.97]"
-          >
-            Cancel
-          </button>
+          >{t("Cancel")}</button>
           <button
             type="submit"
             className="rounded-md bg-accent px-3 py-1.5 font-medium text-white hover:brightness-110 active:scale-[0.97]"
           >
-            {initial ? "Update link" : "Link"}
+            {initial ? t("Update link") : t("Link")}
           </button>
         </div>
       </form>

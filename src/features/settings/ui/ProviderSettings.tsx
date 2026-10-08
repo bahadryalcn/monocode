@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import {
   ArrowDownCircle,
   Check,
@@ -33,6 +34,7 @@ import {
   defaultModelId,
   firstEnabledHarness,
   getModelSnapshot,
+  hasLiveCatalog,
   isEnabledChoice,
   isModelEnabled,
   saveModelEnabled,
@@ -80,12 +82,6 @@ import {
 } from "../../sessions/model/providerSessionDefaults";
 
 import {
-  saveMaskEmails,
-  saveShowRemainingUsage,
-  useMaskEmails,
-  useShowRemainingUsage,
-} from "../model/displayPrefs";
-import {
   checkInstalledHarnessVersions,
   getHarnessUpdateSnapshot,
   runHarnessUpdate,
@@ -112,14 +108,11 @@ import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { loadClaudeHooks, saveClaudeHooks } from "../model/settings";
 
-import { UsageOverview } from "../../usage/ui/UsageOverview";
-
 import { Group, Row, Toggle, Select } from "./settingsControls";
 import {
   GLOBAL_PROVIDER_SCOPE,
   ProviderBinaryControl,
 } from "./ProviderBinarySettings";
-import { ProviderUsageSettings } from "./ProviderUsageSettings";
 import { ProviderAccountsSettings } from "./ProviderAccountsSettings";
 
 export function ProvidersPage({
@@ -129,6 +122,7 @@ export function ProvidersPage({
   cwd?: string;
   recents?: RecentProject[];
 }) {
+  useLocale();
   useSyncExternalStore(subscribeModels, getModelSnapshot, getModelSnapshot);
   useSyncExternalStore(
     subscribeHarnessAvailability,
@@ -158,7 +152,7 @@ export function ProvidersPage({
     const options: { value: string; label: string; icon?: ReactNode }[] = [
       {
         value: GLOBAL_PROVIDER_SCOPE,
-        label: "Global",
+        get label() { return t("Global"); },
         icon: (
           <Globe
             className="size-3.5 shrink-0 text-content/60"
@@ -180,7 +174,7 @@ export function ProvidersPage({
       });
     }
     return options;
-  }, [cwd, recents]);
+  }, [getLocale(), cwd, recents]);
 
   const project = scope === GLOBAL_PROVIDER_SCOPE ? null : scope;
   const projectSettings = project ? loadProjectProviderSettings(project) : {};
@@ -255,14 +249,12 @@ export function ProvidersPage({
     <>
       <Group
         id="agent-clis"
-        title="Agent CLIs"
+        title={t("Agent CLIs")}
         action={
           <div className="provider-cli-scope">
-            <span className="text-[11px] text-content/60">
-              Apply defaults to
-            </span>
+            <span className="text-[11px] text-content/60">{t("Apply defaults to")}</span>
             <Select
-              label="Provider defaults scope"
+              label={t("Provider defaults scope")}
               value={scope}
               options={scopeOptions}
               onChange={setScope}
@@ -271,8 +263,8 @@ export function ProvidersPage({
         }
         description={
           project
-            ? `Defaults for ${projectName(project)} only. CLI paths stay global.`
-            : "Choose the default model, effort and permissions for new conversations. CLIs not found on your PATH are left out of the picker."
+            ? t("Defaults for {p0} only. CLI paths stay global.", { p0: projectName(project) })
+            : t("Choose the default model, effort and permissions for new conversations. CLIs not found on your PATH are left out of the picker.")
         }
       >
         <div className="provider-cli-grid">
@@ -339,20 +331,16 @@ export function ProvidersPage({
 
       <EnabledModelsGroup />
 
-      <UsageDisplaySettings />
-      <ProviderUsageSettings />
-      <UsageOverview />
-
       <HarnessUpdatesGroup />
 
-      <Group title="Advanced">
+      <Group title={t("Advanced")}>
         <Row
           id="claude-hooks"
-          label="Claude Code hooks"
-          description="Run the hooks configured in your settings.json files — PreToolUse command rewrites, blocks, notifications, and the rest — just as the Claude Code CLI would. Turn this off if a hook is misbehaving and you need the session back. Takes effect on the next turn."
+          label={t("Claude Code hooks")}
+          description={t("Run the hooks configured in your settings.json files — PreToolUse command rewrites, blocks, notifications, and the rest — just as the Claude Code CLI would. Turn this off if a hook is misbehaving and you need the session back. Takes effect on the next turn.")}
         >
           <Toggle
-            label="Claude Code hooks"
+            label={t("Claude Code hooks")}
             on={claudeHooks}
             onChange={onClaudeHooks}
           />
@@ -364,6 +352,7 @@ export function ProvidersPage({
 
 /** Per-model switches: a model turned off is never offered or picked by default. */
 export function EnabledModelsGroup() {
+  useLocale();
   const harnesses = HARNESSES.filter(
     (harness) =>
       isHarnessAvailable(harness) && catalogModelsFor(harness).length > 0,
@@ -381,11 +370,11 @@ export function EnabledModelsGroup() {
   return (
     <Group
       id="enabled-models"
-      title="Models"
-      description="Models that are off are hidden from every picker and never chosen by default. Existing conversations keep theirs."
+      title={t("Models")}
+      description={t("Models that are off are hidden from every picker and never chosen by default. Existing conversations keep theirs.")}
       action={
         <Select
-          label="Provider"
+          label={t("Provider")}
           value={harness}
           options={harnesses.map((id) => ({
             value: id,
@@ -410,7 +399,7 @@ export function EnabledModelsGroup() {
               }
             >
               <Toggle
-                label={`Use ${model.name}`}
+                label={t("Use {p0}", { p0: model.name })}
                 on={on}
                 onChange={(next) => saveModelEnabled(model.id, next)}
                 // The last model stays on so the provider keeps a default.
@@ -430,6 +419,7 @@ export function EnabledModelsGroup() {
  * page runs no CLI: it shows the last check, and the button runs a new one.
  */
 export function HarnessUpdatesGroup() {
+  useLocale();
   const { checks, checking, runs, error } = useSyncExternalStore(
     subscribeHarnessUpdates,
     getHarnessUpdateSnapshot,
@@ -462,15 +452,13 @@ export function HarnessUpdatesGroup() {
   return (
     <Group
       id="harness-updates"
-      title="CLI updates"
-      description="Compares installed CLIs with their newest release. Hermes Agent and Antigravity have no release feed and are not listed."
+      title={t("CLI updates")}
+      description={t("Compares installed CLIs with their newest release. Hermes Agent and Antigravity have no release feed and are not listed.")}
       action={
         <div className="flex items-center gap-2">
           {pending.length > 1 ? (
             <SecondaryButton onClick={() => start(pending)}>
-              <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />
-              Update all
-            </SecondaryButton>
+              <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />{t("Update all")}</SecondaryButton>
           ) : null}
           <SecondaryButton
             onClick={() =>
@@ -484,26 +472,23 @@ export function HarnessUpdatesGroup() {
               <Loader className="size-3.5 animate-spin" aria-hidden />
             ) : (
               <RefreshCw className="size-3.5" strokeWidth={1.75} aria-hidden />
-            )}
-            Check for updates
-          </SecondaryButton>
+            )}{t("Check for updates")}</SecondaryButton>
         </div>
       }
     >
       {error ? (
-        <p role="alert" className="px-4 py-2 text-[12px] text-red-400">
-          Could not check CLI updates: {error}
+        <p role="alert" className="px-4 py-2 text-[12px] text-red-400">{t("Could not check CLI updates: ")}{error}
         </p>
       ) : null}
       {checks === null ? (
         <Row
-          label={checking ? "Checking installed CLIs…" : "Not checked yet"}
-          description="Runs each installed CLI to read its version, then looks up the newest release."
+          label={checking ? t("Checking installed CLIs…") : t("Not checked yet")}
+          description={t("Runs each installed CLI to read its version, then looks up the newest release.")}
         />
       ) : checks.length === 0 ? (
         <Row
-          label="No CLIs to check"
-          description="None of the CLIs with a release feed are installed."
+          label={t("No CLIs to check")}
+          description={t("None of the CLIs with a release feed are installed.")}
         />
       ) : (
         <div className="max-h-[360px] overflow-y-auto">
@@ -530,6 +515,7 @@ export function HarnessUpdateSettingsRow({
   state: HarnessUpdateRun;
   onUpdate: (update: HarnessUpdate) => void;
 }) {
+  useLocale();
   const title = HARNESS_TITLE[check.harness];
   const description =
     check.status === "unknown"
@@ -565,8 +551,8 @@ export function HarnessUpdateSettingsRow({
           disabled={state.status === "updating"}
           aria-label={
             state.status === "failed"
-              ? `Retry updating ${title}`
-              : `Update ${title} to ${check.latest}`
+              ? t("Retry updating {p0}", { p0: title })
+              : t("Update {p0} to {p1}", { p0: title, p1: check.latest })
           }
         >
           {state.status === "updating" ? (
@@ -574,7 +560,7 @@ export function HarnessUpdateSettingsRow({
           ) : (
             <ArrowDownCircle className="size-3.5 text-accent" aria-hidden />
           )}
-          {state.status === "failed" ? "Retry" : "Update"}
+          {state.status === "failed" ? t("Retry") : t("Update")}
         </SecondaryButton>
       ) : check.status === "current" ? (
         <Check className="size-4 text-emerald-400" aria-hidden />
@@ -583,39 +569,9 @@ export function HarnessUpdateSettingsRow({
   );
 }
 
-export function UsageDisplaySettings() {
-  const showRemainingUsage = useShowRemainingUsage();
-  const maskEmails = useMaskEmails();
-  return (
-    <Group title="Usage and privacy">
-      <Row
-        id="show-remaining-usage"
-        label="Show remaining usage"
-        description="Fill usage meters with what is left in each limit instead of what has been used."
-      >
-        <Toggle
-          label="Show remaining usage"
-          on={showRemainingUsage}
-          onChange={saveShowRemainingUsage}
-        />
-      </Row>
-      <Row
-        id="mask-emails"
-        label="Mask account emails"
-        description="Blur account emails in Settings and the usage popover until you click one, so they stay out of screenshots."
-      >
-        <Toggle
-          label="Mask account emails"
-          on={maskEmails}
-          onChange={saveMaskEmails}
-        />
-      </Row>
-    </Group>
-  );
-}
-
 /** The icon the project rail shows: custom logo, else the project mascot. */
 export function ProjectScopeIcon({ path }: { path: string }) {
+  useLocale();
   const logos = useTabGroupLogos();
   const [colors] = useState(loadTabGroupColors);
   const [customColors] = useState(loadTabGroupCustomColors);
@@ -670,6 +626,7 @@ export function ProviderRow({
   scopeDefaults?: ProviderSessionDefaults;
   onSessionDefaultsChange?: (next: ProviderSessionDefaults) => void;
 }) {
+  useLocale();
   const models = modelsFor(harness);
   const available = isHarnessAvailable(harness);
   const current =
@@ -687,14 +644,14 @@ export function ProviderRow({
   );
 
   useEffect(() => {
-    if (!available || models.length > 0) return;
+    if (!available || hasLiveCatalog(harness)) return;
     void refreshHarnessCatalogs([harness]);
-  }, [available, harness, models.length]);
+  }, [available, harness]);
 
   return (
     <article
       className="provider-cli-card"
-      aria-label={`${HARNESS_TITLE[harness]} CLI settings`}
+      aria-label={t("{p0} CLI settings", { p0: HARNESS_TITLE[harness] })}
       data-default={isDefault || undefined}
     >
       <div className="provider-cli-header">
@@ -705,7 +662,7 @@ export function ProviderRow({
           <div className="min-w-0">
             <h3 className="text-[13px] font-semibold text-content">
               {harness === "gemini"
-                ? "Gemini CLI (enterprise / API key)"
+                ? t("Gemini CLI (enterprise / API key)")
                 : HARNESS_TITLE[harness]}
             </h3>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-content/60">
@@ -713,13 +670,13 @@ export function ProviderRow({
                 className={`size-1.5 rounded-full ${available ? "bg-emerald-400" : "bg-content/30"}`}
               />
               {available
-                ? "CLI detected"
+                ? t("CLI detected")
                 : hasProbedHarnessAvailability()
-                  ? "CLI not found"
-                  : "Checking CLI…"}
+                  ? t("CLI not found")
+                  : t("Checking CLI…")}
               {available ? (
                 <span className="text-content/45">
-                  · {models.length} {models.length === 1 ? "model" : "models"}
+                  · {models.length} {models.length === 1 ? t("model") : t("models")}
                 </span>
               ) : null}
             </span>
@@ -729,16 +686,19 @@ export function ProviderRow({
       </div>
       {!available && hasProbedHarnessAvailability() ? (
         <details className="provider-cli-install">
-          <summary>Installation help</summary>
+          <summary>{t("Installation help")}</summary>
           <p>{harnessUnavailableHint(harness)}</p>
         </details>
       ) : null}
       <div className="provider-cli-fields">
         {current ? (
           <div className="provider-cli-field">
-            <span>Model</span>
+            <span>{t("Model")}</span>
             <Select
-              label={`${HARNESS_TITLE[harness]} model`}
+              label={t("{p0} model", { p0: HARNESS_TITLE[harness] })}
+              onOpen={() => {
+                void refreshHarnessCatalogs([harness], { force: true });
+              }}
               value={current.id}
               onChange={(next) => onModelChange(harness, next)}
               options={models.map((item) => ({
@@ -749,9 +709,9 @@ export function ProviderRow({
           </div>
         ) : (
           <div className="provider-cli-field">
-            <span>Model</span>
+            <span>{t("Model")}</span>
             <p className="py-1 text-[12px] text-content/45">
-              {available ? "Loading models…" : "Available after CLI setup"}
+              {available ? t("Loading models…") : t("Available after CLI setup")}
             </p>
           </div>
         )}
@@ -759,9 +719,9 @@ export function ProviderRow({
           <>
             {effort ? (
               <div className="provider-cli-field">
-                <span>Effort</span>
+                <span>{t("Effort")}</span>
                 <Select
-                  label={`${HARNESS_TITLE[harness]} default effort`}
+                  label={t("{p0} default effort", { p0: HARNESS_TITLE[harness] })}
                   value={
                     scopeDefaults.effort && validEffort
                       ? scopeDefaults.effort
@@ -786,9 +746,9 @@ export function ProviderRow({
               </div>
             ) : null}
             <div className="provider-cli-field">
-              <span>Permissions</span>
+              <span>{t("Permissions")}</span>
               <Select
-                label={`${HARNESS_TITLE[harness]} default permissions`}
+                label={t("{p0} default permissions", { p0: HARNESS_TITLE[harness] })}
                 value={scopeDefaults.runtimeMode ?? ""}
                 options={[
                   {
@@ -819,29 +779,29 @@ export function ProviderRow({
         <SecondaryButton
           aria-label={
             isDefault
-              ? `${HARNESS_TITLE[harness]} is the default provider`
-              : `Use ${HARNESS_TITLE[harness]} by default`
+              ? t("{p0} is the default provider", { p0: HARNESS_TITLE[harness] })
+              : t("Use {p0} by default", { p0: HARNESS_TITLE[harness] })
           }
           onClick={() => current && onDefault(harness, current.id)}
           disabled={isDefault || !current}
         >
           {isDefault ? <Check className="size-3.5" /> : null}
-          {isDefault ? "Default" : "Use by default"}
+          {isDefault ? t("Default") : t("Use by default")}
         </SecondaryButton>
         {available ? (
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-content/60">
-              {pickerLocked ? "Hidden globally" : "Show in picker"}
+              {pickerLocked ? t("Hidden globally") : t("Show in picker")}
             </span>
             <Toggle
-              label={`Show ${HARNESS_TITLE[harness]} in the model picker`}
+              label={t("Show {p0} in the model picker", { p0: HARNESS_TITLE[harness] })}
               on={inPicker}
               onChange={onPickerVisible}
               disabled={pickerLocked}
             />
           </div>
         ) : (
-          <span className="text-[11px] text-content/45">Not in picker</span>
+          <span className="text-[11px] text-content/45">{t("Not in picker")}</span>
         )}
       </div>
     </article>

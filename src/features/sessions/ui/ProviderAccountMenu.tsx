@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown } from "../../../shared/ui/icons";
 import { Popover } from "../../../shared/ui/Popover";
@@ -35,6 +36,7 @@ export function ProviderAccountMenu({
   onSelect: (accountId: string) => void;
   onClose?: () => void;
 }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [version, setVersion] = useState(0);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -65,11 +67,11 @@ export function ProviderAccountMenu({
         type="button"
         title={
           variant === "pill"
-            ? `Account: ${label}`
-            : "Continue this conversation with another account"
+            ? t("Account: {p0}", { p0: label })
+            : t("Continue this conversation with another account")
         }
         aria-label={
-          variant === "pill" ? `Account: ${label}` : "Switch account"
+          variant === "pill" ? t("Account: {p0}", { p0: label }) : t("Switch account")
         }
         aria-expanded={open}
         aria-haspopup="menu"
@@ -88,7 +90,7 @@ export function ProviderAccountMenu({
         <span
           className={variant === "pill" ? "min-w-0 truncate text-[11px]" : ""}
         >
-          {variant === "pill" ? label : "Switch account"}
+          {variant === "pill" ? label : t("Switch account")}
         </span>
         <ChevronDown
           className={`size-3 shrink-0 text-content/50 ${open ? "rotate-180" : ""}`}
@@ -105,7 +107,7 @@ export function ProviderAccountMenu({
           onDismiss={(reason) => dismiss(reason === "escape")}
           role="menu"
           aria-label={
-            variant === "pill" ? "Account" : "Continue with another account"
+            variant === "pill" ? t("Account") : t("Continue with another account")
           }
           tabIndex={-1}
           data-model-control

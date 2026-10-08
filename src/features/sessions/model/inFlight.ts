@@ -1,3 +1,4 @@
+import { t } from "../../../shared/i18n";
 import { leafIds, newTab, type WorkspaceTab } from "../../workspace/model/layout";
 import type { DockSide, ProjectTerminalDock } from "../../projects/model/projectTerminal";
 import { isRemoteProjectPath } from "../../projects/model/recents";
@@ -6,7 +7,12 @@ import { stopStreaming } from "../../../integrations/harness/core/apply";
 import type { ProjectReturnMemory } from "../../projects/model/projectReturn";
 
 export const INTERRUPT_MESSAGE =
-  "Turn interrupted when MonoCode quit.";
+  "Turn interrupted when imc code quit.";
+
+/** Older saved sessions used the original product name in this marker. */
+export function isTurnInterruptMessage(text: string): boolean {
+  return text === INTERRUPT_MESSAGE || text === "Turn interrupted when imc quit." || text === "Turn interrupted when MonoCode quit.";
+}
 
 export const CONTINUE_PROMPT = "Continue from where you left off.";
 
@@ -70,9 +76,9 @@ export function inFlightRefs(
 
 export function quitWhileBusyMessage(count: number): string {
   if (count === 1) {
-    return "1 chat is still running. Quit anyway? It will resume when you reopen MonoCode.";
+    return t("1 chat is still running. Quit anyway? It will resume when you reopen imc code.");
   }
-  return `${count} chats are still running. Quit anyway? They will resume when you reopen MonoCode.`;
+  return t("{p0} chats are still running. Quit anyway? They will resume when you reopen imc code.", { p0: count });
 }
 
 /**
@@ -131,7 +137,7 @@ export function canAutoContinue(session: Session): boolean {
 
 function lastBlockIsInterrupt(session: Session): boolean {
   const last = session.blocks[session.blocks.length - 1];
-  return last?.role === "system" && last.text === INTERRUPT_MESSAGE;
+  return last?.role === "system" && (last.notice === "interrupt" || isTurnInterruptMessage(last.text));
 }
 
 export function inFlightSnapshotKey(refs: InFlightRef[]): string {

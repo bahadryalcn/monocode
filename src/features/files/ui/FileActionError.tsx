@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { LAYER } from "../../../shared/lib/layers";
 
 export function FileActionError({
@@ -7,6 +8,7 @@ export function FileActionError({
   message: string;
   onDismiss: () => void;
 }) {
+  useLocale();
   return (
     <div
       role="alert"
@@ -16,12 +18,10 @@ export function FileActionError({
       <span className="min-w-0 break-words">{message}</span>
       <button
         type="button"
-        aria-label="Dismiss file action error"
+        aria-label={t("Dismiss file action error")}
         className="shrink-0 text-content/60 hover:text-content"
         onClick={onDismiss}
-      >
-        Dismiss
-      </button>
+      >{t("Dismiss")}</button>
     </div>
   );
 }

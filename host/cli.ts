@@ -19,6 +19,8 @@ import {
 } from "../src/integrations/harness/core/child";
 import { HostChildBackend } from "./child-backend";
 import { HostStore } from "./store";
+import { GenericAcpService } from "./generic-acp";
+import { ensureGenericAcpRegistered } from "../src/integrations/harness/providers/generic-acp/genericAcpAdapter";
 import { acquireHostOwner } from "./owner";
 import { HostEngine } from "./engine";
 import { hostProviders } from "./providers";
@@ -230,10 +232,13 @@ Connect another computer using an SSH forward to the loopback port.`);
     releaseOwner();
   };
   try {
+    backend.setGenericAcpService(new GenericAcpService(dirname(store.attachmentDir)));
     configureChildBackend(backend);
+    ensureGenericAcpRegistered();
     const release = await acquireHarnessBridge();
     const available: RemoteProvider[] = [];
     for (const provider of REMOTE_PROVIDERS) {
+      if (provider === "acp") continue;
       try {
         await backend.resolve(provider);
         available.push(provider);

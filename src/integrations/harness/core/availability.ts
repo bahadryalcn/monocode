@@ -17,6 +17,7 @@ import {
   resolveOmpBinary,
   resolveOpenCodeBinary,
   resolvePiBinary,
+  invokeProviderCommand,
 } from "./child";
 import { STREAM_MODE_LIMITS } from "../providers/antigravity/antigravityStreamProtocol";
 import { isLiveHarness } from "./registry";
@@ -41,6 +42,7 @@ export {
  * authenticated, so the hint must not blame a login.
  */
 const CLI: Record<HarnessId, { name: string; install?: string }> = {
+  acp: { name: "Configured ACP agent", install: "Add a local command or install an agent in ACP settings" },
   claude: { name: "Claude Code CLI" },
   codex: { name: "Codex CLI" },
   cursor: { name: "Cursor CLI" },
@@ -99,6 +101,10 @@ export function probeHarnessAvailability(options?: {
   inflight = Promise.all(
     HARNESSES.map(async (id) => {
       if (!isLiveHarness(id)) return [id, false] as const;
+      if (id === "acp") {
+        try { const configs = await invokeProviderCommand<unknown[]>("generic_acp_list"); return [id, configs.length > 0] as const; }
+        catch { return [id, false] as const; }
+      }
       if (id === "cursor") {
         try {
           await resolveCursorBinary();

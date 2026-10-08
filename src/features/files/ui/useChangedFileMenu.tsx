@@ -1,3 +1,4 @@
+import { t } from "../../../shared/i18n";
 import { useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { message } from "@tauri-apps/plugin-dialog";
 import { copyText } from "../../../platform/tauri/clipboard";
@@ -39,13 +40,13 @@ export function useChangedFileMenu({
   const trigger = useRef<HTMLElement | null>(null);
   const remote = path.startsWith("remote://");
   const items: ExplorerMenuItem[] = [
-    { kind: "item", id: "changes", label: "View Changes" },
+    { kind: "item", id: "changes", get label() { return t("View Changes"); } },
     ...(onOpenFile && canPreviewFile(path)
       ? [
           {
             kind: "item" as const,
             id: "preview",
-            label: "Preview",
+            get label() { return t("Preview"); },
             disabled: deleted,
           },
         ]
@@ -55,7 +56,7 @@ export function useChangedFileMenu({
           {
             kind: "item" as const,
             id: "open",
-            label: `Open in ${PRODUCT_IDENTITY.displayName}`,
+            get label() { return t("Open in {p0}", { p0: PRODUCT_IDENTITY.displayName }); },
             disabled: deleted,
           },
         ]
@@ -63,7 +64,7 @@ export function useChangedFileMenu({
     {
       kind: "item",
       id: "default",
-      label: "Open in Default App",
+      get label() { return t("Open in Default App"); },
       disabled: deleted || remote,
     },
     {
@@ -76,8 +77,8 @@ export function useChangedFileMenu({
           : "Open Containing Folder",
     },
     { kind: "sep" },
-    { kind: "item", id: "copy-path", label: "Copy Path" },
-    { kind: "item", id: "copy-relative", label: "Copy Relative Path" },
+    { kind: "item", id: "copy-path", get label() { return t("Copy Path"); } },
+    { kind: "item", id: "copy-relative", get label() { return t("Copy Relative Path"); } },
     ...(actions.length
       ? [
           { kind: "sep" as const },
@@ -125,7 +126,7 @@ export function useChangedFileMenu({
         }
       }
     })().catch((error) =>
-      message(String(error), { title: "File action failed", kind: "error" }),
+      message(String(error), { get title() { return t("File action failed"); }, kind: "error" }),
     );
   };
   return {

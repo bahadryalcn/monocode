@@ -141,7 +141,7 @@ impl Job {
             inner: Mutex::new(JobData {
                 view: JobView {
                     id: uuid::Uuid::new_v4().to_string(),
-                    message: "Connecting to SSH and setting up imc Host…".into(),
+                    message: "Connecting to SSH and setting up imc code Host…".into(),
                     prompt: None,
                     done: false,
                     error: None,
@@ -510,7 +510,7 @@ pub fn bootstrap_script(platform: HostPlatform) -> String {
 fn bootstrap_script_from_template(platform: HostPlatform, template: &str) -> String {
     let version = env!("CARGO_PKG_VERSION");
     // Independent host packages must be configured explicitly at build time.
-    // Never install an upstream host into imc's isolated data/service paths.
+    // Never install an upstream host into imc code's isolated data/service paths.
     let url = option_env!("IMECE_HOST_RELEASE_URL").unwrap_or("");
     match platform {
         // include_str! preserves checkout line endings, including Windows CRLF.
@@ -1061,9 +1061,9 @@ pub fn device_name() -> String {
         .take(80)
         .collect();
     if name.is_empty() {
-        "imc desktop".into()
+        "imc code desktop".into()
     } else {
-        format!("imc on {name}")
+        format!("imc code on {name}")
     }
 }
 
@@ -1571,7 +1571,7 @@ mod tests {
         assert!(script.contains("BASE=\"$HOME/.imece-host\""));
         assert!(script.contains("ENTRY=\"$BASE/bin/imece-host\""));
         assert!(script.contains("IMECE_HOST_PORT:-3775"));
-        assert!(script.contains("imc host distribution is not configured"));
+        assert!(script.contains("imc code host distribution is not configured"));
         assert!(!script.contains("github.com/bahadryalcn/monocode"));
         assert!(!script.contains('\r'));
         assert!(!script.contains("@@"));
@@ -1657,7 +1657,7 @@ mod tests {
     #[test]
     fn device_names_are_bounded_single_lines() {
         let name = device_name();
-        assert!(name.starts_with("imc"));
+        assert!(name.starts_with("imc code"));
         assert!(name.chars().count() <= 100);
         assert!(!name.chars().any(char::is_control));
     }

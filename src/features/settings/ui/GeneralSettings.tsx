@@ -1,3 +1,5 @@
+import { t, useLocale } from "../../../shared/i18n";
+import { LanguageSettings } from "./LanguageSettings";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { ArrowDownCircle, Loader, RefreshCw } from "../../../shared/ui/icons";
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -75,6 +77,7 @@ export function GeneralPage({
 }: {
   onOpenWhatsNew: (version: string) => void;
 }) {
+  useLocale();
   const [soundsEnabled, setSoundsEnabled] = useState(loadSoundsEnabled);
   const [notificationsEnabled, setNotificationsEnabled] = useState(
     loadNotificationsEnabled,
@@ -191,36 +194,35 @@ export function GeneralPage({
 
   return (
     <>
+      <LanguageSettings />
       <Group
-        title="Alerts"
-        description={`How ${PRODUCT_IDENTITY.displayName} reaches you while you are looking somewhere else.`}
+        title={t("Alerts")}
+        description={t("How {p0} reaches you while you are looking somewhere else.", { p0: PRODUCT_IDENTITY.displayName })}
       >
         <Row
           id="sounds"
-          label="Sounds"
-          description="Short cues for project activity, finished turns, and available updates. Choose project notification categories in Inbox settings. Switches and Copy on a finished turn also play."
+          label={t("Sounds")}
+          description={t("Short cues for project activity, finished turns, and available updates. Choose project notification categories in Inbox settings. Switches and Copy on a finished turn also play.")}
         >
           <Toggle
-            label="Sounds"
+            label={t("Sounds")}
             on={soundsEnabled}
             onChange={onSoundsEnabled}
           />
         </Row>
         <Row
           id="notifications"
-          label="Notifications"
-          description={`Notify when a reminder is due, or when an agent finishes or needs input in another session or while ${PRODUCT_IDENTITY.displayName} is in the background. Click the notification to open that session.`}
+          label={t("Notifications")}
+          description={t("Notify when a reminder is due, or when an agent finishes or needs input in another session or while {p0} is in the background. Click the notification to open that session.", { p0: PRODUCT_IDENTITY.displayName })}
         >
           {notificationsEnabled && notificationPermission === "denied" ? (
             <NotificationsBlocked />
           ) : null}
           {notificationsEnabled && notificationPermission === "unsupported" ? (
-            <span className="text-[12px] text-content/45">
-              Not available on this platform
-            </span>
+            <span className="text-[12px] text-content/45">{t("Not available on this platform")}</span>
           ) : null}
           <Toggle
-            label="Notifications"
+            label={t("Notifications")}
             on={notificationsEnabled}
             onChange={onNotificationsEnabled}
           />
@@ -246,12 +248,12 @@ export function GeneralPage({
         {notificationsEnabled ? (
           <Row
             id="daily-summary"
-            label="Daily summary"
-            description="Once a day, one notification with what background tasks and goals did on every machine. Click it to open the summary."
+            label={t("Daily summary")}
+            description={t("Once a day, one notification with what background tasks and goals did on every machine. Click it to open the summary.")}
           >
             {summaryEnabled ? (
               <Select
-                label="Daily summary time"
+                label={t("Daily summary time")}
                 value={summaryTime}
                 options={DAILY_SUMMARY_TIMES.map((time) => ({
                   value: time,
@@ -264,7 +266,7 @@ export function GeneralPage({
               />
             ) : null}
             <Toggle
-              label="Daily summary"
+              label={t("Daily summary")}
               on={summaryEnabled}
               onChange={(on) => {
                 saveDailySummaryEnabled(on);
@@ -276,47 +278,47 @@ export function GeneralPage({
       </Group>
 
       <Group
-        title="Workspace"
-        description="How project navigation and workspace tabs behave."
+        title={t("Workspace")}
+        description={t("How project navigation and workspace tabs behave.")}
       >
         <Row
           id="file-tabs"
-          label="File tabs"
-          description="Open files beside the active chat, or give each file a normal tab in the top bar. Top-bar files can still be combined into split panes."
+          label={t("File tabs")}
+          description={t("Open files beside the active chat, or give each file a normal tab in the top bar. Top-bar files can still be combined into split panes.")}
         >
           <Segmented
-            label="File tabs"
+            label={t("File tabs")}
             value={fileTabMode}
             options={[
-              { value: "pane", label: "Beside chat" },
-              { value: "workspace", label: "Top bar" },
+              { value: "pane", get label() { return t("Beside chat"); } },
+              { value: "workspace", get label() { return t("Top bar"); } },
             ]}
             onChange={onFileTabMode}
           />
         </Row>
         <Row
           id="tab-animations"
-          label="Tab animations"
-          description="Animate tabs as they open and close. Turn this off for instant tab changes."
+          label={t("Tab animations")}
+          description={t("Animate tabs as they open and close. Turn this off for instant tab changes.")}
         >
           <Toggle
-            label="Tab animations"
+            label={t("Tab animations")}
             on={tabAnimationsEnabled}
             onChange={onTabAnimationsEnabled}
           />
         </Row>
         <Row
           id="notes"
-          label="Notes"
-          description="A global markdown notebook on the project rail. Save a finished turn from the transcript, then mention it later with @note or add it to chat."
+          label={t("Notes")}
+          description={t("A global markdown notebook on the project rail. Save a finished turn from the transcript, then mention it later with @note or add it to chat.")}
         >
-          <Toggle label="Notes" on={notesEnabled} onChange={onNotesEnabled} />
+          <Toggle label={t("Notes")} on={notesEnabled} onChange={onNotesEnabled} />
         </Row>
         {IS_MAC && (
           <Row
             id="quick-composer"
-            label="Quick composer"
-            description={`Press ${quickComposerShortcutLabel(loadQuickComposerShortcut())} in any app to float a prompt over it and start a session without switching to ${PRODUCT_IDENTITY.displayName}. Change the shortcut in Keybindings. Return starts it in the background; ⌘Return starts it and brings the session forward.`}
+            label={t("Quick composer")}
+            description={t("Press {p0} in any app to float a prompt over it and start a session without switching to {p1}. Change the shortcut in Keybindings. Return starts it in the background; ⌘Return starts it and brings the session forward.", { p0: quickComposerShortcutLabel(loadQuickComposerShortcut()), p1: PRODUCT_IDENTITY.displayName })}
           >
             {quickComposerError ? (
               <span className="text-[12px] text-content/45">
@@ -324,7 +326,7 @@ export function GeneralPage({
               </span>
             ) : null}
             <Toggle
-              label="Quick composer"
+              label={t("Quick composer")}
               on={quickComposerEnabled}
               onChange={onQuickComposerEnabled}
             />
@@ -332,11 +334,11 @@ export function GeneralPage({
         )}
         <Row
           id="working-agents"
-          label="Working agents"
-          description="A card on the project rail lists working or just-finished chats you are not looking at, so you can jump across projects. Finished turns stay until you open that session."
+          label={t("Working agents")}
+          description={t("A card on the project rail lists working or just-finished chats you are not looking at, so you can jump across projects. Finished turns stay until you open that session.")}
         >
           <Toggle
-            label="Working agents"
+            label={t("Working agents")}
             on={liveAgentsEnabled}
             onChange={onLiveAgentsEnabled}
           />
@@ -344,11 +346,11 @@ export function GeneralPage({
         {IS_WIN && (
           <Row
             id="close-to-tray"
-            label="Close to tray"
-            description="Closing a window hides it to the system tray instead of quitting, so running agents keep going. Reopen from the tray icon, and quit for real from its menu. Turn this off to have close end the window."
+            label={t("Close to tray")}
+            description={t("Closing a window hides it to the system tray instead of quitting, so running agents keep going. Reopen from the tray icon, and quit for real from its menu. Turn this off to have close end the window.")}
           >
             <Toggle
-              label="Close to tray"
+              label={t("Close to tray")}
               on={closeToTray}
               onChange={onCloseToTray}
             />
@@ -357,32 +359,32 @@ export function GeneralPage({
       </Group>
 
       <Group
-        title="Sleep"
-        description="Keep this computer awake while an agent is working."
+        title={t("Sleep")}
+        description={t("Keep this computer awake while an agent is working.")}
       >
         <Row
           id="keep-awake"
-          label="Prevent sleep while agents work"
+          label={t("Prevent sleep while agents work")}
           description={
             IS_WIN
-              ? "Prevent idle sleep during agent work, and optionally after the last agent finishes. Closing the lid or choosing Sleep still works. On battery-powered Modern Standby PCs, Windows may stop the request five minutes after the sleep timeout."
+              ? t("Prevent idle sleep during agent work, and optionally after the last agent finishes. Closing the lid or choosing Sleep still works. On battery-powered Modern Standby PCs, Windows may stop the request five minutes after the sleep timeout.")
               : IS_MAC
-                ? "Prevent idle sleep during agent work, and optionally after the last agent finishes. Closing the lid or choosing Sleep still works."
-                : "Prevent idle sleep during agent work, and optionally after the last agent finishes. Automatic screen locking remains available. On GNOME, choosing Sleep may be blocked while this is active."
+                ? t("Prevent idle sleep during agent work, and optionally after the last agent finishes. Closing the lid or choosing Sleep still works.")
+                : t("Prevent idle sleep during agent work, and optionally after the last agent finishes. Automatic screen locking remains available. On GNOME, choosing Sleep may be blocked while this is active.")
           }
         >
           <Toggle
-            label="Prevent sleep while agents work"
+            label={t("Prevent sleep while agents work")}
             on={keepAwake}
             onChange={onKeepAwake}
           />
         </Row>
         <Row
-          label="After agents finish"
-          description="Choose when this computer can sleep again after the last agent finishes."
+          label={t("After agents finish")}
+          description={t("Choose when this computer can sleep again after the last agent finishes.")}
         >
           <Select
-            label="Stay awake after an agent ends"
+            label={t("Stay awake after an agent ends")}
             value={keepAwakeHoldAfter}
             options={[...KEEP_AWAKE_HOLD_AFTER]}
             onChange={onKeepAwakeHoldAfter}
@@ -391,15 +393,15 @@ export function GeneralPage({
         </Row>
         <Row
           id="keep-awake-screen"
-          label="Keep the screen on"
+          label={t("Keep the screen on")}
           description={
             IS_WIN || IS_MAC
-              ? "Keep the display awake while the sleep setting is active. Closing the lid or choosing Sleep still works."
-              : "Keep the display awake while the sleep setting is active. Automatic screen locking may be prevented."
+              ? t("Keep the display awake while the sleep setting is active. Closing the lid or choosing Sleep still works.")
+              : t("Keep the display awake while the sleep setting is active. Automatic screen locking may be prevented.")
           }
         >
           <Toggle
-            label="Keep the screen on"
+            label={t("Keep the screen on")}
             on={keepAwakeScreen}
             onChange={onKeepAwakeScreen}
             disabled={!keepAwake}
@@ -409,32 +411,28 @@ export function GeneralPage({
 
       <Group
         id="import-history"
-        title="Import history"
-        description={`Bring conversations you had in the Claude Code and Codex terminals into ${PRODUCT_IDENTITY.displayName}.`}
+        title={t("Import history")}
+        description={t("Bring conversations you had in the Claude Code and Codex terminals into {p0}.", { p0: PRODUCT_IDENTITY.displayName })}
       >
         <Row
-          label="Claude Code and Codex sessions"
-          description="Lists what is on this computer by folder. Nothing is imported until you choose it, and the originals are never changed."
+          label={t("Claude Code and Codex sessions")}
+          description={t("Lists what is on this computer by folder. Nothing is imported until you choose it, and the originals are never changed.")}
         >
           <SecondaryButton
             onClick={() =>
               window.dispatchEvent(new Event(OPEN_SESSION_IMPORT_EVENT))
             }
-          >
-            Import…
-          </SecondaryButton>
+          >{t("Import…")}</SecondaryButton>
         </Row>
       </Group>
 
-      <Group title="Setup" description="Connect computers, set up agents, and choose your projects.">
-        <Row label="Getting started" description="Reopen the setup guide at any time.">
-          <SecondaryButton onClick={() => window.dispatchEvent(new Event(OPEN_ONBOARDING_EVENT))}>
-            Open setup…
-          </SecondaryButton>
+      <Group title={t("Setup")} description={t("Connect computers, set up agents, and choose your projects.")}>
+        <Row label={t("Getting started")} description={t("Reopen the setup guide at any time.")}>
+          <SecondaryButton onClick={() => window.dispatchEvent(new Event(OPEN_ONBOARDING_EVENT))}>{t("Open setup…")}</SecondaryButton>
         </Row>
       </Group>
 
-      <Group title="About">
+      <Group title={t("About")}>
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
       </Group>
     </>
@@ -446,6 +444,7 @@ export function UpdateRow({
 }: {
   onOpenWhatsNew: (version: string) => void;
 }) {
+  useLocale();
   const [snapshot, setSnapshot] = useState<UpdaterSnapshot>({
     phase: "idle",
     currentVersion: "…",
@@ -513,9 +512,7 @@ export function UpdateRow({
         <SecondaryButton
           onClick={() => onOpenWhatsNew(snapshot.currentVersion)}
           disabled={snapshot.currentVersion === "…"}
-        >
-          What's new
-        </SecondaryButton>
+        >{t("What's new")}</SecondaryButton>
         {updatesEnabled === false ? null : (
           <SecondaryButton onClick={() => void onClick()} disabled={busy}>
             {busy ? (
@@ -525,7 +522,7 @@ export function UpdateRow({
             ) : (
               <RefreshCw className="size-3.5" strokeWidth={1.75} aria-hidden />
             )}
-            {hasUpdate ? "Download" : "Check for updates"}
+            {hasUpdate ? t("Download") : t("Check for updates")}
           </SecondaryButton>
         )}
       </div>
@@ -535,19 +532,16 @@ export function UpdateRow({
 
 /** macOS keeps the decision after the first prompt; only System Settings can flip it. Windows toasts are governed by Settings > Notifications. */
 export function NotificationsBlocked() {
+  useLocale();
   return (
-    <span className="flex items-center gap-2 text-[12px] text-content/45">
-      Permission needed
-      {IS_MAC || IS_WIN ? (
+    <span className="flex items-center gap-2 text-[12px] text-content/45">{t("Permission needed")}{IS_MAC || IS_WIN ? (
         <button
           type="button"
           onClick={() => {
             void openNotificationSettings().catch(() => {});
           }}
           className="rounded-md border border-content/10 px-2 py-1 text-content/70 hover:bg-content/10 hover:text-content"
-        >
-          Open System Settings
-        </button>
+        >{t("Open System Settings")}</button>
       ) : null}
     </span>
   );

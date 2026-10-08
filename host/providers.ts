@@ -8,6 +8,7 @@ import * as omp from "../src/integrations/harness/providers/omp/omp";
 import * as fx from "../src/integrations/harness/providers/fx/fx";
 import * as hermes from "../src/integrations/harness/providers/hermes/hermes";
 import * as gemini from "../src/integrations/harness/providers/gemini/gemini";
+import * as genericAcp from "../src/integrations/harness/providers/generic-acp/genericAcpAdapter";
 import * as antigravity from "../src/integrations/harness/providers/antigravity/antigravity";
 import type {
   SendTurnInput,
@@ -51,6 +52,14 @@ export interface HostProvider {
 }
 
 export const hostProviders: Record<RemoteProvider, HostProvider> = {
+  acp: {
+    send: genericAcp.sendGenericAcpTurn,
+    cancel: genericAcp.cancelGenericAcpTurn,
+    stop: genericAcp.forgetGenericAcpSession,
+    bind: genericAcp.bindGenericAcpSession,
+    approve: genericAcp.respondGenericAcpApproval,
+    answer: () => genericAcp.respondGenericAcpQuestion(),
+  },
   codex: {
     send: codex.sendCodexTurn,
     compact: codex.compactCodexContext,

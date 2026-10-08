@@ -1,3 +1,4 @@
+import { t } from "../../../shared/i18n";
 import {
   deriveActivityDock,
   type ActivityDock,
@@ -41,15 +42,13 @@ export function stopAllControl(
   return perItem
     ? {
         kind: "task",
-        label: "Stop all background work",
-        title:
-          "Stop every running subagent and background command. The turn itself is not interrupted.",
+        get label() { return t("Stop all background work"); },
+        get title() { return t("Stop every running subagent and background command. The turn itself is not interrupted."); },
       }
     : {
         kind: "turn",
-        label: "Stop all",
-        title:
-          "Interrupt the whole turn, subagents included. This harness cannot stop one of them on its own.",
+        get label() { return t("Stop all"); },
+        get title() { return t("Interrupt the whole turn, subagents included. This harness cannot stop one of them on its own."); },
       };
 }
 

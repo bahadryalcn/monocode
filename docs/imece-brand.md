@@ -1,6 +1,6 @@
 > Güncel sahne kararı (2026-10-07): Sahne şeffaf zeminde gri 0/1 karakterlerinden oluşan code arttır. Bize bakan altı farklı amcanın hepsinde çay vardır; orta ikilinin arasında tek sehpalı tavla bulunur. Oda ve dekor yoktur. İki kişi bacak bacak üstüne atar, iki kişi yaslanır. Hareket yalnızca sırayla ve aralıklı çay içme pozlarıdır. Session arkasında aynı çizim düşük opaklıkla gösterilir. Aşağıdaki eski görsel kararlar tarihçedir.
 
-# İmece marka sistemi
+# imc code marka sistemi
 
 ## Güncel kahvehane yönü: ince piksel sanatı — 2026-10-07
 
@@ -8,7 +8,7 @@
 
 Hareketler ayrı çizilmiş pozlar arasında geçiş yapar: göz kırpma, konuşma, bardağı kaldırma/yudumlama ve tavla taşı hamlesi. Oda katmanı önbelleğe alınır; yalnız değişen pozlarda yeniden boyanır. Gizli, görünmeyen veya hareket tercihi kapalı sahnede zamanlayıcı çalışmaz. Sohbet arka planı ve sahneyi kapatma ayarı korunur. Aşağıdaki SVG tasarım kayıtları tarihsel yönü anlatır.
 
-İmece, yapay zekâ araçlarının birlikte iş üretmesini sağlayan çalışma platformudur. İsim kullanıcı tarafından seçildi; görsel yön kullanıcının gönderdiği Türk çay tabağı referansı üzerine kuruldu.
+imc code, yapay zekâ araçlarının birlikte iş üretmesini sağlayan çalışma platformudur. İsim kullanıcı tarafından seçildi; görsel yön kullanıcının gönderdiği Türk çay tabağı referansı üzerine kuruldu.
 
 ## Amblem ve varlıklar
 
@@ -16,7 +16,7 @@ Hareketler ayrı çizilmiş pozlar arasında geçiş yapar: göz kırpma, konuş
 - Kaynak üretim: `01a1138f-784d-7f11-9683-b7fa7c1435b4/exec-aa0e3b2c-568b-42b4-ab35-5432551200ab.png`, ImageGen. Üretim aracından alınan dosya değiştirilmeden proje içine kopyalandı.
 - Alternatif: `public/brand/imece-mark-geometric.png`, aynı paletin daha geometrik, boş merkezli yorumu. Kaynak: aynı üretim klasöründe `exec-442a73b2-4e98-4d57-885d-eae611c8865a.png`. Önceki bordo-altın amblem `public/brand/imece-mark-legacy.png` içinde korunur.
 - Paket ikonları: `src-tauri/icons/`, aynı amblemden `pnpm exec tauri icon public/brand/imece-mark.png --output src-tauri/icons` ile üretildi. ICO, ICNS ve platform PNG'leri aynı kaynağı kullanır.
-- Metin işareti kodda **İmece** olarak çizilir; noktalı büyük İ korunur. Dosya/paket adı **Imece**, uygulama kimliği `com.imece.desktop`.
+- Metin işareti kodda **imc code** olarak çizilir; noktalı büyük İ korunur. Dosya/paket adı **Imece**, uygulama kimliği `com.imece.desktop`.
 
 ## Görsel dil
 
@@ -28,7 +28,7 @@ Hareketler ayrı çizilmiş pozlar arasında geçiş yapar: göz kırpma, konuş
 | Amblem detayları | Grafit `#15191F`, soğuk gümüş `#A3ACB8`, porselen gri `#DEE3EA` hedef paleti |
 | Yazı | Aptos / Segoe UI Variable / sistem sans |
 
-Amblemi esnetmeyin; etrafında en az yüksekliğinin dörtte biri kadar boşluk bırakın. Küçük kontrollerde ürün amblemi yerine yeni vektör ikon ailesini kullanın. Üçüncü taraf sağlayıcı logoları ilgili sağlayıcıyı tanımlar; İmece amblemi olarak kullanılmaz.
+Amblemi esnetmeyin; etrafında en az yüksekliğinin dörtte biri kadar boşluk bırakın. Küçük kontrollerde ürün amblemi yerine yeni vektör ikon ailesini kullanın. Üçüncü taraf sağlayıcı logoları ilgili sağlayıcıyı tanımlar; imc code amblemi olarak kullanılmaz.
 
 Yeni arayüz kompakt editör başlıkları, nötr ayırıcılar, görev giriş alanı ve kısa geçişler kullanır. Ayarlar üst kategori sekmeleri ve iki kolonlu düz form bölümleriyle düzenlenir. Sahne tek renkli grafit SVG çizimidir; aktif sohbetlerde düşük opaklıkla arka planda görünür. Piksel karakter, sağlayıcıya göre değişen karşılama ve parçacık patlaması kaldırılır. Kullanıcının son kararıyla oyunlar tamamen kaldırılmıştır. Boş sohbet ekranında SVG koduyla çizilmiş yedi köy kahvehanesi amcası hilal düzeninde izleyiciye dönük oturur; yelek, hırka, bere, bıyık, sandalye ve ince belli çay bardağı detayları bulunur. Seyrek çay yudumlama, sohbet jestleri ve konuşma hareketleri vardır; skor, klavye oyun kontrolü veya oyun düğmesi yoktur. Sahne kapatılabilir; dekoratif hareket kapatma ve işletim sistemi azaltılmış hareket tercihi korunur. Görünmeyen veya gizli penceredeki sahne statik kalır.
 

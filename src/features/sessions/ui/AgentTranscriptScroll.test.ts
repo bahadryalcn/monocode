@@ -401,6 +401,40 @@ describe("transcript scrolling", () => {
     expect(geometry.top).toBe(700);
   });
 
+  it("holds following until a directionless trackpad gesture resolves", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { scroller, geometry, observer } = mountScroller();
+      act(() => scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 0 })));
+      geometry.height = 1100;
+      act(() => observer.resize());
+      expect(geometry.top).toBe(600);
+      act(() => vi.advanceTimersByTime(150));
+      expect(geometry.top).toBe(700);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not snap back when a directionless gesture becomes an upward scroll", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const { scroller, geometry, observer } = mountScroller();
+      act(() => scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 0 })));
+      geometry.height = 1100;
+      act(() => observer.resize());
+      act(() => {
+        scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -4 }));
+        geometry.top = 596;
+        scroller.dispatchEvent(new Event("scroll"));
+        vi.advanceTimersByTime(150);
+      });
+      expect(geometry.top).toBe(596);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("pauses following for a scrollbar move inside the bottom margin", () => {
     const { scroller, geometry, observer } = mountScroller();
     geometry.top = 596;

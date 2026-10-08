@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import { shouldRunLoop } from "../../../shared/lib/animationGate";
 import { useDecorativeMotionEnabled } from "../../settings/model/decorativeMotion";
@@ -28,6 +29,7 @@ export function VillageCoffeehouseScene({ className = "", variant = "hero", work
   variant?: "hero" | "background";
   workingCount?: number;
 }) {
+  useLocale();
   const sessions = useShellSessions();
   const workingCount = Math.max(0, Math.floor(previewCount ?? coffeehouseWorkingCount(sessions)));
   const standing = useRef<number[]>(Array(6).fill(0));
@@ -112,7 +114,7 @@ export function VillageCoffeehouseScene({ className = "", variant = "hero", work
     data-variant={variant} data-motion={running ? "running" : "still"}
     data-working-count={workingCount}
     role={variant === "hero" ? "img" : undefined}
-    aria-label={variant === "hero" ? `${Math.max(6,workingCount)} men holding tea around a backgammon table; ${workingCount} working agents. Monochrome binary code art.` : undefined}
+    aria-label={variant === "hero" ? t("{p0} men holding tea around a backgammon table; {p1} working agents. Monochrome binary code art.", { p0: Math.max(6,workingCount), p1: workingCount }) : undefined}
     aria-hidden={variant === "background" ? true : undefined}>
     <canvas key="code-art-layout-v2" ref={canvas} width={CODE_WIDTH} height={CODE_HEIGHT} aria-hidden="true" />
   </div>;

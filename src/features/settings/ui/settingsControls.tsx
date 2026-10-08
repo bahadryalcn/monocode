@@ -281,12 +281,14 @@ export function Select({
   options,
   onChange,
   disabled = false,
+  onOpen,
 }: {
   label: string;
   value: string;
   options: { value: string; label: string; icon?: ReactNode }[];
   onChange: (value: string) => void;
   disabled?: boolean;
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(() =>
@@ -370,9 +372,13 @@ export function Select({
         onKeyDown={(event) => {
           if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
           event.preventDefault();
+          if (!open) onOpen?.();
           setOpen(true);
         }}
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={() => {
+          if (!open) onOpen?.();
+          setOpen(!open);
+        }}
         className="settings-select flex min-h-8 w-full items-center justify-between gap-2 rounded-[3px] border border-content/15 bg-content/5 px-2.5 py-1.5 text-left text-[12px] text-content hover:border-content/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <span className="flex min-w-0 flex-1 items-center gap-1.5">

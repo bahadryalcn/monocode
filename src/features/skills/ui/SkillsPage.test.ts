@@ -580,7 +580,7 @@ describe("Settings skill preview", () => {
     expect(
       container
         .querySelector(
-          '[aria-label="Include Personal guide in imc catalog"]',
+          '[aria-label="Include Personal guide in imc code catalog"]',
         )
         ?.getAttribute("aria-checked"),
     ).toBe("false");
@@ -691,7 +691,7 @@ describe("Skills on connected machines", () => {
     expect(text).toContain("3 skills");
     // Names only: no description line, no catalog switch on the other machine's rows.
     expect(text).not.toContain("Notes from the Mac");
-    expect(container.querySelector('[aria-label="Include mac-notes in imc catalog"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Include mac-notes in imc code catalog"]')).toBeNull();
     expect(button("Copy mac-notes to this computer").textContent).toBe("Transfer");
     // A plugin skill belongs to its plugin: nothing to transfer.
     expect(container.querySelector('[aria-label="Copy kit:plan to this computer"]')).toBeNull();

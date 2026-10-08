@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -54,6 +55,7 @@ export function InboxPage({
   notificationProjectPath?: string | null;
   notificationSettingsRequest?: number;
 }) {
+  useLocale();
   const revealed = useContext(RevealedSetting);
   return (
     <>
@@ -77,7 +79,7 @@ export function InboxPage({
             GitHub
           </span>
         }
-        description="Pull requests, reviews, and issues, read through the GitHub CLI."
+        description={t("Pull requests, reviews, and issues, read through the GitHub CLI.")}
       >
         <GithubSettings />
       </Group>
@@ -90,7 +92,7 @@ export function InboxPage({
             GitLab
           </span>
         }
-        description="Merge requests from GitLab.com or a self-managed instance."
+        description={t("Merge requests from GitLab.com or a self-managed instance.")}
       >
         <GitlabSettings />
       </Group>
@@ -106,7 +108,7 @@ export function InboxPage({
             ADO
           </span>
         }
-        description="Pull requests and Boards work items from your ADO organization."
+        description={t("Pull requests and Boards work items from your ADO organization.")}
       >
         <AzureDevOpsSettings />
       </Group>
@@ -119,7 +121,7 @@ export function InboxPage({
             Jira
           </span>
         }
-        description="Jira Cloud issues from the projects you pick."
+        description={t("Jira Cloud issues from the projects you pick.")}
       >
         <JiraSettings />
       </Group>
@@ -132,7 +134,7 @@ export function InboxPage({
             Linear
           </span>
         }
-        description="Issues assigned to you, from the teams you pick."
+        description={t("Issues assigned to you, from the teams you pick.")}
       >
         <LinearSettings />
       </Group>
@@ -141,6 +143,7 @@ export function InboxPage({
 }
 
 export function GithubSettings() {
+  useLocale();
   const [status, setStatus] = useState<GithubStatus | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -184,19 +187,17 @@ export function GithubSettings() {
 
   return (
     <>
-      <Row label="Connection" description={description}>
+      <Row label={t("Connection")} description={description}>
         <span className="text-[12px] text-content/50">{label}</span>
         {!checking && !status?.installed ? (
           <SecondaryButton
             onClick={() => {
               void openUrl("https://cli.github.com/").catch(() => {});
             }}
-          >
-            Installation guide
-          </SecondaryButton>
+          >{t("Installation guide")}</SecondaryButton>
         ) : null}
         <SecondaryButton onClick={() => void checkStatus()} disabled={checking}>
-          {checking ? "Checking" : "Check again"}
+          {checking ? t("Checking") : t("Check again")}
         </SecondaryButton>
       </Row>
       {error ? (
@@ -209,6 +210,7 @@ export function GithubSettings() {
 }
 
 export function GitlabSettings() {
+  useLocale();
   const [url, setUrl] = useState("https://gitlab.com");
   const [token, setToken] = useState("");
   const [connected, setConnected] = useState(false);
@@ -269,8 +271,8 @@ export function GitlabSettings() {
   return (
     <>
       <Row
-        label="Connection"
-        description="Connect GitLab.com or a self-managed GitLab instance. Use a personal access token with API access; the token is stored locally and Disconnect deletes it."
+        label={t("Connection")}
+        description={t("Connect GitLab.com or a self-managed GitLab instance. Use a personal access token with API access; the token is stored locally and Disconnect deletes it.")}
       >
         {connected ? (
           <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
@@ -280,9 +282,7 @@ export function GitlabSettings() {
             <SecondaryButton
               onClick={() => void onDisconnect()}
               disabled={busy}
-            >
-              Disconnect
-            </SecondaryButton>
+            >{t("Disconnect")}</SecondaryButton>
           </div>
         ) : (
           <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
@@ -292,7 +292,7 @@ export function GitlabSettings() {
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 placeholder="https://gitlab.com"
-                aria-label="GitLab URL"
+                aria-label={t("GitLab URL")}
                 autoComplete="url"
                 spellCheck={false}
                 className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
@@ -306,8 +306,8 @@ export function GitlabSettings() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void onSave();
                 }}
-                placeholder="glpat-…"
-                aria-label="GitLab access token"
+                placeholder={t("glpat-…")}
+                aria-label={t("GitLab access token")}
                 autoComplete="off"
                 spellCheck={false}
                 className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
@@ -317,7 +317,7 @@ export function GitlabSettings() {
               onClick={() => void onSave()}
               disabled={busy || !token.trim()}
             >
-              {busy ? "Saving" : "Connect"}
+              {busy ? t("Saving") : t("Connect")}
             </SecondaryButton>
           </div>
         )}
@@ -332,6 +332,7 @@ export function GitlabSettings() {
 }
 
 export function AzureDevOpsSettings() {
+  useLocale();
   const [url, setUrl] = useState("https://dev.azure.com/myorg");
   const [token, setToken] = useState("");
   const [connected, setConnected] = useState(false);
@@ -392,8 +393,8 @@ export function AzureDevOpsSettings() {
   return (
     <>
       <Row
-        label="Connection"
-        description="Connect your ADO organization with a personal access token (Boards + Repos read & write for comments). The token is stored locally and Disconnect deletes it."
+        label={t("Connection")}
+        description={t("Connect your ADO organization with a personal access token (Boards + Repos read & write for comments). The token is stored locally and Disconnect deletes it.")}
       >
         {connected ? (
           <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
@@ -403,9 +404,7 @@ export function AzureDevOpsSettings() {
             <SecondaryButton
               onClick={() => void onDisconnect()}
               disabled={busy}
-            >
-              Disconnect
-            </SecondaryButton>
+            >{t("Disconnect")}</SecondaryButton>
           </div>
         ) : (
           <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
@@ -415,7 +414,7 @@ export function AzureDevOpsSettings() {
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 placeholder="https://dev.azure.com/myorg"
-                aria-label="Azure DevOps organization URL"
+                aria-label={t("Azure DevOps organization URL")}
                 autoComplete="url"
                 spellCheck={false}
                 className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
@@ -429,8 +428,8 @@ export function AzureDevOpsSettings() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void onSave();
                 }}
-                placeholder="PAT…"
-                aria-label="Azure DevOps personal access token"
+                placeholder={t("PAT…")}
+                aria-label={t("Azure DevOps personal access token")}
                 autoComplete="off"
                 spellCheck={false}
                 className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
@@ -440,7 +439,7 @@ export function AzureDevOpsSettings() {
               onClick={() => void onSave()}
               disabled={busy || !token.trim()}
             >
-              {busy ? "Saving" : "Connect"}
+              {busy ? t("Saving") : t("Connect")}
             </SecondaryButton>
           </div>
         )}
@@ -455,6 +454,7 @@ export function AzureDevOpsSettings() {
 }
 
 export function LinearSettings() {
+  useLocale();
   const [token, setToken] = useState("");
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -543,13 +543,11 @@ export function LinearSettings() {
   return (
     <>
       <Row
-        label="API key"
-        description="Create a personal API key in Linear → Settings → Security & Access. Disconnect deletes it."
+        label={t("API key")}
+        description={t("Create a personal API key in Linear → Settings → Security & Access. Disconnect deletes it.")}
       >
         {connected ? (
-          <SecondaryButton onClick={() => void onDisconnect()} disabled={busy}>
-            Disconnect
-          </SecondaryButton>
+          <SecondaryButton onClick={() => void onDisconnect()} disabled={busy}>{t("Disconnect")}</SecondaryButton>
         ) : (
           <div className="flex max-w-full flex-wrap items-center gap-2">
             <label className="flex h-7 w-52 max-w-full shrink-0 items-center rounded-md border border-content/10 px-2 focus-within:border-content/20">
@@ -560,8 +558,8 @@ export function LinearSettings() {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") void onSave();
                 }}
-                placeholder="lin_api_…"
-                aria-label="Linear API key"
+                placeholder={t("lin_api_…")}
+                aria-label={t("Linear API key")}
                 autoComplete="off"
                 spellCheck={false}
                 className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
@@ -571,7 +569,7 @@ export function LinearSettings() {
               onClick={() => void onSave()}
               disabled={busy || !token.trim()}
             >
-              {busy ? "Saving" : "Connect"}
+              {busy ? t("Saving") : t("Connect")}
             </SecondaryButton>
           </div>
         )}
@@ -583,10 +581,8 @@ export function LinearSettings() {
       ) : null}
       {connected && teams.length > 0 ? (
         <div className="border-b border-content/5 px-4 py-3.5 last:border-b-0">
-          <div className="text-[13px] font-medium text-content">Teams</div>
-          <p className="mt-1 text-[12px] leading-relaxed text-content/45">
-            Unchecked teams stay out of the inbox.
-          </p>
+          <div className="text-[13px] font-medium text-content">{t("Teams")}</div>
+          <p className="mt-1 text-[12px] leading-relaxed text-content/45">{t("Unchecked teams stay out of the inbox.")}</p>
           <div className="-mx-2 mt-2 flex flex-col gap-0.5">
             {teams.map((team) => {
               const checked = !hiddenTeamIds.includes(team.id);

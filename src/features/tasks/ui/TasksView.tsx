@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { invalidateMachineSnapshot } from "../../automations/model/machineSnapshot";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
@@ -222,13 +223,13 @@ const COLUMN_EMPTY: Record<TaskColumn, string> = {
 
 // The same choices as an automation's run time limit.
 const RUN_TIME_LIMIT_OPTIONS = [
-  { value: "0", label: "No limit" },
-  { value: "15", label: "15 minutes" },
-  { value: "30", label: "30 minutes" },
-  { value: "60", label: "1 hour" },
-  { value: "120", label: "2 hours" },
-  { value: "240", label: "4 hours" },
-  { value: "480", label: "8 hours" },
+  { value: "0", get label() { return t("No limit"); } },
+  { value: "15", get label() { return t("15 minutes"); } },
+  { value: "30", get label() { return t("30 minutes"); } },
+  { value: "60", get label() { return t("1 hour"); } },
+  { value: "120", get label() { return t("2 hours"); } },
+  { value: "240", get label() { return t("4 hours"); } },
+  { value: "480", get label() { return t("8 hours"); } },
 ] as const;
 
 const GOAL_STATUS_LABELS: Record<GoalStatus, string> = {
@@ -260,10 +261,11 @@ export function TasksView({
   onToggleSidebar,
   onOpenBackgroundSession,
 }: Props) {
+  useLocale();
   return (
     <div
       role="region"
-      aria-label="Tasks"
+      aria-label={t("Tasks")}
       data-app-tasks
       className="flex min-h-0 min-w-0 flex-1 flex-col text-content"
     >
@@ -281,7 +283,7 @@ export function TasksView({
             className="size-3.5 shrink-0 text-content/45"
             strokeWidth={1.75}
           />
-          <span className="min-w-0 truncate text-content">Tasks</span>
+          <span className="min-w-0 truncate text-content">{t("Tasks")}</span>
         </div>
         {IS_MAC ? null : <WindowControls />}
       </div>
@@ -299,6 +301,7 @@ function TasksContent({
   recents,
   onOpenBackgroundSession,
 }: Pick<Props, "cwd" | "recents" | "onOpenBackgroundSession">) {
+  useLocale();
   // Tasks for a project in a locked group are not shown.
   const lock = useLockSnapshot();
   // Machines whose host keeps a task board, this computer's included.
@@ -793,22 +796,22 @@ function TasksContent({
       <header className="imece-workspace-heading">
         <div className="imece-heading-mark" aria-hidden="true"><DashboardSquare className="size-6" /></div>
         <div className="min-w-0 flex-1">
-          <h1>Work in motion</h1>
-          <p>Follow an idea from its first step to a reviewed result.</p>
+          <h1>{t("Work in motion")}</h1>
+          <p>{t("Follow an idea from its first step to a reviewed result.")}</p>
         </div>
-        <div className="imece-heading-count"><strong>{visibleTasks.length}</strong><span>tasks</span></div>
+        <div className="imece-heading-count"><strong>{visibleTasks.length}</strong><span>{t("tasks")}</span></div>
       </header>
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stroke px-3">
         <span className="min-w-0 flex-1 truncate text-[12px] text-content/45">
           {machines.length > 0
-            ? "Each task runs on its project’s machine, with this app open or closed."
+            ? t("Each task runs on its project’s machine, with this app open or closed.")
             : loading
-              ? "Looking for machines…"
-              : `No connected machine has a task board. Connect one, or update its ${PRODUCT_IDENTITY.displayName} Host.`}
+              ? t("Looking for machines…")
+              : t("No connected machine has a task board. Connect one, or update its {p0} Host.", { p0: PRODUCT_IDENTITY.displayName })}
         </span>
         {newReviewNotes > 0 ? (
           <span data-new-review-notes className="shrink-0 text-[11px] text-amber-400">
-            {newReviewNotes} new review {newReviewNotes === 1 ? "note" : "notes"}
+            {newReviewNotes}{t(" new review ")}{newReviewNotes === 1 ? t("note") : t("notes")}
           </span>
         ) : null}
         {goals.length > 0 ? (
@@ -816,10 +819,10 @@ function TasksContent({
             variant="pill"
             searchable={goals.length > 8}
             align="end"
-            label="Show goal"
+            label={t("Show goal")}
             value={goalFilter}
             options={[
-              { value: ALL_GOALS, label: "All tasks" },
+              { value: ALL_GOALS, get label() { return t("All tasks"); } },
               ...goals.map((goal) => ({
                 value: goalKey(goal.machineId, goal.id),
                 label: goal.title,
@@ -835,9 +838,7 @@ function TasksContent({
             onClick={() => setStewardsOpen((open) => !open)}
             className={ACTION_OUTLINE}
           >
-            <Bot className="size-3.5" strokeWidth={1.75} />
-            Stewards
-            {stewards.length > 0 ? (
+            <Bot className="size-3.5" strokeWidth={1.75} />{t("Stewards")}{stewards.length > 0 ? (
               <span className="tabular-nums text-content/45">
                 {stewards.length}
               </span>
@@ -850,9 +851,7 @@ function TasksContent({
           onClick={() => setSummaryOpen((open) => !open)}
           className={ACTION_OUTLINE}
         >
-          <Check className="size-3.5" strokeWidth={1.75} />
-          Summary
-        </button>
+          <Check className="size-3.5" strokeWidth={1.75} />{t("Summary")}</button>
         {limits.length > 0 ? (
           <button
             type="button"
@@ -860,9 +859,7 @@ function TasksContent({
             onClick={() => setLimitsOpen((open) => !open)}
             className={ACTION_OUTLINE}
           >
-            <Gauge className="size-3.5" strokeWidth={1.75} />
-            Limits
-          </button>
+            <Gauge className="size-3.5" strokeWidth={1.75} />{t("Limits")}</button>
         ) : null}
         <button
           type="button"
@@ -870,23 +867,19 @@ function TasksContent({
           disabled={goalDraft != null || draft != null}
           className={ACTION_OUTLINE}
         >
-          <Sparkles className="size-3.5" strokeWidth={1.75} />
-          New goal
-        </button>
+          <Sparkles className="size-3.5" strokeWidth={1.75} />{t("New goal")}</button>
         <button
           type="button"
           onClick={beginCreate}
           disabled={draft != null || goalDraft != null}
           className={ACTION_OUTLINE}
         >
-          <Plus className="size-3.5" strokeWidth={1.75} />
-          New task
-        </button>
+          <Plus className="size-3.5" strokeWidth={1.75} />{t("New task")}</button>
       </div>
       <RemoteDataStatus
         state={boardDataState}
         onRefresh={retryBoard}
-        label="task board"
+        label={t("task board")}
       />
       {error ? (
         <div className="mx-4 mt-4 flex shrink-0 items-start gap-2 rounded-lg border border-red-400/20 bg-red-400/8 px-3 py-2 text-[12px] text-red-300">
@@ -987,7 +980,7 @@ function TasksContent({
       ) : null}
       {goals.length > 0 ? (
         <ul
-          aria-label="Goals"
+          aria-label={t("Goals")}
           className="flex max-h-[45%] shrink-0 flex-col gap-1.5 overflow-y-auto border-b border-stroke p-3"
         >
           {goals
@@ -1132,6 +1125,7 @@ function TaskCard({
   selected: boolean;
   onOpen: () => void;
 } & TaskActionHandlers) {
+  useLocale();
   const model = resolveModel(task.harness, task.model);
   const description = taskInstructionsSummary(task.prompt);
   const unread = unreadReviewNotes(task.reviewNotes);
@@ -1153,7 +1147,7 @@ function TaskCard({
       {goal ? (
         <p
           data-task-goal
-          title={`Part of the goal “${goal}”`}
+          title={t("Part of the goal “{p0}”", { p0: goal })}
           className="mb-1 flex min-w-0 items-center gap-1 text-[10px] text-content/45"
         >
           <Sparkles className="size-2.5 shrink-0" />
@@ -1163,12 +1157,10 @@ function TaskCard({
       {task.source === "steward" ? (
         <p
           data-task-suggested
-          title="Suggested by a project steward"
+          title={t("Suggested by a project steward")}
           className="mb-1 inline-flex h-4 items-center gap-1 rounded-full bg-violet-500/12 px-1.5 text-[10px] font-medium text-violet-400"
         >
-          <Bot className="size-2.5 shrink-0" />
-          Suggested
-        </p>
+          <Bot className="size-2.5 shrink-0" />{t("Suggested")}</p>
       ) : null}
       <h3
         title={description}
@@ -1185,8 +1177,8 @@ function TaskCard({
         </p>
       ) : null}
       <p className="mt-1 truncate text-[11px] text-content/45">
-        {project} · on {task.machineName}
-        {task.stale ? " (offline, last known)" : ""}
+        {project}{t(" · on ")}{task.machineName}
+        {task.stale ? t(" (offline, last known)") : ""}
       </p>
       <p className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-content/50">
         <HarnessIcon harness={task.harness} className="size-3.5 shrink-0" />
@@ -1199,13 +1191,13 @@ function TaskCard({
       </p>
       {task.branch ? (
         <p
-          title={task.merged ? `Merged into ${task.baseBranch}` : task.branch}
+          title={task.merged ? t("Merged into {p0}", { p0: task.baseBranch }) : task.branch}
           className="mt-1 flex min-w-0 items-center gap-1 text-[11px] text-content/45"
         >
           <GitBranch className="size-3 shrink-0" />
           <span className="min-w-0 truncate">
             {task.merged
-              ? `${task.branch} merged into ${task.baseBranch}`
+              ? t("{p0} merged into {p1}", { p0: task.branch, p1: task.baseBranch })
               : task.branch}
           </span>
         </p>
@@ -1214,36 +1206,29 @@ function TaskCard({
         <p
           data-task-auto-merged
           className="mt-1 inline-flex h-4 items-center rounded-full bg-emerald-500/12 px-1.5 text-[10px] font-medium text-emerald-400"
-        >
-          Merged automatically
-        </p>
+        >{t("Merged automatically")}</p>
       ) : null}
       {waitingFor.length > 0 ? (
-        <p className="mt-1 break-words text-[11px] leading-snug text-content/50">
-          Waiting for: {waitingFor.join(", ")}
+        <p className="mt-1 break-words text-[11px] leading-snug text-content/50">{t("Waiting for: ")}{waitingFor.join(", ")}
         </p>
       ) : null}
       {task.status === "verifying" ? (
-        <p className="mt-1.5 mr-1 inline-flex h-5 items-center rounded-full bg-sky-500/12 px-2 text-[11px] font-medium text-sky-400">
-          Verifying
-        </p>
+        <p className="mt-1.5 mr-1 inline-flex h-5 items-center rounded-full bg-sky-500/12 px-2 text-[11px] font-medium text-sky-400">{t("Verifying")}</p>
       ) : null}
       {task.needsInput || taskRequiresInstructions(task) ? (
-        <p className="mt-1.5 inline-flex h-5 items-center rounded-full bg-amber-500/12 px-2 text-[11px] font-medium text-amber-400">
-          Needs input
-        </p>
+        <p className="mt-1.5 inline-flex h-5 items-center rounded-full bg-amber-500/12 px-2 text-[11px] font-medium text-amber-400">{t("Needs input")}</p>
       ) : null}
       {task.repairAttempts ? (
         <p title={task.repairNote} className="mt-1.5 text-[11px] text-amber-400">
-          {task.status === "blocked" ? "Automatic corrections used" : "Automatic correction"} · attempt {task.repairAttempts}
+          {task.status === "blocked" ? t("Automatic corrections used") : t("Automatic correction")}{t(" · attempt ")}{task.repairAttempts}
         </p>
       ) : null}
       {repairStopLabel(task) ? <p className="mt-1.5 text-[11px] text-amber-400">{repairStopLabel(task)}</p> : null}
       {task.reviewNotes?.length ? (
         <p data-task-review-notes className={`mt-1.5 text-[11px] ${unread ? "text-amber-400" : "text-content/50"}`}>
           {unread
-            ? `${unread} new review ${unread === 1 ? "note" : "notes"}`
-            : `${task.reviewNotes.length} review ${task.reviewNotes.length === 1 ? "note" : "notes"}`}
+            ? t((unread === 1 ? "{p0} new review note" : "{p0} new review notes"), { p0: unread })
+            : t((task.reviewNotes.length === 1 ? "{p0} review note" : "{p0} review notes"), { p0: task.reviewNotes.length })}
         </p>
       ) : null}
       {task.status === "blocked" && task.error ? (
@@ -1257,7 +1242,7 @@ function TaskCard({
       ) : null}
       {task.status === "review" && task.diffStat ? (
         <pre
-          aria-label="Changes"
+          aria-label={"Changes"}
           className="mt-1.5 max-h-32 overflow-auto rounded bg-content/5 px-1.5 py-1 font-mono text-[10px] leading-snug text-content/60"
         >
           {task.diffStat}
@@ -1303,6 +1288,7 @@ function TaskActions({
   onOpenSession,
   onRecheckReview,
 }: { task: BoardTask } & TaskActionHandlers) {
+  useLocale();
   const can = (to: TaskStatus) => canMoveTask(task.status, to);
   return (
     <div
@@ -1316,7 +1302,7 @@ function TaskActions({
       {can("done") ? (
         hasUnmergedBranch(task) ? (
           <CardAction
-            label={`Merge into ${task.baseBranch}`}
+            label={t("Merge into {p0}", { p0: task.baseBranch })}
             disabled={busy}
             onClick={() => onMove("done")}
           >
@@ -1324,7 +1310,7 @@ function TaskActions({
           </CardAction>
         ) : (
           <CardAction
-            label={task.status === "todo" ? "Mark done" : "Approve"}
+            label={task.status === "todo" ? t("Mark done") : t("Approve")}
             disabled={busy}
             onClick={() => onMove("done")}
           >
@@ -1336,10 +1322,10 @@ function TaskActions({
         <CardAction
           label={
             task.status === "todo"
-              ? "Start"
+              ? t("Start")
               : task.status === "blocked"
-                ? "Retry"
-                : "Run again"
+                ? t("Retry")
+                : t("Run again")
           }
           disabled={busy}
           onClick={() => onMove("queued")}
@@ -1352,13 +1338,13 @@ function TaskActions({
         </CardAction>
       ) : null}
       {task.status === "blocked" && !taskRequiresInstructions(task) && !canTakeOverBlockedTask(task) && task.reviewRecheckSupported && task.verification?.review?.verdict === "fail" && task.sessionId ? (
-        <CardAction label="Recheck review" disabled={busy} onClick={onRecheckReview}>
+        <CardAction label={t("Recheck review")} disabled={busy} onClick={onRecheckReview}>
           <RefreshCw className="size-3" />
         </CardAction>
       ) : null}
       {can("todo") ? (
         <CardAction
-          label={task.status === "done" ? "Reopen" : "Move to To do"}
+          label={task.status === "done" ? t("Reopen") : t("Move to To do")}
           disabled={busy}
           onClick={() => onMove("todo")}
         >
@@ -1366,26 +1352,26 @@ function TaskActions({
         </CardAction>
       ) : null}
       {can("blocked") ? (
-        <CardAction label="Stop" disabled={busy} onClick={() => onMove("blocked")}>
+        <CardAction label={t("Stop")} disabled={busy} onClick={() => onMove("blocked")}>
           <Square className="size-3" />
         </CardAction>
       ) : null}
       {onOpenSession ? (
-        <CardAction label="Open session" disabled={false} onClick={onOpenSession}>
+        <CardAction label={t("Open session")} disabled={false} onClick={onOpenSession}>
           <MessageSquare className="size-3" />
         </CardAction>
       ) : null}
       {canEditTask(task.status) ? (
-        <CardAction label={taskRequiresInstructions(task) ? "Update instructions" : "Edit"} disabled={busy} onClick={onEdit}>
+        <CardAction label={taskRequiresInstructions(task) ? t("Update instructions") : t("Edit")} disabled={busy} onClick={onEdit}>
           <Pencil className="size-3" />
         </CardAction>
       ) : null}
       {isStewardProposal(task) ? (
-        <CardAction label="Decline" disabled={busy} onClick={onDecline}>
+        <CardAction label={t("Decline")} disabled={busy} onClick={onDecline}>
           <X className="size-3" />
         </CardAction>
       ) : task.status === "running" || task.status === "verifying" ? null : (
-        <CardAction label="Delete" disabled={busy} onClick={onDelete}>
+        <CardAction label={t("Delete")} disabled={busy} onClick={onDelete}>
           <Trash2 className="size-3" />
         </CardAction>
       )}
@@ -1404,10 +1390,11 @@ const STATUS_LABELS: Record<TaskStatus, string> = {
 };
 
 function formatTime(at: number | undefined): string | undefined {
-  return at ? new Date(at).toLocaleString() : undefined;
+  return at ? new Date(at).toLocaleString(getLocale()) : undefined;
 }
 
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
+  useLocale();
   return (
     <div className="flex min-w-0 gap-2 text-[12px] leading-snug">
       <dt className="w-24 shrink-0 text-content/45">{label}</dt>
@@ -1438,6 +1425,7 @@ function TaskDetail({
   /** Resolves true once the new title and description are saved. */
   onSaveDetails: (title: string, prompt: string) => Promise<boolean>;
 } & TaskActionHandlers) {
+  useLocale();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
   const [prompt, setPrompt] = useState(task.prompt);
@@ -1484,7 +1472,7 @@ function TaskDetail({
   const { command, review } = task.verification ?? {};
   return (
     <aside
-      aria-label="Task details"
+      aria-label={t("Task details")}
       className="flex min-h-0 w-[380px] max-w-[45%] shrink-0 flex-col border-l border-stroke"
     >
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-stroke px-3">
@@ -1492,21 +1480,17 @@ function TaskDetail({
           {STATUS_LABELS[task.status]}
         </span>
         {task.needsInput || taskRequiresInstructions(task) ? (
-          <span className="inline-flex h-5 items-center rounded-full bg-amber-500/12 px-2 text-[11px] font-medium text-amber-400">
-            Needs input
-          </span>
+          <span className="inline-flex h-5 items-center rounded-full bg-amber-500/12 px-2 text-[11px] font-medium text-amber-400">{t("Needs input")}</span>
         ) : null}
         {task.source === "steward" ? (
           <span
             data-task-suggested
             className="inline-flex h-5 items-center rounded-full bg-violet-500/12 px-2 text-[11px] font-medium text-violet-400"
-          >
-            Suggested
-          </span>
+          >{t("Suggested")}</span>
         ) : null}
         <button
           type="button"
-          aria-label="Close details"
+          aria-label={t("Close details")}
           onClick={onClose}
           className="ml-auto grid size-6 place-items-center rounded-md text-content/50 hover:bg-content/10 hover:text-content"
         >
@@ -1515,34 +1499,30 @@ function TaskDetail({
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
         {editing ? (
-          <form aria-label="Edit details" onSubmit={save} className="space-y-2">
+          <form aria-label={t("Edit details")} onSubmit={save} className="space-y-2">
             <input
               autoFocus
-              aria-label="Title"
+              aria-label={t("Title")}
               value={title}
               onChange={(event) => setTitle(event.target.value)}
               className="w-full rounded-md border border-content/10 bg-content/3 px-2 py-1 text-[14px] font-semibold text-content outline-none focus:border-content/20"
             />
             <textarea
-              aria-label="Description"
+              aria-label={t("Description")}
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
-              placeholder="Details, acceptance criteria, links…"
+              placeholder={t("Details, acceptance criteria, links…")}
               rows={8}
               className="block w-full resize-y rounded-md border border-content/10 bg-content/3 px-2 py-1.5 text-[13px] leading-relaxed text-content outline-none placeholder:text-content/35 focus:border-content/20"
             />
             <div className="flex items-center gap-2">
               <button type="submit" disabled={!canSave} className={ACTION_FILLED}>
-                {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
-                Save
-              </button>
+                {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}{t("Save")}</button>
               <button
                 type="button"
                 onClick={() => setEditing(false)}
                 className={ACTION_OUTLINE}
-              >
-                Cancel
-              </button>
+              >{t("Cancel")}</button>
             </div>
           </form>
         ) : (
@@ -1556,18 +1536,16 @@ function TaskDetail({
                   type="button"
                   onClick={beginEdit}
                   className={CARD_ACTION}
-                  aria-label="Edit title and description"
+                  aria-label={t("Edit title and description")}
                 >
-                  <Pencil className="size-3" />
-                  Edit
-                </button>
+                  <Pencil className="size-3" />{t("Edit")}</button>
               ) : null}
             </div>
             <div data-task-detail-description className="text-[13px] text-content/80">
               {description ? (
                 <AgentMarkdown text={taskInstructionsMarkdown(task.prompt)} allowRemoteMedia={false} />
               ) : (
-                <p className="text-content/45">No description.</p>
+                <p className="text-content/45">{t("No description.")}</p>
               )}
             </div>
           </>
@@ -1581,7 +1559,7 @@ function TaskDetail({
         {goal ? (
           <p className="flex min-w-0 items-center gap-1 text-[12px] text-content/55">
             <Sparkles className="size-3 shrink-0" />
-            <span className="min-w-0 truncate">Part of the goal “{goal}”</span>
+            <span className="min-w-0 truncate">{t("Part of the goal “")}{goal}”</span>
           </p>
         ) : null}
         {task.status === "blocked" && task.error ? (
@@ -1593,62 +1571,58 @@ function TaskDetail({
           </p>
         ) : null}
         <dl className="space-y-1.5">
-          <DetailRow label="Project">{project}</DetailRow>
-          <DetailRow label="Machine">{task.machineName}</DetailRow>
-          <DetailRow label="Agent">
+          <DetailRow label={t("Project")}>{project}</DetailRow>
+          <DetailRow label={t("Machine")}>{task.machineName}</DetailRow>
+          <DetailRow label={t("Agent")}>
             <span className="inline-flex items-center gap-1">
               <HarnessIcon harness={task.harness} className="size-3.5 shrink-0" />
               {model.name}
             </span>
           </DetailRow>
-          <DetailRow label="Access">{RUNTIME_MODE_LABEL[task.runtimeMode]}</DetailRow>
-          <DetailRow label="Time limit">
+          <DetailRow label={t("Access")}>{RUNTIME_MODE_LABEL[task.runtimeMode]}</DetailRow>
+          <DetailRow label={t("Time limit")}>
             {RUN_TIME_LIMIT_OPTIONS.find(
               (option) => option.value === String(task.maxRunMinutes),
-            )?.label ?? `${task.maxRunMinutes} minutes`}
+            )?.label ?? t("{p0} minutes", { p0: task.maxRunMinutes })}
           </DetailRow>
           {task.branch ? (
-            <DetailRow label="Branch">
+            <DetailRow label={t("Branch")}>
               {task.merged
-                ? `${task.branch} merged into ${task.baseBranch}`
+                ? t("{p0} merged into {p1}", { p0: task.branch, p1: task.baseBranch })
                 : task.branch}
             </DetailRow>
           ) : null}
           {task.baseBranch ? (
-            <DetailRow label="Base branch">{task.baseBranch}</DetailRow>
+            <DetailRow label={t("Base branch")}>{task.baseBranch}</DetailRow>
           ) : null}
           {task.autoMerged ? (
-            <DetailRow label="Merge">
-              Merged automatically
-              {task.mergedAt ? ` · ${formatTime(task.mergedAt)}` : ""}
+            <DetailRow label={t("Merge")}>{t("Merged automatically")}{task.mergedAt ? ` · ${formatTime(task.mergedAt)}` : ""}
             </DetailRow>
           ) : null}
           {waitingFor.length > 0 ? (
-            <DetailRow label="Waiting for">{waitingFor.join(", ")}</DetailRow>
+            <DetailRow label={t("Waiting for")}>{waitingFor.join(", ")}</DetailRow>
           ) : null}
-          <DetailRow label="Created">{formatTime(task.createdAt)}</DetailRow>
+          <DetailRow label={t("Created")}>{formatTime(task.createdAt)}</DetailRow>
           {task.startedAt ? (
-            <DetailRow label="Started">{formatTime(task.startedAt)}</DetailRow>
+            <DetailRow label={t("Started")}>{formatTime(task.startedAt)}</DetailRow>
           ) : null}
           {task.completedAt ? (
-            <DetailRow label="Completed">{formatTime(task.completedAt)}</DetailRow>
+            <DetailRow label={t("Completed")}>{formatTime(task.completedAt)}</DetailRow>
           ) : null}
-          <DetailRow label="Status">{taskTimeLabel(task, now)}</DetailRow>
+          <DetailRow label={t("Status")}>{taskTimeLabel(task, now)}</DetailRow>
           {task.repairAttempts ? (
-            <DetailRow label="Automatic correction">
-              Attempt {task.repairAttempts} · {task.repairNote}
+            <DetailRow label={t("Automatic correction")}>{t("Attempt ")}{task.repairAttempts} · {task.repairNote}
             </DetailRow>
           ) : null}
           {task.verifyCommand ? (
-            <DetailRow label="Check command">
+            <DetailRow label={t("Check command")}>
               <code className="font-mono text-[11px]">{task.verifyCommand}</code>
             </DetailRow>
           ) : null}
         </dl>
         {command ? (
-          <section aria-label="Check output" className="space-y-1">
-            <h3 className="text-[12px] text-content/55">
-              Check command{" "}
+          <section aria-label={t("Check output")} className="space-y-1">
+            <h3 className="text-[12px] text-content/55">{t("Check command")}{" "}
               <span
                 className={
                   !command.timedOut && command.exitCode === 0
@@ -1657,12 +1631,12 @@ function TaskDetail({
                 }
               >
                 {!command.timedOut && command.exitCode === 0
-                  ? "passed"
+                  ? t("passed")
                   : command.timedOut
-                    ? "timed out"
+                    ? t("timed out")
                     : command.exitCode === null
-                      ? "could not run"
-                      : `failed (exit code ${command.exitCode})`}
+                      ? t("could not run")
+                      : t("failed (exit code {p0})", { p0: command.exitCode })}
               </span>
             </h3>
             <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-content/5 px-2 py-1.5 font-mono text-[11px] text-content/65">
@@ -1671,21 +1645,20 @@ function TaskDetail({
           </section>
         ) : null}
         {review ? (
-          <p className="break-words text-[12px] leading-snug text-content/65">
-            Reviewer{" "}
+          <p className="break-words text-[12px] leading-snug text-content/65">{t("Reviewer")}{" "}
             <span
               className={
                 review.verdict === "pass" ? "text-emerald-400" : "text-rose-400"
               }
             >
-              {review.verdict === "pass" ? "passed" : "failed"}
+              {review.verdict === "pass" ? t("passed") : t("failed")}
             </span>
             {review.note ? ` · ${review.note}` : null}
           </p>
         ) : null}
         {task.diffStat ? (
           <pre
-            aria-label="Diff stat"
+            aria-label={"Diff stat"}
             className="max-h-48 overflow-auto rounded bg-content/5 px-2 py-1.5 font-mono text-[11px] leading-snug text-content/65"
           >
             {task.diffStat}
@@ -1711,6 +1684,7 @@ function VerificationSummary({
 }: {
   verification: TaskVerification;
 }) {
+  useLocale();
   const { command, review } = verification;
   if (!command && !review) return null;
   const passed = command && !command.timedOut && command.exitCode === 0;
@@ -1718,16 +1692,15 @@ function VerificationSummary({
     <div className="mt-1.5 space-y-1 text-[11px] leading-snug text-content/60">
       {command ? (
         <details>
-          <summary className="cursor-pointer select-none">
-            Check command{" "}
+          <summary className="cursor-pointer select-none">{t("Check command")}{" "}
             <span className={passed ? "text-emerald-400" : "text-rose-400"}>
               {passed
-                ? "passed"
+                ? t("passed")
                 : command.timedOut
-                  ? "timed out"
+                  ? t("timed out")
                   : command.exitCode === null
-                    ? "could not run"
-                    : `failed (exit code ${command.exitCode})`}
+                    ? t("could not run")
+                    : t("failed (exit code {p0})", { p0: command.exitCode })}
             </span>
           </summary>
           <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-content/5 px-1.5 py-1 font-mono text-[10px] text-content/60">
@@ -1736,14 +1709,13 @@ function VerificationSummary({
         </details>
       ) : null}
       {review ? (
-        <p className="break-words">
-          Reviewer{" "}
+        <p className="break-words">{t("Reviewer")}{" "}
           <span
             className={
               review.verdict === "pass" ? "text-emerald-400" : "text-rose-400"
             }
           >
-            {review.verdict === "pass" ? "passed" : "failed"}
+            {review.verdict === "pass" ? t("passed") : t("failed")}
           </span>
           {review.note ? ` · ${review.note}` : null}
         </p>
@@ -1763,6 +1735,7 @@ function CardAction({
   onClick: () => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -1798,6 +1771,7 @@ function TaskForm({
   /** `todo` and `queued` add a new task; `save` keeps an edited task's status. */
   onSubmit: (mode: "todo" | "queued" | "save") => void;
 }) {
+  useLocale();
   // A to-do item is mostly title and description; the agent comes later.
   const [agentOpen, setAgentOpen] = useState(
     draft.id ? draft.status !== "todo" : false,
@@ -1814,7 +1788,7 @@ function TaskForm({
   const canSave = ready && (draft.status === "todo" || hasDescription);
   return (
     <form
-      aria-label={draft.id ? "Edit task" : "New task"}
+      aria-label={draft.id ? t("Edit task") : t("New task")}
       onSubmit={(event) => {
         event.preventDefault();
         if (saving) return;
@@ -1827,25 +1801,21 @@ function TaskForm({
       <div className="flex items-start gap-4">
         <input
           autoFocus
-          aria-label="Task title"
+          aria-label={t("Task title")}
           value={draft.title}
           onChange={(event) => update("title", event.target.value)}
-          placeholder="What should get done?"
+          placeholder={t("What should get done?")}
           className="min-w-0 flex-1 bg-transparent text-[16px] font-semibold leading-tight text-content outline-none placeholder:text-content/35"
         />
         <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={onCancel} className={ACTION_OUTLINE}>
-            Cancel
-          </button>
+          <button type="button" onClick={onCancel} className={ACTION_OUTLINE}>{t("Cancel")}</button>
           {draft.id ? (
             <button
               type="submit"
               disabled={!canSave || saving}
               className={ACTION_FILLED}
             >
-              {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
-              Save
-            </button>
+              {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}{t("Save")}</button>
           ) : (
             <>
               <button
@@ -1854,21 +1824,17 @@ function TaskForm({
                 title={
                   hasDescription
                     ? undefined
-                    : "Add a description to start this with an agent."
+                    : t("Add a description to start this with an agent.")
                 }
                 onClick={() => onSubmit("queued")}
                 className={ACTION_OUTLINE}
-              >
-                Add and start
-              </button>
+              >{t("Add and start")}</button>
               <button
                 type="submit"
                 disabled={!canTodo || saving}
                 className={ACTION_FILLED}
               >
-                {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
-                Add to To do
-              </button>
+                {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}{t("Add to To do")}</button>
             </>
           )}
         </div>
@@ -1886,7 +1852,7 @@ function TaskForm({
         )}
         <span aria-hidden className="h-3 w-px shrink-0 bg-content/15" />
         {machine ? (
-          <span className="truncate">Runs on {machine}</span>
+          <span className="truncate">{t("Runs on ")}{machine}</span>
         ) : (
           <span role="alert" className="text-amber-400">
             {TASK_MACHINE_ERROR}
@@ -1904,8 +1870,8 @@ function TaskForm({
           harness={draft.harness}
           cwd={draft.cwd}
           onChange={(prompt) => update("prompt", prompt)}
-          label="Description"
-          placeholder="Details, acceptance criteria, links…"
+          label={t("Description")}
+          placeholder={t("Details, acceptance criteria, links…")}
         />
       </div>
       <button
@@ -1918,9 +1884,7 @@ function TaskForm({
           <ChevronDown className="size-3" />
         ) : (
           <ChevronRight className="size-3" />
-        )}
-        Agent settings
-      </button>
+        )}{t("Agent settings")}</button>
       {agentOpen ? (
         <div className="mt-1 space-y-2">
           <div className="flex flex-wrap items-center gap-1 rounded-md border border-content/10 bg-content/3 px-2 py-2">
@@ -1940,13 +1904,11 @@ function TaskForm({
                 onChange={(runtimeMode) => update("runtimeMode", runtimeMode)}
               />
             ) : null}
-            <span className="ml-auto flex items-center gap-2 text-[11px] text-content/45">
-              Time limit
-              <SearchableSelect
+            <span className="ml-auto flex items-center gap-2 text-[11px] text-content/45">{t("Time limit")}<SearchableSelect
                 variant="pill"
                 searchable={false}
                 align="end"
-                label="Time limit"
+                label={t("Time limit")}
                 value={String(draft.maxRunMinutes)}
                 options={RUN_TIME_LIMIT_OPTIONS}
                 onChange={(value) => update("maxRunMinutes", Number(value))}
@@ -1955,7 +1917,7 @@ function TaskForm({
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-content/60">
             <label
-              title="In a git project the task works on a new branch in its own worktree, and nothing reaches the project until you merge it."
+              title={t("In a git project the task works on a new branch in its own worktree, and nothing reaches the project until you merge it.")}
               className="flex cursor-pointer items-center gap-1.5"
             >
               <input
@@ -1963,30 +1925,26 @@ function TaskForm({
                 checked={draft.isolate}
                 onChange={(event) => update("isolate", event.target.checked)}
                 className={CHECKBOX}
-              />
-              Run on its own branch
-            </label>
+              />{t("Run on its own branch")}</label>
             <label className="flex cursor-pointer items-center gap-1.5">
               <input
                 type="checkbox"
                 checked={draft.review}
                 onChange={(event) => update("review", event.target.checked)}
                 className={CHECKBOX}
-              />
-              Review with a second agent
-            </label>
+              />{t("Review with a second agent")}</label>
             <AutoMergeField
               checked={draft.autoMerge && draft.isolate}
               disabled={!draft.isolate}
               onChange={(checked) => update("autoMerge", checked)}
             />
             <label className="flex min-w-[220px] flex-1 items-center gap-2">
-              <span className="shrink-0">Check command</span>
+              <span className="shrink-0">{t("Check command")}</span>
               <input
-                aria-label="Check command"
+                aria-label={t("Check command")}
                 value={draft.verifyCommand}
                 onChange={(event) => update("verifyCommand", event.target.value)}
-                placeholder="npm test"
+                placeholder={"npm test"}
                 spellCheck={false}
                 className="h-7 min-w-0 flex-1 rounded-md border border-content/10 bg-content/3 px-2 font-mono text-[12px] text-content outline-none placeholder:text-content/30 focus:border-content/20"
               />
@@ -2008,6 +1966,7 @@ function AutoMergeField({
   disabled?: boolean;
   onChange: (checked: boolean) => void;
 }) {
+  useLocale();
   return (
     <label
       className={`flex items-center gap-1.5 ${disabled ? "opacity-50" : "cursor-pointer"}`}
@@ -2018,11 +1977,7 @@ function AutoMergeField({
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
         className={CHECKBOX}
-      />
-      Merge automatically
-      <span className="text-[11px] text-content/40">
-        Merges into the base branch when every check passes
-      </span>
+      />{t("Merge automatically")}<span className="text-[11px] text-content/40">{t("Merges into the base branch when every check passes")}</span>
     </label>
   );
 }
@@ -2061,6 +2016,7 @@ function SummaryPanel({
   onRefresh: () => void;
   onOpenTask: (key: string) => void;
 }) {
+  useLocale();
   const taskSection = (
     label: string,
     items: readonly SummaryTask[],
@@ -2105,7 +2061,7 @@ function SummaryPanel({
             >
               <span className="font-medium text-content/85">{goal.title}</span>{" "}
               <span className="text-content/45">
-                {goal.done} of {goal.total} tasks done · {goal.machineName}
+                {goal.done}{t(" of ")}{goal.total}{t(" tasks done · ")}{goal.machineName}
               </span>
             </li>
           ))}
@@ -2122,14 +2078,14 @@ function SummaryPanel({
     !summary.goalsFinished.length;
   return (
     <section
-      aria-label="Summary"
+      aria-label={t("Summary")}
       className="mx-4 mt-4 flex max-h-[45%] shrink-0 flex-col gap-3 overflow-y-auto rounded-lg border border-content/10 bg-content/3 p-3"
     >
       <div className="flex items-center gap-2">
         <p className="min-w-0 flex-1 text-[12px] text-content/50">
           {summary
-            ? `From ${SUMMARY_TIME.format(summary.since)} to ${SUMMARY_TIME.format(summary.until)}`
-            : "No summary yet. One is sent every day at the time set in Settings."}
+            ? t("From {p0} to {p1}", { p0: SUMMARY_TIME.format(summary.since), p1: SUMMARY_TIME.format(summary.until) })
+            : t("No summary yet. One is sent every day at the time set in Settings.")}
         </p>
         <button
           type="button"
@@ -2138,14 +2094,14 @@ function SummaryPanel({
           className={ACTION_OUTLINE}
         >
           <RefreshCw className="size-3.5" strokeWidth={1.75} />
-          {busy ? "Refreshing…" : "Refresh now"}
+          {busy ? t("Refreshing…") : t("Refresh now")}
         </button>
       </div>
       {error ? <p className="text-[12px] text-red-300">{error}</p> : null}
       {summary ? (
         <>
           {empty ? (
-            <p className="text-[12px] text-content/50">No background activity.</p>
+            <p className="text-[12px] text-content/50">{t("No background activity.")}</p>
           ) : null}
           {taskSection(
             "Finished",
@@ -2160,8 +2116,8 @@ function SummaryPanel({
           {goalSection("Goals in progress", summary.goals)}
           {goalSection("Goals finished", summary.goalsFinished)}
           {summary.usage.length ? (
-            <section aria-label="Agent time" className="flex flex-col gap-1">
-              <h3 className={SUMMARY_HEADING}>Agent time today</h3>
+            <section aria-label={t("Agent time")} className="flex flex-col gap-1">
+              <h3 className={SUMMARY_HEADING}>{t("Agent time today")}</h3>
               <ul className="flex flex-col gap-0.5">
                 {summary.usage.map((entry) => (
                   <li
@@ -2173,7 +2129,7 @@ function SummaryPanel({
                     </span>{" "}
                     {formatAgentMinutes(entry.usedMinutes)}
                     {entry.dailyAgentMinutes
-                      ? ` of ${formatAgentMinutes(entry.dailyAgentMinutes)}`
+                      ? t(" of {p0}", { p0: formatAgentMinutes(entry.dailyAgentMinutes) })
                       : ""}
                   </li>
                 ))}
@@ -2181,8 +2137,7 @@ function SummaryPanel({
             </section>
           ) : null}
           {summary.unreachable.length || summary.outdated.length ? (
-            <p className="text-[12px] text-content/50">
-              Not included:{" "}
+            <p className="text-[12px] text-content/50">{t("Not included:")}{" "}
               {[
                 ...summary.unreachable.map((name) => `${name} (not reachable)`),
                 ...summary.outdated.map(
@@ -2204,6 +2159,7 @@ function CustomDailyLimit({
   entry: MachineLimits;
   onChange: (machineId: string, settings: Partial<HostSettings>) => void;
 }) {
+  useLocale();
   const [hours, setHours] = useState(String(entry.dailyAgentMinutes / 60));
   useEffect(() => {
     setHours(String(entry.dailyAgentMinutes / 60));
@@ -2212,29 +2168,25 @@ function CustomDailyLimit({
   const valid = hours.trim() !== "" && Number(hours) >= 0 && Number.isSafeInteger(minutes);
   return (
     <form
-      aria-label={`Custom daily agent time on ${entry.machineName}`}
+      aria-label={t("Custom daily agent time on {p0}", { p0: entry.machineName })}
       className="flex items-center gap-2"
       onSubmit={(event) => {
         event.preventDefault();
         if (valid) onChange(entry.machineId, { dailyAgentMinutes: minutes });
       }}
     >
-      <label className="flex items-center gap-2">
-        Hours
-        <input
+      <label className="flex items-center gap-2">{t("Hours")}<input
           type="number"
           min="0"
           step="any"
-          aria-label={`Daily agent hours on ${entry.machineName}`}
+          aria-label={t("Daily agent hours on {p0}", { p0: entry.machineName })}
           value={hours}
           onChange={(event) => setHours(event.target.value)}
           className="w-24 rounded border border-content/15 bg-content/5 px-2 py-1 text-content outline-none focus:border-content/40"
         />
       </label>
-      <button type="submit" disabled={!valid} className={ACTION_OUTLINE}>
-        Save
-      </button>
-      <span className="text-[11px] text-content/40">0 = no limit</span>
+      <button type="submit" disabled={!valid} className={ACTION_OUTLINE}>{t("Save")}</button>
+      <span className="text-[11px] text-content/40">{t("0 = no limit")}</span>
     </form>
   );
 }
@@ -2246,6 +2198,7 @@ function LimitsPanel({
   limits: readonly MachineLimits[];
   onChange: (machineId: string, settings: Partial<HostSettings>) => void;
 }) {
+  useLocale();
   // A limit set some other way stays selectable.
   const choices = (current: number) =>
     [...new Set([...DAILY_LIMIT_CHOICES, current])]
@@ -2256,7 +2209,7 @@ function LimitsPanel({
       }));
   return (
     <ul
-      aria-label="Work limits"
+      aria-label={t("Work limits")}
       className="mx-4 mt-4 flex shrink-0 flex-col gap-2 rounded-lg border border-content/10 bg-content/3 p-3"
     >
       {limits.map((entry) => (
@@ -2267,12 +2220,10 @@ function LimitsPanel({
           <span className="min-w-24 font-medium text-content/80">
             {entry.machineName}
           </span>
-          <span className="flex items-center gap-2">
-            Max concurrent tasks
-            <SearchableSelect
+          <span className="flex items-center gap-2">{t("Max concurrent tasks")}<SearchableSelect
               variant="pill"
               searchable={false}
-              label={`Max concurrent tasks on ${entry.machineName}`}
+              label={t("Max concurrent tasks on {p0}", { p0: entry.machineName })}
               value={String(entry.maxRunningTasks)}
               options={Array.from({ length: MAX_RUNNING_TASKS_LIMIT }, (_, i) => ({
                 value: String(i + 1),
@@ -2283,12 +2234,10 @@ function LimitsPanel({
               }
             />
           </span>
-          <span className="flex items-center gap-2">
-            Daily agent time
-            <SearchableSelect
+          <span className="flex items-center gap-2">{t("Daily agent time")}<SearchableSelect
               variant="pill"
               searchable={false}
-              label={`Daily agent time on ${entry.machineName}`}
+              label={t("Daily agent time on {p0}", { p0: entry.machineName })}
               value={String(entry.dailyAgentMinutes)}
               options={choices(entry.dailyAgentMinutes)}
               onChange={(value) =>
@@ -2297,8 +2246,7 @@ function LimitsPanel({
             />
           </span>
           <CustomDailyLimit entry={entry} onChange={onChange} />
-          <span className="tabular-nums text-content/50">
-            Used today: {formatAgentMinutes(entry.usedMinutes)}
+          <span className="tabular-nums text-content/50">{t("Used today: ")}{formatAgentMinutes(entry.usedMinutes)}
           </span>
         </li>
       ))}
@@ -2329,6 +2277,7 @@ function GoalCard({
   onDelete: () => void;
   onOpenPlanner?: () => void;
 }) {
+  useLocale();
   const [replanning, setReplanning] = useState(false);
   const [feedback, setFeedback] = useState("");
   const progress = goalProgress(goal, tasks);
@@ -2364,26 +2313,25 @@ function GoalCard({
         </span>
         {progress.total > 0 ? (
           <span className="shrink-0 tabular-nums text-[11px] text-content/50">
-            {progress.done}/{progress.total} done
-          </span>
+            {progress.done}/{progress.total}{t(" done")}</span>
         ) : null}
         <span className="min-w-0 truncate text-[11px] text-content/40">
-          {goal.projects.map((project) => project.name).join(", ")} · on{" "}
+          {goal.projects.map((project) => project.name).join(", ")}{t(" · on")}{" "}
           {goal.machineName}
-          {goal.stale ? " (offline, last known)" : ""}
+          {goal.stale ? t(" (offline, last known)") : ""}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           {busy ? (
             <LoaderCircle className="mx-1.5 size-3 animate-spin text-content/40" />
           ) : null}
           {goal.status === "awaiting-approval" ? (
-            <CardAction label="Approve" disabled={busy} onClick={onApprove}>
+            <CardAction label={t("Approve")} disabled={busy} onClick={onApprove}>
               <Check className="size-3" />
             </CardAction>
           ) : null}
           {canReplan ? (
             <CardAction
-              label="Replan"
+              label={t("Replan")}
               disabled={busy}
               onClick={() => setReplanning((open) => !open)}
             >
@@ -2392,7 +2340,7 @@ function GoalCard({
           ) : null}
           {onOpenPlanner ? (
             <CardAction
-              label="Open planner"
+              label={t("Open planner")}
               disabled={false}
               onClick={onOpenPlanner}
             >
@@ -2400,12 +2348,12 @@ function GoalCard({
             </CardAction>
           ) : null}
           {goal.status === "done" || goal.status === "cancelled" ? null : (
-            <CardAction label="Cancel" disabled={busy} onClick={onCancel}>
+            <CardAction label={t("Cancel")} disabled={busy} onClick={onCancel}>
               <Square className="size-3" />
             </CardAction>
           )}
           {goal.status === "planning" || goal.status === "running" ? null : (
-            <CardAction label="Delete" disabled={busy} onClick={onDelete}>
+            <CardAction label={t("Delete")} disabled={busy} onClick={onDelete}>
               <Trash2 className="size-3" />
             </CardAction>
           )}
@@ -2417,7 +2365,7 @@ function GoalCard({
         </p>
       ) : null}
       {goal.status === "awaiting-approval" && goal.plan ? (
-        <ol aria-label="Plan" className="mt-1.5 space-y-1">
+        <ol aria-label={t("Plan")} className="mt-1.5 space-y-1">
           {goal.plan.tasks.map((task) => (
             <li
               key={task.key}
@@ -2425,12 +2373,10 @@ function GoalCard({
               className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 text-[12px] leading-snug"
             >
               <span className="text-content/80">{task.title}</span>
-              <span className="text-[11px] text-content/45">
-                in {projectOf(task.projectId, task.project)}
+              <span className="text-[11px] text-content/45">{t("in ")}{projectOf(task.projectId, task.project)}
               </span>
               {task.dependsOn.length ? (
-                <span className="text-[11px] text-content/45">
-                  · after {task.dependsOn.map(titleOf).join(", ")}
+                <span className="text-[11px] text-content/45">{t("· after ")}{task.dependsOn.map(titleOf).join(", ")}
                 </span>
               ) : null}
             </li>
@@ -2439,7 +2385,7 @@ function GoalCard({
       ) : null}
       {replanning && canReplan ? (
         <form
-          aria-label="Replan"
+          aria-label={t("Replan")}
           className="mt-1.5 flex items-start gap-2"
           onSubmit={(event) => {
             event.preventDefault();
@@ -2451,16 +2397,14 @@ function GoalCard({
         >
           <textarea
             autoFocus
-            aria-label="Plan feedback"
+            aria-label={t("Plan feedback")}
             value={feedback}
             onChange={(event) => setFeedback(event.target.value)}
-            placeholder="What should the plan do differently? (optional)"
+            placeholder={t("What should the plan do differently? (optional)")}
             rows={2}
             className="min-w-0 flex-1 resize-y rounded-md border border-content/10 bg-background-base px-2 py-1 text-[12px] text-content outline-none placeholder:text-content/30 focus:border-content/20"
           />
-          <button type="submit" disabled={busy} className={ACTION_FILLED}>
-            Plan again
-          </button>
+          <button type="submit" disabled={busy} className={ACTION_FILLED}>{t("Plan again")}</button>
         </form>
       ) : null}
     </article>
@@ -2487,6 +2431,7 @@ function GoalForm({
   onCancel: () => void;
   onSubmit: (event: FormEvent) => void;
 }) {
+  useLocale();
   const update = <K extends keyof GoalDraft>(key: K, value: GoalDraft[K]) =>
     onChange({ ...draft, [key]: value });
   // After the first pick, only projects on the same machine can be added.
@@ -2505,35 +2450,31 @@ function GoalForm({
     machine != null;
   return (
     <form
-      aria-label="New goal"
+      aria-label={t("New goal")}
       onSubmit={onSubmit}
       className="shrink-0 border-b border-stroke px-4 py-3"
     >
       <div className="flex items-start gap-4">
         <input
           autoFocus
-          aria-label="Goal title"
+          aria-label={t("Goal title")}
           value={draft.title}
           onChange={(event) => update("title", event.target.value)}
-          placeholder="Name the main job"
+          placeholder={t("Name the main job")}
           className="min-w-0 flex-1 bg-transparent text-[16px] font-semibold leading-tight text-content outline-none placeholder:text-content/35"
         />
         <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={onCancel} className={ACTION_OUTLINE}>
-            Cancel
-          </button>
+          <button type="button" onClick={onCancel} className={ACTION_OUTLINE}>{t("Cancel")}</button>
           <button
             type="submit"
             disabled={!valid || saving}
             className={ACTION_FILLED}
           >
-            {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
-            Plan it
-          </button>
+            {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}{t("Plan it")}</button>
         </div>
       </div>
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 text-[12px] text-content/50">
-        <span className="shrink-0">Projects</span>
+        <span className="shrink-0">{t("Projects")}</span>
         {draft.cwds.map((cwd) => (
           <span
             key={cwd}
@@ -2542,11 +2483,11 @@ function GoalForm({
           >
             <span className="min-w-0 truncate">{projectName(cwd)}</span>
             {cwd === lead ? (
-              <span className="shrink-0 text-[10px] text-content/45">lead</span>
+              <span className="shrink-0 text-[10px] text-content/45">{t("lead")}</span>
             ) : null}
             <button
               type="button"
-              aria-label={`Remove ${projectName(cwd)}`}
+              aria-label={t("Remove {p0}", { p0: projectName(cwd) })}
               onClick={() => onChange(toggleGoalProject(draft, cwd))}
               className="grid size-4 shrink-0 place-items-center rounded-full text-content/45 hover:bg-content/10 hover:text-content"
             >
@@ -2563,12 +2504,10 @@ function GoalForm({
         ) : null}
         {draft.cwds.length > 1 ? (
           <span className="flex items-center gap-1.5">
-            <span aria-hidden className="h-3 w-px shrink-0 bg-content/15" />
-            Lead
-            <SearchableSelect
+            <span aria-hidden className="h-3 w-px shrink-0 bg-content/15" />{t("Lead")}<SearchableSelect
               variant="pill"
               searchable={false}
-              label="Lead project"
+              label={t("Lead project")}
               value={lead}
               options={draft.cwds.map((cwd) => ({
                 value: cwd,
@@ -2580,21 +2519,21 @@ function GoalForm({
         ) : null}
         <span aria-hidden className="h-3 w-px shrink-0 bg-content/15" />
         {machine ? (
-          <span className="truncate">Runs on {machine}</span>
+          <span className="truncate">{t("Runs on ")}{machine}</span>
         ) : draft.cwds.length ? (
           <span role="alert" className="text-amber-400">
             {TASK_MACHINE_ERROR}
           </span>
         ) : (
-          <span>Choose the projects the job may touch, all on one machine.</span>
+          <span>{t("Choose the projects the job may touch, all on one machine.")}</span>
         )}
       </div>
       <div className="relative mt-2 rounded-md border border-content/10 bg-content/3 has-focus:border-content/20">
         <textarea
-          aria-label="Main job"
+          aria-label={t("Main job")}
           value={draft.prompt}
           onChange={(event) => update("prompt", event.target.value)}
-          placeholder="Describe the whole job. A planner agent reads the projects and splits it into tasks, which agents then carry out."
+          placeholder={t("Describe the whole job. A planner agent reads the projects and splits it into tasks, which agents then carry out.")}
           rows={4}
           className="block w-full resize-y bg-transparent px-3 py-2 text-[13px] leading-relaxed text-content outline-none placeholder:text-content/35"
         />
@@ -2615,13 +2554,11 @@ function GoalForm({
               onChange={(runtimeMode) => update("runtimeMode", runtimeMode)}
             />
           ) : null}
-          <span className="ml-auto flex items-center gap-2 text-[11px] text-content/45">
-            Time limit
-            <SearchableSelect
+          <span className="ml-auto flex items-center gap-2 text-[11px] text-content/45">{t("Time limit")}<SearchableSelect
               variant="pill"
               searchable={false}
               align="end"
-              label="Time limit"
+              label={t("Time limit")}
               value={String(draft.maxRunMinutes)}
               options={RUN_TIME_LIMIT_OPTIONS}
               onChange={(value) => update("maxRunMinutes", Number(value))}
@@ -2631,7 +2568,7 @@ function GoalForm({
       </div>
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 text-[12px] text-content/60">
         <label
-          title="The planned tasks are created only once you approve the plan."
+          title={t("The planned tasks are created only once you approve the plan.")}
           className="flex cursor-pointer items-center gap-1.5"
         >
           <input
@@ -2639,26 +2576,22 @@ function GoalForm({
             checked={draft.approvePlan}
             onChange={(event) => update("approvePlan", event.target.checked)}
             className={CHECKBOX}
-          />
-          Review the plan before starting
-        </label>
+          />{t("Review the plan before starting")}</label>
         <label className="flex cursor-pointer items-center gap-1.5">
           <input
             type="checkbox"
             checked={draft.review}
             onChange={(event) => update("review", event.target.checked)}
             className={CHECKBOX}
-          />
-          Review each task with a second agent
-        </label>
+          />{t("Review each task with a second agent")}</label>
         <AutoMergeField
           checked={draft.autoMerge}
           onChange={(checked) => update("autoMerge", checked)}
         />
         <span className="text-[11px] text-content/40">
           {draft.autoMerge
-            ? "Each task runs on its own branch."
-            : "Each task runs on its own branch and waits for you to merge it."}
+            ? t("Each task runs on its own branch.")
+            : t("Each task runs on its own branch and waits for you to merge it.")}
         </span>
       </div>
     </form>
@@ -2675,10 +2608,10 @@ function scheduleOf(draft: StewardDraft) {
 }
 
 const SCHEDULE_OPTIONS = [
-  { value: "hourly", label: "Hourly" },
-  { value: "daily", label: "Daily" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
+  { value: "hourly", get label() { return t("Hourly"); } },
+  { value: "daily", get label() { return t("Daily"); } },
+  { value: "weekdays", get label() { return t("Weekdays"); } },
+  { value: "weekly", get label() { return t("Weekly"); } },
 ] as const;
 
 /** The stewards above the board: one row per project with its schedule and
@@ -2717,25 +2650,21 @@ function StewardsPanel({
   onRunNow: (steward: BoardSteward) => void;
   onDelete: (steward: BoardSteward) => void;
 }) {
+  useLocale();
   return (
     <section
-      aria-label="Stewards"
+      aria-label={t("Stewards")}
       className="flex max-h-[45%] shrink-0 flex-col gap-1.5 overflow-y-auto border-b border-stroke p-3"
     >
       <div className="flex items-center gap-2">
-        <p className="min-w-0 flex-1 text-[12px] text-content/50">
-          A steward reads its project on a schedule and suggests the next work as
-          To do items. Nothing runs until you start it.
-        </p>
+        <p className="min-w-0 flex-1 text-[12px] text-content/50">{t("A steward reads its project on a schedule and suggests the next work as To do items. Nothing runs until you start it.")}</p>
         <button
           type="button"
           onClick={onAdd}
           disabled={draft != null}
           className={ACTION_OUTLINE}
         >
-          <Plus className="size-3.5" strokeWidth={1.75} />
-          Add steward
-        </button>
+          <Plus className="size-3.5" strokeWidth={1.75} />{t("Add steward")}</button>
       </div>
       {draft ? (
         <StewardForm
@@ -2748,14 +2677,14 @@ function StewardsPanel({
           onSubmit={onSubmit}
         />
       ) : null}
-      <ul aria-label="Steward list" className="flex flex-col gap-1.5">
+      <ul aria-label={t("Steward list")} className="flex flex-col gap-1.5">
         {stewards.map((steward) => {
           const busy = acting === `steward:${steward.machineId}:${steward.id}`;
           const running = steward.run != null;
           return (
             <li key={`${steward.machineId}:${steward.id}`}>
               <article
-                aria-label={`Steward for ${stewardProjectName(steward)}`}
+                aria-label={t("Steward for {p0}", { p0: stewardProjectName(steward) })}
                 data-steward-status={steward.lastRunStatus}
                 className="rounded-md border border-content/10 bg-content/3 px-3 py-2"
               >
@@ -2767,9 +2696,8 @@ function StewardsPanel({
                   >
                     {stewardProjectName(steward)}
                   </h3>
-                  <span className="min-w-0 truncate text-[11px] text-content/40">
-                    on {steward.machineName}
-                    {steward.stale ? " (offline, last known)" : ""} ·{" "}
+                  <span className="min-w-0 truncate text-[11px] text-content/40">{t("on ")}{steward.machineName}
+                    {steward.stale ? t(" (offline, last known)") : ""} ·{" "}
                     {automationScheduleLabel(steward)}
                   </span>
                   <div className="ml-auto flex shrink-0 items-center gap-0.5">
@@ -2779,30 +2707,28 @@ function StewardsPanel({
                     <label className="flex cursor-pointer items-center gap-1.5 px-1.5 text-[11px] text-content/60">
                       <input
                         type="checkbox"
-                        aria-label="Enabled"
+                        aria-label={t("Enabled")}
                         checked={steward.enabled}
                         disabled={busy}
                         onChange={() => onToggle(steward)}
                         className={CHECKBOX}
-                      />
-                      Enabled
-                    </label>
+                      />{t("Enabled")}</label>
                     <CardAction
-                      label="Run now"
+                      label={t("Run now")}
                       disabled={busy || running}
                       onClick={() => onRunNow(steward)}
                     >
                       <Play className="size-3" />
                     </CardAction>
                     <CardAction
-                      label="Edit"
+                      label={t("Edit")}
                       disabled={busy}
                       onClick={() => onEdit(steward)}
                     >
                       <Pencil className="size-3" />
                     </CardAction>
                     <CardAction
-                      label="Delete"
+                      label={t("Delete")}
                       disabled={busy}
                       onClick={() => onDelete(steward)}
                     >
@@ -2812,22 +2738,21 @@ function StewardsPanel({
                 </div>
                 <p className="mt-1 break-words text-[11px] leading-snug text-content/50">
                   {steward.lastRunStatus ? (
-                    <>
-                      Last run: {STEWARD_STATUS_LABELS[steward.lastRunStatus]}
+                    <>{t("Last run: ")}{STEWARD_STATUS_LABELS[steward.lastRunStatus]}
                       {steward.lastRunAt
-                        ? ` ${formatTaskSpan(now - steward.lastRunAt)} ago`
+                        ? t(" {p0} ago", { p0: formatTaskSpan(now - steward.lastRunAt) })
                         : ""}
                       {steward.lastRunStatus === "succeeded" &&
                       steward.lastProposed !== undefined
-                        ? ` · ${steward.lastProposed} new suggestion${steward.lastProposed === 1 ? "" : "s"}`
+                        ? t((steward.lastProposed === 1 ? " · {p0} new suggestion" : " · {p0} new suggestions"), { p0: steward.lastProposed })
                         : ""}
                     </>
                   ) : (
-                    "Has not run yet"
+                    t("Has not run yet")
                   )}
                   {steward.enabled
                     ? ` · ${nextRunPreview(steward.nextRunAt)}`
-                    : " · Paused"}
+                    : t(" · Paused")}
                 </p>
                 {steward.lastRunError &&
                 (steward.lastRunStatus === "failed" ||
@@ -2847,9 +2772,7 @@ function StewardsPanel({
           );
         })}
         {stewards.length === 0 && !draft ? (
-          <li className="px-1 py-2 text-[11px] text-content/35">
-            No stewards yet.
-          </li>
+          <li className="px-1 py-2 text-[11px] text-content/35">{t("No stewards yet.")}</li>
         ) : null}
       </ul>
     </section>
@@ -2875,6 +2798,7 @@ function StewardForm({
   onCancel: () => void;
   onSubmit: (event: FormEvent) => void;
 }) {
+  useLocale();
   const update = <K extends keyof StewardDraft>(
     key: K,
     value: StewardDraft[K],
@@ -2907,7 +2831,7 @@ function StewardForm({
   );
   return (
     <form
-      aria-label={draft.id ? "Edit steward" : "New steward"}
+      aria-label={draft.id ? t("Edit steward") : t("New steward")}
       onSubmit={onSubmit}
       className="rounded-md border border-content/10 bg-background-base px-3 py-2"
     >
@@ -2924,40 +2848,36 @@ function StewardForm({
         )}
         <span aria-hidden className="h-3 w-px shrink-0 bg-content/15" />
         {machine ? (
-          <span className="truncate">Runs on {machine}</span>
+          <span className="truncate">{t("Runs on ")}{machine}</span>
         ) : (
           <span role="alert" className="text-amber-400">
             {TASK_MACHINE_ERROR}
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <button type="button" onClick={onCancel} className={ACTION_OUTLINE}>
-            Cancel
-          </button>
+          <button type="button" onClick={onCancel} className={ACTION_OUTLINE}>{t("Cancel")}</button>
           <button
             type="submit"
             disabled={!valid || saving}
             className={ACTION_FILLED}
           >
-            {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}
-            Save
-          </button>
+            {saving ? <LoaderCircle className="size-3.5 animate-spin" /> : null}{t("Save")}</button>
         </div>
       </div>
       <textarea
-        aria-label="Focus"
+        aria-label={t("Focus")}
         value={draft.focus}
         onChange={(event) => update("focus", event.target.value)}
-        placeholder="What should it look for? e.g. follow docs/ROADMAP.md, or find bugs and missing tests"
+        placeholder={t("What should it look for? e.g. follow docs/ROADMAP.md, or find bugs and missing tests")}
         rows={2}
         className="mt-2 block w-full resize-y rounded-md border border-content/10 bg-content/3 px-2 py-1.5 text-[13px] leading-relaxed text-content outline-none placeholder:text-content/35 focus:border-content/20"
       />
       <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-[12px] text-content/60">
-        <span className="shrink-0">Look</span>
+        <span className="shrink-0">{t("Look")}</span>
         <SearchableSelect
           variant="pill"
           searchable={false}
-          label="Schedule"
+          label={t("Schedule")}
           value={draft.scheduleKind}
           options={SCHEDULE_OPTIONS}
           onChange={(value) =>
@@ -2968,7 +2888,7 @@ function StewardForm({
           <SearchableSelect
             variant="pill"
             searchable={false}
-            label="Day of week"
+            label={t("Day of week")}
             value={String(draft.dayOfWeek)}
             options={AUTOMATION_WEEKDAYS.map((day, index) => ({
               value: String(index),
@@ -2982,7 +2902,7 @@ function StewardForm({
         ) : (
           <input
             type="time"
-            aria-label="Time"
+            aria-label={t("Time")}
             value={draft.time}
             onChange={(event) => {
               if (event.target.value) update("time", event.target.value);
@@ -3031,19 +2951,15 @@ function StewardForm({
             checked={draft.autoStart}
             onChange={(event) => update("autoStart", event.target.checked)}
             className={CHECKBOX}
-          />
-          Start suggestions automatically
-        </label>
+          />{t("Start suggestions automatically")}</label>
         <AutoMergeField
           checked={draft.autoMerge}
           onChange={(checked) => update("autoMerge", checked)}
         />
         {draft.autoStart ? (
-          <span role="status" className="text-[11px] text-amber-400">
-            Suggestions will run without you reviewing the idea first.
-            {draft.autoMerge
+          <span role="status" className="text-[11px] text-amber-400">{t("Suggestions will run without you reviewing the idea first.")}{draft.autoMerge
               ? ""
-              : " Each still waits for your review before it is merged."}
+              : t(" Each still waits for your review before it is merged.")}
           </span>
         ) : null}
       </div>

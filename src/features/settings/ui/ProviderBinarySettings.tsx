@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   ExternalLink,
@@ -66,6 +67,7 @@ export function ProviderBinaryControl({
   provider: ConfigurableBinaryProvider;
   showLabel?: boolean;
 }) {
+  useLocale();
   const root = useRef<HTMLSpanElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const editInput = useRef<HTMLInputElement>(null);
@@ -171,13 +173,13 @@ export function ProviderBinaryControl({
         type="button"
         aria-label={
           restartRequired
-            ? `Show ${title} CLI details, restart required`
-            : `Show ${title} CLI details`
+            ? t("Show {p0} CLI details, restart required", { p0: title })
+            : t("Show {p0} CLI details", { p0: title })
         }
         aria-expanded={open}
         aria-controls={`${provider}-binary-popover`}
         aria-haspopup="dialog"
-        title={`${title} CLI path${restartRequired ? " — restart required" : ""}`}
+        title={t((restartRequired ? "{p0} CLI path — restart required" : "{p0} CLI path"), { p0: title })}
         onClick={() => {
           if (!open && !inspection && !working && !error) {
             void inspect(loadProviderBinaryPath(provider));
@@ -192,13 +194,13 @@ export function ProviderBinaryControl({
         }`}
       >
         <FolderOpen className="size-3.5" strokeWidth={1.75} />
-        {showLabel ? "CLI setup" : null}
+        {showLabel ? t("CLI setup") : null}
       </button>
       {open ? (
         <Popover
           id={`${provider}-binary-popover`}
           role="dialog"
-          aria-label={`${title} CLI details`}
+          aria-label={t("{p0} CLI details", { p0: title })}
           aria-busy={working}
           tabIndex={-1}
           anchor={root}
@@ -229,20 +231,17 @@ export function ProviderBinaryControl({
         >
           <div className="flex items-center justify-between gap-3">
             <span className="text-[12px] font-medium text-content">
-              {title} CLI
-            </span>
+              {title}{t(" CLI")}</span>
             <div className="flex items-center gap-1.5">
-              <span className="rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] text-content/50">
-                Global path
-              </span>
+              <span className="rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] text-content/50">{t("Global path")}</span>
               <span className="rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] text-content/50">
                 {error
-                  ? "Needs attention"
+                  ? t("Needs attention")
                   : restartRequired
-                    ? "Restart required"
+                    ? t("Restart required")
                     : overridden
-                      ? "Configured"
-                      : "Auto-detected"}
+                      ? t("Configured")
+                      : t("Auto-detected")}
               </span>
             </div>
           </div>
@@ -251,23 +250,19 @@ export function ProviderBinaryControl({
               <label
                 htmlFor={`${provider}-binary-path`}
                 className="text-[11px] text-content/50"
-              >
-                CLI path
-              </label>
+              >{t("CLI path")}</label>
               <input
                 id={`${provider}-binary-path`}
                 ref={editInput}
                 type="text"
                 value={draft}
-                placeholder={inspection?.path ?? "Auto-detected path"}
+                placeholder={inspection?.path ?? t("Auto-detected path")}
                 disabled={working}
                 autoFocus
                 onChange={(event) => setDraft(event.target.value)}
                 className="mt-1.5 h-8 w-full rounded-md border border-content/10 bg-content/[0.04] px-2 font-mono text-[11px] text-content outline-none placeholder:font-sans placeholder:text-content/35 focus:border-accent/45 disabled:opacity-50"
               />
-              <p className="mt-1.5 text-[10px] text-content/40">
-                Enter the absolute path to the CLI executable. Changes apply
-                after restarting {PRODUCT_IDENTITY.displayName}.
+              <p className="mt-1.5 text-[10px] text-content/40">{t("Enter the absolute path to the CLI executable. Changes apply after restarting ")}{PRODUCT_IDENTITY.displayName}.
               </p>
               {error ? (
                 <span
@@ -285,19 +280,15 @@ export function ProviderBinaryControl({
                     setEditing(false);
                     queueMicrotask(() => trigger.current?.focus());
                   }}
-                >
-                  Cancel
-                </SecondaryButton>
+                >{t("Cancel")}</SecondaryButton>
                 {overridden ? (
                   <SecondaryButton
                     disabled={working}
                     onClick={() => void useAuto()}
-                  >
-                    Use auto-detected path
-                  </SecondaryButton>
+                  >{t("Use auto-detected path")}</SecondaryButton>
                 ) : null}
                 <SecondaryButton type="submit" disabled={working}>
-                  {working ? "Checking path…" : "Save path"}
+                  {working ? t("Checking path…") : t("Save path")}
                 </SecondaryButton>
               </div>
             </form>
@@ -307,12 +298,12 @@ export function ProviderBinaryControl({
                 <span className="block max-h-12 overflow-y-auto whitespace-pre-wrap break-all font-mono text-[10px] text-content/65">
                   {inspection?.path ??
                     (error
-                      ? "CLI could not be resolved"
-                      : "Checking the selected CLI…")}
+                      ? t("CLI could not be resolved")
+                      : t("Checking the selected CLI…"))}
                 </span>
                 <span className="mt-1 block max-h-10 overflow-y-auto whitespace-pre-wrap break-words text-[10px] text-content/40">
                   {inspection?.version ??
-                    (error ? "Retry to check this CLI" : "Checking version…")}
+                    (error ? t("Retry to check this CLI") : t("Checking version…"))}
                 </span>
               </div>
               {error ? (
@@ -328,27 +319,24 @@ export function ProviderBinaryControl({
                 <span
                   role="alert"
                   className="mt-1.5 block max-h-20 overflow-y-auto whitespace-pre-wrap break-words text-[10px] leading-4 text-red-400"
-                >
-                  Could not open the CLI location: {revealError}
+                >{t("Could not open the CLI location: ")}{revealError}
                 </span>
               ) : null}
               <div className="mt-3 flex justify-end gap-2">
                 {error ? (
                   <SecondaryButton
                     disabled={working}
-                    aria-label={`Retry ${title} ${
-                      overridden ? "configured path" : "auto-detect"
-                    }`}
+                    aria-label={t((overridden ? "Retry {p0} configured path" : "Retry {p0} auto-detect"), { p0: title })}
                     onClick={() =>
                       void inspect(overridden ? draft.trim() || null : null)
                     }
                   >
                     <RefreshCw className="size-3.5" strokeWidth={1.75} />
-                    {overridden ? "Retry configured path" : "Retry auto-detect"}
+                    {overridden ? t("Retry configured path") : t("Retry auto-detect")}
                   </SecondaryButton>
                 ) : null}
                 <SecondaryButton
-                  aria-label={`Open ${title} CLI location`}
+                  aria-label={t("Open {p0} CLI location", { p0: title })}
                   disabled={!inspection}
                   onClick={() => {
                     if (inspection) {
@@ -362,17 +350,13 @@ export function ProviderBinaryControl({
                     }
                   }}
                 >
-                  <ExternalLink className="size-3.5" strokeWidth={1.75} />
-                  Open location
-                </SecondaryButton>
+                  <ExternalLink className="size-3.5" strokeWidth={1.75} />{t("Open location")}</SecondaryButton>
                 <SecondaryButton
-                  aria-label={`Edit ${title} CLI path`}
+                  aria-label={t("Edit {p0} CLI path", { p0: title })}
                   disabled={working}
                   onClick={() => setEditing(true)}
                 >
-                  <Pencil className="size-3.5" strokeWidth={1.75} />
-                  Edit path
-                </SecondaryButton>
+                  <Pencil className="size-3.5" strokeWidth={1.75} />{t("Edit path")}</SecondaryButton>
               </div>
             </>
           )}

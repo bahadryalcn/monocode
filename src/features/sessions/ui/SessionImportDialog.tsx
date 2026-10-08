@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -57,12 +58,12 @@ const chip =
   "rounded-md border px-2 py-0.5 text-[11px] transition-colors focus-visible:outline-2 focus-visible:outline-accent";
 
 function plural(count: number, one: string, many = `${one}s`): string {
-  return `${count.toLocaleString()} ${count === 1 ? one : many}`;
+  return `${count.toLocaleString(getLocale())} ${count === 1 ? one : many}`;
 }
 
 function formatDate(at: number): string {
   if (!at) return "unknown date";
-  return new Date(at).toLocaleDateString(undefined, {
+  return new Date(at).toLocaleDateString(getLocale(), {
     year: "numeric",
     month: "short",
     day: "numeric",
@@ -84,6 +85,7 @@ export function SessionImportDialog({
   onImported,
   initialContext,
 }: Props) {
+  useLocale();
   const [load, setLoad] = useState<Load>({ status: "loading" });
   const [providers, setProviders] = useState<ReadonlySet<ImportProvider>>(
     () =>
@@ -253,8 +255,8 @@ export function SessionImportDialog({
 
   return (
     <Modal
-      title="Import Claude Code and Codex sessions"
-      description="Conversations from the terminal, listed by the folder they ran in. The originals are never changed."
+      title={t("Import Claude Code and Codex sessions")}
+      description={t("Conversations from the terminal, listed by the folder they ran in. The originals are never changed.")}
       size="lg"
       fitViewport
       // Closing mid-import would only look like it stopped; Cancel says so.
@@ -262,13 +264,10 @@ export function SessionImportDialog({
     >
       <div className="flex min-h-0 flex-col gap-3 p-4 pt-3">
         {load.status === "loading" ? (
-          <p className="py-10 text-center text-[13px] text-content/55">
-            Scanning Claude Code and Codex history…
-          </p>
+          <p className="py-10 text-center text-[13px] text-content/55">{t("Scanning Claude Code and Codex history…")}</p>
         ) : null}
         {load.status === "error" ? (
-          <p className="py-10 text-center text-[13px] text-red-400">
-            Could not read the history: {load.message}
+          <p className="py-10 text-center text-[13px] text-red-400">{t("Could not read the history: ")}{load.message}
           </p>
         ) : null}
 
@@ -311,8 +310,7 @@ export function SessionImportDialog({
                       ? "border-content/25 bg-content/10 text-content"
                       : "border-content/10 text-content/45 hover:text-content"
                   }`}
-                >
-                  Only under {root.replace("/", "\\")}
+                >{t("Only under ")}{root.replace("/", "\\")}
                 </button>
               ) : null}
               <label className="flex items-center gap-1.5 px-1.5 text-[11px] text-content/65">
@@ -321,15 +319,13 @@ export function SessionImportDialog({
                   className={checkbox}
                   checked={showAutomation}
                   onChange={(event) => setShowAutomation(event.target.checked)}
-                />
-                Show automation runs
-              </label>
+                />{t("Show automation runs")}</label>
               <input
                 type="search"
                 value={text}
                 onChange={(event) => setText(event.target.value)}
-                placeholder="Filter by prompt or folder"
-                aria-label="Filter conversations"
+                placeholder={t("Filter by prompt or folder")}
+                aria-label={t("Filter conversations")}
                 className="ml-auto min-w-40 flex-1 rounded-md border border-content/15 bg-content/3 px-2.5 py-1 text-[12px] outline-none focus:border-content/35 sm:max-w-64"
               />
             </div>
@@ -339,21 +335,17 @@ export function SessionImportDialog({
                 type="button"
                 className="hover:text-content"
                 onClick={() => toggleKeys(selectable(visible), true)}
-              >
-                Select all shown
-              </button>
+              >{t("Select all shown")}</button>
               <button
                 type="button"
                 className="hover:text-content"
                 onClick={() => toggleKeys(visible.map(candidateKey), false)}
-              >
-                Clear selection
-              </button>
+              >{t("Clear selection")}</button>
               <span className="ml-auto">
-                {plural(visible.length, "conversation")} in{" "}
+                {plural(visible.length, "conversation")}{t(" in")}{" "}
                 {plural(folders.length, "folder")}
                 {report.candidates.length !== visible.length
-                  ? ` (of ${report.candidates.length.toLocaleString()})`
+                  ? t(" (of {p0})", { p0: report.candidates.length.toLocaleString(getLocale()) })
                   : ""}
               </span>
             </div>
@@ -362,8 +354,8 @@ export function SessionImportDialog({
               {folders.length === 0 ? (
                 <p className="px-4 py-8 text-center text-[12px] text-content/45">
                   {report.candidates.length === 0
-                    ? "No Claude Code or Codex conversations were found on this computer."
-                    : "Nothing matches these filters."}
+                    ? t("No Claude Code or Codex conversations were found on this computer.")
+                    : t("Nothing matches these filters.")}
                 </p>
               ) : (
                 folders.map((folder) => (
@@ -395,13 +387,11 @@ export function SessionImportDialog({
                   className={checkbox}
                   checked={groupProjects}
                   onChange={(event) => setGroupProjects(event.target.checked)}
-                />
-                Group new projects in the sidebar by their parent folder
-              </label>
+                />{t("Group new projects in the sidebar by their parent folder")}</label>
               {groupProjects ? (
                 <p className="pl-5 text-[11px] leading-relaxed text-content/50">
                   {groupPreview.length === 0
-                    ? "No groups: no folder has two or more projects to group."
+                    ? t("No groups: no folder has two or more projects to group.")
                     : groupPreview
                         .map((group) => `${group.name} (${group.count})`)
                         .join(" · ")}
@@ -412,35 +402,29 @@ export function SessionImportDialog({
             <div className="flex flex-wrap items-center gap-3">
               <p className="min-w-0 flex-1 text-[12px] leading-snug text-content/65">
                 {counts.toImport === 0
-                  ? "Nothing selected to import."
-                  : `${plural(counts.toImport, "conversation")} in ${plural(
+                  ? t("Nothing selected to import.")
+                  : t("{p0} in {p1} will be imported ({p2} on disk).", { p0: plural(counts.toImport, "conversation"), p1: plural(
                       counts.folders,
                       "folder",
-                    )} will be imported (${formatBytes(counts.bytes)} on disk).`}
+                    ), p2: formatBytes(counts.bytes) })}
                 {counts.alreadyImported > 0
-                  ? ` ${plural(counts.alreadyImported, "conversation")} already imported will be skipped.`
+                  ? t(" {p0} already imported will be skipped.", { p0: plural(counts.alreadyImported, "conversation") })
                   : ""}
-                <span className="block text-[11px] text-content/40">
-                  Scanned {report.filesScanned.toLocaleString()} files in{" "}
-                  {report.elapsedMs.toLocaleString()} ms. Conversations hidden
-                  by a filter are not imported.
-                </span>
+                <span className="block text-[11px] text-content/40">{t("Scanned ")}{report.filesScanned.toLocaleString(getLocale())}{t(" files in")}{" "}
+                  {report.elapsedMs.toLocaleString(getLocale())}{t(" ms. Conversations hidden by a filter are not imported.")}</span>
               </p>
               <button
                 type="button"
                 className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
                 onClick={onClose}
-              >
-                Close
-              </button>
+              >{t("Close")}</button>
               <button
                 type="button"
                 disabled={counts.toImport === 0}
                 onClick={() => void start()}
                 className="rounded-md bg-selection px-3 py-1.5 text-[12px] font-medium hover:bg-selection-hover disabled:opacity-40"
-              >
-                Import{" "}
-                {counts.toImport > 0 ? counts.toImport.toLocaleString() : ""}
+              >{t("Import")}{" "}
+                {counts.toImport > 0 ? counts.toImport.toLocaleString(getLocale()) : ""}
               </button>
             </div>
           </>
@@ -479,6 +463,7 @@ function FolderSection({
   onToggleKeys: (keys: string[], on: boolean) => void;
   selectable: (items: ImportCandidate[]) => string[];
 }) {
+  useLocale();
   const keys = selectable(folder.items);
   const chosen = keys.filter((key) => selected.has(key)).length;
   const header = useRef<HTMLInputElement>(null);
@@ -495,7 +480,7 @@ function FolderSection({
           ref={header}
           type="checkbox"
           className={checkbox}
-          aria-label={`Select every conversation in ${folder.path}`}
+          aria-label={t("Select every conversation in {p0}", { p0: folder.path })}
           disabled={keys.length === 0}
           checked={keys.length > 0 && chosen === keys.length}
           onChange={(event) => onToggleKeys(keys, event.target.checked)}
@@ -516,12 +501,10 @@ function FolderSection({
             {prettyCwd(folder.path)}
           </span>
           {!folder.exists ? (
-            <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-500">
-              missing folder
-            </span>
+            <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-500">{t("missing folder")}</span>
           ) : null}
           <span className="shrink-0 text-[11px] text-content/45">
-            {chosen > 0 ? `${chosen} of ` : ""}
+            {chosen > 0 ? t("{p0} of ", { p0: chosen }) : ""}
             {plural(folder.items.length, "conversation")}
           </span>
         </button>
@@ -557,20 +540,16 @@ function FolderSection({
                     {item.firstPrompt}
                   </span>
                   {imported ? (
-                    <span className="shrink-0 rounded bg-content/10 px-1.5 py-0.5 text-[10px]">
-                      imported
-                    </span>
+                    <span className="shrink-0 rounded bg-content/10 px-1.5 py-0.5 text-[10px]">{t("imported")}</span>
                   ) : isHistoryOnly(item) ? (
                     <span
                       className="shrink-0 rounded bg-content/10 px-1.5 py-0.5 text-[10px] text-content/60"
-                      title="Imported as history; sending a message starts a new conversation"
-                    >
-                      history only
-                    </span>
+                      title={t("Imported as history; sending a message starts a new conversation")}
+                    >{t("history only")}</span>
                   ) : null}
                   {item.kind !== "interactive" ? (
                     <span className="shrink-0 rounded bg-content/10 px-1.5 py-0.5 text-[10px] text-content/60">
-                      {item.kind === "exec" ? "automation" : "subagent"}
+                      {item.kind === "exec" ? t("automation") : t("subagent")}
                     </span>
                   ) : null}
                   <span className="w-24 shrink-0 text-right text-[11px] text-content/45">
@@ -596,14 +575,14 @@ function RunningView({
   progress: ImportProgress;
   onCancel: () => void;
 }) {
+  useLocale();
   const percent = progress.total
     ? Math.round((progress.done / progress.total) * 100)
     : 0;
   return (
     <div className="flex flex-col gap-3 py-6" role="status" aria-live="polite">
-      <p className="text-[13px] font-medium">
-        Importing {progress.done.toLocaleString()} of{" "}
-        {progress.total.toLocaleString()}…
+      <p className="text-[13px] font-medium">{t("Importing ")}{progress.done.toLocaleString(getLocale())}{t(" of")}{" "}
+        {progress.total.toLocaleString(getLocale())}…
       </p>
       <div
         className="h-1.5 overflow-hidden rounded-full bg-content/10"
@@ -621,10 +600,9 @@ function RunningView({
         {progress.current ?? " "}
       </p>
       <p className="text-[11px] text-content/45">
-        {progress.imported.toLocaleString()} imported
-        {progress.skipped > 0 ? ` · ${progress.skipped} skipped` : ""}
+        {progress.imported.toLocaleString(getLocale())}{t(" imported")}{progress.skipped > 0 ? t(" · {p0} skipped", { p0: progress.skipped }) : ""}
         {progress.failed.length > 0
-          ? ` · ${progress.failed.length} failed`
+          ? t(" · {p0} failed", { p0: progress.failed.length })
           : ""}
       </p>
       <div className="flex justify-end">
@@ -632,9 +610,7 @@ function RunningView({
           type="button"
           onClick={onCancel}
           className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
-        >
-          Cancel
-        </button>
+        >{t("Cancel")}</button>
       </div>
     </div>
   );
@@ -647,44 +623,38 @@ function DoneView({
   summary: ImportSummary;
   onClose: () => void;
 }) {
+  useLocale();
   return (
     <div className="flex flex-col gap-3 py-4">
       <p className="text-[14px] font-medium">
-        {summary.cancelled ? "Import cancelled" : "Import finished"}
+        {summary.cancelled ? t("Import cancelled") : t("Import finished")}
       </p>
       <ul className="flex flex-col gap-1 text-[12px] text-content/70">
-        <li>{plural(summary.imported, "conversation")} imported.</li>
+        <li>{plural(summary.imported, "conversation")}{t(" imported.")}</li>
         {summary.skipped > 0 ? (
-          <li>{summary.skipped} already in {PRODUCT_IDENTITY.displayName}, skipped.</li>
+          <li>{summary.skipped}{t(" already in ")}{PRODUCT_IDENTITY.displayName}{t(", skipped.")}</li>
         ) : null}
         {summary.projects > 0 ? (
           <li>
-            {plural(summary.projects, "folder")} added to the sidebar
-            {summary.groups.length > 0
-              ? `, grouped as ${summary.groups.join(", ")}`
+            {plural(summary.projects, "folder")}{t(" added to the sidebar")}{summary.groups.length > 0
+              ? t(", grouped as {p0}", { p0: summary.groups.join(", ") })
               : ""}
             .
           </li>
         ) : null}
         {summary.readOnly > 0 ? (
           <li>
-            {summary.readOnly} can only be read: their folder is gone or could
-            not be matched, so a new message starts a new conversation.
-          </li>
+            {summary.readOnly}{t(" can only be read: their folder is gone or could not be matched, so a new message starts a new conversation.")}</li>
         ) : null}
         {summary.truncated > 0 ? (
           <li>
-            {summary.truncated} were large, so only their most recent part was
-            imported.
-          </li>
+            {summary.truncated}{t(" were large, so only their most recent part was imported.")}</li>
         ) : null}
       </ul>
       {summary.failed.length > 0 ? (
         <details className="rounded-lg border border-red-400/30 bg-red-400/5 px-3 py-2 text-[12px]">
           <summary className="cursor-pointer text-red-400">
-            {plural(summary.failed.length, "conversation")} could not be
-            imported
-          </summary>
+            {plural(summary.failed.length, "conversation")}{t(" could not be imported")}</summary>
           <ul className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto">
             {summary.failed.map((failure) => (
               <li
@@ -706,9 +676,7 @@ function DoneView({
           type="button"
           onClick={onClose}
           className="rounded-md bg-selection px-3 py-1.5 text-[12px] font-medium hover:bg-selection-hover"
-        >
-          Done
-        </button>
+        >{t("Done")}</button>
       </div>
     </div>
   );

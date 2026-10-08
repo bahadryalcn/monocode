@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   Check,
   ChevronDown,
@@ -118,6 +119,7 @@ export function UnifiedDiffView({
   onStageHunk,
   onSectionNeeded,
 }: Props) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const colorScheme = useColorScheme();
   const diffLayout = useDiffLayout();
@@ -237,7 +239,7 @@ export function UnifiedDiffView({
 
   if (files.length === 0) {
     return (
-      <p className="px-4 py-6 text-[13px] text-content/45">No file changes</p>
+      <p className="px-4 py-6 text-[13px] text-content/45">{t("No file changes")}</p>
     );
   }
 
@@ -265,8 +267,8 @@ export function UnifiedDiffView({
           <DiffLayoutToggle className="mr-0.5" />
           <button
             type="button"
-            title="Expand all files"
-            aria-label="Expand all files"
+            title={t("Expand all files")}
+            aria-label={t("Expand all files")}
             onClick={() => setOpen(new Set(files.map((file) => file.id)))}
             className="grid size-7 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content"
           >
@@ -274,8 +276,8 @@ export function UnifiedDiffView({
           </button>
           <button
             type="button"
-            title="Collapse all files"
-            aria-label="Collapse all files"
+            title={t("Collapse all files")}
+            aria-label={t("Collapse all files")}
             disabled={open.size === 0}
             onClick={() => setOpen(new Set())}
             className="grid size-7 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content disabled:opacity-40"
@@ -297,10 +299,7 @@ export function UnifiedDiffView({
         }
       >
         {truncated ? (
-          <p className="px-3 py-3 text-[12px] text-content/45">
-            Diff is too large to display in full. File list is shown without
-            patches.
-          </p>
+          <p className="px-3 py-3 text-[12px] text-content/45">{t("Diff is too large to display in full. File list is shown without patches.")}</p>
         ) : null}
         <div
           ref={bindContent}
@@ -384,6 +383,7 @@ const FileSection = memo(function FileSection({
   bindRef,
   onNeeded,
 }: FileSectionProps) {
+  useLocale();
   const Chevron = expanded ? ChevronDown : ChevronRight;
   const name = basename(file.path);
   const sectionRef = useRef<HTMLElement | null>(null);
@@ -478,7 +478,7 @@ const FileSection = memo(function FileSection({
         </button>
         {file.canDiscard && onDiscardFile ? (
           <IconButton
-            title="Discard file"
+            title={t("Discard file")}
             disabled={busy}
             onClick={() => onDiscardFile(file.id)}
           >
@@ -488,8 +488,8 @@ const FileSection = memo(function FileSection({
         {file.canStage && onStageFile ? (
           <button
             type="button"
-            title="Stage file"
-            aria-label="Stage file"
+            title={t("Stage file")}
+            aria-label={t("Stage file")}
             disabled={busy}
             onClick={() => onStageFile(file.id)}
             className="grid size-4 place-items-center rounded-[3px] bg-content text-background-base hover:opacity-80 disabled:opacity-40"
@@ -586,10 +586,11 @@ function FileBody({
   onReveal: (foldId: string, direction: "up" | "down" | "all") => void;
   onStageHunk?: (id: string, pos: number) => void;
 }) {
-  if (file.binary) return <EmptyBody>Binary file changed</EmptyBody>;
-  if (file.tooLarge) return <EmptyBody>Diff is too large to display</EmptyBody>;
+  useLocale();
+  if (file.binary) return <EmptyBody>{t("Binary file changed")}</EmptyBody>;
+  if (file.tooLarge) return <EmptyBody>{t("Diff is too large to display")}</EmptyBody>;
   if (file.emptyMessage) return <EmptyBody>{file.emptyMessage}</EmptyBody>;
-  if (file.blocks.length === 0) return <EmptyBody>No textual diff</EmptyBody>;
+  if (file.blocks.length === 0) return <EmptyBody>{t("No textual diff")}</EmptyBody>;
 
   return (
     <VirtualRows
@@ -634,6 +635,7 @@ function VirtualRows({
   onReveal: (foldId: string, direction: "up" | "down" | "all") => void;
   onStageHunk?: (id: string, pos: number) => void;
 }) {
+  useLocale();
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const codeRef = useRef<HTMLDivElement | null>(null);
   // The after column's own scroller, in split layout only.
@@ -1077,6 +1079,7 @@ function SplitLane({
   onStage?: () => void;
   onComment?: (anchor: DOMRect) => void;
 }) {
+  useLocale();
   if (row.type === "fold") {
     // The bar is drawn once, from the before gutter, across both columns.
     if (side === "before" && lane === "gutter") {
@@ -1145,6 +1148,7 @@ function DiffLane({
   onStage?: () => void;
   onComment?: (anchor: DOMRect) => void;
 }) {
+  useLocale();
   if (row.type === "fold") {
     if (lane === "gutter") {
       return (
@@ -1180,6 +1184,7 @@ function FoldBar({
   hidden: number;
   onReveal: (direction: "up" | "down" | "all") => void;
 }) {
+  useLocale();
   return (
     <div
       className="flex items-center gap-1 bg-content/8 px-2"
@@ -1187,8 +1192,8 @@ function FoldBar({
     >
       <button
         type="button"
-        title="Expand upward"
-        aria-label="Expand unmodified lines upward"
+        title={t("Expand upward")}
+        aria-label={t("Expand unmodified lines upward")}
         onClick={() => onReveal("up")}
         className="grid size-5 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content"
       >
@@ -1196,8 +1201,8 @@ function FoldBar({
       </button>
       <button
         type="button"
-        title="Expand downward"
-        aria-label="Expand unmodified lines downward"
+        title={t("Expand downward")}
+        aria-label={t("Expand unmodified lines downward")}
         onClick={() => onReveal("down")}
         className="grid size-5 place-items-center rounded text-content/40 hover:bg-content/10 hover:text-content"
       >
@@ -1208,7 +1213,7 @@ function FoldBar({
         onClick={() => onReveal("all")}
         className="min-w-0 flex-1 py-1 text-left font-mono text-[11px] text-content/45 hover:text-content/70"
       >
-        {hidden} unmodified {hidden === 1 ? "line" : "lines"}
+        {hidden}{t(" unmodified ")}{hidden === 1 ? t("line") : t("lines")}
       </button>
     </div>
   );
@@ -1237,6 +1242,7 @@ const DiffLineRow = memo(function DiffLineRow({
   onStage?: () => void;
   onComment?: (anchor: DOMRect) => void;
 }) {
+  useLocale();
   if (line.kind === "hunk") {
     return (
       <div
@@ -1305,8 +1311,8 @@ const DiffLineRow = memo(function DiffLineRow({
         {onStage ? (
           <button
             type="button"
-            title="Stage hunk"
-            aria-label="Stage hunk"
+            title={t("Stage hunk")}
+            aria-label={t("Stage hunk")}
             onClick={onStage}
             className={`absolute top-0.5 left-full z-10 ml-0.5 grid size-4 place-items-center rounded-[3px] bg-white text-[11px] font-bold text-black ${
               stageVisible ? "opacity-100" : "pointer-events-none opacity-0"
@@ -1331,7 +1337,7 @@ const DiffLineRow = memo(function DiffLineRow({
       >
         <span aria-hidden="true">{added ? "+" : deleted ? "−" : ""}</span>
         {added || deleted ? (
-          <span className="sr-only">{added ? "Added: " : "Removed: "}</span>
+          <span className="sr-only">{added ? t("Added: ") : t("Removed: ")}</span>
         ) : null}
       </span>
       <span
@@ -1365,6 +1371,7 @@ function renderLineText(line: UnifiedLine, tokens?: SyntaxToken[]) {
 }
 
 function EmptyBody({ children }: { children: string }) {
+  useLocale();
   return <p className="px-3 py-3 text-[12px] text-content/45">{children}</p>;
 }
 
@@ -1375,6 +1382,7 @@ function DiffCounts({
   additions: number;
   deletions: number;
 }) {
+  useLocale();
   if (additions <= 0 && deletions <= 0) return null;
   return (
     <span className="flex shrink-0 items-center gap-1.5 font-sans text-[11px] font-semibold tabular-nums">
@@ -1399,6 +1407,7 @@ function IconButton({
   onClick: () => void;
   children: React.ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"

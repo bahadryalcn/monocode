@@ -549,7 +549,7 @@ pub(crate) fn prefer_bundle_dock_icon() {
     unsafe { app.setApplicationIconImage(None) };
     app.dockTile().display();
     // Tauri assigns the embedded bitmap after Ready. Clear again so Icon
-    // Services keeps the imc ICNS supplied by the bundle.
+    // Services keeps the imc code ICNS supplied by the bundle.
     unsafe {
         let _: () = msg_send![
             &app,
@@ -651,7 +651,7 @@ fn write_dev_bundle_icons(app: &Path, app_name: &str) -> Result<(), String> {
 
 /// Must match `CFBundleIdentifier` in the generated dev bundle plist and tauri.conf.json.
 #[cfg(debug_assertions)]
-const DEV_BUNDLE_DEFAULT_NAME: &str = "imc Dev";
+const DEV_BUNDLE_DEFAULT_NAME: &str = "imc code Dev";
 #[cfg(debug_assertions)]
 const DEV_BUNDLE_NAME_ENV: &str = "IMECE_DEV_APP_NAME";
 #[cfg(debug_assertions)]
@@ -794,8 +794,8 @@ mod tests {
 
     #[test]
     fn dev_bundle_plist_uses_the_provided_app_name() {
-        let plist = String::from_utf8(dev_bundle_plist("imc Dev")).unwrap();
-        assert!(plist.contains("<string>imc Dev</string>"));
+        let plist = String::from_utf8(dev_bundle_plist("imc code Dev")).unwrap();
+        assert!(plist.contains("<string>imc code Dev</string>"));
         assert!(plist.contains("<string>com.imece.desktop.dev</string>"));
         assert!(!plist.contains("com.monocode.desktop"));
         assert!(plist.contains("<string>monocode</string>"));

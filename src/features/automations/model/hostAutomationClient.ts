@@ -37,7 +37,7 @@ import {
 export const BACKGROUND_TRIGGER_ERROR =
   "A background automation runs on one schedule. Remove the other triggers.";
 export const BACKGROUND_MACHINE_ERROR =
-  "This project’s machine isn’t connected, or its imc Host needs an update.";
+  "This project’s machine isn’t connected, or its imc code Host needs an update.";
 
 /** Machines whose host does background work on its own, this computer's
  * included. `capability` is what the host must advertise: automations unless

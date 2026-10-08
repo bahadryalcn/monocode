@@ -76,7 +76,7 @@ describe("projectMascots", () => {
       "private",
       "G:/Projects/web",
       "",
-      "imc",
+      "imc code",
     ]) {
       let hash = 0;
       for (let i = 0; i < path.length; i++)

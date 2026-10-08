@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   useCallback,
@@ -44,6 +45,7 @@ export function UserLinkPreview({
   cwd?: string;
   compact?: boolean;
 }) {
+  useLocale();
   if (link.githubWorkItem) {
     const workItem = link.githubWorkItem;
     return (
@@ -60,6 +62,7 @@ export function UserLinkPreview({
 }
 
 function GenericLinkPreview({ link }: { link: UserLink }) {
+  useLocale();
   const [metadata, setMetadata] = useState<LinkPreviewMetadata | null>(null);
   const [faviconFailed, setFaviconFailed] = useState(false);
 
@@ -85,7 +88,7 @@ function GenericLinkPreview({ link }: { link: UserLink }) {
       href={link.url}
       data-user-link-preview
       title={link.url}
-      aria-label={`Open ${title}`}
+      aria-label={t("Open {p0}", { p0: title })}
       className="user-link-preview group mx-0.5 text-sky-400/90 hover:text-sky-300 hover:underline"
       onClick={(event) => openExternalLink(event, link.url)}
     >
@@ -123,6 +126,7 @@ function GithubWorkItemPreview({
   cwd?: string;
   compact: boolean;
 }) {
+  useLocale();
   const anchor = useRef<HTMLAnchorElement>(null);
   const openTimer = useRef<number | null>(null);
   const closeTimer = useRef<number | null>(null);
@@ -242,7 +246,7 @@ function GithubWorkItemPreview({
         data-user-link-preview
         data-github-work-item-chip={workItem.kind}
         data-compact={compact || undefined}
-        aria-label={`Open ${kindLabel.toLowerCase()} #${workItem.number} in ${workItem.repo}${itemTitle ? `: ${itemTitle}` : ""}`}
+        aria-label={t("Open {p0} #{p1} in {p2}{p3}", { p0: kindLabel.toLowerCase(), p1: workItem.number, p2: workItem.repo, p3: itemTitle ? `: ${itemTitle}` : "" })}
         aria-describedby={open ? tooltipId : undefined}
         className={`group mx-px inline-flex max-w-full items-center gap-1 rounded-md border-0 bg-transparent p-0 text-content/70 no-underline shadow-none outline-none transition-[color,transform] duration-[140ms] ease-[var(--motion-ease-out)] hover:text-content focus-visible:ring-2 focus-visible:ring-accent/60 active:scale-[0.98] motion-reduce:transition-none pb-px ${
           compact
@@ -322,6 +326,7 @@ function GithubWorkItemCard({
   details: GithubWorkItemDetails | null;
   loadState: "idle" | "loading" | "ready" | "unavailable";
 }) {
+  useLocale();
   const status = workItemStatus(parsed.kind, item);
   const summary = plainTextSummary(details?.body ?? "");
   const updated = item?.updatedAt ? formatRelativeTime(item.updatedAt) : "";
@@ -367,17 +372,14 @@ function GithubWorkItemCard({
       ) : (
         <div className="mt-2">
           <h3 className="text-[13px] font-semibold text-content">
-            {parsed.kind === "pr" ? "Pull request" : "Issue"} #{parsed.number}
+            {parsed.kind === "pr" ? t("Pull request") : t("Issue")} #{parsed.number}
           </h3>
           {summary ? (
             <p className="mt-1.5 line-clamp-3 text-[11px] leading-[1.45] text-content/55">
               {summary}
             </p>
           ) : (
-            <p className="mt-1 text-[11px] leading-relaxed text-content/50">
-              Details aren&apos;t available here, but the link can still be
-              opened on GitHub.
-            </p>
+            <p className="mt-1 text-[11px] leading-relaxed text-content/50">{t("Details aren't available here, but the link can still be opened on GitHub.")}</p>
           )}
         </div>
       )}
@@ -391,7 +393,7 @@ function GithubWorkItemCard({
             />
           ) : null}
           {details?.author && updated ? <span aria-hidden>·</span> : null}
-          {updated ? <span className="shrink-0">Updated {updated}</span> : null}
+          {updated ? <span className="shrink-0">{t("Updated ")}{updated}</span> : null}
         </div>
       ) : null}
 
@@ -429,7 +431,7 @@ function GithubWorkItemCard({
           {assignees.length > 0 ? (
             <div
               className="flex shrink-0 -space-x-1"
-              aria-label={`Assigned to ${assignees.map((person) => person.login).join(", ")}`}
+              aria-label={t("Assigned to {p0}", { p0: assignees.map((person) => person.login).join(", ") })}
             >
               {assignees.slice(0, 3).map((person) => (
                 <GithubAvatar
@@ -445,16 +447,15 @@ function GithubWorkItemCard({
       ) : null}
 
       <div className="mt-3 flex items-center gap-1.5 border-t border-content/[0.07] pt-2 text-[10px] text-content/35">
-        <ExternalLink className="size-3" aria-hidden="true" />
-        Click the chip to open on GitHub
-      </div>
+        <ExternalLink className="size-3" aria-hidden="true" />{t("Click the chip to open on GitHub")}</div>
     </div>
   );
 }
 
 function GithubWorkItemCardSkeleton() {
+  useLocale();
   return (
-    <div aria-label="Loading GitHub details" className="mt-2.5 space-y-2">
+    <div aria-label={t("Loading GitHub details")} className="mt-2.5 space-y-2">
       <div className="h-3 w-4/5 rounded bg-content/10 motion-safe:animate-pulse" />
       <div className="h-2 w-full rounded bg-content/[0.07] motion-safe:animate-pulse" />
       <div className="h-2 w-2/3 rounded bg-content/[0.07] motion-safe:animate-pulse" />
@@ -469,6 +470,7 @@ function GithubPerson({
   name: string;
   avatarUrl?: string;
 }) {
+  useLocale();
   return (
     <span className="inline-flex min-w-0 items-center gap-1.5">
       <GithubAvatar name={name} avatarUrl={avatarUrl} size={16} />
@@ -488,6 +490,7 @@ function GithubAvatar({
   avatarUrl?: string;
   size: number;
 }) {
+  useLocale();
   const [failed, setFailed] = useState(!avatarUrl);
   if (!avatarUrl || failed) {
     return (
@@ -533,27 +536,27 @@ function workItemStatus(
   if (item?.draft) {
     return {
       Icon: GitPullRequestDraft,
-      label: "Draft",
+      get label() { return t("Draft"); },
       className: "text-content/50",
     };
   }
   if (item?.state === "merged") {
     return {
       Icon: GitMerge,
-      label: "Merged",
+      get label() { return t("Merged"); },
       className: "text-violet-400/90",
     };
   }
   if (item?.state === "closed") {
     return {
       Icon: kind === "pr" ? GitPullRequestClosed : CircleX,
-      label: "Closed",
+      get label() { return t("Closed"); },
       className: "text-rose-400/90",
     };
   }
   return {
     Icon: kind === "pr" ? GitPullRequest : CircleDot,
-    label: "Open",
+    get label() { return t("Open"); },
     className: "text-emerald-400/90",
   };
 }

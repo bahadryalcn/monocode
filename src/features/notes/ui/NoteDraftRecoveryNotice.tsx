@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -50,6 +51,7 @@ async function retryDraft(id: string, draft: Draft) {
 
 /** Mounted with the app so an unmount-time save failure stays discoverable. */
 export function NoteDraftRecoveryNotice() {
+  useLocale();
   const [, update] = useState(0);
   useEffect(() => {
     const changed = () => update((value) => value + 1);
@@ -66,18 +68,15 @@ export function NoteDraftRecoveryNotice() {
     >
       {failed.map(([id, draft]) => (
         <div key={id} className="flex flex-col gap-1">
-          <span>
-            Could not save “{draft.edits.current.title ?? draft.base.title}”:{" "}
+          <span>{t("Could not save “")}{draft.edits.current.title ?? draft.base.title}”:{" "}
             {draft.error}
           </span>
-          <span>Your draft is retained for this app session.</span>
+          <span>{t("Your draft is retained for this app session.")}</span>
           <button
             type="button"
             className="self-start underline"
             onClick={() => void retryDraft(id, draft)}
-          >
-            Retry save
-          </button>
+          >{t("Retry save")}</button>
         </div>
       ))}
     </div>,

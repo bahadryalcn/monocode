@@ -1,4 +1,4 @@
-/** imc's quiet, acoustic-inspired cue family. No assets or startup playback. */
+/** imc code's quiet, acoustic-inspired cue family. No assets or startup playback. */
 export type SoundName = "settle" | "knock" | "thread" | "welcome" | "touch" | "stamp";
 type Note = readonly [frequency: number, offset: number, duration: number];
 const SCORES: Record<SoundName, readonly Note[]> = {

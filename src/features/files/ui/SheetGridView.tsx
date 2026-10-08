@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useId, useState, useRef, useEffect, useLayoutEffect } from "react";
 import type { SparseSheet } from "../model/spreadsheet";
 import { formatInteger } from "../../../shared/lib/numbers";
@@ -15,6 +16,7 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
 
 export function SheetGridView({ grid }: { grid: SparseSheet }) {
+  useLocale();
   const name = grid.name;
   const id = useId();
   const [focused, setFocused] = useState({ row: 0, column: 0 });
@@ -59,7 +61,7 @@ export function SheetGridView({ grid }: { grid: SparseSheet }) {
   }, [name]);
 
   if (empty) {
-    return <DocumentMessage title="This sheet is empty" />;
+    return <DocumentMessage title={t("This sheet is empty")} />;
   }
 
   const first = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
@@ -72,20 +74,18 @@ export function SheetGridView({ grid }: { grid: SparseSheet }) {
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       {grid.truncated ? (
-        <div className="shrink-0 border-b border-stroke bg-content/[0.04] px-3 py-1 text-[11px] text-content/60">
-          Showing the first {formatInteger(grid.rowCount)} of{" "}
-          {formatInteger(grid.totalRows)} rows and{" "}
-          {formatInteger(grid.columns.length)} of{" "}
-          {formatInteger(grid.totalColumns)} columns.
-          {grid.budgetLimited
-            ? " Cell/text preview budget reached; some values are omitted or shortened. Open the original file to see all values."
+        <div className="shrink-0 border-b border-stroke bg-content/[0.04] px-3 py-1 text-[11px] text-content/60">{t("Showing the first ")}{formatInteger(grid.rowCount)}{t(" of")}{" "}
+          {formatInteger(grid.totalRows)}{t(" rows and")}{" "}
+          {formatInteger(grid.columns.length)}{t(" of")}{" "}
+          {formatInteger(grid.totalColumns)}{t(" columns.")}{grid.budgetLimited
+            ? t(" Cell/text preview budget reached; some values are omitted or shortened. Open the original file to see all values.")
             : ""}
         </div>
       ) : null}
       <div
         ref={scrollRef}
         role="grid"
-        aria-label={`${name}, read-only spreadsheet`}
+        aria-label={t("{p0}, read-only spreadsheet", { p0: name })}
         aria-readonly="true"
         aria-rowcount={grid.rowCount + 1}
         aria-colcount={grid.columns.length + 1}
@@ -155,7 +155,7 @@ export function SheetGridView({ grid }: { grid: SparseSheet }) {
             <div
               role="columnheader"
               aria-colindex={1}
-              aria-label="Row"
+              aria-label={t("Row")}
               className="sticky left-0 z-10 shrink-0 border-r border-stroke bg-background-base"
               style={{ width: rowHeaderWidth }}
             />

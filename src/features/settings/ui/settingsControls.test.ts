@@ -39,6 +39,19 @@ async function key(target: Element, key: string) {
 }
 
 describe("settings keyboard controls", () => {
+  it("refreshes on mouse or keyboard opening, without refreshing on close", async () => {
+    const onOpen = vi.fn();
+    await act(async () => root.render(createElement(Select, {
+      label: "Model", value: "first", options, onChange: vi.fn(), onOpen,
+    })));
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!;
+    await act(async () => trigger.click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    await act(async () => trigger.click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    await key(trigger, "ArrowDown");
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  });
   it("moves segmented selection and focus with arrow keys", async () => {
     const onChange = vi.fn();
     await act(async () => root.render(createElement(Segmented, {

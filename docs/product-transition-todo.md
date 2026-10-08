@@ -17,7 +17,7 @@
 - Kahvehane SVG'si tek renkli grafit çizime dönüştürüldü; giysi kıvrımları ve yaşlı yüz detayları artırıldı. Aynı sahne aktif oturumların arka planına düşük opaklıkla eklendi. Sahne anahtarı, az hareket tercihi ve gizli oturum kapısı korunur; oyun bulunmaz.
 - Bileşenlerin tarayıcı önizlemesi görsel kontrol için kullanıldı. Bu kayıt bütün native ekranların veya kurulu paketlerin kabulü anlamına gelmez.
 
-Oluşturma: 2026-10-06. Son karar güncellemesi: 2026-10-07. Hedef: mevcut motorlardan yararlanan, **İmece** adı, kendi özellikleri ve görsel kimliği olan bağımsız masaüstü uygulaması. Kullanıcının isteği mevcut oyunların, hareketli ikonların ve diğer görünür öğelerin de farklılaşmasıdır. Renk/logo değişikliği yeterli kabul edilmez.
+Oluşturma: 2026-10-06. Son karar güncellemesi: 2026-10-07. Hedef: mevcut motorlardan yararlanan, **imc code** adı, kendi özellikleri ve görsel kimliği olan bağımsız masaüstü uygulaması. Kullanıcının isteği mevcut oyunların, hareketli ikonların ve diğer görünür öğelerin de farklılaşmasıdır. Renk/logo değişikliği yeterli kabul edilmez.
 
 Bu belge kaynak üzerinden hazırlanmış uygulanabilir backlog'dur; uygulamanın çalışan ekranlarında karşılaştırma veya paket doğrulaması yapılmış değildir. Kutular yalnızca ilgili kabul kanıtı alındıktan sonra işaretlenir. İlk kimlik ve hareket altyapısı dilimi kaynakta uygulanmış ve odaklı kontrolleri geçmiştir; bu, nihai yeniden tasarımın tamamlandığı anlamına gelmez.
 
@@ -32,9 +32,9 @@ Bu belge kaynak üzerinden hazırlanmış uygulanabilir backlog'dur; uygulamanı
 
 ## Kabul edilen ad — 2026-10-07
 
-- Kullanıcı nihai ürün adını **İmece** olarak seçti. Ortak frontend marka kaynağı, görünür arayüz metinleri, HTML başlığı ve Tauri pencere başlıkları kaynakta bu ada geçirildi; bu kayıt kurulum veya cihaz kabul kanıtı değildir.
+- Kullanıcı nihai ürün adını **imc code** olarak seçti. Ortak frontend marka kaynağı, görünür arayüz metinleri, HTML başlığı ve Tauri pencere başlıkları kaynakta bu ada geçirildi; bu kayıt kurulum veya cihaz kabul kanıtı değildir.
 - Gelecekteki teknik kimlikler için önerilen ASCII slug `imece` olur. Paket/bundle kimliği, servis adı, veri dizini, URL protokolü ve updater kanalı bu slug'a henüz taşınmış sayılmaz; her biri A05/E görevleriyle ayrı doğrulanacak.
-- Geçişte görünen ad ile paket kimliği ayrıdır: frontend İmece adını kullanır; bilinen eski native adlar yalnızca sunumda İmece/İmece Dev/İmece Fork olarak eşlenir. Tauri pencere başlıkları İmece adına geçirilir. Native `productName` paket alanı ve kurulum artifact adları, bunlara bağlı yerel güncelleme koordinatörüyle birlikte E fazında taşınacaktır; bu aşamada kurulu uygulamanın OS kaydı veya servis adı değişmiş sayılmaz.
+- Geçişte görünen ad ile paket kimliği ayrıdır: frontend imc code adını kullanır; bilinen eski native adlar yalnızca sunumda imc code/imc code Dev/imc code Fork olarak eşlenir. Tauri pencere başlıkları imc code adına geçirilir. Native `productName` paket alanı ve kurulum artifact adları, bunlara bağlı yerel güncelleme koordinatörüyle birlikte E fazında taşınacaktır; bu aşamada kurulu uygulamanın OS kaydı veya servis adı değişmiş sayılmaz.
 - Ad geçişi doğrulaması: 18 ilgili test dosyasında ilk tur 372/374 geçti; iki hata (JSX metin boşluğu ve statik render hareket beklentisi) düzeltildi, etkilenen iki dosyada 94/94 geçti. Ek bağlantı ayarları kontrolü 11/11 geçti. Böylece seçilen 19 dosyadaki 385 farklı testin son sonuçları başarılıdır. Son `pnpm exec tsc --noEmit` ve dört Tauri JSON dosyasının parse kontrolü geçti; build/kurulum/yayın yapılmadı.
 - 2026-10-06 ilk dilim kaydı tarihsel haliyle korunur. B01 bütünüyle tamamlanmış değildir: görünür ad kararı alındı, bağımsız teknik ürün ve dağıtım kimlikleri halen açık.
 
@@ -54,7 +54,7 @@ Kullanıcının son tasarım kararı **koyu Türk çay tabağı**dır. İlk petr
 - 116 ortak arayüz ikonu yeni vektör çizim ailesiyle değiştirildi. Piksel karakterler yerine 8 çalışma simgesi eklendi; eski kaydedilmiş seçimler yeni karşılıklarına çözümlenir. Eski Opus/Astra karşılama kaynakları, piksel boş ekran ve kota kutlama yüzleri kaldırıldı; başlık canvas parçacıkları CSS geçişiyle değiştirildi.
 - Pacman/Snake kaynak ve testleri kaldırıldı; farklı kurallarla Relay ve Orbit motorları, oyun çizimleri, skor/zorluk/yeniden başlatma ve Escape ile odak dönüşü eklendi. Ses koleksiyonu 6 yeni WebAudio cue ile değiştirildi; bildirim/sessiz mod kuralları korunur.
 - Ayarlar, görevler ve gelen kutusunda yeni bölüm kompozisyonları uygulanır. Teknik kimlik `com.imece.desktop` / `.dev`, host `.imece-host`, launcher `imece-host`, varsayılan port `3775` olur. İç Cargo/CLI binary adı `monocode` ve mevcut RPC/localStorage alanları, sözleşme uyumluluğu için korunur; yeni native kimlik veri izolasyonu sağlar.
-- Updater ve otomatik host indirme eski ürüne yönlenmez. İmece updater yapılandırması kapalıdır; bağımsız host indirme `IMECE_HOST_RELEASE_URL` ile açıkça tanımlanmalıdır. Eski yayın işlerinin tamamı devre dışı bırakıldı; geliştirme CI kullanılabilir. Kurulum manifesti farklı/eski ürün paketlerini reddeder. MIT ve özgün katkı atıfları korunur.
+- Updater ve otomatik host indirme eski ürüne yönlenmez. imc code updater yapılandırması kapalıdır; bağımsız host indirme `IMECE_HOST_RELEASE_URL` ile açıkça tanımlanmalıdır. Eski yayın işlerinin tamamı devre dışı bırakıldı; geliştirme CI kullanılabilir. Kurulum manifesti farklı/eski ürün paketlerini reddeder. MIT ve özgün katkı atıfları korunur.
 
 ### Doğrulama ve kalan kabul
 
@@ -66,7 +66,7 @@ Kullanıcının son tasarım kararı **koyu Türk çay tabağı**dır. İlk petr
 
 ## Kapsam ve kararlar
 
-- Ürün adı **İmece**, görsel yön koyu Türk çay tabağı olarak belirlendi. Logo, ortak arayüz stili ve bağımsız teknik kimlik kaynakta uygulanır. Şirket/yayıncı adı, hedef kullanıcı ve ayrıntılı özellik kapsamı, destek/yayın adresi ve güncelleme sunucusu henüz kesinleşmedi; teknik kaynak değişikliği kurulum/yayın kanıtı değildir.
+- Ürün adı **imc code**, görsel yön koyu Türk çay tabağı olarak belirlendi. Logo, ortak arayüz stili ve bağımsız teknik kimlik kaynakta uygulanır. Şirket/yayıncı adı, hedef kullanıcı ve ayrıntılı özellik kapsamı, destek/yayın adresi ve güncelleme sunucusu henüz kesinleşmedi; teknik kaynak değişikliği kurulum/yayın kanıtı değildir.
 - Mevcut Windows/macOS masaüstü ve gömülü oyun mimarisi korunur; yeni mobil motor, bağımsız oyun yayını, mağaza hesabı veya GBMB markası eklenmez. Oyun üretim kuralları prototip, farklı mekanik, okunabilirlik, dışsallaştırılmış metin ve gerçek oynanış kanıtı için uygulanır; kullanıcının kendi markası önceliklidir.
 - Aktif veriler, servisler, kimlik bilgileri ve kullanıcı varlıkları korunur. Toplu `monocode` metin değiştirme yapılmaz; uyumluluk, protokol ve depolama alanları ayrı ele alınır.
 - Yerel uygulama geliştirme kapsamı commit/push, yayın, gerçek kurulum veya mevcut host servisini değiştirme yetkisi vermez.
@@ -140,7 +140,7 @@ Faz sırası: **A karar/envanter → B temel kimlik/tasarım → C ekranlar + D 
 
 ## İlk uygulanabilir dilim
 
-1. A03–A05 envanter ve B01/B04 gibi geri alınabilir altyapı işleriyle başla; İmece görünür adını kullan, stil/yayıncı/teknik kimlik kararları verilmeden bunları tamamlanmış marka veya dağıtım olarak sunma.
+1. A03–A05 envanter ve B01/B04 gibi geri alınabilir altyapı işleriyle başla; imc code görünür adını kullan, stil/yayıncı/teknik kimlik kararları verilmeden bunları tamamlanmış marka veya dağıtım olarak sunma.
 2. A01/A02 kararlarıyla ana ekran, sohbet ve ayarlar için yeni kompozisyonu üret; B02/B03/C01 ilk dikey dilimi oluştur.
 3. D01/D08/D09 üzerinden ilk görünür varlık dönüşümünü uygula; D03/D04'te farklı oyunları oynanabilir hale getir.
 4. C'nin kalan ekranları ve D'nin sanat/ses/oyun polish'i tamamlanınca F01/F02; ardından erişilebilir çalışan platformlarda F03–F05.

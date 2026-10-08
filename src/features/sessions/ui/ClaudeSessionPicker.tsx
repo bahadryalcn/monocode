@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import { ModalPanel } from "../../../shared/ui/Modal";
 import {
@@ -20,6 +21,7 @@ export function ClaudeSessionPicker({
   onPick,
   onClose,
 }: Props) {
+  useLocale();
   const [sessions, setSessions] = useState<ClaudeSessionSummary[] | null>(null);
 
   useEffect(() => {
@@ -40,16 +42,14 @@ export function ClaudeSessionPicker({
   return (
     <ModalPanel
       onClose={onClose}
-      title="Resume a Claude Code conversation"
-      description="Picked up from where Claude Code left off in this project."
+      title={t("Resume a Claude Code conversation")}
+      description={t("Picked up from where Claude Code left off in this project.")}
       fitViewport
     >
       {sessions === null ? (
-        <p className="px-1 py-6 text-center text-sm opacity-60">Reading…</p>
+        <p className="px-1 py-6 text-center text-sm opacity-60">{t("Reading…")}</p>
       ) : sessions.length === 0 ? (
-        <p className="px-1 py-6 text-center text-sm opacity-60">
-          Claude Code has not recorded a conversation in this project yet.
-        </p>
+        <p className="px-1 py-6 text-center text-sm opacity-60">{t("Claude Code has not recorded a conversation in this project yet.")}</p>
       ) : (
         <ul className="flex flex-col gap-1">
           {sessions.map((session) => (
@@ -63,8 +63,8 @@ export function ClaudeSessionPicker({
                 <span className="text-xs opacity-60">
                   {formatWhen(session.updatedAt)} ·{" "}
                   {session.messageCount === 1
-                    ? "1 message"
-                    : `${session.messageCount} messages`}
+                    ? t("1 message")
+                    : t("{p0} messages", { p0: session.messageCount })}
                 </span>
               </button>
             </li>
@@ -81,8 +81,8 @@ function formatWhen(at: number): string {
   const today = new Date();
   const sameDay = date.toDateString() === today.toDateString();
   return sameDay
-    ? date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
-    : date.toLocaleDateString(undefined, {
+    ? date.toLocaleTimeString(getLocale(), { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleDateString(getLocale(), {
         year: "numeric",
         month: "short",
         day: "numeric",

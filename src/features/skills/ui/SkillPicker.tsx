@@ -1,3 +1,5 @@
+import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
+import { t, useLocale } from "../../../shared/i18n";
 import { Plus } from "../../../shared/ui/icons";
 import {
   Fragment,
@@ -52,6 +54,7 @@ export function SkillPicker({
   onCancelCreate,
   onCreate,
 }: Props) {
+  useLocale();
   return (
     <div
       data-skill-picker
@@ -88,9 +91,7 @@ export function SkillPicker({
               onClick={onStartCreate}
               className="flex w-full items-center gap-2 border-t border-stroke px-2.5 py-2 text-left text-[12px] text-content/70 hover:bg-content/10 hover:text-content"
             >
-              <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />
-              New skill
-            </button>
+              <Plus className="size-3.5 shrink-0" strokeWidth={1.75} />{t("New skill")}</button>
           ) : null}
         </>
       )}
@@ -115,6 +116,7 @@ function SkillList({
   onActive: (index: number) => void;
   onPick: (skill: Skill) => void;
 }) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeRef = useRef<HTMLButtonElement>(null);
   const pointer = useRef({ x: Number.NaN, y: Number.NaN, allow: false });
@@ -149,7 +151,7 @@ function SkillList({
   if (skills.length === 0) {
     return (
       <p className="px-3 py-2.5 text-[12px] text-content/50">
-        {query.trim() ? "No matching commands or skills" : "No commands yet"}
+        {query.trim() ? t("No matching commands or skills") : t("No commands yet")}
       </p>
     );
   }
@@ -158,7 +160,7 @@ function SkillList({
     <div
       ref={lockOverscroll}
       role="listbox"
-      aria-label="Commands and skills"
+      aria-label={t("Commands and skills")}
       onMouseMove={onListMouseMove}
       className={`${compact ? "max-h-48" : "max-h-[min(240px,40vh)]"} overflow-y-auto overscroll-none px-1 py-1`}
     >
@@ -167,9 +169,7 @@ function SkillList({
         return (
           <Fragment key={`${skill.kind}:${skill.source}:${skill.invocation}`}>
           {skill.kind === "template" && skills[index - 1]?.kind !== "template" ? (
-            <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-content/40">
-              Templates
-            </p>
+            <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-content/40">{t("Templates")}</p>
           ) : null}
           <button
             ref={highlighted ? activeRef : undefined}
@@ -229,6 +229,7 @@ export function CreateSkillForm({
   onCancel: () => void;
   onCreate: (name: string, scope: "project" | "user") => void;
 }): ReactNode {
+  useLocale();
   const input = useRef<HTMLInputElement>(null);
   const project = isLocalProject(cwd);
   const [name, setName] = useState(() => slugSkillName(query));
@@ -260,22 +261,20 @@ export function CreateSkillForm({
       }}
       className="px-2.5 py-2"
     >
-      <p className="mb-2 text-[11px] text-content/50">
-        Writes a starter SKILL.md you can edit.
-      </p>
+      <p className="mb-2 text-[11px] text-content/50">{t("Writes a starter SKILL.md you can edit.")}</p>
       <input
         ref={input}
         value={name}
         spellCheck={false}
-        placeholder="skill-name"
-        aria-label="Skill name"
+        placeholder={t("skill-name")}
+        aria-label={t("Skill name")}
         disabled={busy}
         onChange={(e) => setName(e.target.value)}
         className={`mb-2 w-full rounded-md bg-content/10 px-2 py-1.5 text-[13px] text-content outline-none placeholder:text-content/40 ${monospace ? "font-mono" : "font-sans"}`}
       />
       <div className="mb-2 flex gap-1">
         <ScopeButton
-          label="Project"
+          label={t("Project")}
           hint=".agents/skills"
           monospace={monospace}
           selected={scope === "project"}
@@ -283,7 +282,7 @@ export function CreateSkillForm({
           onClick={() => setScope("project")}
         />
         <ScopeButton
-          label="Personal"
+          label={t("Personal")}
           hint="~/.agents/skills"
           monospace={monospace}
           selected={scope === "user"}
@@ -294,9 +293,7 @@ export function CreateSkillForm({
       {error ? (
         <p className="mb-2 text-[12px] text-content/70">{error}</p>
       ) : !name.trim() || valid ? null : (
-        <p className="mb-2 text-[12px] text-content/50">
-          Use lowercase letters, numbers, and hyphens.
-        </p>
+        <p className="mb-2 text-[12px] text-content/50">{t("Use lowercase letters, numbers, and hyphens.")}</p>
       )}
       <div className="flex items-center justify-end gap-1">
         <button
@@ -304,15 +301,13 @@ export function CreateSkillForm({
           disabled={busy}
           onClick={onCancel}
           className="rounded-md px-2 py-1 text-[12px] text-content/50 hover:bg-content/10 hover:text-content"
-        >
-          Cancel
-        </button>
+        >{t("Cancel")}</button>
         <button
           type="submit"
           disabled={!valid || busy}
           className="rounded-md bg-content/20 px-2 py-1 text-[12px] text-content disabled:opacity-40"
         >
-          {busy ? "Creating…" : "Create"}
+          {busy ? t("Creating…") : t("Create")}
         </button>
       </div>
     </form>
@@ -334,6 +329,7 @@ function ScopeButton({
   disabled?: boolean;
   onClick: () => void;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -359,7 +355,7 @@ function scopeLabel(skill: Skill): string {
   if (skill.kind === "native") {
     return skill.origin ? `${skill.source} · ${skill.origin}` : skill.source;
   }
-  if (skill.kind === "builtin") return "monocode";
+  if (skill.kind === "builtin") return PRODUCT_IDENTITY.displayName;
   if (skill.kind === "template") return "template";
   if (skill.scope === "user") return "personal";
   if (skill.source !== "agents" && skill.source !== "monocode") return skill.source;

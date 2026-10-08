@@ -30,26 +30,29 @@ it("uses the runtime product name once it resolves", async () => {
   expect(appName()).toBe("Custom Product");
 });
 
-it("keeps the imc fallback when the lookup fails or is blank", async () => {
+it("keeps the imc code fallback when the lookup fails or is blank", async () => {
   vi.doMock("@tauri-apps/api/app", () => ({
     getName: async () => {
       throw new Error("not in Tauri");
     },
   }));
   const failing = await import("./appName");
-  expect(await failing.loadAppName()).toBe("imc");
+  expect(await failing.loadAppName()).toBe("imc code");
   vi.resetModules();
   vi.doMock("@tauri-apps/api/app", () => ({ getName: async () => "  " }));
   const blank = await import("./appName");
-  expect(await blank.loadAppName()).toBe("imc");
+  expect(await blank.loadAppName()).toBe("imc code");
 });
 
 it.each([
-  ["MonoCode", "imc"],
-  ["MonoCode Dev", "imc Dev"],
-  ["MonoCode Fork", "imc Fork"],
-  ["Imece", "imc"],
-  ["Imece Dev", "imc Dev"],
+  ["MonoCode", "imc code"],
+  ["MonoCode Dev", "imc code Dev"],
+  ["MonoCode Fork", "imc code Fork"],
+  ["Imece", "imc code"],
+  ["Imece Dev", "imc code Dev"],
+  ["imc", "imc code"],
+  ["imc Dev", "imc code Dev"],
+  ["imc Fork", "imc code Fork"],
 ])("adapts legacy native name %s to %s", async (nativeName, displayName) => {
   vi.doMock("@tauri-apps/api/app", () => ({ getName: async () => nativeName }));
   const { appName, loadAppName } = await import("./appName");

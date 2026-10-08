@@ -31,7 +31,8 @@ export type HarnessId =
   | "fx"
   | "hermes"
   | "antigravity"
-  | "gemini";
+  | "gemini"
+  | "acp";
 
 export const HARNESSES: HarnessId[] = [
   "claude",
@@ -45,6 +46,7 @@ export const HARNESSES: HarnessId[] = [
   "hermes",
   "antigravity",
   "gemini",
+  "acp",
 ];
 
 export type BlockRole =
@@ -399,6 +401,7 @@ export type Block = {
    * rather than turn chrome like a status ping. Never folds into the trail.
    */
   notice?: "error" | "interrupt";
+  statusKey?: string;
 };
 
 export type RuntimeMode =
@@ -553,6 +556,7 @@ export const HARNESS_LABEL: Record<HarnessId, string> = {
   hermes: "hermes",
   antigravity: "antigravity",
   gemini: "gemini",
+  acp: "acp",
 };
 
 export const HARNESS_TITLE: Record<HarnessId, string> = {
@@ -567,6 +571,7 @@ export const HARNESS_TITLE: Record<HarnessId, string> = {
   hermes: "Hermes Agent",
   antigravity: "Antigravity",
   gemini: "Gemini",
+  acp: "ACP Agent",
 };
 
 /** fx ACP rejects attachment prompt blocks. */

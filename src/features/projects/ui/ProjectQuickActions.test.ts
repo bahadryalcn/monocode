@@ -62,7 +62,11 @@ it("runs a saved action and hides local controls for remote projects", async () 
   try {
     await act(async () =>
       root.render(
-        createElement(ProjectQuickActions, { cwd: "C:/project", onRun }),
+        createElement(ProjectQuickActions, {
+          cwd: "C:/project-worktree",
+          actionsCwd: "C:/project",
+          onRun,
+        }),
       ),
     );
     await act(async () =>
@@ -71,6 +75,9 @@ it("runs a saved action and hides local controls for remote projects", async () 
         .click(),
     );
     expect(onRun).toHaveBeenCalledWith(action);
+    const openButton = host.querySelector<HTMLButtonElement>('[aria-label="Open project in"]')!;
+    expect(openButton.textContent).toBe("");
+    expect(openButton.title).toContain("C:/project-worktree");
     await act(async () =>
       root.render(
         createElement(ProjectQuickActions, {
@@ -103,6 +110,22 @@ it("runs a shortcut once and respects the browser-opening preference", async () 
   const root = createRoot(host);
   const onRun = vi.fn();
   try {
+    await act(async () =>
+      root.render(
+        createElement(ProjectQuickActions, {
+          cwd: "C:/project",
+          onRun,
+          shortcutsEnabled: false,
+        }),
+      ),
+    );
+    await act(async () =>
+      window.dispatchEvent(new KeyboardEvent("keydown", {
+        code: "KeyY", ctrlKey: true, altKey: true,
+        bubbles: true, cancelable: true,
+      })),
+    );
+    expect(onRun).not.toHaveBeenCalled();
     await act(async () =>
       root.render(
         createElement(ProjectQuickActions, { cwd: "C:/project", onRun }),

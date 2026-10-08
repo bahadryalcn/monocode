@@ -1,3 +1,4 @@
+import { defaultProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import {
   gitRangeContext,
   gitStagedContext,
@@ -25,6 +26,7 @@ export async function generateCodexCommitMessage(
   signal?.throwIfAborted();
   const output = await runCodexTextPrompt({
     cwd,
+    providerAccountId: defaultProviderAccountId("codex"),
     prompt: buildCommitMessagePrompt({
       branch: context.branch,
       stagedSummary: context.summary,

@@ -11,7 +11,7 @@ import time
 
 # Presentation/artifact identity is separate from the internal Rust binary name.
 PRODUCT_IDENTITY = {
-    'productName': 'imc', 'binaryName': 'imc',
+    'productName': 'imc code', 'binaryName': 'imc',
     'bundleIdentifier': 'com.imece.desktop', 'hostDirectory': '.imece-host',
     'hostService': 'com.imece.host', 'hostTaskName': 'Imece Host',
     'hostLauncher': 'imece-host', 'hostPort': 3775,
@@ -20,7 +20,7 @@ PRODUCT_IDENTITY = {
 def package_identity(manifest):
     identity = manifest.get('identity')
     if identity != PRODUCT_IDENTITY:
-        raise RuntimeError('Package identity is missing or incompatible; rebuild the imc package')
+        raise RuntimeError('Package identity is missing or incompatible; rebuild the imc code package')
     return identity
 
 def digest(path):

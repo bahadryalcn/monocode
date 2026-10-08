@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import {
@@ -52,6 +53,7 @@ export function LiveAgentsPreview({
   groupCustomColors: groupCustomColorsProp,
   groupMascots: groupMascotsProp,
 }: Props) {
+  useLocale();
   const [loadedGroupLabels] = useState(loadTabGroupLabels);
   const [loadedGroupColors] = useState(loadTabGroupColors);
   const [loadedGroupCustomColors] = useState(loadTabGroupCustomColors);
@@ -88,16 +90,16 @@ export function LiveAgentsPreview({
 
   return (
     <section
-      aria-label={hasWorkingAgents ? "Working agents" : "Finished agents"}
+      aria-label={hasWorkingAgents ? t("Working agents") : t("Finished agents")}
       className={`shrink-0 ${collapsible ? "" : "px-2"} ${bottomSpacing ? "pb-2" : ""}`}
       data-live-agents-preview="full"
     >
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {workingCount === 0
-          ? `${finishedCount} finished agent${finishedCount === 1 ? "" : "s"}`
+          ? t((finishedCount === 1 ? "{p0} finished agent" : "{p0} finished agents"), { p0: finishedCount })
           : finishedCount === 0
-            ? `${workingCount} working agent${workingCount === 1 ? "" : "s"}`
-            : `${workingCount} working agent${workingCount === 1 ? "" : "s"}, ${finishedCount} finished agent${finishedCount === 1 ? "" : "s"}`}
+            ? t((workingCount === 1 ? "{p0} working agent" : "{p0} working agents"), { p0: workingCount })
+            : t((workingCount === 1 ? (finishedCount === 1 ? "{p0} working agent, {p2} finished agent" : "{p0} working agent, {p2} finished agents") : (finishedCount === 1 ? "{p0} working agents, {p2} finished agent" : "{p0} working agents, {p2} finished agents")), { p0: workingCount, p2: finishedCount })}
       </span>
       <div className="overflow-hidden rounded-lg border border-accent/20 bg-accent/5">
         <Header
@@ -117,7 +119,7 @@ export function LiveAgentsPreview({
             }`}
           />
           <span className="min-w-0 flex-1 truncate text-xs font-semibold text-content/90">
-            {hasWorkingAgents ? "Working" : "Finished"}
+            {hasWorkingAgents ? t("Working") : t("Finished")}
           </span>
           <span className="rounded-md bg-accent/12 px-1.5 text-[11px] font-medium tabular-nums text-content/85">
             {agents.length}
@@ -162,7 +164,7 @@ export function LiveAgentsPreview({
               ) : (
                 <ChevronDown className="size-3" strokeWidth={1.75} />
               )}
-              {expanded ? "Show less" : `${extra} more`}
+              {expanded ? t("Show less") : t("{p0} more", { p0: extra })}
             </button>
           ) : null}
         </div>
@@ -190,6 +192,7 @@ function LiveAgentCard({
   groupCustomColors: Record<string, string>;
   groupMascots: Record<string, string>;
 }) {
+  useLocale();
   const seed = projectName(agent.cwd);
   const key = projectKey(agent.cwd);
   const project = resolveTabGroupLabel(key, groupLabels, seed);
@@ -273,7 +276,7 @@ function LiveAgentCard({
         <HarnessIcon harness={agent.harness} className="size-3 shrink-0" />
         {remote ? (
           <Internet
-            aria-label="On another machine"
+            aria-label={t("On another machine")}
             className="size-3 shrink-0"
             strokeWidth={1.75}
           />

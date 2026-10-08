@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   AppWindow,
   ChevronRight,
@@ -102,29 +103,29 @@ type MenuItem = {
 const ITEMS: MenuItem[] = [
   {
     id: "new-tab",
-    label: "New tab in group",
+    get label() { return t("New tab in group"); },
     shortcut: `${MOD}T`,
     icon: SquarePlus,
   },
   {
     id: "new-window",
-    label: "Move group to new window",
+    get label() { return t("Move group to new window"); },
     icon: AppWindow,
   },
   {
     id: "close-group",
-    label: "Close group",
+    get label() { return t("Close group"); },
     shortcut: `${MOD}W`,
     icon: X,
   },
   {
     id: "ungroup",
-    label: "Ungroup",
+    get label() { return t("Ungroup"); },
     icon: Ungroup,
   },
   {
     id: "delete-group",
-    label: "Delete group",
+    get label() { return t("Delete group"); },
     danger: true,
     icon: Trash2,
   },
@@ -157,6 +158,7 @@ export function TabGroupMenu({
   onExtraPick,
   footer,
 }: Props) {
+  useLocale();
   const menuId = useId();
   const [submenu, setSubmenu] = useState<{
     item: TabGroupMenuExtraItem;
@@ -247,7 +249,7 @@ export function TabGroupMenu({
           value={name}
           onChange={(e) => setName(e.target.value)}
           onBlur={() => void commitName()}
-          aria-label="Group name"
+          aria-label={t("Group name")}
           aria-invalid={nameError ? true : undefined}
           className="mb-2 w-full rounded-lg border border-content/10 bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none ring-accent/40 focus:ring-1"
         />
@@ -264,8 +266,8 @@ export function TabGroupMenu({
           <div className="mb-2 flex items-center gap-2 px-0.5">
             <button
               type="button"
-              title={logoPath ? "Change project logo" : "Add project logo"}
-              aria-label={logoPath ? "Change project logo" : "Add project logo"}
+              title={logoPath ? t("Change project logo") : t("Add project logo")}
+              aria-label={logoPath ? t("Change project logo") : t("Add project logo")}
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 void (async () => {
@@ -290,18 +292,18 @@ export function TabGroupMenu({
               />
             </button>
             <div className="min-w-0 flex-1">
-              <p className="text-[11px] text-content/50">Project logo</p>
+              <p className="text-[11px] text-content/50">{t("Project logo")}</p>
               <p className="truncate text-[12px] text-content/70">
                 {logoPath
-                  ? "Shown in tabs and composer"
-                  : "Optional — replaces folder icon"}
+                  ? t("Shown in tabs and composer")
+                  : t("Optional — replaces folder icon")}
               </p>
             </div>
             {logoPath ? (
               <button
                 type="button"
-                title="Remove project logo"
-                aria-label="Remove project logo"
+                title={t("Remove project logo")}
+                aria-label={t("Remove project logo")}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
                   void clearProjectLogo(projectKey(logoProject)).then(
@@ -436,6 +438,7 @@ function MenuRow({
   onHover?: (anchor: HTMLButtonElement) => void;
   expanded?: boolean;
 }) {
+  useLocale();
   const Icon = item.icon;
   return (
     <button

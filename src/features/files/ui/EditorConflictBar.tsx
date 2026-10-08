@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { ChevronDown, ChevronUp } from "../../../shared/ui/icons";
 
 const iconButton =
@@ -30,28 +31,27 @@ export function EditorConflictBar({
   fileNote?: string | null;
   onMarkResolved: () => void;
 }) {
+  useLocale();
   const nextFile = onNextFile ? (
     <button
       type="button"
-      title="Open the next conflicted file"
+      title={t("Open the next conflicted file")}
       onMouseDown={(event) => event.preventDefault()}
       onClick={onNextFile}
       className="h-6 shrink-0 rounded-md px-2 text-[11px] text-content/70 hover:bg-content/10 hover:text-content"
-    >
-      Next file
-    </button>
+    >{t("Next file")}</button>
   ) : null;
   if (count === 0 && !canMarkResolved) return null;
   return (
     <header
       className="flex h-8 shrink-0 items-center justify-between gap-3 border-b border-stroke px-3 pr-1 text-[11px]"
       role="toolbar"
-      aria-label="Merge conflicts"
+      aria-label={t("Merge conflicts")}
     >
       {count > 0 ? (
         <>
           <span className="font-semibold tabular-nums text-amber-400" role="status">
-            {count === 1 ? "1 conflict" : `${count} conflicts`}
+            {count === 1 ? t("1 conflict") : t("{p0} conflicts", { p0: count })}
           </span>
           <div className="flex items-center gap-0.5">
             {fileNote ? (
@@ -62,8 +62,8 @@ export function EditorConflictBar({
             {nextFile}
             <button
               type="button"
-              title="Previous conflict"
-              aria-label="Previous conflict"
+              title={t("Previous conflict")}
+              aria-label={t("Previous conflict")}
               onMouseDown={(event) => event.preventDefault()}
               onClick={onPrev}
               className={iconButton}
@@ -72,8 +72,8 @@ export function EditorConflictBar({
             </button>
             <button
               type="button"
-              title="Next conflict"
-              aria-label="Next conflict"
+              title={t("Next conflict")}
+              aria-label={t("Next conflict")}
               onMouseDown={(event) => event.preventDefault()}
               onClick={onNext}
               className={iconButton}
@@ -90,7 +90,7 @@ export function EditorConflictBar({
                 {error}
               </span>
             ) : (
-              "All conflicts resolved"
+              t("All conflicts resolved")
             )}
           </span>
           <div className="flex shrink-0 items-center gap-1">
@@ -105,10 +105,10 @@ export function EditorConflictBar({
               disabled={marking}
               onMouseDown={(event) => event.preventDefault()}
               onClick={onMarkResolved}
-              title="Save the file and stage it"
+              title={t("Save the file and stage it")}
               className="mr-2 h-6 shrink-0 rounded-md bg-content/10 px-2 text-[11px] font-medium text-content hover:bg-content/15 disabled:opacity-50"
             >
-              {marking ? "Staging…" : "Mark resolved"}
+              {marking ? t("Staging…") : t("Mark resolved")}
             </button>
           </div>
         </>

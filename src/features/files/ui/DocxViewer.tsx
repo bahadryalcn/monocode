@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import mammoth from "mammoth/mammoth.browser";
 import { documentErrorMessage } from "../model/documentViewer";
@@ -29,6 +30,7 @@ const DOCUMENT_CLASS = [
 ].join(" ");
 
 export default function DocxViewer({ bytes }: { bytes: Uint8Array }) {
+  useLocale();
   const [state, setState] = useState<State>({ status: "loading" });
 
   useEffect(() => {
@@ -60,25 +62,24 @@ export default function DocxViewer({ bytes }: { bytes: Uint8Array }) {
 
   if (state.status === "loading") {
     return (
-      <div className="grid h-full place-items-center text-[12px] text-content/45">
-        Converting document…
-      </div>
+      <div className="grid h-full place-items-center text-[12px] text-content/45">{t("Converting document…")}</div>
     );
   }
   if (state.status === "error") {
     return (
-      <DocumentMessage title="Couldn’t read this document" error>
+      <DocumentMessage title={t("Couldn’t read this document")} error>
         {state.message}
       </DocumentMessage>
     );
   }
   if (!state.html.trim()) {
-    return <DocumentMessage title="This document has no readable content" />;
+    return <DocumentMessage title={t("This document has no readable content")} />;
   }
   return <DocxPages html={state.html} />;
 }
 
 function DocxPages({ html }: { html: string }) {
+  useLocale();
   const scrollRef = useRef<HTMLDivElement>(null);
   const { zoom, reset } = useAnchoredZoom(scrollRef, "docx", {
     min: MIN_ZOOM,

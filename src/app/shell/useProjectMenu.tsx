@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AppWindow,
@@ -134,7 +135,7 @@ function projectMenuExtraItems(
   const lockedGroups = getGroupLockView().lock.lockedGroupIds;
   projectGroups = projectGroups.filter((group) => !lockedGroups.has(group.id));
   const groupSubmenu: ExplorerMenuItem[] = [
-    { kind: "item", id: "project-group:new", label: "New group…" },
+    { kind: "item", id: "project-group:new", get label() { return t("New group…"); } },
     ...(projectGroups.length > 0 ? [{ kind: "sep" } as const] : []),
     ...projectGroups.map((group) => ({
       kind: "item" as const,
@@ -146,38 +147,38 @@ function projectMenuExtraItems(
     {
       kind: "item",
       id: "project-group:none",
-      label: "Ungrouped",
+      get label() { return t("Ungrouped"); },
       checked: currentProjectGroupId == null,
     },
   ];
   const items: TabGroupMenuExtraItem[] = [
     {
       id: "background",
-      label: "Background image",
+      get label() { return t("Background image"); },
       icon: ImagePlus,
     },
     {
       id: "project-group",
-      label: "Move to group",
+      get label() { return t("Move to group"); },
       icon: FolderTree,
       submenu: groupSubmenu,
     },
     ...(canAddDirs
-      ? [{ id: "additional-dirs", label: "Additional folders…", icon: FolderPlus }]
+      ? [{ id: "additional-dirs", get label() { return t("Additional folders…"); }, icon: FolderPlus }]
       : []),
     ...(canReconnect
       ? [
-          { id: "reconnect-machine", label: "Reconnect machine", icon: RefreshCw },
-          { id: "edit-machine", label: "Edit machine…", icon: Pencil },
+          { id: "reconnect-machine", get label() { return t("Reconnect machine"); }, icon: RefreshCw },
+          { id: "edit-machine", get label() { return t("Edit machine…"); }, icon: Pencil },
         ]
       : []),
     pinned
-      ? { id: "unpin", label: "Unpin project", icon: PinOff }
-      : { id: "pin", label: "Pin project", icon: Pin },
+      ? { id: "unpin", get label() { return t("Unpin project"); }, icon: PinOff }
+      : { id: "pin", get label() { return t("Pin project"); }, icon: Pin },
     { id: "reveal", label: REVEAL_LABEL, icon: FolderOpen },
     {
       id: "external-editor",
-      label: "Open in editor",
+      get label() { return t("Open in editor"); },
       icon: AppWindow,
       disabled: externalEditors === null,
       submenu:
@@ -186,7 +187,7 @@ function projectMenuExtraItems(
               {
                 kind: "item",
                 id: "external-editor:loading",
-                label: "Looking for editors…",
+                get label() { return t("Looking for editors…"); },
                 disabled: true,
               },
             ]
@@ -200,14 +201,14 @@ function projectMenuExtraItems(
                 {
                   kind: "item",
                   id: "external-editor:none",
-                  label: "No supported editors found",
+                  get label() { return t("No supported editors found"); },
                   disabled: true,
                 },
               ],
     },
     {
       id: "notifications-mute",
-      label: "Mute notifications",
+      get label() { return t("Mute notifications"); },
       icon: BellOff,
       sepBefore: true,
       disabled: !notificationReady,
@@ -217,14 +218,14 @@ function projectMenuExtraItems(
   if (canConfigureNotifications) {
     items.push({
       id: "notifications-settings",
-      label: "Notification settings…",
+      get label() { return t("Notification settings…"); },
       icon: Settings,
     });
   }
   if (canRemove) {
     items.push(
-      { id: "archive", label: "Archive", icon: Archive, sepBefore: true },
-      { id: "delete", label: "Delete", icon: Trash2, danger: true },
+      { id: "archive", get label() { return t("Archive"); }, icon: Archive, sepBefore: true },
+      { id: "delete", get label() { return t("Delete"); }, icon: Trash2, danger: true },
     );
   }
   return items;
@@ -546,7 +547,7 @@ export function useProjectMenu({
           menuMuteStatus
             ? {
                 id: "notifications-resume",
-                label: "Resume notifications",
+                get label() { return t("Resume notifications"); },
                 description: menuMuteStatus,
                 icon: BellOff,
               }
@@ -587,20 +588,20 @@ export function useProjectMenu({
     const locked = getGroupLockView().lock.lockedGroupIds.has(group.id);
     const lockItems: TabGroupMenuExtraItem[] = locked
       ? [
-          { id: "unlock-group", label: "Unlock…", icon: LockOpen },
-          { id: "remove-group-lock", label: "Remove lock…", icon: Lock },
+          { id: "unlock-group", get label() { return t("Unlock…"); }, icon: LockOpen },
+          { id: "remove-group-lock", get label() { return t("Remove lock…"); }, icon: Lock },
         ]
       : group.lockable
         ? [
-            { id: "lock-group", label: "Lock group", icon: Lock },
-            { id: "remove-group-lock", label: "Remove lock…", icon: Lock },
+            { id: "lock-group", get label() { return t("Lock group"); }, icon: Lock },
+            { id: "remove-group-lock", get label() { return t("Remove lock…"); }, icon: Lock },
           ]
         : [
-            { id: "lock-group", label: "Lock group", icon: Lock },
+            { id: "lock-group", get label() { return t("Lock group"); }, icon: Lock },
             {
               id: "make-lockable",
-              label: "Make lockable",
-              description: "Ask for the password once it is locked",
+              get label() { return t("Make lockable"); },
+              get description() { return t("Ask for the password once it is locked"); },
               icon: Lock,
             },
           ];
@@ -610,19 +611,19 @@ export function useProjectMenu({
     const moveItems: TabGroupMenuExtraItem[] = [
       {
         id: "move-group-up",
-        label: "Move up",
+        get label() { return t("Move up"); },
         icon: ArrowUp,
         disabled: groupIndex <= 0,
       },
       {
         id: "move-group-down",
-        label: "Move down",
+        get label() { return t("Move down"); },
         icon: ChevronDown,
         disabled: groupIndex >= groupIds.length - 1,
       },
       {
         id: "move-group-top",
-        label: "Move to top",
+        get label() { return t("Move to top"); },
         icon: ArrowUp,
         disabled: groupIndex <= 0,
       },
@@ -635,7 +636,7 @@ export function useProjectMenu({
             ? [
                 {
                   id: "add-project-to-group",
-                  label: "Add project to group…",
+                  get label() { return t("Add project to group…"); },
                   icon: FolderPlus,
                 },
               ]
@@ -644,13 +645,13 @@ export function useProjectMenu({
             ? [
                 {
                   id: "workspace-refresh",
-                  label: "Refresh from workspace file",
+                  get label() { return t("Refresh from workspace file"); },
                   description: group.workspaceFile,
                   icon: RefreshCw,
                 },
                 {
                   id: "workspace-open",
-                  label: "Open workspace file",
+                  get label() { return t("Open workspace file"); },
                   icon: ExternalLink,
                 },
                 {
@@ -660,23 +661,23 @@ export function useProjectMenu({
                 },
                 {
                   id: "workspace-unlink",
-                  label: "Unlink from workspace file",
-                  description: "Projects stay in the group",
+                  get label() { return t("Unlink from workspace file"); },
+                  get description() { return t("Projects stay in the group"); },
                   icon: Ungroup,
                 },
               ]
             : []),
           {
             id: "fetch-all",
-            label: "Fetch all",
-            description: "Run git fetch in each project",
+            get label() { return t("Fetch all"); },
+            get description() { return t("Run git fetch in each project"); },
             icon: ArrowDownCircle,
             sepBefore: true,
           },
           {
             id: "delete-project-group",
-            label: "Delete group",
-            description: "Projects will become ungrouped",
+            get label() { return t("Delete group"); },
+            get description() { return t("Projects will become ungrouped"); },
             icon: Trash2,
             danger: true,
           },
@@ -730,7 +731,7 @@ export function useProjectMenu({
         footer={menuError ? <p role="alert" className="px-3 py-2 text-xs text-red-400">{menuError}</p> : undefined}
         extraItems={[
           ...moveItems,
-          { id: "hide-group", label: "Hide group", description: "Restore from Settings → Group privacy → Hidden groups", icon: EyeOff, sepBefore: true },
+          { id: "hide-group", get label() { return t("Hide group"); }, get description() { return t("Restore from Settings → Group privacy → Hidden groups"); }, icon: EyeOff, sepBefore: true },
           ...lockItems.map((item, index) =>
             index === 0 ? { ...item, sepBefore: true } : item,
           ),
@@ -844,7 +845,7 @@ export function useProjectMenu({
           gap={0}
           width={280}
           role="dialog"
-          aria-label="Mute project notifications"
+          aria-label={t("Mute project notifications")}
           onDismiss={closeNotificationMenu}
           className="space-y-1 overflow-y-auto p-3"
         >
@@ -889,8 +890,8 @@ export function useProjectMenu({
       ) : null}
       {lockDialog?.kind === "remove-lock" ? (
         <PasswordPromptDialog
-          title={`Remove lock from ${lockDialog.name}`}
-          description="The group stays; it just stops asking for the password."
+          title={t("Remove lock from {p0}", { p0: lockDialog.name })}
+          description={t("The group stays; it just stops asking for the password.")}
           submitLabel="Remove lock"
           danger
           verify={(password) => removeGroupLock(lockDialog.groupId, password)}

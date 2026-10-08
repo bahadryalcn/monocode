@@ -12,9 +12,9 @@ const resolved: Promise<string> = (async () => {
     const name = (await getName()).trim();
     // Native package metadata stays compatible until the installer migration.
     // Adapt only known legacy product names; custom runtime names remain intact.
-    if (name === "MonoCode" || name === "Imece") cachedName = PRODUCT_IDENTITY.displayName;
-    else if (name === "MonoCode Dev" || name === "Imece Dev") cachedName = `${PRODUCT_IDENTITY.displayName} Dev`;
-    else if (name === "MonoCode Fork") cachedName = `${PRODUCT_IDENTITY.displayName} Fork`;
+    if (name === "MonoCode" || name === "Imece" || name === "imc") cachedName = PRODUCT_IDENTITY.displayName;
+    else if (name === "MonoCode Dev" || name === "Imece Dev" || name === "imc Dev") cachedName = `${PRODUCT_IDENTITY.displayName} Dev`;
+    else if (name === "MonoCode Fork" || name === "imc Fork") cachedName = `${PRODUCT_IDENTITY.displayName} Fork`;
     else if (name) cachedName = name;
   } catch {
     // Outside Tauri (tests, browser preview) the fallback stays.

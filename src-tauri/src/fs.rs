@@ -342,7 +342,7 @@ pub struct OmpAssistantText {
     concat: String,
 }
 
-/// Recover displayed OMP custom messages that older MonoCode builds omitted
+/// Recover displayed OMP custom messages that older imc code builds omitted
 /// from their persisted transcript. The provider id is already stored with the
 /// session; matching the original JSONL keeps the repair deterministic instead
 /// of guessing from neighbouring reasoning text.
@@ -1545,7 +1545,7 @@ fn git_github_status_for() -> GitHubStatus {
     }
 }
 
-/// Whether the active GitHub CLI account has starred the MonoCode repository.
+/// Whether the active GitHub CLI account has starred the imc code repository.
 #[tauri::command]
 pub async fn github_monocode_star_status() -> Result<GitHubStarStatus, String> {
     tauri::async_runtime::spawn_blocking(github_monocode_star_status_for)
@@ -1570,7 +1570,7 @@ fn github_star_status_from_result(result: Result<String, String>) -> GitHubStarS
     }
 }
 
-/// Star the MonoCode repository for the active GitHub CLI account.
+/// Star the imc code repository for the active GitHub CLI account.
 #[tauri::command]
 pub async fn github_star_monocode() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -3524,7 +3524,7 @@ fn with_signing_hint(error: String) -> String {
         return error;
     }
     format!(
-        "{error}\n\nGit couldn't sign this commit. MonoCode runs git without a terminal, \
+        "{error}\n\nGit couldn't sign this commit. imc code runs git without a terminal, \
          so your signer needs a GUI passphrase prompt (e.g. pinentry-mac) or an unlocked agent."
     )
 }

@@ -1,3 +1,4 @@
+import { t, sourceMessages } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   ALT,
@@ -38,9 +39,9 @@ export type SettingsSectionId =
 export type SettingsGroupId = "app" | "agents" | "workspace";
 
 export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
-  { id: "app", label: "App" },
-  { id: "agents", label: "Agents" },
-  { id: "workspace", label: "Workspace" },
+  { id: "app", get label() { return t("App"); } },
+  { id: "agents", get label() { return t("Agents"); } },
+  { id: "workspace", get label() { return t("Workspace"); } },
 ];
 
 export type SettingsSection = {
@@ -56,116 +57,107 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "general",
     group: "app",
-    label: "General",
-    description:
-      `The build you are running, how ${PRODUCT_IDENTITY.displayName} reaches you, and the panels it shows.`,
+    get label() { return t("General"); },
+    get description() { return t("The build you are running, how {p0} reaches you, and the panels it shows.", { p0: PRODUCT_IDENTITY.displayName }); },
     keywords: "version update sounds notifications notes rail sleep",
   },
   {
     id: "connections",
     group: "app",
-    label: "Connections",
-    description: "Connect your machines and run agents remotely through SSH.",
+    get label() { return t("Connections"); },
+    get description() { return t("Connect your machines and run agents remotely through SSH."); },
     keywords: "ssh remote host machine server environment always on",
   },
   {
     id: "appearance",
     group: "app",
-    label: "Appearance",
-    description:
-      "Theme, tint, translucency, workspace layout, and conversation backgrounds.",
+    get label() { return t("Appearance"); },
+    get description() { return t("Theme, tint, translucency, workspace layout, and conversation backgrounds."); },
     keywords:
       "theme dark light color accent glass blur zoom scale wallpaper rail sidebar",
   },
   {
     id: "keybindings",
     group: "app",
-    label: "Keybindings",
-    description:
-      "Every shortcut the workspace handles, from the app menu and the key handler.",
+    get label() { return t("Keybindings"); },
+    get description() { return t("Every shortcut the workspace handles, from the app menu and the key handler."); },
     keywords: "shortcut hotkey keyboard binding",
   },
   {
     id: "terminal",
     group: "app",
-    label: "Terminal",
-    description:
-      "The shell new terminals open in and `!commands` from the composer run in.",
+    get label() { return t("Terminal"); },
+    get description() { return t("The shell new terminals open in and `!commands` from the composer run in."); },
     keywords:
       "shell profile bash git bash powershell pwsh cmd command prompt wsl zsh fish default",
   },
   {
     id: "chat",
     group: "agents",
-    label: "Chat",
-    description:
-      "How transcripts read, what the composer does with a follow-up, how files save, and how diffs open.",
+    get label() { return t("Chat"); },
+    get description() { return t("How transcripts read, what the composer does with a follow-up, how files save, and how diffs open."); },
     keywords:
       "transcript composer prompt message diff review layout format save editor template snippet trigger queue",
   },
   {
     id: "providers",
     group: "agents",
-    label: "Providers",
-    description:
-      `Provider accounts, agent CLIs ${PRODUCT_IDENTITY.displayName} can drive, and the model new sessions start with.`,
+    get label() { return t("Providers"); },
+    get description() { return t("Provider accounts, agent CLIs {p0} can drive, and the model new sessions start with.", { p0: PRODUCT_IDENTITY.displayName }); },
     keywords:
       "account sign in login model harness claude codex gemini cli default hooks",
   },
   {
     id: "usage",
     group: "agents",
-    label: "Usage",
-    description: "Account limits, remaining capacity and usage by project.",
+    get label() { return t("Usage"); },
+    get description() { return t("Account limits, remaining capacity and usage by project."); },
     keywords: "quota limits weekly session tokens cost",
   },
   {
     id: "mcp",
     group: "agents",
-    label: "MCP",
-    description:
-      "Find MCP servers across providers and manage their connections.",
+    get label() { return t("MCP"); },
+    get description() { return t("Find MCP servers across providers and manage their connections."); },
     keywords:
       "tools servers connections oauth authenticate login claude codex cursor opencode",
   },
   {
     id: "skills",
     group: "agents",
-    label: "Skills",
-    description:
-      "Discover and manage file skills from project, personal, and harness folders.",
+    get label() { return t("Skills"); },
+    get description() { return t("Discover and manage file skills from project, personal, and harness folders."); },
     keywords: "skill instructions prompt",
   },
   {
     id: "inbox",
     group: "workspace",
-    label: "Inbox",
-    description:
-      "Manage Inbox services and notification preferences for each project.",
+    get label() { return t("Inbox"); },
+    get description() { return t("Manage Inbox services and notification preferences for each project."); },
     keywords:
       "github gitlab linear jira atlassian azure devops connect token integration",
   },
   {
     id: "archive",
     group: "workspace",
-    label: "Archive",
-    description: "Projects and conversations you have archived.",
+    get label() { return t("Archive"); },
+    get description() { return t("Projects and conversations you have archived."); },
     keywords: "archived restore delete hidden",
   },
   {
     id: "worktrees",
     group: "workspace",
-    label: "Worktrees",
-    description: "Manage additional worktrees for each project.",
+    get label() { return t("Worktrees"); },
+    get description() { return t("Manage additional worktrees for each project."); },
     keywords: "git branch worktree working copy project create delete",
   },
   {
     id: "groupLock",
     group: "workspace",
-    label: "Group privacy",
-    description:
-      "Hide and restore project groups, or protect them with a password. Hidden projects stay on disk.",
-    keywords: "password privacy hide hidden restore private protect secure passcode gizli gizle geri getir görünür",
+    get label() { return t("Group privacy"); },
+    get description() { return t("Hide and restore project groups, or protect them with a password. Hidden projects stay on disk."); },
+    keywords:
+      "password privacy hide hidden restore private protect secure passcode gizli gizle geri getir görünür",
   },
 ];
 
@@ -193,88 +185,95 @@ export type SettingsEntry = {
 
 export const SETTINGS_INDEX: SettingsEntry[] = [
   {
+    id: "interface-language",
+    section: "general",
+    get label() { return t("Application language"); },
+    keywords: "language locale translation system türkçe dil çeviri english deutsch français español português 中文 日本語",
+  },
+  {
     id: "terminal-default-profile",
     section: "terminal",
-    label: "Default terminal profile",
+    get label() { return t("Default terminal profile"); },
     keywords:
       "shell bash git bash powershell pwsh cmd wsl zsh default ! command",
   },
   {
     id: "hidden-project-groups",
     section: "groupLock",
-    label: "Hidden groups",
-    keywords: "hide hidden restore recover show visible temporary privacy personal gizli gizle geri getir görünür kişisel",
+    get label() { return t("Hidden groups"); },
+    keywords:
+      "hide hidden restore recover show visible temporary privacy personal gizli gizle geri getir görünür kişisel",
   },
   {
     id: "group-lock-password",
     section: "groupLock",
-    label: "Lock password",
+    get label() { return t("Lock password"); },
     keywords: "set change remove forgot reset passcode group rail protect",
   },
   {
     id: "group-lock-options",
     section: "groupLock",
-    label: `Lock groups again when ${PRODUCT_IDENTITY.displayName} starts`,
+    get label() { return t("Lock groups again when {p0} starts", { p0: PRODUCT_IDENTITY.displayName }); },
     keywords: "auto lock inactivity timeout minutes launch startup unlock all",
   },
   {
     id: "group-lock-groups",
     section: "groupLock",
-    label: "Lockable groups",
+    get label() { return t("Lockable groups"); },
     keywords: "group rail project password lock now",
   },
   {
     id: "remote-machines",
     section: "connections",
-    label: "Your machines",
+    get label() { return t("Your machines"); },
     keywords: "ssh remote connect host server environment",
   },
   {
     id: "remote-auto-reconnect",
     section: "connections",
-    label: "Automatically reconnect to remote machines",
+    get label() { return t("Automatically reconnect to remote machines"); },
     keywords: "ssh remote retry reconnect drop tunnel offline background",
   },
   {
     id: "mcp-servers",
     section: "mcp",
-    label: "MCP servers",
+    get label() { return t("MCP servers"); },
     keywords: "claude tools connections oauth authenticate login add remove",
   },
   {
     id: "project-worktrees",
     section: "worktrees",
-    label: "Project worktrees",
+    get label() { return t("Project worktrees"); },
     keywords: "git branch working copy create delete manage",
   },
   {
     id: "update",
     section: "general",
-    label: "Version",
+    get label() { return t("Version"); },
     keywords: "update upgrade release what's new build changelog",
   },
   {
     id: "import-history",
     section: "general",
-    label: "Import Claude Code and Codex sessions",
+    get label() { return t("Import Claude Code and Codex sessions"); },
     keywords: "history conversations terminal resume migrate existing",
   },
   {
     id: "sounds",
     section: "general",
-    label: "Sounds",
+    get label() { return t("Sounds"); },
     keywords: "audio cue chime mute volume",
   },
   {
     id: "notifications",
     section: "general",
-    label: "Notifications",
+    get label() { return t("Notifications"); },
     keywords: "notify alert toast permission reminder background",
   },
   {
     id: "notes",
     section: "general",
-    label: "Notes",
+    get label() { return t("Notes"); },
     keywords: "notebook markdown rail scratchpad",
   },
   ...(IS_MAC
@@ -282,7 +281,7 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
         {
           id: "quick-composer",
           section: "general" as const,
-          label: "Quick composer",
+          get label() { return t("Quick composer"); },
           keywords: "spotlight global shortcut hotkey floating prompt anywhere",
         },
       ]
@@ -290,32 +289,32 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   {
     id: "working-agents",
     section: "general",
-    label: "Working agents",
+    get label() { return t("Working agents"); },
     keywords: "live running sessions rail card",
   },
   {
     id: "file-tabs",
     section: "general",
-    label: "File tabs",
+    get label() { return t("File tabs"); },
     keywords: "editor open top workspace normal session pane beside chat",
   },
   {
     id: "tab-animations",
     section: "general",
-    label: "Tab animations",
+    get label() { return t("Tab animations"); },
     keywords: "motion open close resize transition",
   },
   {
     id: "keep-awake",
     section: "general",
-    label: "Prevent sleep while agents work",
+    get label() { return t("Prevent sleep while agents work"); },
     keywords:
       "sleep awake idle running agents windows linux macos duration 15 30 hour forever hold after",
   },
   {
     id: "keep-awake-screen",
     section: "general",
-    label: "Keep the screen on",
+    get label() { return t("Keep the screen on"); },
     keywords: "sleep display screen blank dim lock awake",
   },
   ...(IS_WIN
@@ -323,7 +322,7 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
         {
           id: "close-to-tray",
           section: "general" as const,
-          label: "Close to tray",
+          get label() { return t("Close to tray"); },
           keywords: "minimize background quit exit window taskbar windows",
         },
       ]
@@ -331,253 +330,279 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   {
     id: "theme",
     section: "appearance",
-    label: "Theme",
+    get label() { return t("Theme"); },
     keywords: "dark light system appearance mode",
   },
-  { id: "interface-contrast", section: "appearance", label: "Contrast", keywords: "borders secondary text softer stronger" },
-  { id: "chat-width", section: "appearance", label: "Chat width", keywords: "comfortable wide full messages composer" },
-  { id: "interface-font", section: "appearance", label: "Interface font", keywords: "typography typeface Segoe Arial Verdana" },
-  { id: "monospace-font", section: "appearance", label: "Monospace font", keywords: "code terminal font size Consolas Menlo typography" },
-  { id: "code-word-wrap", section: "appearance", label: "Word wrap", keywords: "code long lines wrapping" },
+  {
+    id: "interface-contrast",
+    section: "appearance",
+    get label() { return t("Contrast"); },
+    keywords: "borders secondary text softer stronger",
+  },
+  {
+    id: "chat-width",
+    section: "appearance",
+    get label() { return t("Chat width"); },
+    keywords: "comfortable wide full messages composer",
+  },
+  {
+    id: "interface-font",
+    section: "appearance",
+    get label() { return t("Interface font"); },
+    keywords: "typography typeface Segoe Arial Verdana",
+  },
+  {
+    id: "monospace-font",
+    section: "appearance",
+    get label() { return t("Monospace font"); },
+    keywords: "code terminal font size Consolas Menlo typography",
+  },
+  {
+    id: "code-word-wrap",
+    section: "appearance",
+    get label() { return t("Word wrap"); },
+    keywords: "code long lines wrapping",
+  },
   {
     id: "decorative-motion",
     section: "appearance",
-    label: "Decorative animations",
+    get label() { return t("Decorative animations"); },
     keywords: "motion reduced accessibility mascot particles welcome effects",
   },
   {
     id: "accent-color",
     section: "appearance",
-    label: "Accent color",
+    get label() { return t("Accent color"); },
     keywords: "highlight bubble send button tint",
   },
   {
     id: "diff-colors",
     section: "appearance",
-    label: "Diff colors",
+    get label() { return t("Diff colors"); },
     keywords:
       "colorblind color blind accessibility added removed red green blue orange high contrast changes",
   },
   {
     id: "hue",
     section: "appearance",
-    label: "Hue",
+    get label() { return t("Hue"); },
     keywords: "tint color chrome",
   },
   {
     id: "saturation",
     section: "appearance",
-    label: "Saturation",
+    get label() { return t("Saturation"); },
     keywords: "tint color neutral grey gray",
   },
   {
     id: "dark-lightness",
     section: "appearance",
-    label: "Dark-mode lightness",
+    get label() { return t("Dark-mode lightness"); },
     keywords: "black brightness contrast background",
   },
   {
     id: "sidebar-opacity",
     section: "appearance",
-    label: "Sidebar opacity",
+    get label() { return t("Sidebar opacity"); },
     keywords: "glass translucent transparency vibrancy rail",
   },
   {
     id: "blur",
     section: "appearance",
-    label: "Blur radius",
+    get label() { return t("Blur radius"); },
     keywords: "glass translucent vibrancy backdrop",
   },
   {
     id: "main-pane-glass",
     section: "appearance",
-    label: "Main pane glass",
+    get label() { return t("Main pane glass"); },
     keywords: "translucent transparency body window",
   },
   {
     id: "main-pane-opacity",
     section: "appearance",
-    label: "Main pane opacity",
+    get label() { return t("Main pane opacity"); },
     keywords: "glass translucent transparency body window",
   },
   {
     id: "interface-scale",
     section: "appearance",
-    label: "Interface scale",
+    get label() { return t("Interface scale"); },
     keywords: "zoom font size bigger smaller ui",
   },
   {
     id: "collapsed-project-rail",
     section: "appearance",
-    label: "Collapsed project rail",
+    get label() { return t("Collapsed project rail"); },
     keywords: "sidebar compact icons hidden navigation layout",
   },
   {
     id: "show-excluded-files",
     section: "appearance",
-    label: "Show excluded files",
+    get label() { return t("Show excluded files"); },
     keywords: "explorer gitignore ignored hidden files tree",
   },
   {
     id: "chat-background",
     section: "appearance",
-    label: "Chat background",
+    get label() { return t("Chat background"); },
     keywords: "wallpaper image picture opacity backdrop blur",
   },
   {
     id: "transcript-layout",
     section: "chat",
-    label: "Transcript layout",
+    get label() { return t("Transcript layout"); },
     keywords: "full width chat bubble message",
   },
   {
     id: "anchor-prompts",
     section: "chat",
-    label: "Anchor prompts to top",
+    get label() { return t("Anchor prompts to top"); },
     keywords: "scroll position sticky message",
   },
   {
     id: "follow-up",
     section: "chat",
-    label: "Follow-up behavior",
+    get label() { return t("Follow-up behavior"); },
     keywords: "queue steer interrupt send while running",
   },
   {
     id: "resume-at-reset",
     section: "chat",
-    label: "Resume at reset",
+    get label() { return t("Resume at reset"); },
     keywords: "usage limit rate limit continue automatically wait",
   },
   {
     id: "auto-continue-interrupted",
     section: "chat",
-    label: "Automatically continue interrupted turns",
+    get label() { return t("Automatically continue interrupted turns"); },
     keywords: "restart quit resume continue where you left off cut off crash",
   },
   {
     id: "model-controls",
     section: "chat",
-    label: "Model controls",
+    get label() { return t("Model controls"); },
     keywords:
       "effort thinking reasoning fast service tier model picker composer",
   },
   {
     id: "format-on-save",
     section: "chat",
-    label: "Format on save",
+    get label() { return t("Format on save"); },
     keywords: "prettier quotes editor save format",
   },
   {
     id: "diff-view",
     section: "chat",
-    label: "Diff view",
+    get label() { return t("Diff view"); },
     keywords: "unified editor review changes working tree",
   },
   {
     id: "coffeehouse-scene",
     section: "chat",
-    label: "Village coffeehouse",
-    keywords: "coffeehouse village tea sohbet kahve çay amcalar dayılar ambient scene",
+    get label() { return t("Village coffeehouse"); },
+    keywords:
+      "coffeehouse village tea sohbet kahve çay amcalar dayılar ambient scene",
   },
   {
     id: "agent-clis",
     section: "providers",
-    label: "Agent CLIs",
+    get label() { return t("Agent CLIs"); },
     keywords:
       "codex opencode cursor grok pi omp fx hermes antigravity gemini google binary path",
   },
   {
     id: "enabled-models",
     section: "providers",
-    label: "Models",
+    get label() { return t("Models"); },
     keywords:
       "model enable disable hide turn off sonnet opus haiku gpt default",
   },
   {
     id: "harness-updates",
     section: "providers",
-    label: "CLI updates",
+    get label() { return t("CLI updates"); },
     keywords:
       "update upgrade version outdated latest release claude codex cursor grok opencode pi omp fx",
   },
   {
     id: "antigravity-account",
     section: "providers",
-    label: "Antigravity CLI account",
+    get label() { return t("Antigravity CLI account"); },
     keywords:
       "google gemini antigravity agy install migration sign in login oauth account authentication api key",
   },
   {
     id: "provider-accounts",
     section: "providers",
-    label: "Provider accounts",
+    get label() { return t("Provider accounts"); },
     keywords:
-      "account sign in login rename remove delete credentials profile usage limit quota exhausted",
+      "account sign in login rename remove delete credentials profile color colour orange pink",
   },
   {
     id: "show-remaining-usage",
-    section: "providers",
-    label: "Show remaining usage",
+    section: "usage",
+    get label() { return t("Show remaining usage"); },
     keywords: "usage limit meter bar left used quota percent",
   },
   {
     id: "mask-emails",
-    section: "providers",
-    label: "Mask account emails",
+    section: "usage",
+    get label() { return t("Mask account emails"); },
     keywords: "email privacy blur hide screenshot account",
   },
   {
     id: "provider-usage",
-    section: "providers",
-    label: "Usage",
+    section: "usage",
+    get label() { return t("Usage"); },
     keywords: "usage tokens cost spend billing cache model project account",
   },
   {
     id: "claude-hooks",
     section: "providers",
-    label: "Claude Code hooks",
+    get label() { return t("Claude Code hooks"); },
     keywords: "pretooluse settings.json block command notification",
   },
   {
     id: "project-notifications",
     section: "inbox",
-    label: "Project notifications",
+    get label() { return t("Project notifications"); },
     keywords: "mute resume sounds banners reminders categories",
   },
   {
     id: "github",
     section: "inbox",
-    label: "GitHub",
+    get label() { return t("GitHub"); },
     keywords: "gh cli connect pull request sign in",
   },
   {
     id: "gitlab",
     section: "inbox",
-    label: "GitLab",
+    get label() { return t("GitLab"); },
     keywords: "token self-managed merge request connect",
   },
   {
     id: "azuredevops",
     section: "inbox",
-    label: "ADO",
+    get label() { return t("ADO"); },
     keywords: "azure devops boards repos pull request pat organization connect",
   },
   {
     id: "jira",
     section: "inbox",
-    label: "Jira",
+    get label() { return t("Jira"); },
     keywords: "atlassian cloud site email api token issues projects connect",
   },
   {
     id: "linear",
     section: "inbox",
-    label: "Linear",
+    get label() { return t("Linear"); },
     keywords: "api key issues teams connect",
   },
   {
     id: "show-archived",
     section: "archive",
-    label: "Show archived in the sidebar",
+    get label() { return t("Show archived in the sidebar"); },
     keywords: "hidden conversations list",
   },
 ];
@@ -596,9 +621,9 @@ function matchScore(
   label: string,
   keywords?: string,
 ): number | null {
-  const lower = label.toLowerCase();
-  if (lower.startsWith(needle)) return 0;
-  if (lower.includes(needle)) return 1;
+  const labels = [label, ...sourceMessages(label)].map(value => value.toLowerCase());
+  if (labels.some(value => value.startsWith(needle))) return 0;
+  if (labels.some(value => value.includes(needle))) return 1;
   if (keywords?.toLowerCase().includes(needle)) return 2;
   return null;
 }
@@ -970,12 +995,12 @@ export function subscribeKeepAwakeEnabled(onChange: () => void): () => void {
 }
 
 export const KEEP_AWAKE_HOLD_AFTER = [
-  { value: "0", label: "When it ends" },
-  { value: "15m", label: "15 minutes" },
-  { value: "30m", label: "30 minutes" },
-  { value: "1h", label: "1 hour" },
-  { value: "4h", label: "4 hours" },
-  { value: "forever", label: "Forever" },
+  { value: "0", get label() { return t("When it ends"); } },
+  { value: "15m", get label() { return t("15 minutes"); } },
+  { value: "30m", get label() { return t("30 minutes"); } },
+  { value: "1h", get label() { return t("1 hour"); } },
+  { value: "4h", get label() { return t("4 hours"); } },
+  { value: "forever", get label() { return t("Forever"); } },
 ] as const;
 
 export type KeepAwakeHoldAfter =
@@ -1133,7 +1158,9 @@ export const COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT =
   "imece:coffeehouse-scene-enabled-change";
 
 export function loadCoffeehouseSceneEnabled(): boolean {
-  return readFlag(COFFEEHOUSE_SCENE_ENABLED_KEY) ?? COFFEEHOUSE_SCENE_ENABLED_DEFAULT;
+  return (
+    readFlag(COFFEEHOUSE_SCENE_ENABLED_KEY) ?? COFFEEHOUSE_SCENE_ENABLED_DEFAULT
+  );
 }
 
 export function saveCoffeehouseSceneEnabled(value: boolean) {
@@ -1148,9 +1175,15 @@ export function saveCoffeehouseSceneEnabled(value: boolean) {
 
 export function subscribeCoffeehouseSceneEnabled(onStoreChange: () => void) {
   if (typeof window === "undefined") return () => {};
-  window.addEventListener(COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT, onStoreChange);
+  window.addEventListener(
+    COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT,
+    onStoreChange,
+  );
   return () =>
-    window.removeEventListener(COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT, onStoreChange);
+    window.removeEventListener(
+      COFFEEHOUSE_SCENE_ENABLED_CHANGE_EVENT,
+      onStoreChange,
+    );
 }
 
 const DIFF_VIEWER_KEY = "monocode.diffViewer";

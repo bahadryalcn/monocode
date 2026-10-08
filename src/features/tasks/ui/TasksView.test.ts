@@ -398,7 +398,7 @@ it("says so when the project's machine cannot take a task", async () => {
   await act(async () => button(container, "New task")!.click());
   const form = container.querySelector('form[aria-label="New task"]')!;
   expect(form.querySelector('[role="alert"]')?.textContent).toContain(
-    "isn’t connected, or its imc Host needs an update",
+    "isn’t connected, or its imc code Host needs an update",
   );
   expect(button(form, "Add to To do")!.disabled).toBe(true);
   expect(button(form, "Add and start")!.disabled).toBe(true);
@@ -643,7 +643,7 @@ it("offers to update an older host instead of adding a to-do item", async () => 
     ),
   );
   expect(form.querySelector('[role="status"]')!.textContent).toBe(
-    "Update imc Host on this computer to add to-do items",
+    "Update imc code Host on this computer to add to-do items",
   );
   expect(button(form, "Add to To do")!.disabled).toBe(true);
   expect(requests.some((request) => request.method === "tasks.save")).toBe(

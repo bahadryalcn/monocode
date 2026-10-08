@@ -1,3 +1,4 @@
+import { t } from "../../../shared/i18n";
 import { hasPendingApproval, type Block } from "./session";
 import {
   groupTurns,
@@ -194,10 +195,10 @@ export function nextUnseenDone(
 /** "2 running · 1 done · 1 failed", leaving out what is zero. */
 export function dockCountLabel(dock: ActivityDock): string {
   return [
-    dock.running ? `${dock.running} running` : "",
-    dock.finished ? `${dock.finished} done` : "",
-    dock.failed ? `${dock.failed} failed` : "",
-    dock.stopped ? `${dock.stopped} stopped` : "",
+    dock.running ? t("{p0} running", { p0: dock.running }) : "",
+    dock.finished ? t("{p0} done", { p0: dock.finished }) : "",
+    dock.failed ? t("{p0} failed", { p0: dock.failed }) : "",
+    dock.stopped ? t("{p0} stopped", { p0: dock.stopped }) : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -207,28 +208,31 @@ export function dockCountLabel(dock: ActivityDock): string {
 export function dockStateLabel(dock: ActivityDock): string {
   switch (dock.state) {
     case "working":
-      return "Working";
+      return t("Working");
     case "waiting": {
       if (dock.backgroundAgents === undefined) {
-        return `Waiting on ${plural(dock.backgroundCount, "background task")}`;
+        return t("Waiting on {p0}", { p0: plural(dock.backgroundCount, "background task") });
       }
       const commands = dock.backgroundCount - dock.backgroundAgents;
-      const agents = `Waiting on ${plural(dock.backgroundAgents, "background agent")}`;
+      const agents = t("Waiting on {p0}", { p0: plural(dock.backgroundAgents, "background agent") });
       return commands > 0
-        ? `${agents} · ${plural(commands, "command")} running`
+        ? t("{p0} · {p1} running", { p0: agents, p1: plural(commands, "command") })
         : agents;
     }
     case "background":
-      return `Finished · ${plural(dock.backgroundCount, "background command")} running`;
+      return t("Finished · {p0} running", { p0: plural(dock.backgroundCount, "background command") });
     case "needs-input":
-      return "Needs your input";
+      return t("Needs your input");
     case "done":
-      return "Done";
+      return t("Done");
     case "idle":
       return "";
   }
 }
 
 function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+  if (noun === "background task") return t(count === 1 ? "{p0} background task" : "{p0} background tasks", { p0: count });
+  if (noun === "background agent") return t(count === 1 ? "{p0} background agent" : "{p0} background agents", { p0: count });
+  if (noun === "background command") return t(count === 1 ? "{p0} background command" : "{p0} background commands", { p0: count });
+  return t(count === 1 ? "{p0} command" : "{p0} commands", { p0: count });
 }

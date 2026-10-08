@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { RefreshCw } from "../../../shared/ui/icons";
 import { useEffect, useMemo, useState } from "react";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
@@ -32,7 +33,10 @@ import { Group, Segmented, Select } from "./settingsControls";
 
 export type UsageRange = "7d" | "30d";
 export type UsageMetric = "tokens" | "cost";
-export const USAGE_RANGE_DAYS: Record<UsageRange, number> = { "7d": 7, "30d": 30 };
+export const USAGE_RANGE_DAYS: Record<UsageRange, number> = {
+  "7d": 7,
+  "30d": 30,
+};
 export const ALL_USAGE_ACCOUNTS = "all";
 
 export type UsageLoad =
@@ -43,7 +47,12 @@ export function usageAccountLabel(account: ProviderAccount): string {
   return `${HARNESS_TITLE[account.provider]} · ${account.label}`;
 }
 
-export function ProviderUsageSettings() {
+export function ProviderUsageSettings({
+  showSummary = true,
+}: {
+  showSummary?: boolean;
+}) {
+  useLocale();
   const [version, setVersion] = useState(0);
   const [reload, setReload] = useState(0);
   const [load, setLoad] = useState<UsageLoad>({ status: "loading" });
@@ -148,7 +157,7 @@ export function ProviderUsageSettings() {
   );
 
   const accountOptions = [
-    { value: ALL_USAGE_ACCOUNTS, label: "All accounts" },
+    { value: ALL_USAGE_ACCOUNTS, get label() { return t("All accounts"); } },
     ...accounts.map((account) => ({
       value: identityKey(account),
       label: usageAccountLabel(account),
@@ -173,29 +182,29 @@ export function ProviderUsageSettings() {
   return (
     <Group
       id="provider-usage"
-      title="Usage"
-      description="Estimated from local session logs at API rates. Subscription plans are billed differently."
+      title={showSummary ? t("Usage") : t("Usage breakdown")}
+      description={t("Estimated from local session logs at API rates. Subscription plans are billed differently.")}
       action={
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Select
-            label="Usage account"
+            label={t("Usage account")}
             value={selected ? accountKey : ALL_USAGE_ACCOUNTS}
             options={accountOptions}
             onChange={setAccountKey}
           />
           <Segmented
-            label="Usage range"
+            label={t("Usage range")}
             value={range}
             options={[
-              { value: "7d", label: "7 days" },
-              { value: "30d", label: "30 days" },
+              { value: "7d", get label() { return t("7 days"); } },
+              { value: "30d", get label() { return t("30 days"); } },
             ]}
             onChange={setRange}
           />
           <button
             type="button"
-            aria-label="Reload usage"
-            title="Reload usage"
+            aria-label={t("Reload usage")}
+            title={t("Reload usage")}
             disabled={refreshing}
             onClick={() => setReload((value) => value + 1)}
             className="grid size-[26px] place-items-center rounded-md border border-content/10 text-content/50 hover:bg-content/10 hover:text-content disabled:opacity-40"
@@ -210,67 +219,60 @@ export function ProviderUsageSettings() {
       }
     >
       {load.status === "loading" ? (
-        <div className="px-4 py-6 text-[12px] text-content/45">
-          Reading session logs…
-        </div>
+        <div className="px-4 py-6 text-[12px] text-content/45">{t("Reading session logs…")}</div>
       ) : summary.tokens === 0 ? (
-        <div className="px-4 py-6 text-[12px] leading-relaxed text-content/45">
-          No usage in the last {dayCount} days
-          {selected ? ` for ${usageAccountLabel(selected)}` : ""}. Usage appears
-          here once a Claude Code or Codex conversation has run on this
-          computer.
-        </div>
+        <div className="px-4 py-6 text-[12px] leading-relaxed text-content/45">{t("No usage in the last ")}{dayCount}{t(" days")}{selected ? t(" for {p0}", { p0: usageAccountLabel(selected) }) : ""}{t(". Usage appears here once a Claude Code or Codex conversation has run on this computer.")}</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 divide-y divide-content/5 border-b border-content/5 @min-[560px]/settings:grid-cols-3 @min-[560px]/settings:divide-x @min-[560px]/settings:divide-y-0">
-            <UsageStat
-              label="Estimated cost"
-              value={formatUsageCost(summary.cost)}
-              detail={`${formatUsageCost(summary.cost / Math.max(1, summary.activeDays))} per active day`}
-            />
-            <UsageStat
-              label="Tokens"
-              value={formatUsageTokens(summary.tokens)}
-              detail={`${summary.activeDays} of ${dayCount} days active`}
-            />
-            <UsageStat
-              label="Cache hit rate"
-              value={`${(summary.cacheHitRate * 100).toFixed(1)}%`}
-              detail={`Saved about ${formatUsageCost(summary.cacheSavings)}`}
-            />
-          </div>
-
-          <div className="border-b border-content/5 px-4 py-3.5">
-            <div className="flex items-center gap-4 pb-3">
-              <div className="min-w-0 flex-1 text-[13px] font-medium text-content">
-                Daily {metric === "cost" ? "cost" : "tokens"}
+          {showSummary ? (
+            <>
+              <div className="grid grid-cols-1 divide-y divide-content/5 border-b border-content/5 @min-[560px]/settings:grid-cols-3 @min-[560px]/settings:divide-x @min-[560px]/settings:divide-y-0">
+                <UsageStat
+                  label={t("Estimated cost")}
+                  value={formatUsageCost(summary.cost)}
+                  detail={`${formatUsageCost(summary.cost / Math.max(1, summary.activeDays))} per active day`}
+                />
+                <UsageStat
+                  label={t("Tokens")}
+                  value={formatUsageTokens(summary.tokens)}
+                  detail={`${summary.activeDays} of ${dayCount} days active`}
+                />
+                <UsageStat
+                  label={t("Cache hit rate")}
+                  value={`${(summary.cacheHitRate * 100).toFixed(1)}%`}
+                  detail={`Saved about ${formatUsageCost(summary.cacheSavings)}`}
+                />
               </div>
-              <Segmented
-                label="Chart metric"
-                value={metric}
-                options={[
-                  { value: "tokens", label: "Tokens" },
-                  { value: "cost", label: "Cost" },
-                ]}
-                onChange={setMetric}
-              />
-            </div>
-            <UsageDailyBars days={summary.days} metric={metric} />
-          </div>
 
+              <div className="border-b border-content/5 px-4 py-3.5">
+                <div className="flex items-center gap-4 pb-3">
+                  <div className="min-w-0 flex-1 text-[13px] font-medium text-content">{t("Daily ")}{metric === "cost" ? t("cost") : t("tokens")}
+                  </div>
+                  <Segmented
+                    label={t("Chart metric")}
+                    value={metric}
+                    options={[
+                      { value: "tokens", get label() { return t("Tokens"); } },
+                      { value: "cost", get label() { return t("Cost"); } },
+                    ]}
+                    onChange={setMetric}
+                  />
+                </div>
+                <UsageDailyBars days={summary.days} metric={metric} />
+              </div>
+            </>
+          ) : null}
           <div>
             <div className="flex items-center gap-4 px-4 py-3">
-              <div className="min-w-0 flex-1 text-[13px] font-medium text-content">
-                Breakdown
-              </div>
+              <div className="min-w-0 flex-1 text-[13px] font-medium text-content">{t("Breakdown")}</div>
               <Segmented
-                label="Breakdown"
+                label={t("Breakdown")}
                 value={shownBreakdown}
                 options={[
-                  { value: "model", label: "Model" },
-                  { value: "project", label: "Project" },
+                  { value: "model", get label() { return t("Model"); } },
+                  { value: "project", get label() { return t("Project"); } },
                   ...(all
-                    ? [{ value: "account" as const, label: "Account" }]
+                    ? [{ value: "account" as const, get label() { return t("Account"); } }]
                     : []),
                 ]}
                 onChange={setBreakdown}
@@ -337,6 +339,7 @@ export function UsageStat({
   value: string;
   detail: string;
 }) {
+  useLocale();
   return (
     <div className="min-w-0 px-4 py-3.5">
       <div className="text-[12px] text-content/45">{label}</div>
@@ -349,7 +352,7 @@ export function UsageStat({
 }
 
 export function formatUsageDay(date: Date): string {
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return date.toLocaleDateString(getLocale(), { month: "short", day: "numeric" });
 }
 
 export function UsageDailyBars({
@@ -359,6 +362,7 @@ export function UsageDailyBars({
   days: UsageDay[];
   metric: UsageMetric;
 }) {
+  useLocale();
   const [hover, setHover] = useState<number | null>(null);
   const values = days.map((day) => (metric === "cost" ? day.cost : day.tokens));
   const max = Math.max(...values, 0);
@@ -415,13 +419,13 @@ export function UsageDailyBars({
               {formatUsageDay(days[hover].date)}
             </span>
             <span className="text-content/70">
-              {values[hover] <= 0 ? "No activity" : format(values[hover])}
+              {values[hover] <= 0 ? t("No activity") : format(values[hover])}
             </span>
           </>
         ) : (
           <>
             <span>{formatUsageDay(days[0].date)}</span>
-            <span>Peak {format(max)}</span>
+            <span>{t("Peak ")}{format(max)}</span>
             <span>{formatUsageDay(days[days.length - 1].date)}</span>
           </>
         )}

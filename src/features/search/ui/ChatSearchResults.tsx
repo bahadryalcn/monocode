@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import { Folder, MessageSquare } from "../../../shared/ui/icons";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
@@ -42,14 +43,15 @@ export function ChatFilterBar({
   inGroup: boolean;
   onChange: (filters: ChatFilters) => void;
 }) {
+  useLocale();
   return (
     <div
       className="flex min-h-9 shrink-0 flex-wrap items-center gap-2 border-b border-stroke px-3 py-1"
       role="group"
-      aria-label="Chat search filters"
+      aria-label={t("Chat search filters")}
     >
       <select
-        aria-label="Search in"
+        aria-label={t("Search in")}
         value={filters.scope}
         onChange={(event) =>
           onChange({ ...filters, scope: event.target.value as ChatScope })
@@ -67,7 +69,7 @@ export function ChatFilterBar({
         ))}
       </select>
       <select
-        aria-label="Provider"
+        aria-label={t("Provider")}
         value={filters.harness}
         onChange={(event) =>
           onChange({
@@ -77,7 +79,7 @@ export function ChatFilterBar({
         }
         className={SELECT_CLASS}
       >
-        <option value="any">Any provider</option>
+        <option value="any">{t("Any provider")}</option>
         {HARNESSES.map((harness) => (
           <option key={harness} value={harness}>
             {HARNESS_TITLE[harness]}
@@ -85,7 +87,7 @@ export function ChatFilterBar({
         ))}
       </select>
       <select
-        aria-label="Date"
+        aria-label={t("Date")}
         value={filters.range}
         onChange={(event) =>
           onChange({ ...filters, range: event.target.value as ChatDateRange })
@@ -106,9 +108,7 @@ export function ChatFilterBar({
             onChange({ ...filters, archived: event.target.checked })
           }
           className="size-3"
-        />
-        Archived
-      </label>
+        />{t("Archived")}</label>
     </div>
   );
 }
@@ -120,6 +120,7 @@ function Marked({
   text: string;
   ranges: [number, number][];
 }) {
+  useLocale();
   return (
     <>
       {highlightRuns(text, ranges).map((run, index) =>
@@ -148,6 +149,7 @@ export function ChatSearchResults({
   onActive: (index: number) => void;
   onOpen: (entry: ChatEntry) => void;
 }) {
+  useLocale();
   const activeRef = useRef<HTMLButtonElement>(null);
   const pointer = useRef({ x: Number.NaN, y: Number.NaN, allow: false });
   const fromPointer = useRef(false);
@@ -199,7 +201,7 @@ export function ChatSearchResults({
   return (
     <div
       role="listbox"
-      aria-label="Chat search results"
+      aria-label={t("Chat search results")}
       onMouseMove={onMouseMove}
       className="pb-2"
     >
@@ -235,15 +237,13 @@ export function ChatSearchResults({
                     <Marked text={session.title} ranges={session.titleRanges} />
                   </span>
                   {session.archived ? (
-                    <span className="shrink-0 rounded bg-content/8 px-1 py-px text-[10px] text-content/55">
-                      Archived
-                    </span>
+                    <span className="shrink-0 rounded bg-content/8 px-1 py-px text-[10px] text-content/55">{t("Archived")}</span>
                   ) : null}
                   {session.hitCount > 0 ? (
                     <span className="shrink-0 font-mono text-[11px] tabular-nums text-content/45">
                       {session.hitCount === 1
-                        ? "1 match"
-                        : `${session.hitCount} matches`}
+                        ? t("1 match")
+                        : t("{p0} matches", { p0: session.hitCount })}
                     </span>
                   ) : null}
                   <span className="shrink-0 font-mono text-[11px] text-content/35">
@@ -272,14 +272,14 @@ export function ChatSearchResults({
                         <Marked text={hit.snippet} ranges={hit.ranges} />
                       </span>
                       <span className="shrink-0 text-[10px] text-content/35">
-                        {hit.role === "user" ? "You" : hit.role}
+                        {hit.role === "user" ? t("You") : hit.role}
                       </span>
                     </button>
                   );
                 })}
                 {more > 0 ? (
                   <p className="ml-7 px-2 py-0.5 text-[11px] text-content/40">
-                    {more === 1 ? "1 more match" : `${more} more matches`}
+                    {more === 1 ? t("1 more match") : t("{p0} more matches", { p0: more })}
                   </p>
                 ) : null}
               </div>

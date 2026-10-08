@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -25,6 +26,7 @@ export function AddRemoteProjectDialog({
   /** Receives the new project's rail key. */
   onOpen: (key: string) => void;
 }) {
+  useLocale();
   const {
     machines: allMachines,
     loaded,
@@ -149,7 +151,7 @@ export function AddRemoteProjectDialog({
         ref={dialogRoot}
         role="dialog"
         aria-modal="true"
-        aria-label="Open folder on a machine"
+        aria-label={t("Open folder on a machine")}
         onMouseDown={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
@@ -158,18 +160,12 @@ export function AddRemoteProjectDialog({
         className="absolute left-1/2 top-[16%] flex max-h-[70vh] w-[min(480px,calc(100vw-24px))] -translate-x-1/2 flex-col gap-3 rounded-lg border border-content/10 bg-content/5 p-4 shadow-xl backdrop-blur-xl"
       >
         <div className="flex flex-col gap-1">
-          <h2 className="text-[13px] font-medium leading-tight text-content">
-            Open folder on a machine
-          </h2>
-          <p className="text-[12px] leading-snug text-content/55">
-            Sessions in this project run on that machine, using its checkout
-            and its Codex or Claude Code sign-in. They keep running when you
-            close {PRODUCT_IDENTITY.displayName} here.
-          </p>
+          <h2 className="text-[13px] font-medium leading-tight text-content">{t("Open folder on a machine")}</h2>
+          <p className="text-[12px] leading-snug text-content/55">{t("Sessions in this project run on that machine, using its checkout and its Codex or Claude Code sign-in. They keep running when you close ")}{PRODUCT_IDENTITY.displayName}{t(" here.")}</p>
         </div>
         {machinesLoading || machinesError ? (
           <RemoteDataStatus
-            label="machines"
+            label={t("machines")}
             state={{
               phase: machinesLoading
                 ? machines.length
@@ -183,18 +179,13 @@ export function AddRemoteProjectDialog({
         ) : null}
         {!loaded || (machinesError && !machine) ? null : !machine ? (
           <>
-            <p className="text-[12px] leading-snug text-content/55">
-              No machines are connected yet. Add one in Settings, then open a
-              folder on it here.
-            </p>
+            <p className="text-[12px] leading-snug text-content/55">{t("No machines are connected yet. Add one in Settings, then open a folder on it here.")}</p>
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={cancel}
                 className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
-              >
-                Cancel
-              </button>
+              >{t("Cancel")}</button>
               <button
                 type="button"
                 onClick={() => {
@@ -202,16 +193,14 @@ export function AddRemoteProjectDialog({
                   window.dispatchEvent(new Event(OPEN_CONNECTIONS_EVENT));
                 }}
                 className="rounded-md bg-selection px-3 py-1.5 text-[12px] font-medium hover:bg-selection-hover"
-              >
-                Add a machine
-              </button>
+              >{t("Add a machine")}</button>
             </div>
           </>
         ) : (
           <>
             {machines.length > 1 ? (
               <SearchableSelect
-                label="Machine"
+                label={t("Machine")}
                 value={machine.id}
                 options={machines.map((entry) => ({
                   value: entry.id,
@@ -222,12 +211,11 @@ export function AddRemoteProjectDialog({
                 searchable={false}
               />
             ) : (
-              <p className="text-[12px] text-content/55">
-                On <span className="text-content/80">{machine.name}</span>
+              <p className="text-[12px] text-content/55">{t("On ")}<span className="text-content/80">{machine.name}</span>
               </p>
             )}
             <input
-              aria-label="Folder path on the machine"
+              aria-label={t("Folder path on the machine")}
               className="h-8 shrink-0 rounded-md border border-content/10 bg-content/3 px-2.5 font-mono text-[12px] text-content outline-none focus:border-content/25"
               placeholder="/home/me/code/my-app"
               value={path}
@@ -238,7 +226,7 @@ export function AddRemoteProjectDialog({
               onChange={(event) => setPath(event.target.value)}
             />
             <RemoteDataStatus
-              label="folders"
+              label={t("folders")}
               state={{
                 phase: loading
                   ? directory
@@ -262,12 +250,11 @@ export function AddRemoteProjectDialog({
               disabled={opening}
             />
             {directory && (loading || browseError) ? (
-              <p className="text-[12px] text-content/55">
-                Showing last loaded folder: {directory.path}
+              <p className="text-[12px] text-content/55">{t("Showing last loaded folder: ")}{directory.path}
               </p>
             ) : null}
             <div
-              aria-label="Folders"
+              aria-label={t("Folders")}
               className="min-h-24 flex-1 overflow-y-auto overscroll-contain rounded-md border border-content/10"
             >
               <div className="p-1">
@@ -285,14 +272,10 @@ export function AddRemoteProjectDialog({
                   />
                 ))}
                 {directory && !directory.entries.length ? (
-                  <p className="px-2 py-1.5 text-[12px] text-content/45">
-                    No subfolders
-                  </p>
+                  <p className="px-2 py-1.5 text-[12px] text-content/45">{t("No subfolders")}</p>
                 ) : null}
                 {!directory && loading ? (
-                  <p className="px-2 py-1.5 text-[12px] text-content/45">
-                    Loading folders…
-                  </p>
+                  <p className="px-2 py-1.5 text-[12px] text-content/45">{t("Loading folders…")}</p>
                 ) : null}
               </div>
             </div>
@@ -309,9 +292,7 @@ export function AddRemoteProjectDialog({
                 type="button"
                 onClick={cancel}
                 className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
-              >
-                Cancel
-              </button>
+              >{t("Cancel")}</button>
               <button
                 type="submit"
                 disabled={
@@ -323,7 +304,7 @@ export function AddRemoteProjectDialog({
                 }
                 className="rounded-md bg-selection px-3 py-1.5 text-[12px] font-medium hover:bg-selection-hover disabled:opacity-40"
               >
-                {opening ? "Opening…" : "Open"}
+                {opening ? t("Opening…") : t("Open")}
               </button>
             </div>
           </>
@@ -336,6 +317,7 @@ export function AddRemoteProjectDialog({
 }
 
 function FolderRow({ name, onOpen }: { name: string; onOpen: () => void }) {
+  useLocale();
   return (
     <button
       type="button"

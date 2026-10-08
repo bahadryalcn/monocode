@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   Check,
   ChevronDown,
@@ -80,14 +81,15 @@ export function HandoffButton({
   from,
   onPick,
 }: Pick<Props, "from" | "onPick">) {
+  useLocale();
   return (
     <SecondOpinionButton
       from={from}
       onPick={onPick}
       icon={Replace}
-      title="Handoff"
+      title={t("Handoff")}
       disabledTitle="Install another provider to hand off"
-      description="Hand this session to another agent to continue the work."
+      description={t("Hand this session to another agent to continue the work.")}
       menuLabel="Hand this session to another agent"
     />
   );
@@ -106,6 +108,7 @@ export function BuildTargetButton({
   disabled?: boolean;
   onPick: (target: ModelTarget) => void;
 }) {
+  useLocale();
   return (
     <SecondOpinionButton
       from={from}
@@ -113,9 +116,9 @@ export function BuildTargetButton({
       fromSettings={settings}
       onPick={onPick}
       icon={ChevronDown}
-      title="Build with another model"
+      title={t("Build with another model")}
       disabledTitle="No build providers are available"
-      description="Choose the model and provider that should build this plan."
+      description={t("Choose the model and provider that should build this plan.")}
       menuLabel="Build this plan with another model or provider"
       includeCurrent
       disabled={disabled}
@@ -139,6 +142,7 @@ export function SecondOpinionButton({
   disabled: disabledByCaller = false,
   triggerClassName,
 }: Props) {
+  useLocale();
   const availabilityVersion = useSyncExternalStore(
     subscribeHarnessAvailability,
     getHarnessAvailabilitySnapshot,
@@ -491,7 +495,7 @@ export function SecondOpinionButton({
               maxHeight={SUBMENU_MAX_HEIGHT}
               layer={LAYER.submenu}
               role="menu"
-              aria-label={`${HARNESS_TITLE[activeHarness]} models`}
+              aria-label={t("{p0} models", { p0: HARNESS_TITLE[activeHarness] })}
               ignore={SELF}
               onMouseEnter={() =>
                 setMenuLevel((level) =>
@@ -564,7 +568,7 @@ export function SecondOpinionButton({
               width={EFFORT_MENU_WIDTH}
               layer={LAYER.submenu + 1}
               role="menu"
-              aria-label={`${activeModel.name} effort`}
+              aria-label={t("{p0} effort", { p0: activeModel.name })}
               ignore={SELF}
               onMouseEnter={() => setMenuLevel("effort")}
               data-provider-target

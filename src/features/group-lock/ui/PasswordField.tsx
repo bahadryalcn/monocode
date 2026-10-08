@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useId, useState, type Ref } from "react";
 import { Eye, EyeOff } from "../../../shared/ui/icons";
 
@@ -22,6 +23,7 @@ export function PasswordField({
   invalid,
   describedBy,
 }: Props) {
+  useLocale();
   const id = useId();
   const [shown, setShown] = useState(false);
   return (
@@ -45,8 +47,8 @@ export function PasswordField({
         />
         <button
           type="button"
-          title={shown ? "Hide password" : "Show password"}
-          aria-label={shown ? "Hide password" : "Show password"}
+          title={shown ? t("Hide password") : t("Show password")}
+          aria-label={shown ? t("Hide password") : t("Show password")}
           aria-pressed={shown}
           onClick={() => setShown((value) => !value)}
           className="absolute right-1 top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-md text-content/45 hover:bg-content/8 hover:text-content"

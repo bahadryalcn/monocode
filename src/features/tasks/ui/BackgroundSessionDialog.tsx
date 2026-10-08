@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { LAYER } from "../../../shared/lib/layers";
@@ -18,6 +19,7 @@ export function BackgroundSessionDialog({
   target: Pick<BackgroundSessionTarget, "machineId" | "sessionId">;
   onClose: () => void;
 }) {
+  useLocale();
   const [summary, setSummary] = useState<BackgroundSessionSummary>();
   const [error, setError] = useState("");
 
@@ -51,7 +53,7 @@ export function BackgroundSessionDialog({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={summary?.title ?? "Background session"}
+        aria-label={summary?.title ?? t("Background session")}
         className="absolute left-1/2 top-[16%] flex max-h-[70vh] w-[min(520px,calc(100vw-24px))] -translate-x-1/2 flex-col gap-3 rounded-lg border border-content/10 bg-content/5 p-4 shadow-xl backdrop-blur-xl"
       >
         {error ? (
@@ -70,12 +72,11 @@ export function BackgroundSessionDialog({
                 {summary.title}
               </h2>
               <p className="text-[12px] leading-snug text-content/55">
-                {summary.status} · on this computer’s host
-              </p>
+                {summary.status}{t(" · on this computer’s host")}</p>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-md border border-content/10 bg-content/3 p-3 text-[12px] leading-relaxed text-content/80">
               {summary.reply || (
-                <span className="text-content/45">No reply yet.</span>
+                <span className="text-content/45">{t("No reply yet.")}</span>
               )}
             </div>
             {summary.note ? (
@@ -90,9 +91,7 @@ export function BackgroundSessionDialog({
             type="button"
             onClick={onClose}
             className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
-          >
-            Close
-          </button>
+          >{t("Close")}</button>
         </div>
       </div>
     </div>,

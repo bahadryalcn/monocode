@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { memo, useEffect, useRef, useState } from "react";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { Shimmer } from "../../../shared/ui/Shimmer";
@@ -71,6 +72,7 @@ export const ActivityDock = memo(function ActivityDock({
   onStopAgent,
   onStopAll,
 }: Props) {
+  useLocale();
   const stops = useStopRequests();
   const root = useRef<HTMLDivElement>(null);
   const [unseenDone, setUnseenDone] = useState(false);
@@ -155,6 +157,7 @@ function DockBody({
   onOpenAgent: (agent: DockAgent) => void;
   stop: DockStop;
 }) {
+  useLocale();
   const [expanded, setExpandedState] = useState(
     () => expandedBySession.get(sessionId) ?? false,
   );
@@ -172,7 +175,7 @@ function DockBody({
 
   return (
     <section
-      aria-label="Turn activity"
+      aria-label={t("Turn activity")}
       data-activity-dock={dock.state}
       className={`mb-1.5 overflow-hidden rounded-lg border border-content/10 bg-content/5 font-sans text-xs ${
         dock.state === "done" ? "activity-dock-done" : ""
@@ -226,9 +229,9 @@ function DockBody({
             >
               <Square className="size-3" strokeWidth={1.75} />
               {stop.stopping.has(STOP_ALL)
-                ? "Stopping…"
+                ? t("Stopping…")
                 : stop.failed.has(STOP_ALL)
-                  ? "Could not stop. Retry"
+                  ? t("Could not stop. Retry")
                   : stopAll.label}
             </button>
           ) : null}
@@ -237,8 +240,8 @@ function DockBody({
               type="button"
               aria-expanded={open}
               aria-controls={listId}
-              aria-label={`Background agents, ${counts}. ${open ? "Hide" : "Show"} list`}
-              title={open ? "Hide agents" : "Show agents"}
+              aria-label={t((open ? "Background agents, {p0}. Hide list" : "Background agents, {p0}. Show list"), { p0: counts })}
+              title={open ? t("Hide agents") : t("Show agents")}
               onClick={() => setExpanded(!open)}
               className="flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-content/50 hover:bg-content/8 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
             >
@@ -283,6 +286,7 @@ function DockBody({
 
 /** Its own component so only the clock re-renders each second. */
 function DockClock({ startedAt }: { startedAt?: number }) {
+  useLocale();
   const elapsed = formatElapsed(useElapsedFrom(startedAt, false));
   return (
     <span className="shrink-0 tabular-nums text-content/40">{elapsed}</span>
@@ -290,6 +294,7 @@ function DockClock({ startedAt }: { startedAt?: number }) {
 }
 
 function DockMark({ state }: { state: ActivityDockModel["state"] }) {
+  useLocale();
   if (state === "done" || state === "background") {
     return (
       <Check
@@ -331,6 +336,7 @@ function DockAgentRow({
   onOpen: (agent: DockAgent) => void;
   stop: DockStop;
 }) {
+  useLocale();
   const summary = [agent.name, agent.model, agent.detail, agent.status]
     .filter(Boolean)
     .join(", ");
@@ -379,12 +385,12 @@ function DockAgentRow({
           aria-label={`${stopping ? "Stopping" : "Stop"} ${agent.name}`}
           title={
             stop.failed.has(key)
-              ? "Could not stop it. Try again."
+              ? t("Could not stop it. Try again.")
               : stopping
-                ? "Stopping…"
+                ? t("Stopping…")
                 : agent.kind === "agent"
-                  ? "Stop this subagent"
-                  : "Stop this command"
+                  ? t("Stop this subagent")
+                  : t("Stop this command")
           }
           onClick={() => stop.request(key, () => stop.onAgent!(agent))}
           className={`mr-1 flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] hover:bg-content/10 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:pointer-events-none ${
@@ -392,7 +398,7 @@ function DockAgentRow({
           }`}
         >
           <Square className="size-3" strokeWidth={1.75} />
-          {stopping ? "Stopping…" : "Stop"}
+          {stopping ? t("Stopping…") : t("Stop")}
         </button>
       ) : null}
     </div>
@@ -400,6 +406,7 @@ function DockAgentRow({
 }
 
 function AgentStatusDot({ status }: { status: DockAgent["status"] }) {
+  useLocale();
   if (status === "failed") {
     return <X className="size-3 shrink-0 text-red-400" strokeWidth={2} />;
   }

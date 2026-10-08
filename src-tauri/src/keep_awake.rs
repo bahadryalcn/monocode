@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use tauri::WebviewWindow;
 
-const REASON: &str = "MonoCode agent is working";
+const REASON: &str = "imc code agent is working";
 
 /// Invoke `set_keep_awake` with `{ enabled, display }` from each workspace
 /// window when its own agent activity changes. Repeated values are safe. A
@@ -419,7 +419,7 @@ mod linux_backend {
                 "/org/freedesktop/login1",
                 Some("org.freedesktop.login1.Manager"),
                 "Inhibit",
-                &("idle", "MonoCode", REASON, "block"),
+                &("idle", "imc code", REASON, "block"),
             )
             .map_err(|error| error.to_string())?;
         reply
@@ -440,7 +440,7 @@ mod linux_backend {
                 Some("org.gnome.SessionManager"),
                 "Inhibit",
                 // (app_id, toplevel_xid, reason, flags): flag 4 = suspend
-                &("MonoCode", 0u32, REASON, 4u32),
+                &("imc code", 0u32, REASON, 4u32),
             )
             .ok()?;
         let cookie: u32 = reply.body().deserialize().ok()?;
@@ -455,7 +455,7 @@ mod linux_backend {
                 "/org/freedesktop/ScreenSaver",
                 Some("org.freedesktop.ScreenSaver"),
                 "Inhibit",
-                &("MonoCode", REASON),
+                &("imc code", REASON),
             )
             .map_err(|error| error.to_string())?;
         let cookie = reply

@@ -110,7 +110,7 @@ export function gitActionsMenuItems(state: GitMenuState): ExplorerMenuItem[] {
   const pull = entry("pull", "Pull", canPull);
   if (!state.actions) {
     const limited: ExplorerMenuItem[] = state.updateNotice
-      ? [pull, SEP, entry("host-update", "More actions need a newer MonoCode Host", false, { description: state.updateNotice })]
+      ? [pull, SEP, entry("host-update", "More actions need a newer imc code Host", false, { description: state.updateNotice })]
       : [pull];
     return state.busy ? lock(limited) : limited;
   }

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { LiveAgent } from "../../features/sessions/model/liveAgents";
@@ -19,6 +20,7 @@ export function detachedAgentTitle(title: string): string {
 const interactive = "button, a, input, select, textarea, [role=menu], [data-no-window-drag]";
 
 export function DetachedWorkingBar({ agents, onSelectAgent }: Props) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -78,8 +80,8 @@ export function DetachedWorkingBar({ agents, onSelectAgent }: Props) {
 
   return <div data-detached-working-bar data-tauri-drag-region="false" onPointerDown={beginDrag}
     className={`flex h-8 min-w-0 shrink-0 select-none items-center gap-2 border-b border-stroke px-3 ${dragging ? "cursor-grabbing" : "cursor-grab"}`}>
-    <span className="text-[11px] text-content/50">Working</span>
-    <button ref={trigger} type="button" data-tauri-drag-region="false" aria-label={`Working conversations: ${summary}`}
+    <span className="text-[11px] text-content/50">{t("Working")}</span>
+    <button ref={trigger} type="button" data-tauri-drag-region="false" aria-label={t("Working conversations: {p0}", { p0: summary })}
       aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined} disabled={!count}
       onClick={() => setOpen((value) => !value)}
       onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setOpen(true); } }}
@@ -89,7 +91,7 @@ export function DetachedWorkingBar({ agents, onSelectAgent }: Props) {
     </button>
     <div className="min-w-4 flex-1 self-stretch" aria-hidden="true" />
     {open ? <Popover ref={menu} anchor={trigger} align="start" width={320} maxHeight={320} onDismiss={dismiss}
-      role="menu" id={menuId} aria-label="Working conversations" onKeyDown={onMenuKey}
+      role="menu" id={menuId} aria-label={t("Working conversations")} onKeyDown={onMenuKey}
       style={{ maxWidth: "calc(100vw - 16px)" }} className="overflow-y-auto p-1" data-tauri-drag-region="false">
       {agents.map((agent) => <button key={agent.id} type="button" role="menuitem" data-tauri-drag-region="false"
         onClick={() => { dismiss(); onSelectAgent(agent.id); }}
@@ -97,7 +99,7 @@ export function DetachedWorkingBar({ agents, onSelectAgent }: Props) {
         <span aria-hidden="true" className={`size-1.5 shrink-0 rounded-full ${agent.done ? "bg-content/35" : agent.needsApproval ? "bg-amber-400" : "bg-sky-400"}`} />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs text-content/90">{detachedAgentTitle(agent.title)}</span>
-          <span className="block truncate text-[11px] text-content/45">{detachedAgentStatus(agent)}{agent.ownerWindowLabel ? " · Other window" : " · This window"}</span>
+          <span className="block truncate text-[11px] text-content/45">{detachedAgentStatus(agent)}{agent.ownerWindowLabel ? t(" · Other window") : t(" · This window")}</span>
         </span>
       </button>)}
     </Popover> : null}

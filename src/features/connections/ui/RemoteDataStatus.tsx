@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import {
   CheckCircle,
   CircleAlert,
@@ -12,12 +13,17 @@ export function RemoteDataStatus({
   onRefresh,
   label = "conversation",
   disabled = false,
+  connectionIssueHandled = false,
 }: {
   state: RemoteDataState;
   onRefresh?: () => void;
   label?: string;
   disabled?: boolean;
+  /** The shared connection notice already explains why this data cannot refresh. */
+  connectionIssueHandled?: boolean;
 }) {
+  useLocale();
+  if (connectionIssueHandled) return null;
   const busy = state.phase === "loading" || state.phase === "refreshing";
   const message =
     state.phase === "loading"
@@ -63,7 +69,7 @@ export function RemoteDataStatus({
         {time ? (
           <span
             className="ml-1 text-content/40"
-            title={`Last verified ${new Date(state.updatedAt!).toLocaleString()}`}
+            title={t("Last verified {p0}", { p0: new Date(state.updatedAt!).toLocaleString(getLocale()) })}
           >
             · {time}
           </span>
@@ -79,8 +85,8 @@ export function RemoteDataStatus({
           disabled={disabled || busy}
           aria-label={
             state.phase === "error"
-              ? `Retry loading ${label}`
-              : `Refresh ${label}`
+              ? t("Retry loading {p0}", { p0: label })
+              : t("Refresh {p0}", { p0: label })
           }
           className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-content/75 hover:bg-content/8 disabled:opacity-40"
         >
@@ -88,7 +94,7 @@ export function RemoteDataStatus({
             aria-hidden
             className={`size-3 ${busy ? "animate-spin" : ""}`}
           />
-          {state.phase === "error" ? "Retry" : "Refresh"}
+          {state.phase === "error" ? t("Retry") : t("Refresh")}
         </button>
       ) : null}
     </div>

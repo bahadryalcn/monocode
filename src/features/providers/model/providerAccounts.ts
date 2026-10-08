@@ -46,7 +46,13 @@ export const PROVIDER_ACCOUNT_COLORS = [
   { id: "purple", label: "Purple", value: "hsl(280 55% 62%)" },
   { id: "teal", label: "Teal", value: "hsl(175 55% 48%)" },
   { id: "slate", label: "Slate", value: "hsl(210 8% 58%)" },
+  { id: "orange", label: "Orange", value: "hsl(25 95% 60%)" },
 ] as const;
+
+// Keep automatic colors stable for existing accounts when adding new swatches.
+const AUTOMATIC_ACCOUNT_COLORS = PROVIDER_ACCOUNT_COLORS.filter(
+  (color) => color.id !== "orange",
+);
 
 export type ProviderAccountColor =
   (typeof PROVIDER_ACCOUNT_COLORS)[number]["id"];
@@ -77,7 +83,7 @@ export function providerAccountColor(
   for (let i = 0; i < key.length; i++) {
     hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
   }
-  return PROVIDER_ACCOUNT_COLORS[hash % PROVIDER_ACCOUNT_COLORS.length];
+  return AUTOMATIC_ACCOUNT_COLORS[hash % AUTOMATIC_ACCOUNT_COLORS.length];
 }
 
 /** CSS colour for an account's dot. */

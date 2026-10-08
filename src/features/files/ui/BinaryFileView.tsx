@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
@@ -39,6 +40,7 @@ type LoadState =
  * turn out not to be an image get a card pointing at the file on disk.
  */
 export function BinaryFileView({ path, cwd }: Props) {
+  useLocale();
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -96,8 +98,7 @@ export function BinaryFileView({ path, cwd }: Props) {
 
   if (state.status === "loading") {
     return (
-      <div className="grid h-full place-items-center text-[12px] text-content/45">
-        Opening {basename(path)}…
+      <div className="grid h-full place-items-center text-[12px] text-content/45">{t("Opening ")}{basename(path)}…
       </div>
     );
   }
@@ -107,7 +108,7 @@ export function BinaryFileView({ path, cwd }: Props) {
       <FileCard
         path={path}
         cwd={cwd}
-        title={`Couldn’t open ${basename(path)}`}
+        title={t("Couldn’t open {p0}", { p0: basename(path) })}
         detail={state.message}
         icon={<AlertCircle className="mx-auto mb-3 size-5 text-red-400" />}
         onRetry={reload}
@@ -152,6 +153,7 @@ function ImageView({
   size: number;
   mime: string;
 }) {
+  useLocale();
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [zoom, setZoom] = useState<number | "fit">("fit");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -249,7 +251,7 @@ function ImageView({
         <span className="flex-1" />
         {IS_MAC ? (
           <ZoomButton
-            label={copied ? "Copied" : "Copy original file"}
+            label={copied ? t("Copied") : t("Copy original file")}
             onClick={copyOriginal}
           >
             {copied ? (
@@ -260,7 +262,7 @@ function ImageView({
           </ZoomButton>
         ) : null}
         <ZoomButton
-          label="Zoom out"
+          label={t("Zoom out")}
           onClick={() =>
             setZoom((value) => clampZoom((value === "fit" ? 1 : value) / 1.5))
           }
@@ -269,14 +271,14 @@ function ImageView({
         </ZoomButton>
         <button
           type="button"
-          title="Fit to window"
+          title={t("Fit to window")}
           onClick={() => setZoom("fit")}
           className="w-11 rounded text-center tabular-nums hover:text-content"
         >
-          {zoom === "fit" ? "Fit" : `${Math.round(zoom * 100)}%`}
+          {zoom === "fit" ? t("Fit") : `${Math.round(zoom * 100)}%`}
         </button>
         <ZoomButton
-          label="Zoom in"
+          label={t("Zoom in")}
           onClick={() =>
             setZoom((value) => clampZoom((value === "fit" ? 1 : value) * 1.5))
           }
@@ -292,7 +294,7 @@ function ImageView({
             {
               kind: "item",
               id: "copy-original",
-              label: "Copy Original File",
+              get label() { return t("Copy Original File"); },
             },
           ]}
           ariaLabel="Image actions"
@@ -315,6 +317,7 @@ function ZoomButton({
   onClick: () => void;
   children: React.ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -343,6 +346,7 @@ function FileCard({
   icon: React.ReactNode;
   onRetry?: () => void;
 }) {
+  useLocale();
   return (
     <div className="grid h-full place-items-center p-6">
       <div className="max-w-md text-center">
@@ -355,17 +359,11 @@ function FileCard({
         <div className="mt-4 flex items-center justify-center gap-2">
           {onRetry ? (
             <CardButton onClick={onRetry}>
-              <RotateCcw className="size-3" strokeWidth={1.75} />
-              Retry
-            </CardButton>
+              <RotateCcw className="size-3" strokeWidth={1.75} />{t("Retry")}</CardButton>
           ) : null}
           <CardButton onClick={() => void revealPath(path).catch(() => {})}>
-            <Folder className="size-3" strokeWidth={1.75} />
-            Reveal
-          </CardButton>
-          <CardButton onClick={() => void copyText(path).catch(() => {})}>
-            Copy path
-          </CardButton>
+            <Folder className="size-3" strokeWidth={1.75} />{t("Reveal")}</CardButton>
+          <CardButton onClick={() => void copyText(path).catch(() => {})}>{t("Copy path")}</CardButton>
         </div>
       </div>
     </div>
@@ -379,6 +377,7 @@ function CardButton({
   onClick: () => void;
   children: React.ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"

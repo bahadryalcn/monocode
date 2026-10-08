@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useState, useSyncExternalStore } from "react";
 import { Plus, Trash2 } from "../../../shared/ui/icons";
 import {
@@ -32,6 +33,7 @@ function sameTemplates(a: readonly PromptTemplate[], b: readonly PromptTemplate[
 
 /** Settings page for saved prompt snippets, inserted from the composer's slash picker or `;trigger`. */
 export function TemplatesSettings() {
+  useLocale();
   const saved = useSyncExternalStore(
     subscribePromptTemplates,
     loadPromptTemplates,
@@ -63,14 +65,10 @@ export function TemplatesSettings() {
     <section className="pt-8">
       <div className="flex items-end gap-4 pb-2.5">
         <div className="min-w-0 flex-1">
-          <h2 className="text-[13px] font-semibold text-content">
-            Prompt templates
-          </h2>
-          <p className="mt-1 text-[12px] leading-relaxed text-content/45">
-            Pick one from the / menu in the composer, or type{" "}
-            <code>{TRIGGER_PREFIX}trigger</code> and a space. Put{" "}
-            <code>{CURSOR_PLACEHOLDER}</code> where the caret should land.
-          </p>
+          <h2 className="text-[13px] font-semibold text-content">{t("Prompt templates")}</h2>
+          <p className="mt-1 text-[12px] leading-relaxed text-content/45">{t("Pick one from the / menu in the composer, or type")}{" "}
+            <code>{TRIGGER_PREFIX}{"trigger"}</code>{t(" and a space. Put")}{" "}
+            <code>{CURSOR_PLACEHOLDER}</code>{t(" where the caret should land.")}</p>
         </div>
         <button
           type="button"
@@ -84,15 +82,11 @@ export function TemplatesSettings() {
           }}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2.5 text-[12px] text-content/80 hover:bg-content/10 hover:text-content disabled:cursor-default disabled:opacity-40"
         >
-          <Plus className="size-3.5" strokeWidth={1.75} />
-          Add template
-        </button>
+          <Plus className="size-3.5" strokeWidth={1.75} />{t("Add template")}</button>
       </div>
       <div className="overflow-hidden rounded-xl border border-content/10 bg-content/3">
         {rows.length === 0 ? (
-          <p className="px-4 py-3 text-[12px] text-content/45">
-            No templates yet
-          </p>
+          <p className="px-4 py-3 text-[12px] text-content/45">{t("No templates yet")}</p>
         ) : (
           rows.map((row) => (
             <div
@@ -105,8 +99,8 @@ export function TemplatesSettings() {
                   onChange={(event) =>
                     update(row.id, { name: event.target.value })
                   }
-                  placeholder="Name"
-                  aria-label="Template name"
+                  placeholder={t("Name")}
+                  aria-label={t("Template name")}
                   spellCheck={false}
                   autoComplete="off"
                   className={`${FIELD} h-7 min-w-0 flex-1`}
@@ -118,8 +112,8 @@ export function TemplatesSettings() {
                     onChange={(event) =>
                       update(row.id, { trigger: event.target.value })
                     }
-                    placeholder="trigger (optional)"
-                    aria-label="Template trigger"
+                    placeholder={t("trigger (optional)")}
+                    aria-label={t("Template trigger")}
                     spellCheck={false}
                     autoComplete="off"
                     className="min-w-0 flex-1 bg-transparent text-content outline-none placeholder:text-content/35"
@@ -127,8 +121,8 @@ export function TemplatesSettings() {
                 </label>
                 <button
                   type="button"
-                  title="Delete template"
-                  aria-label="Delete template"
+                  title={t("Delete template")}
+                  aria-label={t("Delete template")}
                   onClick={() => {
                     setError(null);
                     setRows((current) =>
@@ -145,8 +139,8 @@ export function TemplatesSettings() {
                 onChange={(event) =>
                   update(row.id, { body: event.target.value })
                 }
-                placeholder={`Text to insert, e.g. "Review ${CURSOR_PLACEHOLDER} for bugs"`}
-                aria-label="Template text"
+                placeholder={t("Text to insert, e.g. \"Review {p0} for bugs\"", { p0: CURSOR_PLACEHOLDER })}
+                aria-label={t("Template text")}
                 rows={3}
                 maxLength={MAX_TEMPLATE_BODY}
                 spellCheck={false}
@@ -162,11 +156,9 @@ export function TemplatesSettings() {
           disabled={!dirty}
           onClick={save}
           className="primary-action h-7 rounded-md px-3 text-[12px] font-medium disabled:cursor-default disabled:opacity-40"
-        >
-          Save templates
-        </button>
+        >{t("Save templates")}</button>
         {dirty && !error ? (
-          <span className="text-[12px] text-content/45">Unsaved changes</span>
+          <span className="text-[12px] text-content/45">{t("Unsaved changes")}</span>
         ) : null}
         {error ? (
           <span role="alert" className="text-[12px] text-red-400">

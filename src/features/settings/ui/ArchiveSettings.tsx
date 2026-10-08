@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 
@@ -70,6 +71,7 @@ export function ArchivePage({
   onRestoreProject?: (path: string) => void;
   onDeleteProject?: (path: string) => void;
 }) {
+  useLocale();
   const [filters, setFilters] = useState(loadSessionSidebarFilters);
   const [deleting, setDeleting] = useState<ArchivedProject | null>(null);
   const archivedProjects = useArchivedProjects();
@@ -90,13 +92,11 @@ export function ArchivePage({
   return (
     <>
       <Group
-        title="Archived projects"
-        description="Archive a project from the rail to keep its chats without listing it in the sidebar."
+        title={t("Archived projects")}
+        description={t("Archive a project from the rail to keep its chats without listing it in the sidebar.")}
       >
         {archivedProjects.length === 0 ? (
-          <p className="px-4 py-3.5 text-[12px] text-content/45">
-            No archived projects.
-          </p>
+          <p className="px-4 py-3.5 text-[12px] text-content/45">{t("No archived projects.")}</p>
         ) : (
           archivedProjects.map((project) => (
             <div
@@ -112,14 +112,10 @@ export function ArchivePage({
                 </div>
               </div>
               {onRestoreProject ? (
-                <SecondaryButton onClick={() => onRestoreProject(project.path)}>
-                  Restore
-                </SecondaryButton>
+                <SecondaryButton onClick={() => onRestoreProject(project.path)}>{t("Restore")}</SecondaryButton>
               ) : null}
               {onDeleteProject ? (
-                <SecondaryButton danger onClick={() => setDeleting(project)}>
-                  Delete
-                </SecondaryButton>
+                <SecondaryButton danger onClick={() => setDeleting(project)}>{t("Delete")}</SecondaryButton>
               ) : null}
             </div>
           ))
@@ -129,29 +125,25 @@ export function ArchivePage({
       <Group
         title={
           looksLikeProject(cwd)
-            ? `Archived in ${projectName(cwd)}`
-            : "Archived conversations"
+            ? t("Archived in {p0}", { p0: projectName(cwd) })
+            : t("Archived conversations")
         }
       >
         <Row
           id="show-archived"
-          label="Show archived in the sidebar"
-          description="Keep archived conversations listed alongside the active ones."
+          label={t("Show archived in the sidebar")}
+          description={t("Keep archived conversations listed alongside the active ones.")}
         >
           <Toggle
-            label="Show archived in the sidebar"
+            label={t("Show archived in the sidebar")}
             on={filters.showArchived}
             onChange={onShowArchived}
           />
         </Row>
         {!looksLikeProject(cwd) ? (
-          <p className="px-4 py-3.5 text-[12px] text-content/45">
-            Open a project to see its archived conversations.
-          </p>
+          <p className="px-4 py-3.5 text-[12px] text-content/45">{t("Open a project to see its archived conversations.")}</p>
         ) : archived.length === 0 ? (
-          <p className="px-4 py-3.5 text-[12px] text-content/45">
-            No archived conversations in this project.
-          </p>
+          <p className="px-4 py-3.5 text-[12px] text-content/45">{t("No archived conversations in this project.")}</p>
         ) : (
           archived.map((session) => (
             <div
@@ -174,15 +166,11 @@ export function ArchivePage({
               </span>
               <SecondaryButton
                 onClick={() => onArchiveSession(session.id, false)}
-              >
-                Unarchive
-              </SecondaryButton>
+              >{t("Unarchive")}</SecondaryButton>
               <SecondaryButton
                 danger
                 onClick={() => onDeleteSession(session.id)}
-              >
-                Delete
-              </SecondaryButton>
+              >{t("Delete")}</SecondaryButton>
             </div>
           ))
         )}

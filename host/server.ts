@@ -21,6 +21,20 @@ import { HostAutomations } from "./automations";
 import { HostTasks } from "./tasks";
 import { HostGoals } from "./goals";
 import { HostStewards } from "./stewards";
+import { HostPrWatches } from "./pr-watches";
+import { sessionNeedsInput } from "../src/features/sessions/model/session";
+import type { PrWatchInput } from "../src/features/inbox/model/prWatches";
+import { dirname, join } from "node:path";
+import { HtmlArtifactStore } from "./html-artifacts";
+import { DeviceHost } from "./device-host";
+import type { DeviceAction } from "../src/features/devices/types";
+import { GenericAcpService } from "./generic-acp";
+import { HandoffHistoryStore } from "./handoff-history";
+import { ResourceDiagnostics } from "./resource-diagnostics";
+import { SharedBrowser } from "./shared-browser";
+import { WebControl } from "./web-control";
+import type { GenericAcpConfig } from "../src/features/providers/model/genericAcp";
+import type { HandoffHistory } from "../src/features/sessions/model/handoffBudget";
 import { DesktopSessions } from "./desktopSessions";
 import { branchCache } from "./git-actions";
 import { withOverlay } from "./desktopLive";
@@ -109,6 +123,7 @@ const resolveBinary: Record<RemoteProvider, () => Promise<{ path: string }>> = {
   hermes: () => resolveHermesBinary(),
   antigravity: () => resolveAntigravityBinary(),
   gemini: () => resolveGeminiBinary(),
+  acp: async () => ({ path: "configured-acp" }),
 };
 // A 1 MiB text file can expand to 6 MiB when JSON escapes control characters.
 // Existing files.write sends both the original and replacement contents.
@@ -128,6 +143,7 @@ const discoverModels: Record<
   hermes: discoverHermesModels,
   antigravity: discoverAntigravityModels,
   gemini: discoverGeminiModels,
+  acp: async () => [],
 };
 
 async function body(
@@ -176,6 +192,30 @@ export function createHostServer(
   goals = new HostGoals(engine.store, engine, tasks),
   stewards = new HostStewards(engine.store, engine, tasks),
 ) {
+  const featureDirectory = dirname(engine.store.attachmentDir);
+  const artifacts = new HtmlArtifactStore(join(featureDirectory, "html-artifacts"));
+  const deviceHost = new DeviceHost(featureDirectory);
+  const genericAcp = new GenericAcpService(featureDirectory);
+  const handoffHistory = new HandoffHistoryStore(featureDirectory);
+  const diagnostics = new ResourceDiagnostics();
+  const sharedBrowser = new SharedBrowser();
+  const webControl = process.env.IMECE_WEB_CONTROL_ORIGIN ? new WebControl(process.env.IMECE_WEB_CONTROL_ORIGIN) : undefined;
+  const prWatches = new HostPrWatches(engine.store, {
+    wake: async (watch, prompt, eventId) => {
+      if (watch.taskId) return tasks.queueDeliveryFollowup(watch.taskId, prompt, eventId);
+      if (!watch.sessionId) return false;
+      // A receipt wins even if its original run is currently busy.
+      if (engine.store.receiptStatus(eventId)) return true;
+      const current = engine.store.session(watch.sessionId);
+      if (current.projectId !== watch.projectId || current.status !== "idle" ||
+          current.archived || sessionNeedsInput(current.session) || desktopWatch(watch.sessionId)?.running)
+        return false;
+      refresh(watch.sessionId);
+      engine.command({ type: "send", commandId: eventId, sessionId: watch.sessionId,
+        text: `${prompt}\n\nThis PR notification does not authorize pushes, merges or publication beyond the original task instructions.` });
+      return true;
+    },
+  });
   const inHost = (id: string) => {
     try {
       engine.store.session(id);
@@ -193,7 +233,7 @@ export function createHostServer(
       : undefined;
     const snapshot = project && desktop.snapshot(id, project.id);
     return snapshot &&
-      providers.includes(snapshot.session.harness as RemoteProvider)
+      (snapshot.session.harness === "acp" || providers.includes(snapshot.session.harness as RemoteProvider))
       ? snapshot
       : undefined;
   };
@@ -201,6 +241,11 @@ export function createHostServer(
     const snapshot = desktopSnapshot(id);
     if (snapshot) engine.adoptSession(snapshot);
     else refresh(id);
+  };
+  const featureSession = (id: string) => {
+    const snapshot = desktopSnapshot(id);
+    if (snapshot) return snapshot;
+    return engine.store.session(id);
   };
   /** Pulls turns the desktop app ran in an adopted session since. */
   const refresh = (
@@ -218,7 +263,7 @@ export function createHostServer(
     if (!stamp) return;
     if (stamp.running)
       throw new Error(
-        "This session is running in MonoCode on that computer. Wait for it to finish.",
+        "This session is running in imc code on that computer. Wait for it to finish.",
       );
     if (stamp.updatedAt <= current.desktop.updatedAt) return;
     const snapshot = desktop.snapshot(id, current.projectId);
@@ -376,6 +421,8 @@ export function createHostServer(
     engine.withIdleProject(projectId, action),
   );
   const models = async (projectId?: unknown) => {
+    const acpModels = (await genericAcp.list()).map(config => ({ id: `acp:${config.id}`, nativeId: config.id, harness: "acp" as const, name: config.name, contextWindow: config.contextWindow }));
+    setHarnessModels("acp", acpModels);
     const cwd =
       typeof projectId === "string"
         ? engine.store.project(projectId).cwd
@@ -419,7 +466,8 @@ export function createHostServer(
       );
       catalogs.set(cwd, { binaries, probed: Date.now(), catalog });
     }
-    return catalog;
+    const result = await catalog;
+    return { ...result, models: { ...result.models, acp: acpModels } };
   };
   const projectSessionList = async (projectId: string) => {
     const project = engine.store.project(projectId);
@@ -519,6 +567,7 @@ export function createHostServer(
   const server = createServer(
     { requestTimeout: 20_000, headersTimeout: 10_000, maxHeaderSize: 8192 },
     async (request, response) => {
+      if (webControl?.handle(request, response)) return;
       if (request.url === "/lifecycle" && lifecycle) {
         lifecycle(request, response);
         return;
@@ -530,9 +579,7 @@ export function createHostServer(
         // Desktop native HTTP supplies credentials. This endpoint intentionally
         // accepts no browser origin and provides no permissive CORS escape hatch.
         if (
-          request.headers.origin ||
-          request.method !== "POST" ||
-          request.url !== "/rpc"
+          !(webControl?.acceptsRpc(request) || (!request.headers.origin && request.method === "POST" && request.url === "/rpc"))
         ) {
           response
             .writeHead(403)
@@ -580,14 +627,27 @@ export function createHostServer(
             : {};
         let result: unknown;
         switch (input.method) {
+          case "resources.read":
+            result = diagnostics.read(token);
+            break;
+          case "browser.status":
+          case "browser.claim":
+          case "browser.release":
+          case "browser.open":
+          case "browser.frame":
+          case "browser.input":
+          case "browser.close":
+            result = await sharedBrowser.dispatch(input.method, params, token);
+            break;
           case "environment.describe":
             result = {
               protocolVersion: HOST_PROTOCOL_VERSION,
               environmentId: engine.store.environmentId,
               name: hostname(),
+              webControl: webControl ? { origin: webControl.origin, url: `${webControl.origin}/control` } : undefined,
               platform: process.platform,
               // Older clients validate this list against Codex and Claude only.
-              providers: providers.filter((provider) =>
+              providers: [...new Set([...providers, ...((await genericAcp.list()).length ? ["acp" as const] : [])])].filter((provider) =>
                 Array.isArray(params.supportedProviders)
                   ? params.supportedProviders.includes(provider)
                   : provider === "codex" || provider === "claude",
@@ -644,9 +704,108 @@ export function createHostServer(
                 "goals",
                 "stewards",
                 "host.settings",
+                "delivery.pr",
+                "html.artifacts",
+                "device.host",
+                "generic-acp-v1",
+                "handoff-history-v1",
+                "resources.diagnostics",
+                "browser.shared",
               ],
             };
             break;
+          case "generic_acp_list":
+            result = await genericAcp.list(); break;
+          case "generic_acp_save":
+            await genericAcp.save(params.config as GenericAcpConfig); catalogs.clear(); result = null; break;
+          case "generic_acp_remove":
+            await genericAcp.remove(String(params.id ?? "")); catalogs.clear(); result = null; break;
+          case "generic_acp_registry":
+            result = await genericAcp.registry(params.refresh === true); break;
+          case "generic_acp_install":
+            await genericAcp.install(String(params.id ?? ""), String(params.version ?? "")); catalogs.clear(); result = null; break;
+          case "generic_acp_cancel_install":
+            genericAcp.cancelInstall(String(params.id ?? "")); result = null; break;
+          case "handoff_history_save":
+          case "handoff_history_read": {
+            const projectId = String(params.projectId ?? "");
+            engine.store.project(projectId);
+            const sessionId = input.method === "handoff_history_save" ? (params.history as HandoffHistory)?.sessionId : String(params.sessionId ?? "");
+            if (!sessionId) throw new Error("Invalid conversation");
+            if (featureSession(sessionId).projectId !== projectId) throw new Error("Conversation belongs to another project");
+            result = input.method === "handoff_history_save" ? await handoffHistory.save(params.history as HandoffHistory) :
+              await handoffHistory.read(sessionId, Number(params.cursor ?? 0), Number(params.limit ?? 20));
+            break;
+          }
+          case "html.artifacts.list":
+          case "html.artifacts.read":
+          case "html_artifact_publish": {
+            const projectId = String(params.projectId ?? "");
+            engine.store.project(projectId);
+            const sessionId = String(params.sessionId ?? "");
+            const session = featureSession(sessionId);
+            if (session.projectId !== projectId) throw new Error("Conversation belongs to another project");
+            if (input.method === "html.artifacts.list") result = await artifacts.list(sessionId);
+            else if (input.method === "html.artifacts.read") result = await artifacts.read(sessionId, String(params.id ?? ""));
+            else {
+              if (typeof params.title !== "string" || typeof params.path !== "string")
+                throw new Error("A visual requires a title and workspace HTML path");
+              result = await artifacts.publishFile({ sessionId, title: params.title,
+                requestId: typeof params.requestId === "string" ? params.requestId : undefined,
+                path: params.path, messageId: typeof params.messageId === "string" ? params.messageId : undefined },
+                session.session.worktreeCwd || engine.store.project(projectId).cwd);
+            }
+            break;
+          }
+          case "devices.status":
+          case "devices.setup":
+          case "devices.start":
+          case "devices.stop":
+          case "devices.list":
+          case "devices.boot":
+          case "devices.capture":
+          case "devices.action": {
+            engine.store.project(String(params.projectId ?? ""));
+            if (input.method === "devices.status") result = await deviceHost.status();
+            else if (input.method === "devices.setup") {
+              if (typeof params.agentAccess !== "boolean") throw new Error("Choose whether agents may control devices");
+              result = await deviceHost.setup(params.agentAccess);
+            } else if (input.method === "devices.start") result = await deviceHost.start();
+            else if (input.method === "devices.stop") result = await deviceHost.stop();
+            else if (input.method === "devices.list") result = await deviceHost.list();
+            else if (input.method === "devices.boot") result = await deviceHost.boot(String(params.deviceId ?? ""));
+            else if (input.method === "devices.capture") result = await deviceHost.capture(String(params.deviceId ?? ""));
+            else result = await deviceHost.action(String(params.deviceId ?? ""), params.action as DeviceAction);
+            break;
+          }
+          case "delivery.pr.list": {
+            const projectId = String(params.projectId ?? "");
+            engine.store.project(projectId);
+            result = prWatches.list(projectId);
+            break;
+          }
+          case "delivery.pr.link": {
+            const input = params.input as PrWatchInput;
+            if (!input || typeof input !== "object") throw new Error("Invalid PR link");
+            engine.store.project(input.projectId);
+            if (input.sessionId) adopt(input.sessionId);
+            result = prWatches.link(input);
+            break;
+          }
+          case "delivery.pr.remove":
+          case "delivery.pr.resume":
+          case "delivery.pr.pause":
+          case "delivery.pr.check": {
+            const projectId = String(params.projectId ?? "");
+            engine.store.project(projectId);
+            const id = String(params.id ?? "");
+            if (!prWatches.list(projectId).some(watch => watch.id === id))
+              throw new Error("PR link does not belong to this project");
+            if (input.method === "delivery.pr.check") { await prWatches.check(id); result = null; }
+            else if (input.method === "delivery.pr.remove") { prWatches.remove(id); result = null; }
+            else result = input.method === "delivery.pr.resume" ? prWatches.resume(id) : prWatches.pause(id);
+            break;
+          }
           case "projects.list":
             result = engine.store.projects();
             break;
@@ -788,7 +947,7 @@ export function createHostServer(
             const sessionId = String(params.sessionId ?? "");
             if (desktopSnapshot(sessionId))
               throw new Error(
-                "This session belongs to the MonoCode app on that computer; delete it there.",
+                "This session belongs to the imc code app on that computer; delete it there.",
               );
             const current = engine.store.session(sessionId);
             if (current.projectId !== params.projectId)
@@ -985,7 +1144,7 @@ export function createHostServer(
               if (watch?.running) {
                 if (!desktop.live.alive())
                   throw new Error(
-                    "The MonoCode app on that computer isn't responding. Try again when it's open.",
+                    "The imc code app on that computer isn't responding. Try again when it's open.",
                   );
                 const command = parseCommand(params);
                 if (
@@ -1049,7 +1208,8 @@ export function createHostServer(
             result = automations.runNow(String(params.automationId ?? ""));
             break;
           case "tasks.list":
-            result = tasks.list();
+            if (params.projectId !== undefined) engine.store.project(String(params.projectId));
+            result = tasks.list().filter(task => params.projectId === undefined || task.projectId === params.projectId);
             break;
           case "tasks.save":
             result = tasks.save(params.task);
@@ -1137,6 +1297,8 @@ export function createHostServer(
             result = readAttachmentChunk(engine.store, params);
             break;
           case "devices.revokeSelf":
+            diagnostics.revoke(token);
+            sharedBrowser.revoke(token);
             // Only the caller's own credential. Sessions and other devices
             // are unaffected; the host keeps running.
             result = { revoked: engine.store.revokeToken(token) };
@@ -1348,6 +1510,7 @@ export function createHostServer(
     },
   );
   // Cached read-only desktop connections would keep the files locked.
-  server.on("close", () => desktop.close());
+  server.on("listening", () => prWatches.start());
+  server.on("close", () => { prWatches.stop(); diagnostics.close(); void deviceHost.dispose(); void sharedBrowser.close(); desktop.close(); });
   return server;
 }

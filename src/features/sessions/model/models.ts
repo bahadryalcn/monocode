@@ -1,4 +1,5 @@
 import type { HarnessId } from "./session";
+import { withClaudeAdvisor } from "./claudeAdvisor";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
 import {
@@ -218,6 +219,7 @@ export const DEFAULT_MODEL_ID: Record<HarnessId, string> = {
   hermes: "hermes:default",
   antigravity: "antigravity:gemini-3.8-flash-high",
   gemini: "gemini:default",
+  acp: "",
 };
 
 const FAVORITES_KEY = "monocode.favoriteModels";
@@ -279,7 +281,8 @@ export function getModelSnapshot(): number {
 }
 
 export function setHarnessModels(harness: HarnessId, models: AgentModel[]) {
-  if (models.length === 0) return;
+  if (models.length === 0 && harness !== "acp") return;
+  models = models.map(withClaudeAdvisor);
   overlays = { ...overlays, [harness]: models };
   overlayDefaults = {
     ...overlayDefaults,
@@ -317,7 +320,7 @@ function baseModelsFor(harness: HarnessId): AgentModel[] {
   if (!baseByHarness) {
     const grouped: Partial<Record<HarnessId, AgentModel[]>> = {};
     for (const model of MODELS) {
-      (grouped[model.harness] ??= []).push(model);
+      (grouped[model.harness] ??= []).push(withClaudeAdvisor(model));
     }
     baseByHarness = grouped;
   }

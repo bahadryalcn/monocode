@@ -2010,6 +2010,7 @@ function settingsKeyFor(input: HarnessSessionInput): string {
     fast: input.modelSettings?.fast,
     thinking: input.modelSettings?.thinking,
     context: input.modelSettings?.context,
+    advisor: input.modelSettings?.advisor,
     runtimeMode: input.runtimeMode,
     hooks: loadClaudeHooks(),
     // Folders are fixed at launch, so a change needs a fresh process.
@@ -2022,6 +2023,7 @@ function launchOptions(
   sessionId: string,
 ): {
   model?: string;
+  advisor?: string;
   effort?: string;
   permissionMode?: ReturnType<typeof runtimeModeToPermission>;
   resume?: string;
@@ -2047,6 +2049,7 @@ function launchOptions(
   }
   return {
     model: resolveClaudeApiModelId(native, context),
+    advisor: input.modelSettings?.advisor,
     effort: normalizeClaudeCliEffort(effortRaw, native),
     permissionMode:
       input.intent === "plan"

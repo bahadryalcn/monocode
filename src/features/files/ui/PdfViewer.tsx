@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   useCallback,
   useEffect,
@@ -50,6 +51,7 @@ type Anchor = {
 };
 
 export default function PdfViewer({ bytes }: { bytes: Uint8Array }) {
+  useLocale();
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -75,21 +77,20 @@ export default function PdfViewer({ bytes }: { bytes: Uint8Array }) {
 
   if (error)
     return (
-      <DocumentMessage title="Couldn’t read this PDF" error>
+      <DocumentMessage title={t("Couldn’t read this PDF")} error>
         {error}
       </DocumentMessage>
     );
   if (!doc) {
     return (
-      <div className="grid h-full place-items-center text-[12px] text-content/45">
-        Loading PDF…
-      </div>
+      <div className="grid h-full place-items-center text-[12px] text-content/45">{t("Loading PDF…")}</div>
     );
   }
   return <PdfPages doc={doc} />;
 }
 
 function PdfPages({ doc }: { doc: PDFDocumentProxy }) {
+  useLocale();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [zoom, setZoom] = useState<Zoom>(() => recalledZoom("pdf") ?? "fit");
@@ -223,7 +224,7 @@ function PdfPages({ doc }: { doc: PDFDocumentProxy }) {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-stroke px-3 text-[11px] text-content/60">
         <input
-          aria-label="Page number"
+          aria-label={t("Page number")}
           value={pageInput}
           inputMode="numeric"
           onChange={(event) => setPageInput(event.target.value)}
@@ -235,18 +236,18 @@ function PdfPages({ doc }: { doc: PDFDocumentProxy }) {
         />
         <span className="tabular-nums">/ {doc.numPages}</span>
         <span className="flex-1" />
-        <ToolbarButton label="Zoom out" onClick={() => zoomBy(1 / ZOOM_STEP)}>
+        <ToolbarButton label={t("Zoom out")} onClick={() => zoomBy(1 / ZOOM_STEP)}>
           <Minus className="size-3" strokeWidth={1.75} />
         </ToolbarButton>
         <span ref={percentRef} className="w-10 text-center tabular-nums">
           {formatZoomPercent(scale)}
         </span>
-        <ToolbarButton label="Zoom in" onClick={() => zoomBy(ZOOM_STEP)}>
+        <ToolbarButton label={t("Zoom in")} onClick={() => zoomBy(ZOOM_STEP)}>
           <Plus className="size-3" strokeWidth={1.75} />
         </ToolbarButton>
         <button
           type="button"
-          title="Fit to width"
+          title={t("Fit to width")}
           onClick={() => {
             endGesture();
             changeZoom("fit");
@@ -254,9 +255,7 @@ function PdfPages({ doc }: { doc: PDFDocumentProxy }) {
           className={`h-5 rounded px-1.5 hover:bg-content/10 hover:text-content ${
             zoom === "fit" ? "text-content" : ""
           }`}
-        >
-          Fit width
-        </button>
+        >{t("Fit width")}</button>
       </div>
       <div
         ref={scrollRef}
@@ -300,6 +299,7 @@ function PdfPage({
   onSize: (page: number, size: Size) => void;
   onCenter: (page: number) => void;
 }) {
+  useLocale();
   const frameRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
@@ -478,6 +478,7 @@ function ToolbarButton({
   onClick: () => void;
   children: React.ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"

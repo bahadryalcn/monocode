@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   useCallback,
   useEffect,
@@ -105,6 +106,7 @@ export function GitGraphList({
   onOpen,
   onMenu,
 }: Props) {
+  useLocale();
   const wide = variant === "wide";
   const topOffset = wide ? WIDE_HEADER_PX : 0;
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
@@ -216,12 +218,12 @@ export function GitGraphList({
               className="sticky top-0 z-[2] grid items-center border-b border-stroke bg-background-base text-[10px] font-semibold tracking-[0.04em] text-content/50 uppercase"
               style={{ height: WIDE_HEADER_PX, gridTemplateColumns: columns }}
             >
-              <span className="truncate pl-3">Branch / Tag</span>
-              <span className="truncate">{plain ? "" : "Graph"}</span>
-              <span className="truncate pl-1">Commit Message</span>
-              <span className="truncate">Author</span>
-              <span className="truncate">Date</span>
-              <span className="truncate">SHA</span>
+              <span className="truncate pl-3">{t("Branch / Tag")}</span>
+              <span className="truncate">{plain ? "" : t("Graph")}</span>
+              <span className="truncate pl-1">{t("Commit Message")}</span>
+              <span className="truncate">{t("Author")}</span>
+              <span className="truncate">{t("Date")}</span>
+              <span className="truncate">{"SHA"}</span>
             </div>
           ) : null}
           <ul className="min-w-0 max-w-full" onKeyDown={onKeyDown}>
@@ -259,9 +261,7 @@ export function GitGraphList({
             ) : null}
           </ul>
           {hasMore ? (
-            <button type="button" onClick={onLoadMore} className={LOAD_MORE_CLASS}>
-              Load more commits
-            </button>
+            <button type="button" onClick={onLoadMore} className={LOAD_MORE_CLASS}>{t("Load more commits")}</button>
           ) : null}
         </>
       )}
@@ -331,6 +331,7 @@ function subjectClass(item: GraphListItem): string {
 }
 
 function CompactRow(props: RowProps) {
+  useLocale();
   const { item, plain, now } = props;
   const { commit, row } = item;
   const refs = useMemo(() => orderGraphRefs(row.refs, commit.head), [row.refs, commit.head]);
@@ -365,6 +366,7 @@ function CompactRow(props: RowProps) {
 }
 
 function WideRow(props: RowProps & { columns: string }) {
+  useLocale();
   const { item, plain, now, columns } = props;
   const { commit, row } = item;
   const refs = useMemo(() => orderGraphRefs(row.refs, commit.head), [row.refs, commit.head]);

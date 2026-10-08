@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   Check,
   ChevronDown,
@@ -95,6 +96,7 @@ const EFFORT_TILE_COLUMNS = 32;
 const EFFORT_TILE_ROWS = 5;
 
 function EffortTileShimmer() {
+  useLocale();
   return (
     <span className="codex-effort-tiles" aria-hidden="true">
       {Array.from(
@@ -135,6 +137,7 @@ export function ModelPicker({
   onSettingsChange,
   onClose,
 }: Props) {
+  useLocale();
   const source = useModelSource();
   const catalogVersion = useSyncExternalStore(
     subscribeModels,
@@ -580,7 +583,7 @@ export function ModelPicker({
       <button
         ref={button}
         type="button"
-        title={`${triggerTitle} · Recent models: right-click or ${MOD}.`}
+        title={t("{p0} · Recent models: right-click or {p1}.", { p0: triggerTitle, p1: MOD })}
         aria-label={`${HARNESS_TITLE[current.harness]}${
           current.provider ? `, ${current.provider.name},` : ""
         } ${current.name}${
@@ -648,7 +651,7 @@ export function ModelPicker({
             ignore={SELF}
             onDismiss={() => dismiss(false)}
             role="menu"
-            aria-label="Model and settings"
+            aria-label={t("Model and settings")}
             tabIndex={-1}
             onKeyDown={onMenuKey}
             data-model-picker
@@ -678,7 +681,7 @@ export function ModelPicker({
                         : "text-content hover:bg-content/5"
                     }`}
                   >
-                    <span className="min-w-0 flex-1">Model</span>
+                    <span className="min-w-0 flex-1">{t("Model")}</span>
                     <span className="flex min-w-0 max-w-36 items-center gap-1 text-content/55">
                       <HarnessIcon
                         harness={current.harness}
@@ -847,7 +850,7 @@ export function ModelPicker({
           autoFocus
           onDismiss={() => setRecentMenu(null)}
           role="menu"
-          aria-label="Recently used models"
+          aria-label={t("Recently used models")}
           aria-activedescendant={`${recentMenuId}-${recentActive}`}
           tabIndex={-1}
           onContextMenu={(event) => event.preventDefault()}
@@ -918,6 +921,7 @@ export function ModelControlPills({
   Props,
   "harness" | "model" | "values" | "onSettingsChange" | "onClose"
 >) {
+  useLocale();
   const catalogVersion = useSyncExternalStore(
     subscribeModels,
     getModelSnapshot,
@@ -975,6 +979,7 @@ function TogglePill({
   values: Record<string, string>;
   onSettingsChange: (settings: Record<string, string>) => void;
 }) {
+  useLocale();
   const on = settingValue(setting, values) === "true";
   return (
     <button
@@ -1013,6 +1018,7 @@ function SelectPill({
   harness: HarnessId;
   additionalSettings?: ModelSetting[];
 }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const button = useRef<HTMLButtonElement>(null);

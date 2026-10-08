@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Modal } from "../../../shared/ui/Modal";
@@ -32,6 +33,7 @@ type Props = {
  * state.
  */
 export function SetLockPasswordDialog({ mode, onClose, onDone }: Props) {
+  useLocale();
   const current = useRef<HTMLInputElement>(null);
   const next = useRef<HTMLInputElement>(null);
   const confirm = useRef<HTMLInputElement>(null);
@@ -104,8 +106,8 @@ export function SetLockPasswordDialog({ mode, onClose, onDone }: Props) {
 
   return (
     <Modal
-      title={mode === "set" ? "Set lock password" : "Change lock password"}
-      description="One password locks any number of groups."
+      title={mode === "set" ? t("Set lock password") : t("Change lock password")}
+      description={t("One password locks any number of groups.")}
       size="sm"
       fitViewport
       onClose={onClose}
@@ -113,19 +115,19 @@ export function SetLockPasswordDialog({ mode, onClose, onDone }: Props) {
       <form onSubmit={submit} className="flex flex-col gap-3 p-4">
         {mode === "change" ? (
           <PasswordField
-            label="Current password"
+            label={t("Current password")}
             ref={current}
             autoFocus
             invalid={message != null}
           />
         ) : null}
         <PasswordField
-          label="New password"
+          label={t("New password")}
           ref={next}
           autoFocus={mode === "set"}
         />
         <PasswordField
-          label="Confirm new password"
+          label={t("Confirm new password")}
           ref={confirm}
           describedBy={message ? "set-lock-password-error" : undefined}
           invalid={message != null && mode === "set"}
@@ -140,32 +142,21 @@ export function SetLockPasswordDialog({ mode, onClose, onDone }: Props) {
           </p>
         ) : null}
         <ul className="flex list-disc flex-col gap-1 pl-4 text-[11px] leading-snug text-content/50">
-          <li>
-            This hides locked groups inside {PRODUCT_IDENTITY.displayName}. It does not encrypt your
-            project files, the session database, or the Claude Code and Codex
-            transcripts on disk; anyone with access to this computer&apos;s
-            files can still read them.
-          </li>
-          <li>
-            Only a salted hash is stored on this computer. A forgotten password
-            cannot be recovered, only reset from Settings, which removes the
-            lock from every group.
-          </li>
+          <li>{t("This hides locked groups inside ")}{PRODUCT_IDENTITY.displayName}{t(". It does not encrypt your project files, the session database, or the Claude Code and Codex transcripts on disk; anyone with access to this computer's files can still read them.")}</li>
+          <li>{t("Only a salted hash is stored on this computer. A forgotten password cannot be recovered, only reset from Settings, which removes the lock from every group.")}</li>
         </ul>
         <div className="flex justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
             className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
-          >
-            Cancel
-          </button>
+          >{t("Cancel")}</button>
           <button
             type="submit"
             disabled={busy || cooldown.remainingMs > 0}
             className="rounded-md bg-selection px-3 py-1.5 text-[12px] font-medium text-content hover:bg-selection-hover disabled:opacity-40"
           >
-            {mode === "set" ? "Set password" : "Change password"}
+            {mode === "set" ? t("Set password") : t("Change password")}
           </button>
         </div>
       </form>

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   contextRatio,
@@ -37,6 +38,7 @@ export function ContextMeter({
   onCompact?: () => void;
   compactDisabled?: boolean;
 }) {
+  useLocale();
   const [hovered, setHovered] = useState(false);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -83,8 +85,8 @@ export function ContextMeter({
       {onCompact ? (
         <button
           type="button"
-          title="Context usage"
-          aria-label={`${label}. Open context actions`}
+          title={t("Context usage")}
+          aria-label={t("{p0}. Open context actions", { p0: label })}
           aria-expanded={actionsOpen}
           onClick={() => setOpen((value) => !value)}
           className="-m-1 grid rounded-sm p-1 outline-none focus-visible:ring-1 focus-visible:ring-accent"
@@ -127,17 +129,15 @@ export function ContextMeter({
               disabled={compactDisabled}
               title={
                 compactDisabled
-                  ? "Wait for the current operation to finish"
-                  : "Compact this conversation's context"
+                  ? t("Wait for the current operation to finish")
+                  : t("Compact this conversation's context")
               }
               onClick={() => {
                 closeActions();
                 onCompact?.();
               }}
               className="mt-1.5 w-full rounded-md bg-content/10 px-2 py-1 text-[11px] text-content hover:bg-content/15 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Compact now
-            </button>
+            >{t("Compact now")}</button>
           ) : null}
         </Popover>
       ) : null}
@@ -146,6 +146,7 @@ export function ContextMeter({
 }
 
 function MeterRing({ ratio, label }: { ratio: number; label?: string }) {
+  useLocale();
   return (
     <svg
       width={SIZE}

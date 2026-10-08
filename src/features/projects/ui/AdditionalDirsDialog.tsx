@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useState } from "react";
 import { basename } from "../../../platform/tauri/fs";
 import { pathKey, prettyCwd } from "../../../shared/lib/paths";
@@ -19,6 +20,7 @@ type Props = {
  * project may also read and edit.
  */
 export function AdditionalDirsDialog({ project, name, onClose }: Props) {
+  useLocale();
   const [selected, setSelected] = useState(() => loadAdditionalDirs(project));
   const selectedKeys = new Set(selected.map(pathKey));
   // A folder picked earlier stays listed after it leaves the group, so it can
@@ -41,16 +43,14 @@ export function AdditionalDirsDialog({ project, name, onClose }: Props) {
 
   return (
     <Modal
-      title="Additional folders"
-      description={`Folders agents in ${name} can also read and edit. Applies to Claude Code and Codex, from the next message.`}
+      title={t("Additional folders")}
+      description={t("Folders agents in {p0} can also read and edit. Applies to Claude Code and Codex, from the next message.", { p0: name })}
       size="sm"
       fitViewport
       onClose={onClose}
     >
       {candidates.length === 0 ? (
-        <p className="p-4 text-[12px] leading-5 text-content/55">
-          Put this project in a group with other projects to offer them here.
-        </p>
+        <p className="p-4 text-[12px] leading-5 text-content/55">{t("Put this project in a group with other projects to offer them here.")}</p>
       ) : (
         <ul className="min-h-0 overflow-y-auto p-2">
           {candidates.map((path) => (

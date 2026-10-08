@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   useCallback,
   useEffect,
@@ -58,6 +59,7 @@ export function QueuedMessageEditDialog({
   onRemove,
   onCancel,
 }: Props) {
+  useLocale();
   const [draft, setDraft] = useState<QueuedEditDraft>(() =>
     queuedEditDraft(message),
   );
@@ -207,7 +209,7 @@ export function QueuedMessageEditDialog({
 
   return (
     <Modal
-      title="Edit queued message"
+      title={t("Edit queued message")}
       size="md"
       fitViewport
       onClose={requestClose}
@@ -244,11 +246,11 @@ export function QueuedMessageEditDialog({
           ) : null}
           <textarea
             ref={field}
-            aria-label="Queued message text"
+            aria-label={t("Queued message text")}
             value={draft.text}
             rows={5}
             spellCheck={false}
-            placeholder="Message"
+            placeholder={t("Message")}
             onChange={(event) =>
               change(
                 event.target.value,
@@ -263,8 +265,8 @@ export function QueuedMessageEditDialog({
             <div className="flex px-2 pb-2">
               <button
                 type="button"
-                title="Add files or images"
-                aria-label="Add files or images"
+                title={t("Add files or images")}
+                aria-label={t("Add files or images")}
                 onClick={() =>
                   void pickAttachments().then(attach, showError)
                 }
@@ -277,9 +279,7 @@ export function QueuedMessageEditDialog({
         </div>
 
         {draft.attachments.some((file) => file.missing) ? (
-          <p className="text-[11px] leading-4 text-amber-400">
-            Missing files are dropped from the message when you save.
-          </p>
+          <p className="text-[11px] leading-4 text-amber-400">{t("Missing files are dropped from the message when you save.")}</p>
         ) : null}
         {error ? (
           <p role="alert" className="text-[11px] leading-4 text-red-400/90">
@@ -292,21 +292,17 @@ export function QueuedMessageEditDialog({
             role="alert"
             className="flex items-center justify-end gap-2 text-[12px] text-content/70"
           >
-            <span className="mr-auto">Discard your changes?</span>
+            <span className="mr-auto">{t("Discard your changes?")}</span>
             <button
               type="button"
               onClick={() => setConfirmingDiscard(false)}
               className={BUTTON_GHOST}
-            >
-              Keep editing
-            </button>
+            >{t("Keep editing")}</button>
             <button
               type="button"
               onClick={onCancel}
               className="rounded-md bg-red-500/90 px-3 py-1.5 text-[12px] font-medium text-white hover:bg-red-500"
-            >
-              Discard
-            </button>
+            >{t("Discard")}</button>
           </div>
         ) : (
           <div className="flex items-center justify-end gap-2">
@@ -315,22 +311,16 @@ export function QueuedMessageEditDialog({
                 type="button"
                 onClick={onRemove}
                 className="mr-auto rounded-md px-3 py-1.5 text-[12px] text-red-400 hover:bg-red-500/10"
-              >
-                Remove from queue
-              </button>
+              >{t("Remove from queue")}</button>
             ) : null}
-            <button type="button" onClick={requestClose} className={BUTTON_GHOST}>
-              Cancel
-            </button>
+            <button type="button" onClick={requestClose} className={BUTTON_GHOST}>{t("Cancel")}</button>
             <button
               type="button"
               disabled={empty}
               onClick={save}
-              title="Save (Ctrl/Cmd+Enter)"
+              title={t("Save (Ctrl/Cmd+Enter)")}
               className="inline-flex items-center gap-1.5 rounded-md bg-content px-3 py-1.5 text-[12px] font-medium text-background-base hover:bg-content/80 disabled:opacity-40"
-            >
-              Save
-            </button>
+            >{t("Save")}</button>
           </div>
         )}
       </div>

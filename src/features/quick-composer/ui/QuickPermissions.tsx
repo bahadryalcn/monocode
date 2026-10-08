@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useId, useRef, useState } from "react";
 import {
   Check,
@@ -27,6 +28,7 @@ export function QuickPermissionIcon({
   mode: RuntimeMode;
   className?: string;
 }) {
+  useLocale();
   const Icon = ICONS[mode];
   return (
     <Icon
@@ -50,6 +52,7 @@ export function QuickPermissions({
   onClose: () => void;
   embedded?: boolean;
 }) {
+  useLocale();
   const root = useRef<HTMLDivElement>(null);
   const id = useId();
   const [active, setActive] = useState(RUNTIME_MODES.indexOf(value));
@@ -66,7 +69,7 @@ export function QuickPermissions({
     <div
       ref={root}
       role="listbox"
-      aria-label="Permissions"
+      aria-label={t("Permissions")}
       aria-activedescendant={`${id}-${active}`}
       tabIndex={embedded ? 0 : -1}
       className={`min-h-0 overflow-y-auto overscroll-none p-2 outline-none ${embedded ? "" : "border-t border-stroke"}`}
@@ -122,7 +125,7 @@ export function QuickPermissions({
                 {RUNTIME_MODE_LABEL[mode]}
               </span>
               <span className="mt-0.5 block text-[11px] text-content/45">
-                {reason ? `Unavailable: ${reason}` : RUNTIME_MODE_HINT[mode]}
+                {reason ? t("Unavailable: {p0}", { p0: reason }) : RUNTIME_MODE_HINT[mode]}
               </span>
             </span>
             {value === mode ? (

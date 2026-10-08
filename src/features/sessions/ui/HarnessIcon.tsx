@@ -10,6 +10,7 @@ import opencode from "../../../assets/providers/opencode.svg";
 import pi from "../../../assets/providers/pi.svg";
 import antigravity from "../../../assets/providers/antigravity.svg";
 import gemini from "../../../assets/providers/gemini.svg";
+import acp from "../../../assets/providers/acp.svg";
 import type { HarnessId } from "../model/session";
 
 export const HARNESS_ICONS: Record<HarnessId, string> = {
@@ -24,6 +25,7 @@ export const HARNESS_ICONS: Record<HarnessId, string> = {
   hermes,
   antigravity,
   gemini,
+  acp,
 };
 
 /** White marks that must follow `currentColor` so they stay visible in light mode. */

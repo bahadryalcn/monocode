@@ -256,7 +256,7 @@ async function runCodexAccountRequest<T>(
           {
             clientInfo: {
               name: "monocode",
-              title: "MonoCode",
+              title: "imc code",
               version: "0.1.0",
             },
             capabilities: { experimentalApi: true },

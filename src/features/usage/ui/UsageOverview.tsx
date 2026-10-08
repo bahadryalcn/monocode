@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { RefreshCw } from "../../../shared/ui/icons";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -36,7 +37,7 @@ type Load =
   | { status: "ready"; usage: AccountUsage[]; failed: number };
 
 function formatDay(date: Date): string {
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  return date.toLocaleDateString(getLocale(), { month: "short", day: "numeric" });
 }
 
 /**
@@ -45,6 +46,7 @@ function formatDay(date: Date): string {
  * transcripts, so switching range or reopening Settings stays quick.
  */
 export function UsageOverview() {
+  useLocale();
   const [version, setVersion] = useState(0);
   const [reload, setReload] = useState(0);
   const [range, setRange] = useState<UsageRangeId>("30d");
@@ -137,17 +139,12 @@ export function UsageOverview() {
     <section className="pt-8">
       <div className="flex flex-wrap items-end gap-4 pb-2.5">
         <div className="min-w-0 flex-1">
-          <h2 className="text-[13px] font-semibold text-content">
-            Cost by project and day
-          </h2>
-          <p className="mt-1 text-[12px] leading-relaxed text-content/45">
-            API-equivalent estimates from local session logs, not what a
-            subscription plan bills.
-          </p>
+          <h2 className="text-[13px] font-semibold text-content">{t("Cost by project and day")}</h2>
+          <p className="mt-1 text-[12px] leading-relaxed text-content/45">{t("API-equivalent estimates from local session logs, not what a subscription plan bills.")}</p>
         </div>
         <div className="flex shrink-0 items-center gap-2 pb-0.5">
           <Choice
-            label="Cost range"
+            label={t("Cost range")}
             value={range}
             options={USAGE_RANGES.map(({ id, label }) => ({
               value: id,
@@ -157,8 +154,8 @@ export function UsageOverview() {
           />
           <button
             type="button"
-            aria-label="Reload cost by project and day"
-            title="Reload"
+            aria-label={t("Reload cost by project and day")}
+            title={t("Reload")}
             disabled={refreshing}
             onClick={() => setReload((value) => value + 1)}
             className="grid size-[26px] place-items-center rounded-md border border-content/10 text-content/50 hover:bg-content/10 hover:text-content disabled:opacity-40"
@@ -173,12 +170,9 @@ export function UsageOverview() {
       </div>
       <div className="overflow-hidden rounded-xl border border-content/10 bg-content/3">
         {!data ? (
-          <div className="px-4 py-6 text-[12px] text-content/45">
-            Reading session logs…
-          </div>
+          <div className="px-4 py-6 text-[12px] text-content/45">{t("Reading session logs…")}</div>
         ) : data.totals.tokens === 0 ? (
-          <div className="px-4 py-6 text-[12px] leading-relaxed text-content/45">
-            No usage in the selected range ({rangeLabel.toLowerCase()}).
+          <div className="px-4 py-6 text-[12px] leading-relaxed text-content/45">{t("No usage in the selected range (")}{rangeLabel.toLowerCase()}).
           </div>
         ) : (
           <>
@@ -204,26 +198,27 @@ export function UsageOverview() {
 }
 
 function Totals({ data }: { data: UsageOverviewData }) {
+  useLocale();
   const { totals } = data;
   return (
     <div className="grid grid-cols-1 divide-y divide-content/5 border-b border-content/5 @min-[560px]/settings:grid-cols-4 @min-[560px]/settings:divide-x @min-[560px]/settings:divide-y-0">
       <Stat
-        label="Estimated cost"
+        label={t("Estimated cost")}
         value={formatUsageCost(totals.cost)}
         detail="API-equivalent, not billed"
       />
       <Stat
-        label="Input"
+        label={t("Input")}
         value={formatUsageTokens(totals.input)}
         detail="uncached tokens"
       />
       <Stat
-        label="Output"
+        label={t("Output")}
         value={formatUsageTokens(totals.output)}
         detail="tokens"
       />
       <Stat
-        label="Cache"
+        label={t("Cache")}
         value={formatUsageTokens(totals.cacheRead + totals.cacheWrite)}
         detail={`${formatUsageTokens(totals.cacheRead)} read · ${formatUsageTokens(totals.cacheWrite)} written`}
       />
@@ -240,6 +235,7 @@ function Stat({
   value: string;
   detail: string;
 }) {
+  useLocale();
   return (
     <div className="min-w-0 px-4 py-3.5">
       <div className="text-[12px] text-content/45">{label}</div>
@@ -286,6 +282,7 @@ function DailyChart({
   onMetric: (metric: Metric) => void;
   onStackBy: (by: UsageStackBy) => void;
 }) {
+  useLocale();
   const [active, setActive] = useState<number | null>(null);
   const { days, series } = data;
   const value = (amount: { cost: number; tokens: number }) =>
@@ -300,30 +297,29 @@ function DailyChart({
   return (
     <div className="border-b border-content/5 px-4 py-3.5">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pb-3">
-        <div className="min-w-0 flex-1 text-[13px] font-medium text-content">
-          Daily {metric === "cost" ? "estimated cost" : "tokens"}
+        <div className="min-w-0 flex-1 text-[13px] font-medium text-content">{t("Daily ")}{metric === "cost" ? t("estimated cost") : t("tokens")}
         </div>
         <Choice
-          label="Chart metric"
+          label={t("Chart metric")}
           value={metric}
           options={[
-            { value: "cost", label: "Cost" },
-            { value: "tokens", label: "Tokens" },
+            { value: "cost", get label() { return t("Cost"); } },
+            { value: "tokens", get label() { return t("Tokens"); } },
           ]}
           onChange={onMetric}
         />
         <Choice
-          label="Stack by"
+          label={t("Stack by")}
           value={stackBy}
           options={[
-            { value: "provider", label: "Provider" },
-            { value: "model", label: "Model" },
+            { value: "provider", get label() { return t("Provider"); } },
+            { value: "model", get label() { return t("Model"); } },
           ]}
           onChange={onStackBy}
         />
       </div>
       <ul
-        aria-label={`Daily ${metric === "cost" ? "estimated cost" : "tokens"}`}
+        aria-label={t((metric === "cost" ? "Daily estimated cost" : "Daily tokens"))}
         className="relative m-0 flex h-28 list-none items-end gap-px p-0"
         onMouseLeave={() => setActive(null)}
       >
@@ -378,8 +374,7 @@ function DailyChart({
         ) : (
           <span className="flex justify-between text-content/40">
             <span>{formatDay(days[0].date)}</span>
-            <span>
-              Peak{" "}
+            <span>{t("Peak")}{" "}
               {metric === "cost"
                 ? formatUsageCost(max)
                 : formatUsageTokens(max)}
@@ -403,19 +398,13 @@ function DailyChart({
         ))}
       </ul>
       <details className="mt-3 text-[11px] text-content/60">
-        <summary className="cursor-pointer select-none text-content/50 hover:text-content">
-          Show as table
-        </summary>
+        <summary className="cursor-pointer select-none text-content/50 hover:text-content">{t("Show as table")}</summary>
         <div className="mt-2 max-h-56 overflow-auto">
           <table className="w-full border-collapse text-left tabular-nums">
-            <caption className="sr-only">
-              Estimated cost and tokens per day
-            </caption>
+            <caption className="sr-only">{t("Estimated cost and tokens per day")}</caption>
             <thead>
               <tr className="text-content/45">
-                <th scope="col" className="py-1 pr-3 font-normal">
-                  Day
-                </th>
+                <th scope="col" className="py-1 pr-3 font-normal">{t("Day")}</th>
                 {series.map((entry) => (
                   <th
                     key={entry.key}
@@ -425,9 +414,7 @@ function DailyChart({
                     {entry.label}
                   </th>
                 ))}
-                <th scope="col" className="py-1 text-right font-normal">
-                  Total
-                </th>
+                <th scope="col" className="py-1 text-right font-normal">{t("Total")}</th>
               </tr>
             </thead>
             <tbody>
@@ -461,30 +448,19 @@ function dayTotalText(day: UsageDayBucket, metric: Metric): string {
 }
 
 function ProjectTable({ data }: { data: UsageOverviewData }) {
+  useLocale();
   const grouped = data.groups.some((section) => section.name !== null);
   return (
     <div className="max-h-80 overflow-auto">
       <table className="w-full min-w-[520px] border-collapse text-left text-[12px] tabular-nums">
-        <caption className="px-4 py-3 text-left text-[13px] font-medium text-content">
-          Projects by estimated cost
-        </caption>
+        <caption className="px-4 py-3 text-left text-[13px] font-medium text-content">{t("Projects by estimated cost")}</caption>
         <thead>
           <tr className="border-y border-content/5 text-[11px] text-content/45">
-            <th scope="col" className="px-4 py-1.5 font-normal">
-              Project
-            </th>
-            <th scope="col" className="px-2 py-1.5 text-right font-normal">
-              Input
-            </th>
-            <th scope="col" className="px-2 py-1.5 text-right font-normal">
-              Output
-            </th>
-            <th scope="col" className="px-2 py-1.5 text-right font-normal">
-              Cache
-            </th>
-            <th scope="col" className="px-4 py-1.5 text-right font-normal">
-              Est. cost
-            </th>
+            <th scope="col" className="px-4 py-1.5 font-normal">{t("Project")}</th>
+            <th scope="col" className="px-2 py-1.5 text-right font-normal">{t("Input")}</th>
+            <th scope="col" className="px-2 py-1.5 text-right font-normal">{t("Output")}</th>
+            <th scope="col" className="px-2 py-1.5 text-right font-normal">{t("Cache")}</th>
+            <th scope="col" className="px-4 py-1.5 text-right font-normal">{t("Est. cost")}</th>
           </tr>
         </thead>
         {data.groups.map((section) => (
@@ -499,7 +475,7 @@ function ProjectTable({ data }: { data: UsageOverviewData }) {
                   colSpan={4}
                   className="px-4 py-1.5 text-[11px] font-semibold text-content/70"
                 >
-                  {section.name ?? "Not in a group"}
+                  {section.name ?? t("Not in a group")}
                 </th>
                 <td className="px-4 py-1.5 text-right text-[11px] font-semibold text-content/70">
                   {formatUsageCost(section.cost)}
@@ -517,6 +493,7 @@ function ProjectTable({ data }: { data: UsageOverviewData }) {
 }
 
 function ProjectLine({ project }: { project: UsageProjectRow }) {
+  useLocale();
   return (
     <tr className="border-t border-content/5 first:border-t-0">
       <th
@@ -543,14 +520,14 @@ function ProjectLine({ project }: { project: UsageProjectRow }) {
       </td>
       <td
         className="px-2 py-2 text-right text-content/60"
-        title={`${formatUsageTokens(project.cacheRead)} read · ${formatUsageTokens(project.cacheWrite)} written`}
+        title={t("{p0} read · {p1} written", { p0: formatUsageTokens(project.cacheRead), p1: formatUsageTokens(project.cacheWrite) })}
       >
         {formatUsageTokens(project.cacheRead + project.cacheWrite)}
       </td>
       <td className="px-4 py-2 text-right text-content/85">
         {formatUsageCost(project.cost)}
         {project.partlyUnpriced ? (
-          <span title="Some models here have no known price, so this is a minimum">
+          <span title={t("Some models here have no known price, so this is a minimum")}>
             {" "}
             +
           </span>
@@ -569,6 +546,7 @@ function Notes({
   failed: number;
   prices: ModelPrices | null | undefined;
 }) {
+  useLocale();
   const notes = [
     prices === null
       ? "OpenRouter prices could not be loaded, so built-in prices are used."
@@ -600,6 +578,7 @@ function Choice<T extends string>({
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
 }) {
+  useLocale();
   return (
     <div
       role="radiogroup"

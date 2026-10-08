@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { Modal } from "../../../shared/ui/Modal";
@@ -55,6 +56,7 @@ export default function OnboardingDialog({
   onImported,
   onOpenProject,
 }: Props) {
+  useLocale();
   const [step, setStep] = useState(0);
   const [connections, setConnections] = useState(false);
   const [remotePicker, setRemotePicker] = useState(false);
@@ -66,7 +68,7 @@ export default function OnboardingDialog({
 
   return (
     <Modal
-      title={`Welcome to ${PRODUCT_IDENTITY.displayName}`}
+      title={t("Welcome to {p0}", { p0: PRODUCT_IDENTITY.displayName })}
       size="lg"
       minimalHeader
       className="onboarding-panel"
@@ -77,7 +79,7 @@ export default function OnboardingDialog({
           <img src={PRODUCT_IDENTITY.logoSrc} alt="" />
           {PRODUCT_IDENTITY.displayName}
         </div>
-        <ol className="onboarding-steps" aria-label="Getting started">
+        <ol className="onboarding-steps" aria-label={t("Getting started")}>
           {STEPS.map((label, index) => (
             <li key={label} aria-current={index === step ? "step" : undefined}>
               <button
@@ -102,25 +104,22 @@ export default function OnboardingDialog({
       <div className="onboarding-body">
         {step === 0 ? (
           <>
-            <h3>Connect your computers</h3>
-            <p>
-              Start on this computer, or connect another computer to work on its
-              projects.
-            </p>
+            <h3>{t("Connect your computers")}</h3>
+            <p>{t("Start on this computer, or connect another computer to work on its projects.")}</p>
             <div className="onboarding-card">
               <span aria-hidden="true">▣</span>
               <div>
-                <strong>This computer</strong>
-                <small>Your local projects and agents</small>
+                <strong>{t("This computer")}</strong>
+                <small>{t("Your local projects and agents")}</small>
               </div>
-              <span className="onboarding-status">✓ Connected</span>
+              <span className="onboarding-status">{t("✓ Connected")}</span>
             </div>
             {remotes.map((machine) => (
               <div className="onboarding-card" key={machine.id}>
                 <span aria-hidden="true">▣</span>
                 <div>
                   <strong>{machine.name}</strong>
-                  <small>Remote computer</small>
+                  <small>{t("Remote computer")}</small>
                 </div>
               </div>
             ))}
@@ -128,8 +127,7 @@ export default function OnboardingDialog({
               className="onboarding-link"
               aria-expanded={connections}
               onClick={() => setConnections(!connections)}
-            >
-              Manage computers <span>{connections ? "−" : "+"}</span>
+            >{t("Manage computers ")}<span>{connections ? "−" : "+"}</span>
             </button>
             {connections ? (
               <div className="onboarding-settings">
@@ -137,33 +135,22 @@ export default function OnboardingDialog({
               </div>
             ) : null}
             <footer>
-              <button className="onboarding-muted" onClick={onFinish}>
-                Set up later
-              </button>
-              <button className="onboarding-primary" onClick={() => setStep(1)}>
-                Continue →
-              </button>
+              <button className="onboarding-muted" onClick={onFinish}>{t("Set up later")}</button>
+              <button className="onboarding-primary" onClick={() => setStep(1)}>{t("Continue →")}</button>
             </footer>
           </>
         ) : null}
         {step === 1 ? (
           <>
-            <h3>Connect your agents</h3>
-            <p>
-              Set up an agent on this computer. You can add more in Settings
-              later.
-            </p>
+            <h3>{t("Connect your agents")}</h3>
+            <p>{t("Set up an agent on this computer. You can add more in Settings later.")}</p>
             <Agents onSignIn={setSignIn} signedIn={signedIn} />
             {remotes.length ? (
-              <p>Agents on remote computers are configured on each computer.</p>
+              <p>{t("Agents on remote computers are configured on each computer.")}</p>
             ) : null}
             <footer>
-              <button className="onboarding-muted" onClick={() => setStep(0)}>
-                ← Back
-              </button>
-              <button className="onboarding-primary" onClick={() => setStep(2)}>
-                Continue →
-              </button>
+              <button className="onboarding-muted" onClick={() => setStep(0)}>{t("← Back")}</button>
+              <button className="onboarding-primary" onClick={() => setStep(2)}>{t("Continue →")}</button>
             </footer>
           </>
         ) : null}
@@ -210,6 +197,7 @@ function Agents({
   onSignIn: (harness: HarnessId) => void;
   signedIn: ReadonlySet<HarnessId>;
 }) {
+  useLocale();
   useSyncExternalStore(
     subscribeHarnessAvailability,
     getHarnessAvailabilitySnapshot,
@@ -245,12 +233,12 @@ function Agents({
             <strong>{HARNESS_TITLE[provider]}</strong>
             <small>
               {checking
-                ? "Checking installation…"
+                ? t("Checking installation…")
                 : signedIn.has(provider)
-                  ? "✓ Signed in"
+                  ? t("✓ Signed in")
                   : isHarnessAvailable(provider)
-                    ? "CLI installed · sign in with your provider account"
-                    : "Install the CLI, then refresh to continue"}
+                    ? t("CLI installed · sign in with your provider account")
+                    : t("Install the CLI, then refresh to continue")}
             </small>
           </div>
           <ProviderBinaryControl provider={provider} />
@@ -262,17 +250,13 @@ function Agents({
                   setError(String(reason)),
                 )
               }
-            >
-              Install guide ↗
-            </button>
+            >{t("Install guide ↗")}</button>
           ) : (
             <button
               className="onboarding-small"
               disabled={checking}
               onClick={() => onSignIn(provider)}
-            >
-              Sign in
-            </button>
+            >{t("Sign in")}</button>
           )}
         </div>
       ))}
@@ -280,13 +264,8 @@ function Agents({
         className="onboarding-muted"
         disabled={checking}
         onClick={refresh}
-      >
-        Refresh agent status
-      </button>
-      <p>
-        Already signed in through the CLI? Your existing account is used
-        automatically.
-      </p>
+      >{t("Refresh agent status")}</button>
+      <p>{t("Already signed in through the CLI? Your existing account is used automatically.")}</p>
       {error ? <p role="alert">{error}</p> : null}
     </>
   );
@@ -305,6 +284,7 @@ function Projects({
   onBack: () => void;
   onOpenRemote?: () => void;
 }) {
+  useLocale();
   const [candidates, setCandidates] = useState<ImportCandidate[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -391,37 +371,28 @@ function Projects({
   const busy = importing || adding;
   return (
     <>
-      <h3>Choose your projects</h3>
-      <p>
-        Import local projects and conversations from Claude Code and Codex, or
-        choose a folder.
-      </p>
+      <h3>{t("Choose your projects")}</h3>
+      <p>{t("Import local projects and conversations from Claude Code and Codex, or choose a folder.")}</p>
       {error ? (
-        <p className="onboarding-error" role="alert">
-          Could not complete this action: {error}
+        <p className="onboarding-error" role="alert">{t("Could not complete this action: ")}{error}
         </p>
       ) : null}
       {loading ? (
-        <p role="status">Scanning this computer’s conversation history…</p>
+        <p role="status">{t("Scanning this computer’s conversation history…")}</p>
       ) : null}
       {!loading && !summary ? (
         <>
           <div className="onboarding-selection">
             <span>
-              {selected.size} of {folders.length} selected
-            </span>
+              {selected.size}{t(" of ")}{folders.length}{t(" selected")}</span>
             <div>
               <button
                 disabled={busy}
                 onClick={() =>
                   setSelected(new Set(folders.map((folder) => folder.key)))
                 }
-              >
-                Select all
-              </button>
-              <button disabled={busy} onClick={() => setSelected(new Set())}>
-                Select none
-              </button>
+              >{t("Select all")}</button>
+              <button disabled={busy} onClick={() => setSelected(new Set())}>{t("Select none")}</button>
             </div>
           </div>
           <div className="onboarding-projects">
@@ -456,43 +427,35 @@ function Projects({
                     ),
                   )}
                 </span>
-                <span title="Conversations">{folder.items.length}</span>
+                <span title={t("Conversations")}>{folder.items.length}</span>
               </label>
             ))}
             {!folders.length ? (
-              <p>
-                No new conversation history found. Choose a project folder to
-                start.
-              </p>
+              <p>{t("No new conversation history found. Choose a project folder to start.")}</p>
             ) : null}
           </div>
         </>
       ) : null}
       {importing ? (
         <div role="status" aria-live="polite">
-          <p>
-            Importing conversations: {progress?.done ?? 0} /{" "}
+          <p>{t("Importing conversations: ")}{progress?.done ?? 0} /{" "}
             {progress?.total ?? 0}
           </p>
           <button
             className="onboarding-muted"
             onClick={() => abort.current?.abort()}
-          >
-            Cancel import
-          </button>
+          >{t("Cancel import")}</button>
         </div>
       ) : null}
       {summary ? (
         <div role="status">
           <p>
-            {summary.imported} conversations imported across {summary.projects}{" "}
-            projects.{summary.cancelled ? " Import cancelled." : ""}
+            {summary.imported}{t(" conversations imported across ")}{summary.projects}{" "}{t("projects.")}{summary.cancelled ? t(" Import cancelled.") : ""}
           </p>
           {summary.failed.length ? (
             <div role="alert">
               <p>
-                {summary.failed.length} conversations could not be imported.
-              </p>
+                {summary.failed.length}{t(" conversations could not be imported.")}</p>
               {summary.failed.map((failure, index) => (
                 <p key={index}>
                   {failure.candidate.cwd}: {failure.error}
@@ -502,15 +465,14 @@ function Projects({
           ) : null}
           {summary.readOnly || summary.truncated ? (
             <p>
-              {summary.readOnly} history-only conversations ·{" "}
-              {summary.truncated} shortened transcripts
-            </p>
+              {summary.readOnly}{t(" history-only conversations ·")}{" "}
+              {summary.truncated}{t(" shortened transcripts")}</p>
           ) : null}
         </div>
       ) : null}
       {addedFolders.length ? (
         <div role="status">
-          <p>{addedFolders.length} project folders added.</p>
+          <p>{addedFolders.length}{t(" project folders added.")}</p>
           {addedFolders.map((path) => (
             <div className="onboarding-project" key={path}>
               <span>✓</span>
@@ -527,32 +489,24 @@ function Projects({
           className="onboarding-muted"
           disabled={busy}
           onClick={() => void addFolders()}
-        >
-          + Choose project folders
-        </button>
+        >{t("+ Choose project folders")}</button>
         {onOpenRemote ? (
           <button
             className="onboarding-muted"
             disabled={busy}
             onClick={onOpenRemote}
-          >
-            + Open a remote project
-          </button>
+          >{t("+ Open a remote project")}</button>
         ) : null}
       </div>
       <footer>
-        <button className="onboarding-muted" disabled={busy} onClick={onBack}>
-          ← Back
-        </button>
+        <button className="onboarding-muted" disabled={busy} onClick={onBack}>{t("← Back")}</button>
         <div className="onboarding-footer-actions">
           {!summary ? (
             <button
               className="onboarding-muted"
               disabled={busy}
               onClick={onFinish}
-            >
-              Do not import projects
-            </button>
+            >{t("Do not import projects")}</button>
           ) : null}
           <button
             className="onboarding-primary"
@@ -560,8 +514,8 @@ function Projects({
             onClick={summary || !selected.size ? onFinish : () => void start()}
           >
             {summary || !selected.size
-              ? "Start coding →"
-              : `Import ${selected.size} projects`}
+              ? t("Start coding →")
+              : t("Import {p0} projects", { p0: selected.size })}
           </button>
         </div>
       </footer>

@@ -248,7 +248,29 @@ beforeEach(() => {
   root = createRoot(container);
 });
 
+async function fillCommitMessage(text: string) {
+  const textarea = container.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, text);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 describe("GitChangesPanel commit message generation", () => {
+  it("preserves the draft on generation failure and clears the error after a successful retry", async () => {
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [{ path: "/repo/file.ts", relative: "file.ts", status: "modified", staged: true, unstaged: false, additions: 1, deletions: 0 }] }));
+    vi.mocked(generateCommitMessage).mockRejectedValueOnce(new Error("Provider authentication required")).mockResolvedValueOnce("Fix generated message");
+    await renderPanel();
+    await fillCommitMessage("Existing draft");
+    const generate = () => container.querySelector<HTMLButtonElement>('[aria-label="Generate commit message"]')!.click();
+    await act(async () => generate());
+    expect(container.querySelector("textarea")?.value).toBe("Existing draft");
+    expect(container.textContent).toContain("Provider authentication required");
+    await act(async () => generate());
+    expect(container.querySelector("textarea")?.value).toBe("Fix generated message");
+    expect(container.textContent).not.toContain("Provider authentication required");
+  });
+
   it("cancels promptly and ignores a late result after a retry", async () => {
     vi.mocked(gitDiffIndex).mockResolvedValue(
       index({
@@ -352,6 +374,22 @@ async function openBranchMenu() {
 }
 
 describe("GitChangesPanel action feedback", () => {
+  it("removes committed files without showing a success notification", async () => {
+    const cwd = "/repo-silent-commit";
+    vi.mocked(gitDiffIndex).mockResolvedValue(index({ files: [{ path: `${cwd}/file.ts`, relative: "file.ts", status: "modified", staged: true, unstaged: false, additions: 1, deletions: 0 }] }));
+    vi.mocked(gitCommit).mockResolvedValueOnce(undefined);
+    await renderPanel(cwd);
+    await fillCommitMessage("Fix commit flow");
+    vi.mocked(gitDiffIndex).mockResolvedValue(index());
+    await act(async () => {
+      [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "Commit")!.click();
+    });
+    expect(container.textContent).not.toContain("Staged Changes");
+    expect(container.textContent).not.toContain("Commit created");
+    expect(container.querySelector("textarea")?.value).toBe("");
+    expect(container.querySelector('header [role="status"]')).toBeNull();
+  });
+
   const changed = (staged: boolean) => ({
     path: "/repo-feedback/change.ts",
     relative: "change.ts",

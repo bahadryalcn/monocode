@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { invoke } from "@tauri-apps/api/core";
 
 import { RotateCcw, Search } from "../../../shared/ui/icons";
@@ -57,6 +58,7 @@ export function ShortcutEditor({
   onDisable: () => void | Promise<void>;
   onReset: () => void | Promise<void>;
 }) {
+  useLocale();
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -163,7 +165,7 @@ export function ShortcutEditor({
         <input
           type="text"
           readOnly
-          aria-label={`Change ${name} shortcut`}
+          aria-label={t("Change {p0} shortcut", { p0: name })}
           data-shortcut-recorder-active={recording ? "true" : undefined}
           aria-busy={busy || undefined}
           value={
@@ -183,7 +185,7 @@ export function ShortcutEditor({
         {resetVisible ? (
           <button
             type="button"
-            aria-label={`Reset ${name} shortcut`}
+            aria-label={t("Reset {p0} shortcut", { p0: name })}
             disabled={busy}
             onClick={() => void run(onReset)}
             className="rounded-md px-1 py-1 text-content/35 hover:bg-content/10 hover:text-content disabled:opacity-50"
@@ -196,9 +198,7 @@ export function ShortcutEditor({
         <p
           className="pointer-events-none absolute top-1/2 right-full z-40 mr-3 -translate-y-1/2 text-[10px] whitespace-nowrap text-content/50"
           aria-live="polite"
-        >
-          Del disables · Esc cancels
-        </p>
+        >{t("Del disables · Esc cancels")}</p>
       ) : null}
       {error ? (
         <p
@@ -213,6 +213,7 @@ export function ShortcutEditor({
 }
 
 export function QuickComposerShortcutEditor() {
+  useLocale();
   const [shortcut, setShortcut] = useState(loadQuickComposerShortcut);
   const [enabled, setEnabled] = useState(loadQuickComposerEnabled);
   const apply = async (next: string) => {
@@ -270,6 +271,7 @@ export function KeybindingShortcutEditor({
     override: KeybindingOverride,
   ) => void | Promise<void>;
 }) {
+  useLocale();
   return (
     <ShortcutEditor
       name={command}
@@ -283,6 +285,7 @@ export function KeybindingShortcutEditor({
 }
 
 export function KeybindingsPage() {
+  useLocale();
   const [query, setQuery] = useState("");
   const [overrides, setOverrides] = useState(loadKeybindingOverrides);
   useEffect(
@@ -301,21 +304,21 @@ export function KeybindingsPage() {
 
   return (
     <Group
-      title="Shortcuts"
+      title={t("Shortcuts")}
       layout="full"
-      description="Click a shortcut to record new keys. Press Delete while recording to disable it."
+      description={t("Click a shortcut to record new keys. Press Delete while recording to disable it.")}
       action={
         <div className="flex flex-wrap items-center gap-3">
           <span className="shrink-0 text-[12px] text-content/40 tabular-nums">
-            {rows.length} {rows.length === 1 ? "binding" : "bindings"}
+            {rows.length} {rows.length === 1 ? t("binding") : t("bindings")}
           </span>
           <label className="flex h-7 w-44 shrink-0 items-center gap-2 rounded-md border border-content/10 px-2 text-content/45 focus-within:border-content/20">
             <Search className="size-3.5 shrink-0" strokeWidth={1.75} />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Filter"
-              aria-label="Filter keybindings"
+              placeholder={t("Filter")}
+              aria-label={t("Filter keybindings")}
               spellCheck={false}
               autoComplete="off"
               className="min-w-0 flex-1 bg-transparent text-[12px] text-content outline-none placeholder:text-content/35"
@@ -325,14 +328,12 @@ export function KeybindingsPage() {
       }
     >
       <div className="flex items-center border-b border-stroke bg-content/5 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-content/40">
-        <span className="min-w-0 flex-1">Command</span>
-        <span className="w-40 shrink-0">Keybinding</span>
-        <span className="w-28 shrink-0">When</span>
+        <span className="min-w-0 flex-1">{t("Command")}</span>
+        <span className="w-40 shrink-0">{t("Keybinding")}</span>
+        <span className="w-28 shrink-0">{t("When")}</span>
       </div>
       {rows.length === 0 ? (
-        <p className="px-4 py-3 text-[12px] text-content/45">
-          No matching bindings
-        </p>
+        <p className="px-4 py-3 text-[12px] text-content/45">{t("No matching bindings")}</p>
       ) : (
         rows.map((row) => {
           const override = overrides[row.command];

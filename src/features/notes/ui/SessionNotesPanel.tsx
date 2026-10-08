@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   Check,
   ChevronDown,
@@ -9,6 +10,7 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -26,9 +28,11 @@ import {
   createNote,
   deleteNote,
   loadNotes,
+  linkNoteToSession,
   NOTES_CHANGED_EVENT,
   noteTitle,
   peekNotes,
+  requestAddNoteToChat,
   upsertNote,
   type Note,
 } from "../notes";
@@ -50,6 +54,27 @@ import { MOD } from "../../../platform/tauri/platform";
 
 /** The note each session last had open, so reopening the panel resumes it. */
 const lastNoteBySession = new Map<string, string>();
+// An initial blank document belongs to the session, even across quick remounts.
+const initialNotes = new Map<string, Promise<Note>>();
+
+function createSessionNote(sessionId: string, project: string) {
+  return createNote({
+    title: "",
+    body: "",
+    sourceSessionId: sessionId,
+    ...(project ? { sourceCwd: project } : {}),
+  });
+}
+
+function initialSessionNote(sessionId: string, project: string): Promise<Note> {
+  const pending = initialNotes.get(sessionId);
+  if (pending) return pending;
+  const promise = createSessionNote(sessionId, project).finally(() => {
+    if (initialNotes.get(sessionId) === promise) initialNotes.delete(sessionId);
+  });
+  initialNotes.set(sessionId, promise);
+  return promise;
+}
 
 // Saves of one note run in order and outlive the editor that started them, so a
 // reload never reads the list before a pending edit has been written.
@@ -81,6 +106,13 @@ type Props = {
  * notes as the Notes screen: this session's notes first, then the project's.
  */
 export function SessionNotesPanel({ sessionId, cwd }: Props) {
+  return (
+    <SessionNotesContent key={sessionId} sessionId={sessionId} cwd={cwd} />
+  );
+}
+
+function SessionNotesContent({ sessionId, cwd }: Props) {
+  useLocale();
   const project = looksLikeProject(cwd) ? cwd : "";
   const resize = useDragResize({
     direction: "left",
@@ -92,12 +124,14 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
   });
   const listLock = useLockOverscroll<HTMLDivElement>();
   const [notes, setNotes] = useState<Note[]>(() => peekNotes() ?? []);
-  const [loaded, setLoaded] = useState(() => peekNotes() !== null);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(
     () => lastNoteBySession.get(sessionId) ?? null,
   );
   const [listOpen, setListOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [listLimit, setListLimit] = useState(40);
   const [creating, setCreating] = useState(false);
   const [wantFocus, setWantFocus] = useState(notesPanelFocusRequested);
   const focused = useCallback(() => {
@@ -108,7 +142,7 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
   const refresh = useCallback(async () => {
     try {
       await settlePendingSaves();
-      setNotes(await loadNotes(true));
+      setNotes(await loadNotes(peekNotes() === null));
       setError(null);
     } catch (err: unknown) {
       setError(errorText(err));
@@ -119,7 +153,12 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
 
   useEffect(() => {
     void refresh();
-    const onChanged = () => void refresh();
+    const onChanged = () => {
+      void settlePendingSaves()
+        .then(() => loadNotes(true))
+        .then(setNotes)
+        .catch((err: unknown) => setError(errorText(err)));
+    };
     window.addEventListener(NOTES_CHANGED_EVENT, onChanged);
     return () => window.removeEventListener(NOTES_CHANGED_EVENT, onChanged);
   }, [refresh]);
@@ -130,23 +169,60 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
   );
   const selected = pickPanelNote(offered, selectedId);
 
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase();
+    const matches = (note: Note) =>
+      !needle ||
+      `${note.title} ${note.slug}`.toLocaleLowerCase().includes(needle);
+    return {
+      session: offered.session.filter(matches),
+      project: offered.project.filter(matches),
+    };
+  }, [offered, query]);
+  const visibleSession = filtered.session.slice(0, listLimit);
+  const visibleProject = filtered.project.slice(
+    0,
+    Math.max(0, listLimit - visibleSession.length),
+  );
+
   useEffect(() => {
     if (!selected) return;
-    lastNoteBySession.set(sessionId, selected.id);
+    if (selected.sourceSessionId === sessionId)
+      lastNoteBySession.set(sessionId, selected.id);
     if (selected.id !== selectedId) setSelectedId(selected.id);
   }, [selected, selectedId, sessionId]);
+
+  useEffect(() => {
+    if (!loaded || selected || error) return;
+    let cancelled = false;
+    setCreating(true);
+    void initialSessionNote(sessionId, project)
+      .then((created) => {
+        setNotes((current) => [
+          created,
+          ...current.filter((item) => item.id !== created.id),
+        ]);
+        if (cancelled) return;
+        setSelectedId(created.id);
+        setWantFocus(true);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(errorText(err));
+      })
+      .finally(() => {
+        setCreating(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loaded, selected, error, sessionId, project]);
 
   const onCreate = async () => {
     if (creating) return;
     setCreating(true);
     try {
-      const created = await createNote({
-        title: "Untitled",
-        body: "",
-        sourceSessionId: sessionId,
-        ...(project ? { sourceCwd: project } : {}),
-      });
-      setNotes(await loadNotes(true));
+      const created = await createSessionNote(sessionId, project);
+      setNotes((current) => [created, ...current]);
       setSelectedId(created.id);
       setListOpen(false);
       setWantFocus(true);
@@ -164,15 +240,30 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
     );
   }, []);
 
-  const onDelete = async (id: string) => {
+  const onDelete = useCallback(async (id: string) => {
     try {
       await deleteNote(id);
-      setNotes(await loadNotes(true));
+      setNotes((current) => current.filter((item) => item.id !== id));
       setError(null);
     } catch (err: unknown) {
       setError(errorText(err));
     }
-  };
+  }, []);
+
+  const onLink = useCallback(
+    async (id: string) => {
+      try {
+        await settlePendingSaves();
+        const saved = await linkNoteToSession(id, sessionId);
+        onSaved(saved);
+        lastNoteBySession.set(sessionId, saved.id);
+        setError(null);
+      } catch (err: unknown) {
+        setError(errorText(err));
+      }
+    },
+    [sessionId, onSaved],
+  );
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
@@ -190,7 +281,7 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
     <aside
       ref={resize.setPaneRef}
       role="complementary"
-      aria-label="Session notes"
+      aria-label={t("Session notes")}
       data-notes-panel
       onKeyDown={onKeyDown}
       className="relative flex h-full min-h-0 shrink-0 flex-col border-l border-stroke text-content"
@@ -198,7 +289,7 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize notes panel"
+        aria-label={t("Resize notes panel")}
         className={`absolute inset-y-0 -left-px z-10 w-1.5 cursor-col-resize touch-none ${
           resize.dragging ? "bg-content/15" : "hover:bg-content/10"
         }`}
@@ -209,9 +300,13 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
         <button
           type="button"
           aria-expanded={listOpen}
-          aria-label="Switch note"
-          title="Switch note"
-          onClick={() => setListOpen((open) => !open)}
+          aria-label={t("Switch note")}
+          title={t("Switch note")}
+          onClick={() => {
+            setListOpen((open) => !open);
+            setQuery("");
+            setListLimit(40);
+          }}
           className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] hover:bg-content/10"
         >
           <File
@@ -219,7 +314,7 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
             strokeWidth={1.75}
           />
           <span className="min-w-0 flex-1 truncate">
-            {selected?.title ?? "Notes"}
+            {selected?.title ?? t("Notes")}
           </span>
           <ChevronDown
             className={`size-3 shrink-0 text-content/45 transition-transform ${
@@ -229,8 +324,8 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
           />
         </button>
         <PanelIconButton
-          label="New note"
-          disabled={creating}
+          label={t("New note")}
+          disabled={creating || !loaded}
           onClick={() => void onCreate()}
         >
           {creating ? (
@@ -254,9 +349,19 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
           ref={listLock}
           className="max-h-56 shrink-0 overflow-y-auto overscroll-none border-b border-stroke p-1.5"
         >
+          <input
+            aria-label={t("Search notes")}
+            placeholder={t("Search notes")}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setListLimit(40);
+            }}
+            className="mb-1 h-7 w-full rounded border border-stroke bg-transparent px-2 text-[12px] outline-none focus:border-content/40"
+          />
           <NoteGroup
-            label="This session"
-            notes={offered.session}
+            label={t("This session")}
+            notes={visibleSession}
             activeId={selected?.id}
             onSelect={(id) => {
               setSelectedId(id);
@@ -265,8 +370,8 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
             }}
           />
           <NoteGroup
-            label="Project notes"
-            notes={offered.project}
+            label={t("Project notes")}
+            notes={visibleProject}
             activeId={selected?.id}
             onSelect={(id) => {
               setSelectedId(id);
@@ -274,9 +379,18 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
               setWantFocus(true);
             }}
           />
+          {filtered.session.length + filtered.project.length > listLimit ? (
+            <button
+              type="button"
+              className="w-full rounded px-2 py-1.5 text-left text-[12px] hover:bg-content/10"
+              onClick={() => setListLimit((limit) => limit + 40)}
+            >
+              {t("Show more")}
+            </button>
+          ) : null}
           {hasNotes || error || !loaded ? null : (
             <p className="px-2 py-1.5 text-[12px] text-content/50">
-              No notes yet.
+              {t("No notes yet.")}
             </p>
           )}
         </div>
@@ -289,7 +403,7 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
             className="underline"
             onClick={() => void refresh()}
           >
-            Retry
+            {t("Retry")}
           </button>
         </p>
       ) : null}
@@ -301,15 +415,16 @@ export function SessionNotesPanel({ sessionId, cwd }: Props) {
           onFocused={focused}
           onSaved={onSaved}
           onDelete={onDelete}
+          sessionId={sessionId}
+          onLink={onLink}
         />
       ) : error ? null : (
-        <EmptyPanel
-          loaded={loaded}
-          autoFocus={wantFocus}
-          creating={creating}
-          onFocused={focused}
-          onCreate={() => void onCreate()}
-        />
+        <div className="grid min-h-0 flex-1 place-items-center">
+          <LoaderCircle
+            className="size-4 animate-spin text-content/40"
+            strokeWidth={1.75}
+          />
+        </div>
       )}
     </aside>
   );
@@ -326,6 +441,7 @@ function PanelIconButton({
   onClick: () => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -351,6 +467,7 @@ function NoteGroup({
   activeId?: string;
   onSelect: (id: string) => void;
 }) {
+  useLocale();
   if (notes.length === 0) return null;
   return (
     <section aria-label={label} className="mb-1 last:mb-0">
@@ -388,74 +505,35 @@ function NoteGroup({
   );
 }
 
-function EmptyPanel({
-  loaded,
-  autoFocus,
-  creating,
-  onFocused,
-  onCreate,
-}: {
-  loaded: boolean;
-  autoFocus: boolean;
-  creating: boolean;
-  onFocused: () => void;
-  onCreate: () => void;
-}) {
-  const button = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!autoFocus || !loaded) return;
-    button.current?.focus();
-    onFocused();
-  }, [autoFocus, loaded, onFocused]);
-  return (
-    <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-      {loaded ? (
-        <>
-          <p className="text-[13px] text-content/45">
-            No notes for this project yet.
-          </p>
-          <button
-            ref={button}
-            type="button"
-            disabled={creating}
-            onClick={onCreate}
-            className="inline-flex h-6.5 items-center gap-1 rounded-md bg-content px-3 text-[12px] text-background-base hover:bg-content/80 disabled:opacity-40"
-          >
-            New note
-          </button>
-        </>
-      ) : (
-        <LoaderCircle
-          className="size-4 animate-spin text-content/40"
-          strokeWidth={1.75}
-        />
-      )}
-    </div>
-  );
-}
-
-function PanelNoteEditor({
+const PanelNoteEditor = memo(function PanelNoteEditor({
   note,
   autoFocus,
   onFocused,
   onSaved,
   onDelete,
+  sessionId,
+  onLink,
 }: {
   note: Note;
   autoFocus: boolean;
   onFocused: () => void;
   onSaved: (note: Note) => void;
   onDelete: (id: string) => void | Promise<void>;
+  sessionId: string;
+  onLink: (id: string) => Promise<void>;
 }) {
+  useLocale();
   const [title, setTitle] = useState(note.title);
   const [body, setBody] = useState(note.body);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [linking, setLinking] = useState(false);
   const field = useRef<HTMLTextAreaElement>(null);
   const titleRef = useRef(title);
   const bodyRef = useRef(body);
   const savedRef = useRef(note);
   const titleTouched = useRef(false);
+  const finalizeRequested = useRef(false);
   const skipSave = useRef(false);
   const saveTimer = useRef<number | null>(null);
   const copyTimer = useRef<number | null>(null);
@@ -478,15 +556,27 @@ function PanelNoteEditor({
       typed && (typed !== "Untitled" || titleTouched.current)
         ? typed
         : noteTitle(nextBody);
-    if (nextTitle === current.title && nextBody === current.body) return;
+    const finalizeSlug =
+      !!current.slugPending &&
+      finalizeRequested.current &&
+      !!typed &&
+      typed !== "Untitled";
+    if (
+      !finalizeSlug &&
+      nextTitle === current.title &&
+      nextBody === current.body
+    )
+      return;
     try {
       const saved = await upsertNote({
         id: current.id,
         title: nextTitle,
         body: nextBody,
         tags: current.tags,
+        ...(finalizeSlug ? { finalizeSlug: true } : {}),
       });
       savedRef.current = saved;
+      if (finalizeSlug) finalizeRequested.current = false;
       setSaveError(null);
       onSavedRef.current(saved);
       if (!titleTouched.current) {
@@ -498,11 +588,15 @@ function PanelNoteEditor({
     }
   }, []);
 
-  const saveNow = useCallback(() => {
-    if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
-    saveTimer.current = null;
-    return enqueueSave(note.id, save);
-  }, [note.id, save]);
+  const saveNow = useCallback(
+    (finalize = false) => {
+      if (finalize) finalizeRequested.current = true;
+      if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      return enqueueSave(note.id, save);
+    },
+    [note.id, save],
+  );
 
   const scheduleSave = useCallback(() => {
     if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
@@ -514,7 +608,7 @@ function PanelNoteEditor({
 
   useEffect(
     () => () => {
-      void saveNow();
+      void saveNow(true);
       if (copyTimer.current != null) window.clearTimeout(copyTimer.current);
     },
     [saveNow],
@@ -537,7 +631,13 @@ function PanelNoteEditor({
       el && el.selectionStart !== el.selectionEnd
         ? bodyRef.current.slice(el.selectionStart, el.selectionEnd)
         : "";
-    requestAddToChat(selection || bodyRef.current, "plain");
+    if (selection) requestAddToChat(selection, "plain");
+    else
+      requestAddNoteToChat({
+        ...note,
+        title: titleRef.current,
+        body: bodyRef.current,
+      });
   };
 
   const hasBody = Boolean(body.trim());
@@ -552,14 +652,14 @@ function PanelNoteEditor({
           setTitle(event.target.value);
           scheduleSave();
         }}
-        onBlur={() => void saveNow()}
+        onBlur={() => void saveNow(true)}
         onKeyDown={(event) => {
           if (event.key !== "Enter") return;
           event.preventDefault();
           field.current?.focus();
         }}
-        aria-label="Note title"
-        placeholder="Untitled"
+        aria-label={t("Note title")}
+        placeholder={t("Untitled")}
         spellCheck={false}
         className="h-9 w-full shrink-0 border-0 border-b border-stroke bg-transparent px-3 text-[13px] font-semibold text-content outline-none placeholder:text-content/35"
       />
@@ -572,8 +672,8 @@ function PanelNoteEditor({
           scheduleSave();
         }}
         onBlur={() => void saveNow()}
-        aria-label="Note"
-        placeholder="Write markdown…"
+        aria-label={t("Note")}
+        placeholder={t("Write markdown…")}
         spellCheck={false}
         className="min-h-0 w-full flex-1 resize-none border-0 bg-transparent px-3 py-2 font-mono text-[13px] leading-5 text-content outline-none placeholder:text-content/35"
       />
@@ -582,7 +682,10 @@ function PanelNoteEditor({
           role="alert"
           className="flex shrink-0 items-center gap-2 px-3 py-1.5 text-[12px] text-red-400/90"
         >
-          <span className="min-w-0 flex-1">Could not save: {saveError}</span>
+          <span className="min-w-0 flex-1">
+            {t("Could not save: ")}
+            {saveError}
+          </span>
           <button
             type="button"
             onClick={() => {
@@ -591,13 +694,13 @@ function PanelNoteEditor({
             }}
             className="shrink-0 underline hover:no-underline"
           >
-            Retry
+            {t("Retry")}
           </button>
         </div>
       ) : null}
       <div className="flex h-9 shrink-0 items-center gap-1 border-t border-stroke px-2">
         <PanelIconButton
-          label={copied ? "Copied" : "Copy note"}
+          label={copied ? t("Copied") : t("Copy note")}
           disabled={!hasBody}
           onClick={copy}
         >
@@ -610,15 +713,30 @@ function PanelNoteEditor({
         <button
           type="button"
           disabled={!hasBody}
-          title="Add the selection, or the whole note, to the composer"
+          title={t("Add the selection, or the whole note, to the composer")}
           onClick={sendToChat}
           className="h-6 rounded-md px-2 text-[12px] text-content/70 hover:bg-content/10 hover:text-content disabled:opacity-40"
         >
-          Add to chat
+          {t("Add to chat")}
         </button>
+        {note.sourceSessionId !== sessionId ? (
+          <button
+            type="button"
+            disabled={linking}
+            onClick={() => {
+              setLinking(true);
+              void saveNow()
+                .then(() => onLink(note.id))
+                .finally(() => setLinking(false));
+            }}
+            className="h-6 rounded-md px-2 text-[12px] text-content/70 hover:bg-content/10 disabled:opacity-40"
+          >
+            {t("Link to this session")}
+          </button>
+        ) : null}
         <span className="min-w-0 flex-1" />
         <PanelIconButton
-          label="Delete note"
+          label={t("Delete note")}
           onClick={() => {
             skipSave.current = true;
             if (saveTimer.current != null)
@@ -633,4 +751,4 @@ function PanelNoteEditor({
       </div>
     </div>
   );
-}
+});

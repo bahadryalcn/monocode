@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { Check, Search, Star } from "../../../shared/ui/icons";
 import {
   useEffect,
@@ -66,6 +67,7 @@ export function ModelFlyout({
   onPick: (model: AgentModel) => void;
   onToggleFavorite: (id: string) => void;
 }) {
+  useLocale();
   const source = useModelSource();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeRef = useRef<HTMLButtonElement>(null);
@@ -120,7 +122,7 @@ export function ModelFlyout({
       maxHeight={MODEL_MENU_FRAME_HEIGHT}
       layer={LAYER.submenu}
       role="dialog"
-      aria-label="Models"
+      aria-label={t("Models")}
       onDismiss={onDismiss}
       onKeyDown={(event) => {
         // Keyboard nav once focus leaves the search field (which stops its
@@ -162,12 +164,12 @@ export function ModelFlyout({
     >
       <nav
         role="tablist"
-        aria-label="Providers"
+        aria-label={t("Providers")}
         aria-orientation="vertical"
         className="flex w-11 shrink-0 flex-col items-center gap-1 border-r border-stroke p-1.5"
       >
         <ProviderTabButton
-          title="Favorites"
+          title={t("Favorites")}
           selected={tab === "favorites"}
           onSelect={() => onSelectTab("favorites")}
         >
@@ -196,8 +198,8 @@ export function ModelFlyout({
             ref={searchRef}
             type="text"
             value={query}
-            placeholder="Search models"
-            aria-label="Search models"
+            placeholder={t("Search models")}
+            aria-label={t("Search models")}
             className="min-w-0 flex-1 bg-transparent text-[13px] text-content outline-none placeholder:text-content/40"
             onChange={(event) => onQuery(event.target.value)}
             onKeyDown={onSearchKey}
@@ -207,18 +209,18 @@ export function ModelFlyout({
         <div
           ref={lockOverscroll}
           role="listbox"
-          aria-label="Models"
+          aria-label={t("Models")}
           className="min-h-0 flex-1 overflow-y-auto overscroll-none p-1"
         >
           {models.length === 0 ? (
             <div className="px-2 py-3 text-[12px] text-content/50">
               {tab === "favorites" && !query.trim()
-                ? "No favorite models"
+                ? t("No favorite models")
                 : tab !== "favorites" && !source.available(tab)
                   ? harnessUnavailableHint(tab)
                   : tab === "codex" && !query.trim()
-                    ? "Loading Codex models…"
-                    : "No matching models"}
+                    ? t("Loading Codex models…")
+                    : t("No matching models")}
             </div>
           ) : (
             groups.map((group) => (
@@ -282,13 +284,13 @@ export function ModelFlyout({
                         type="button"
                         title={
                           favorited
-                            ? "Remove from favorites"
-                            : "Add to favorites"
+                            ? t("Remove from favorites")
+                            : t("Add to favorites")
                         }
                         aria-label={
                           favorited
-                            ? "Remove from favorites"
-                            : "Add to favorites"
+                            ? t("Remove from favorites")
+                            : t("Add to favorites")
                         }
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={(event) => {
@@ -341,6 +343,7 @@ function ProviderTabButton({
   onSelect: () => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"

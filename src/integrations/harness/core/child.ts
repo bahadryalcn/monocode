@@ -49,6 +49,11 @@ function invoke<T>(
     : tauriInvoke<T>(command, args);
 }
 
+/** Execute a provider management command on the machine owning its processes. */
+export function invokeProviderCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  return invoke<T>(command, args);
+}
+
 let windowLabel: string | null | undefined;
 
 /** A global `listen` registers as target `Any`, which Tauri delivers to even
@@ -382,6 +387,7 @@ export async function spawnChild(
   cwd: string,
   account?: { provider: "claude" | "codex"; id: string },
   binaryProvider?: ConfigurableBinaryProvider,
+  genericAcpId?: string,
 ): Promise<void> {
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
@@ -397,6 +403,7 @@ export async function spawnChild(
     account,
     binaryProvider,
     binaryPath,
+    genericAcpId,
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
@@ -458,7 +465,8 @@ async function resolveHarnessBinary(
       binaryPath: configuredPath,
     });
   }
-  const command: Record<ConfigurableBinaryProvider, string> = {
+  if (provider === "acp") throw new Error("Select a configured ACP agent instead of resolving a provider binary");
+  const command: Record<Exclude<ConfigurableBinaryProvider, "acp">, string> = {
     claude: "harness_resolve_claude",
     codex: "harness_resolve_codex",
     cursor: "harness_resolve_cursor",

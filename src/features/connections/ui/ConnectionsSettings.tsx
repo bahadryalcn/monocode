@@ -1,8 +1,9 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { invoke } from "@tauri-apps/api/core";
 import { RemoteOutboxNotice } from "./RemoteOutboxNotice";
 import { RemoteDataStatus } from "./RemoteDataStatus";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Internet,
   Loader,
@@ -16,6 +17,7 @@ import {
   recordRemoteCapabilities,
   refreshRemoteMachines,
   remoteRequest,
+  reportRemoteMachineStatus,
   subscribeEditRequests,
   subscribeReconnectRequests,
   takeEditRequest,
@@ -33,7 +35,12 @@ import { isLocalSyncMachine } from "../model/localSync";
 import { syncNow } from "../../sync/model/syncClient";
 import { describeSyncStatus } from "../../sync/model/syncStatusText";
 import { useSyncStatus } from "../../sync/model/useSyncStatus";
-import { notifyRemoteRecovered } from "../model/remoteHealth";
+import {
+  notifyRemoteRecovered,
+  readRemoteConnection,
+  subscribeChanges,
+} from "../model/remoteHealth";
+import { connectionIndicator } from "../model/remoteConnection";
 import {
   REMOTE_PROVIDERS,
   type HostDescriptor,
@@ -46,7 +53,34 @@ const input =
 const button =
   "rounded-lg bg-selection px-3 py-2 text-[13px] font-medium hover:bg-selection-hover disabled:opacity-40";
 
+/** A machine's connection line. Until this page's own check returns, it shows
+ * what the rest of the app (the project rail) last learned about the machine,
+ * so the two never disagree. */
+function MachineConnectionLine({
+  environmentId,
+  probed,
+}: {
+  environmentId: string;
+  probed?: string;
+}) {
+  const shared = useSyncExternalStore(
+    subscribeChanges,
+    () => readRemoteConnection(environmentId),
+    () => readRemoteConnection(environmentId),
+  );
+  const indicator = connectionIndicator(shared, false);
+  const label =
+    indicator.tone === "down"
+      ? indicator.label
+      : probed ??
+        (indicator.tone === "connected" ? "Connected" : "Checking connection…");
+  return (
+    <div className="mt-1 text-[12px] text-content/50">{t(label)}</div>
+  );
+}
+
 function SyncLine({ machineId }: { machineId: string }) {
+  useLocale();
   const sync = useSyncStatus(machineId);
   const failed = sync.state === "error";
   return (
@@ -61,14 +95,13 @@ function SyncLine({ machineId }: { machineId: string }) {
         className="shrink-0 rounded px-1.5 py-0.5 text-content/60 hover:bg-selection hover:text-content disabled:opacity-40"
         disabled={sync.state === "syncing"}
         onClick={() => void syncNow(machineId)}
-      >
-        Sync now
-      </button>
+      >{t("Sync now")}</button>
     </div>
   );
 }
 
 export function ConnectionsSettings() {
+  useLocale();
   const {
     machines,
     loaded,
@@ -206,6 +239,8 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               if (host.environmentId !== machine.environmentId)
                 throw new Error("Host identity changed");
               recordRemoteCapabilities(host.environmentId, host.capabilities);
+              // The project rail shows the same machine; keep both in step.
+              reportRemoteMachineStatus(machine.id, true);
               if (!host.providers.length)
                 label = "Connected · install a supported provider on the host";
               const update =
@@ -219,8 +254,9 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                   ...current,
                   [machine.id]: update,
                 }));
-            } catch {
+            } catch (reason) {
               label = "Offline · reconnect to check access";
+              reportRemoteMachineStatus(machine.id, false, reason);
             }
             if (!disposed)
               setStatus((current) => ({ ...current, [machine.id]: label }));
@@ -407,7 +443,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
     <div data-setting-id="remote-machines" className="flex flex-col gap-5">
       <RemoteOutboxNotice />
       <RemoteDataStatus
-        label="machines"
+        label={t("machines")}
         state={{
           phase: loading
             ? machines.length
@@ -424,14 +460,8 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
       />
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
-          <h2 className="text-[13px] font-semibold text-content">
-            Your machines
-          </h2>
-          <p className="mt-1 text-[12px] leading-relaxed text-content/45">
-            Run agents on another computer and return to them from your laptop.
-            The host keeps working when you close {PRODUCT_IDENTITY.displayName}{" "}
-            here.
-          </p>
+          <h2 className="text-[13px] font-semibold text-content">{t("Your machines")}</h2>
+          <p className="mt-1 text-[12px] leading-relaxed text-content/45">{t("Run agents on another computer and return to them from your laptop. The host keeps working when you close ")}{PRODUCT_IDENTITY.displayName}{" "}{t("here.")}</p>
         </div>
         {(!adding || editing) && (
           <button
@@ -439,8 +469,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
             disabled={busy}
             onClick={startAdd}
           >
-            <Plus className="size-4" /> Add machine
-          </button>
+            <Plus className="size-4" />{t(" Add machine")}</button>
         )}
       </div>
       {machines.length > 0 ? (
@@ -454,26 +483,23 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                     {machine.name}
                   </div>
                   {machine.ssh?.alternate && (
-                    <div className="mt-1 break-all text-[12px] text-content/60">
-                      Other address · {machine.ssh.alternate}
+                    <div className="mt-1 break-all text-[12px] text-content/60">{t("Other address · ")}{machine.ssh.alternate}
                     </div>
                   )}
                   <div className="mt-1 truncate text-[12px] text-content/45">
                     {isLocalSyncMachine(machine)
-                      ? `Syncs projects and groups with the ${PRODUCT_IDENTITY.displayName} on this computer`
+                      ? t("Syncs projects and groups with the {p0} on this computer", { p0: PRODUCT_IDENTITY.displayName })
                       : machine.ssh
-                        ? `SSH · ${machine.ssh.target}${machine.ssh.port ? ` · port ${machine.ssh.port}` : ""}`
+                        ? t("SSH · {p0}{p1}", { p0: machine.ssh.target, p1: machine.ssh.port ? ` · port ${machine.ssh.port}` : "" })
                         : machine.endpoint}
                   </div>
-                  <div className="mt-1 text-[12px] text-content/50">
-                    {status[machine.id] ?? "Checking connection…"}
-                  </div>
+                  <MachineConnectionLine
+                    environmentId={machine.environmentId}
+                    probed={status[machine.id]}
+                  />
                   <SyncLine machineId={machine.id} />
                   {machine.ssh && needsUpdate[machine.id] ? (
-                    <div className="mt-1 text-[11px] text-content/45">
-                      Updating restarts the host and interrupts active agent
-                      turns.
-                    </div>
+                    <div className="mt-1 text-[11px] text-content/45">{t("Updating restarts the host and interrupts active agent turns.")}</div>
                   ) : null}
                 </div>
                 {machine.ssh && (
@@ -482,24 +508,20 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                       <button
                         className={button}
                         disabled={busy}
-                        title="Downloads the matching host package and restarts the host; active agent turns will be interrupted"
+                        title={t("Downloads the matching host package and restarts the host; active agent turns will be interrupted")}
                         onClick={() => void begin(machine, true)}
-                      >
-                        Update Host
-                      </button>
+                      >{t("Update Host")}</button>
                     ) : null}
                     <button
                       className={button}
                       disabled={busy}
                       onClick={() => void begin(machine)}
-                    >
-                      Reconnect
-                    </button>
+                    >{t("Reconnect")}</button>
                     <button
                       className="rounded p-2 text-content/40 hover:bg-selection hover:text-content disabled:opacity-40"
                       disabled={busy}
-                      aria-label={`Edit ${machine.name}`}
-                      title="Edit name and address…"
+                      aria-label={t("Edit {p0}", { p0: machine.name })}
+                      title={t("Edit name and address…")}
                       onClick={() => startEdit(machine)}
                     >
                       <Pencil className="size-4" />
@@ -509,8 +531,8 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                 <button
                   disabled={busy || revoking}
                   className="rounded p-2 text-content/40 hover:bg-selection hover:text-content disabled:opacity-40"
-                  aria-label={`Remove ${machine.name}`}
-                  title="Remove connection…"
+                  aria-label={t("Remove {p0}", { p0: machine.name })}
+                  title={t("Remove connection…")}
                   onClick={() => {
                     setError("");
                     setRemoving(machine.id);
@@ -522,65 +544,36 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               {removing === machine.id && (
                 <div
                   role="group"
-                  aria-label={`Confirm removing ${machine.name}`}
+                  aria-label={t("Confirm removing {p0}", { p0: machine.name })}
                   className="flex flex-col gap-3 border-t border-stroke bg-content/3 px-4 py-4 text-[12px] leading-relaxed text-content/60"
                 >
-                  <p className="text-[13px] font-medium text-content">
-                    Remove {machine.name} from this desktop?
-                  </p>
+                  <p className="text-[13px] font-medium text-content">{t("Remove ")}{machine.name}{t(" from this desktop?")}</p>
                   {isLocalSyncMachine(machine) ? (
-                    <p>
-                      Removing this stops syncing projects and groups with the{" "}
-                      {PRODUCT_IDENTITY.displayName} on this computer. It is
-                      created again automatically the next time{" "}
-                      {PRODUCT_IDENTITY.displayName} starts.
-                    </p>
+                    <p>{t("Removing this stops syncing projects and groups with the")}{" "}
+                      {PRODUCT_IDENTITY.displayName}{t(" on this computer. It is created again automatically the next time")}{" "}
+                      {PRODUCT_IDENTITY.displayName}{t(" starts.")}</p>
                   ) : (
-                    <p>
-                      This closes this desktop’s connection to the machine. It
-                      does not stop the host, and its sessions keep running and
-                      stay on that machine. You can add it again later.
-                    </p>
+                    <p>{t("This closes this desktop’s connection to the machine. It does not stop the host, and its sessions keep running and stay on that machine. You can add it again later.")}</p>
                   )}
-                  <p>
-                    Removing alone leaves this desktop’s credential valid on the
-                    host. Revoke access to invalidate it first; the machine must
-                    be reachable.
-                  </p>
-                  <p>
-                    To stop the host and turn off its background service, run{" "}
-                    <code className="rounded bg-content/10 px-1">
-                      ~/.imece-host/bin/imece-host service uninstall
-                    </code>{" "}
-                    on that machine (
-                    <code className="rounded bg-content/10 px-1">
-                      %USERPROFILE%\.imece-host\bin\imece-host.cmd service
-                      uninstall
-                    </code>{" "}
-                    on Windows). Its sessions and history are kept.
-                  </p>
+                  <p>{t("Removing alone leaves this desktop’s credential valid on the host. Revoke access to invalidate it first; the machine must be reachable.")}</p>
+                  <p>{t("To stop the host and turn off its background service, run")}{" "}
+                    <code className="rounded bg-content/10 px-1">{"~/.imece-host/bin/imece-host service uninstall"}</code>{" "}{t("on that machine (")}<code className="rounded bg-content/10 px-1">{"%USERPROFILE%\\.imece-host\\bin\\imece-host.cmd service uninstall"}</code>{" "}{t("on Windows). Its sessions and history are kept.")}</p>
                   <div className="flex flex-wrap gap-2">
                     <button
                       className={button}
                       disabled={revoking}
                       onClick={() => void remove(machine, true)}
-                    >
-                      Revoke access and remove
-                    </button>
+                    >{t("Revoke access and remove")}</button>
                     <button
                       className={button}
                       disabled={revoking}
                       onClick={() => void remove(machine, false)}
-                    >
-                      Remove from this desktop only
-                    </button>
+                    >{t("Remove from this desktop only")}</button>
                     <button
                       className="px-3 py-2 text-[13px] text-content/50"
                       disabled={revoking}
                       onClick={() => setRemoving(undefined)}
-                    >
-                      Cancel
-                    </button>
+                    >{t("Cancel")}</button>
                   </div>
                 </div>
               )}
@@ -588,14 +581,12 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
           ))}
         </div>
       ) : loaded && !loading && !loadError && !adding ? (
-        <div className="rounded-xl border border-dashed border-content/15 px-5 py-8 text-center text-[13px] text-content/45">
-          Add your always-on Windows, Mac, or Linux machine to get started.
-        </div>
+        <div className="rounded-xl border border-dashed border-content/15 px-5 py-8 text-center text-[13px] text-content/45">{t("Add your always-on Windows, Mac, or Linux machine to get started.")}</div>
       ) : null}
       {adding && (
         <form
           key={editing?.id ?? "new-machine"}
-          aria-label={editing ? `Edit ${editing.name}` : "Add a new machine"}
+          aria-label={editing ? t("Edit {p0}", { p0: editing.name }) : t("Add a new machine")}
           className="flex flex-col gap-4 rounded-xl border border-stroke p-5"
           onSubmit={(event) => {
             event.preventDefault();
@@ -604,78 +595,56 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
         >
           <div className="flex items-center justify-between">
             <h3 className="text-[14px] font-medium">
-              {editing ? `Edit ${editing.name}` : "Add a new machine"}
+              {editing ? t("Edit {p0}", { p0: editing.name }) : t("Add a new machine")}
             </h3>
-            <span className="rounded bg-selection px-2 py-1 text-[11px] text-content/60">
-              SSH
-            </span>
+            <span className="rounded bg-selection px-2 py-1 text-[11px] text-content/60">{"SSH"}</span>
           </div>
           <p className="text-[12px] leading-relaxed text-content/65">
             {editing
-              ? "Changes apply to this machine. To connect a different computer, choose Add machine."
-              : "Connect a different computer with its own SSH address. Existing machines stay saved."}
+              ? t("Changes apply to this machine. To connect a different computer, choose Add machine.")
+              : t("Connect a different computer with its own SSH address. Existing machines stay saved.")}
           </p>
-          <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
-            SSH address
-            <input
+          <label className="flex flex-col gap-1.5 text-[12px] text-content/65">{t("SSH address")}<input
               autoFocus
               required
               disabled={busy}
               className={input}
               value={target}
               onChange={(event) => setTarget(event.target.value)}
-              placeholder="user@my-mac-mini or an SSH alias"
+              placeholder={t("user@my-mac-mini or an SSH alias")}
               autoComplete="off"
               spellCheck={false}
             />
-            <span className="text-[11px] leading-relaxed text-content/45">
-              A hostname works too, such as a Mac's Bonjour name (
-              <code className="rounded bg-content/10 px-1">
-                user@MacBook-Pro.local
-              </code>
-              ) or an alias from{" "}
-              <code className="rounded bg-content/10 px-1">~/.ssh/config</code>.
-              Then the address does not need editing when the IP changes.
-            </span>
+            <span className="text-[11px] leading-relaxed text-content/45">{t("A hostname works too, such as a Mac's Bonjour name (")}<code className="rounded bg-content/10 px-1">{"user@MacBook-Pro.local"}</code>{t(") or an alias from")}{" "}
+              <code className="rounded bg-content/10 px-1">{"~/.ssh/config"}</code>{t(". Then the address does not need editing when the IP changes.")}</span>
             {suggestion && (
               <button
                 type="button"
                 disabled={busy}
                 className="self-start rounded-md bg-content/8 px-2 py-1 text-[11px] text-content/80 hover:bg-content/15 hover:text-content disabled:opacity-40"
-                title="Fills the address. Nothing is saved or tested until you save."
+                title={t("Fills the address. Nothing is saved or tested until you save.")}
                 onClick={() => setTarget(suggestion)}
-              >
-                Use {suggestion} instead of the IP
-              </button>
+              >{t("Use ")}{suggestion}{t(" instead of the IP")}</button>
             )}
           </label>
-          <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
-            Other address (optional)
-            <input
+          <label className="flex flex-col gap-1.5 text-[12px] text-content/65">{t("Other address (optional)")}<input
               disabled={busy}
               className={input}
               value={alternate}
               onChange={(event) => setAlternate(event.target.value)}
-              placeholder="Optional, e.g. user@100.64.0.5 (Tailscale)"
+              placeholder={t("Optional, e.g. user@100.64.0.5 (Tailscale)")}
               autoComplete="off"
               spellCheck={false}
             />
-            <span className="text-[11px] leading-relaxed text-content/45">
-              Optional fallback for this same machine, such as its Tailscale
-              address. If the first address cannot connect,{" "}
-              {PRODUCT_IDENTITY.displayName} automatically tries this one. Both
-              addresses stay saved and use the same SSH port. The other address
-              is checked against this machine's known host key.
-            </span>
+            <span className="text-[11px] leading-relaxed text-content/45">{t("Optional fallback for this same machine, such as its Tailscale address. If the first address cannot connect,")}{" "}
+              {PRODUCT_IDENTITY.displayName}{t(" automatically tries this one. Both addresses stay saved and use the same SSH port. The other address is checked against this machine's known host key.")}</span>
           </label>
-          <label className="flex flex-col gap-1.5 text-[12px] text-content/65">
-            Name (optional)
-            <input
+          <label className="flex flex-col gap-1.5 text-[12px] text-content/65">{t("Name (optional)")}<input
               disabled={busy}
               className={input}
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="Optional, e.g. Home Mac mini"
+              placeholder={t("Optional, e.g. Home Mac mini")}
               autoComplete="off"
               autoCorrect="off"
               autoCapitalize="off"
@@ -683,10 +652,8 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
             />
           </label>
           <details className="text-[12px] text-content/50">
-            <summary className="cursor-pointer">Advanced</summary>
-            <label className="mt-3 flex max-w-40 flex-col gap-1.5">
-              SSH port
-              <input
+            <summary className="cursor-pointer">{t("Advanced")}</summary>
+            <label className="mt-3 flex max-w-40 flex-col gap-1.5">{t("SSH port")}<input
                 disabled={busy}
                 type="number"
                 min={1}
@@ -694,39 +661,17 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                 className={input}
                 value={port}
                 onChange={(event) => setPort(event.target.value)}
-                placeholder="From SSH config"
+                placeholder={t("From SSH config")}
               />
             </label>
           </details>
           {editing ? (
-            <p className="text-[12px] leading-relaxed text-content/45">
-              Saving a new address closes the current connection and connects to
-              it. If this computer has not connected to that address before, SSH
-              asks you here whether to trust its host key. The machine's
-              projects, sessions and history stay linked to it. If the address
-              turns out to be another machine, the change stays saved so you can
-              fix it; nothing is installed there.
-            </p>
+            <p className="text-[12px] leading-relaxed text-content/45">{t("Saving a new address closes the current connection and connects to it. If this computer has not connected to that address before, SSH asks you here whether to trust its host key. The machine's projects, sessions and history stay linked to it. If the address turns out to be another machine, the change stays saved so you can fix it; nothing is installed there.")}</p>
           ) : (
             <>
               <p className="text-[12px] leading-relaxed text-content/45">
-                {PRODUCT_IDENTITY.displayName} installs and starts its
-                background host, then connects securely. Your SSH keys and
-                config are used automatically. Enable SSH on the host and sign
-                in to Codex or Claude Code there. On Windows and Mac, keep the
-                host’s desktop account signed in and the machine awake. Locking
-                the desktop is fine.
-              </p>
-              <p className="text-[12px] leading-relaxed text-content/45">
-                On Linux, setup installs a systemd user service and turns on
-                lingering for your account (
-                <code className="rounded bg-content/10 px-1">
-                  loginctl enable-linger
-                </code>
-                ), so the host and your other user services keep running after
-                you log out. The host keeps running until you stop it on that
-                machine; removing it here only disconnects this desktop.
-              </p>
+                {PRODUCT_IDENTITY.displayName}{t(" installs and starts its background host, then connects securely. Your SSH keys and config are used automatically. Enable SSH on the host and sign in to Codex or Claude Code there. On Windows and Mac, keep the host’s desktop account signed in and the machine awake. Locking the desktop is fine.")}</p>
+              <p className="text-[12px] leading-relaxed text-content/45">{t("On Linux, setup installs a systemd user service and turns on lingering for your account (")}<code className="rounded bg-content/10 px-1">{"loginctl enable-linger"}</code>{t("), so the host and your other user services keep running after you log out. The host keeps running until you stop it on that machine; removing it here only disconnects this desktop.")}</p>
             </>
           )}
           {error && (
@@ -743,17 +688,15 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               disabled={busy}
               className="px-3 py-2 text-[13px] text-content/50"
               onClick={closeForm}
-            >
-              Cancel
-            </button>
+            >{t("Cancel")}</button>
             <button className={button} disabled={busy || !target.trim()}>
               {editing
                 ? busy
-                  ? "Saving…"
+                  ? t("Saving…")
                   : saveLabel
                 : busy
-                  ? "Connecting…"
-                  : "Connect"}
+                  ? t("Connecting…")
+                  : t("Connect")}
             </button>
           </div>
         </form>
@@ -766,7 +709,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
         >
           <div className="flex items-center gap-2 text-[13px]">
             <Loader className="size-4 animate-spin" />
-            {job?.message ?? "Starting connection…"}
+            {job?.message ?? t("Starting connection…")}
           </div>
           {job?.prompt && (
             <form
@@ -784,7 +727,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                   key={job.prompt.id}
                   autoFocus
                   type="password"
-                  aria-label="SSH password or passphrase"
+                  aria-label={t("SSH password or passphrase")}
                   autoComplete="off"
                   disabled={answering}
                   className={input}
@@ -794,7 +737,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               )}
               <div className="flex gap-2">
                 <button className={button} disabled={answering}>
-                  {job.prompt.confirm ? "Trust host and continue" : "Continue"}
+                  {job.prompt.confirm ? t("Trust host and continue") : t("Continue")}
                 </button>
                 {job.prompt.confirm && (
                   <button
@@ -802,9 +745,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                     className={button}
                     disabled={answering}
                     onClick={() => void respond("no")}
-                  >
-                    Reject
-                  </button>
+                  >{t("Reject")}</button>
                 )}
               </div>
             </form>
@@ -818,9 +759,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
                   setError(String(reason)),
                 );
             }}
-          >
-            Cancel connection
-          </button>
+          >{t("Cancel connection")}</button>
         </div>
       )}
       {error && !adding && (
@@ -837,9 +776,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
         </p>
       )}
       <details className="text-[12px] text-content/45">
-        <summary className="cursor-pointer">
-          Connect to an existing host by URL
-        </summary>
+        <summary className="cursor-pointer">{t("Connect to an existing host by URL")}</summary>
         <form
           className="mt-4 flex flex-col gap-3"
           onSubmit={(event) => {
@@ -856,9 +793,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               .finally(() => setBusy(false));
           }}
         >
-          <label>
-            Host URL
-            <input
+          <label>{t("Host URL")}<input
               required
               disabled={busy}
               className={`${input} mt-1`}
@@ -866,9 +801,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               onChange={(event) => setUrl(event.target.value)}
             />
           </label>
-          <label>
-            Device token
-            <input
+          <label>{t("Device token")}<input
               required
               disabled={busy}
               type="password"
@@ -878,9 +811,7 @@ The new address is saved. Edit it again, or choose Reconnect to retry.`
               onChange={(event) => setToken(event.target.value)}
             />
           </label>
-          <button className={`${button} self-start`} disabled={busy}>
-            Connect by URL
-          </button>
+          <button className={`${button} self-start`} disabled={busy}>{t("Connect by URL")}</button>
         </form>
       </details>
     </div>

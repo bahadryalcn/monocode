@@ -11,7 +11,7 @@ const { getIdentifier, getVersion, check, message, ask, relaunch } = vi.hoisted(
   }),
 );
 
-const identity = vi.hoisted(() => ({ displayName: "imc", updaterEnabled: true, repositoryUrl: null as string | null }));
+const identity = vi.hoisted(() => ({ displayName: "imc code", updaterEnabled: true, repositoryUrl: null as string | null }));
 vi.mock("../../shared/lib/productIdentity", () => ({ PRODUCT_IDENTITY: identity }));
 
 vi.mock("@tauri-apps/api/app", () => ({ getIdentifier, getVersion }));
@@ -94,7 +94,7 @@ describe("updater", () => {
     });
     expect(message).toHaveBeenCalledWith(
       expect.stringContaining("Automatic updates are disabled"),
-      { title: "imc" },
+      { title: "imc code" },
     );
   });
 

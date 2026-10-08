@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   ChevronDown,
   GitMerge,
@@ -27,18 +28,18 @@ export const GITHUB_PR_MERGE_OPTIONS: Array<{
 }> = [
   {
     action: "merge",
-    label: "Create a merge commit",
-    description: "Add every commit to the base branch.",
+    get label() { return t("Create a merge commit"); },
+    get description() { return t("Add every commit to the base branch."); },
   },
   {
     action: "squash",
-    label: "Squash and merge",
-    description: "Combine the commits into one.",
+    get label() { return t("Squash and merge"); },
+    get description() { return t("Combine the commits into one."); },
   },
   {
     action: "rebase",
-    label: "Rebase and merge",
-    description: "Add the commits without a merge commit.",
+    get label() { return t("Rebase and merge"); },
+    get description() { return t("Add the commits without a merge commit."); },
   },
 ];
 
@@ -55,28 +56,28 @@ export function githubPrActionCopy(
   switch (action) {
     case "merge":
       return {
-        title: "Merge this pull request?",
+        get title() { return t("Merge this pull request?"); },
         detail: `Every commit from ${source} will be added to ${destination} with a merge commit.`,
         confirm: "Merge pull request",
         progress: "Merging…",
       };
     case "squash":
       return {
-        title: "Squash and merge?",
+        get title() { return t("Squash and merge?"); },
         detail: `The commits from ${source} will be combined into one commit on ${destination}.`,
         confirm: "Squash and merge",
         progress: "Merging…",
       };
     case "rebase":
       return {
-        title: "Rebase and merge?",
+        get title() { return t("Rebase and merge?"); },
         detail: `The commits from ${source} will be rebased individually onto ${destination}.`,
         confirm: "Rebase and merge",
         progress: "Merging…",
       };
     case "draft":
       return {
-        title: "Convert to draft?",
+        get title() { return t("Convert to draft?"); },
         detail:
           "Reviewers will see that this pull request is not ready to merge.",
         confirm: "Convert to draft",
@@ -84,7 +85,7 @@ export function githubPrActionCopy(
       };
     case "ready":
       return {
-        title: "Mark as ready for review?",
+        get title() { return t("Mark as ready for review?"); },
         detail:
           "Reviewers will see that this pull request is ready for feedback.",
         confirm: "Ready for review",
@@ -92,7 +93,7 @@ export function githubPrActionCopy(
       };
     case "close":
       return {
-        title: "Close this pull request?",
+        get title() { return t("Close this pull request?"); },
         detail:
           "The pull request will close without merging. You can reopen it later.",
         confirm: "Close pull request",
@@ -100,7 +101,7 @@ export function githubPrActionCopy(
       };
     case "reopen":
       return {
-        title: "Reopen this pull request?",
+        get title() { return t("Reopen this pull request?"); },
         detail: "The pull request will return to the open state.",
         confirm: "Reopen pull request",
         progress: "Reopening…",
@@ -119,6 +120,7 @@ export function GithubPrActions({
   headRef: string;
   onChange?: (item: InboxItem) => void;
 }) {
+  useLocale();
   const mergeGroup = useRef<HTMLDivElement>(null);
   const [mergeAction, setMergeAction] = useState<GithubPrMergeAction>("merge");
   const [mergeMenuOpen, setMergeMenuOpen] = useState(false);
@@ -190,7 +192,7 @@ export function GithubPrActions({
         <div
           ref={mergeGroup}
           role="group"
-          aria-label="Merge pull request"
+          aria-label={t("Merge pull request")}
           className="inline-flex h-7 overflow-hidden rounded-md bg-content text-background-base"
         >
           <button
@@ -201,13 +203,13 @@ export function GithubPrActions({
           >
             <GitMerge className="size-3.5" strokeWidth={1.75} />
             {selectedMerge?.action === "merge"
-              ? "Merge pull request"
+              ? t("Merge pull request")
               : selectedMerge?.label}
           </button>
           <button
             type="button"
-            title="Merge options"
-            aria-label="Merge options"
+            title={t("Merge options")}
+            aria-label={t("Merge options")}
             aria-haspopup="menu"
             aria-expanded={mergeMenuOpen}
             disabled={busy}
@@ -225,9 +227,7 @@ export function GithubPrActions({
           onClick={(event) => askToRun("ready", event.currentTarget)}
           className={stateButton}
         >
-          <GitPullRequest className="size-3.5" strokeWidth={1.75} />
-          Ready for review
-        </button>
+          <GitPullRequest className="size-3.5" strokeWidth={1.75} />{t("Ready for review")}</button>
       ) : null}
       {state === "open" && !item.draft ? (
         <button
@@ -236,9 +236,7 @@ export function GithubPrActions({
           onClick={(event) => askToRun("draft", event.currentTarget)}
           className={stateButton}
         >
-          <GitPullRequestDraft className="size-3.5" strokeWidth={1.75} />
-          Convert to draft
-        </button>
+          <GitPullRequestDraft className="size-3.5" strokeWidth={1.75} />{t("Convert to draft")}</button>
       ) : null}
       {state === "open" ? (
         <button
@@ -247,9 +245,7 @@ export function GithubPrActions({
           onClick={(event) => askToRun("close", event.currentTarget)}
           className={`${stateButton} hover:text-rose-400`}
         >
-          <GitPullRequestClosed className="size-3.5" strokeWidth={1.75} />
-          Close pull request
-        </button>
+          <GitPullRequestClosed className="size-3.5" strokeWidth={1.75} />{t("Close pull request")}</button>
       ) : null}
       {state === "closed" ? (
         <button
@@ -258,9 +254,7 @@ export function GithubPrActions({
           onClick={(event) => askToRun("reopen", event.currentTarget)}
           className={stateButton}
         >
-          <GitPullRequest className="size-3.5" strokeWidth={1.75} />
-          Reopen pull request
-        </button>
+          <GitPullRequest className="size-3.5" strokeWidth={1.75} />{t("Reopen pull request")}</button>
       ) : null}
       {notice ? (
         <span role="status" className="text-[11px] text-content/55">
@@ -276,7 +270,7 @@ export function GithubPrActions({
           onDismiss={() => setMergeMenuOpen(false)}
           role="menu"
           tabIndex={-1}
-          aria-label="Merge method"
+          aria-label={t("Merge method")}
           className="p-1"
         >
           {GITHUB_PR_MERGE_OPTIONS.map((option) => (
@@ -350,9 +344,7 @@ export function GithubPrActions({
               disabled={busy}
               onClick={dismissConfirmation}
               className={`h-7 rounded-md px-3 text-[12px] text-content/65 hover:bg-content/8 hover:text-content disabled:cursor-default disabled:opacity-40 ${PR_ACTION_PRESS}`}
-            >
-              Cancel
-            </button>
+            >{t("Cancel")}</button>
             <button
               type="button"
               disabled={busy}

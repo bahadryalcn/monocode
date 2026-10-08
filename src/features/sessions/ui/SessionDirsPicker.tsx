@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { basename, pickFolders } from "../../../platform/tauri/fs";
 import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
@@ -57,6 +58,7 @@ export function SessionDirsPicker({
   enabled?: boolean;
   onClose?: () => void;
 }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"folders" | "project">("folders");
   const [query, setQuery] = useState("");
@@ -155,7 +157,7 @@ export function SessionDirsPicker({
       <button
         type="button"
         title={effective.map(prettyCwd).join("\n")}
-        aria-label="Folders for this session"
+        aria-label={t("Folders for this session")}
         aria-expanded={open}
         aria-haspopup="dialog"
         disabled={!enabled}
@@ -187,8 +189,8 @@ export function SessionDirsPicker({
           role="dialog"
           aria-label={
             mode === "project"
-              ? "Change session project"
-              : "Folders for this session"
+              ? t("Change session project")
+              : t("Folders for this session")
           }
           tabIndex={-1}
           className="flex min-h-0 flex-col p-1.5"
@@ -196,8 +198,8 @@ export function SessionDirsPicker({
           <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5">
             <p className="text-[10px] font-medium uppercase tracking-wide text-content/50">
               {mode === "project"
-                ? "Change project"
-                : "Folders for this session"}
+                ? t("Change project")
+                : t("Folders for this session")}
             </p>
             {onProjectChange ? (
               <button
@@ -210,14 +212,14 @@ export function SessionDirsPicker({
                 }}
                 className="rounded-md px-1.5 py-0.5 text-[11px] text-content/70 hover:bg-content/10 disabled:opacity-50"
               >
-                {mode === "folders" ? "Change project…" : "Back"}
+                {mode === "folders" ? t("Change project…") : t("Back")}
               </button>
             ) : null}
           </div>
           <input
             type="search"
-            aria-label="Search projects and folders"
-            placeholder="Search projects and folders…"
+            aria-label={t("Search projects and folders")}
+            placeholder={t("Search projects and folders…")}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             className="mx-2 my-1 rounded-md border border-content/10 bg-content/5 px-2 py-1.5 text-[12px] text-content outline-none focus:border-accent/50"
@@ -248,7 +250,7 @@ export function SessionDirsPicker({
                   <Folder className="size-3.5 shrink-0" />
                   {details}
                   {pathKey(path) === pathKey(project) ? (
-                    <span className="text-[10px] text-content/50">Current</span>
+                    <span className="text-[10px] text-content/50">{t("Current")}</span>
                   ) : null}
                 </button>
               ) : (
@@ -264,17 +266,13 @@ export function SessionDirsPicker({
                   />
                   {details}
                   {working ? (
-                    <span className="shrink-0 text-[10px] text-content/50">
-                      Working folder
-                    </span>
+                    <span className="shrink-0 text-[10px] text-content/50">{t("Working folder")}</span>
                   ) : null}
                 </label>
               );
             })}
             {matching.length === 0 ? (
-              <p className="px-2 py-2 text-[12px] text-content/50">
-                No matching folders
-              </p>
+              <p className="px-2 py-2 text-[12px] text-content/50">{t("No matching folders")}</p>
             ) : null}
           </div>
           <button
@@ -284,7 +282,7 @@ export function SessionDirsPicker({
             className="mt-1 flex items-center gap-2 rounded-md border-t border-content/10 px-2 py-2 text-left text-[12px] text-content/80 hover:bg-content/5 disabled:opacity-50"
           >
             <Plus className="size-3.5 shrink-0" />
-            {picking ? "Choosing folders…" : `Choose from ${browserLabel}…`}
+            {picking ? t("Choosing folders…") : t("Choose from {p0}…", { p0: browserLabel })}
           </button>
           {error ? (
             <p role="alert" className="px-2 py-1 text-[11px] text-error">
@@ -294,10 +292,10 @@ export function SessionDirsPicker({
           <div className="flex items-center gap-2 px-2 pb-0.5 pt-1.5">
             <p className="min-w-0 flex-1 text-[11px] leading-4 text-content/50">
               {mode === "project"
-                ? "Existing conversations open a new session in the chosen project."
+                ? t("Existing conversations open a new session in the chosen project.")
                 : overridden
-                  ? "Extra folders apply to this session from the next message."
-                  : "Working folder included. Extra folders follow the project setting."}
+                  ? t("Extra folders apply to this session from the next message.")
+                  : t("Working folder included. Extra folders follow the project setting.")}
             </p>
             {overridden && mode === "folders" ? (
               <button
@@ -307,9 +305,7 @@ export function SessionDirsPicker({
                   saveSessionAdditionalDirs(sessionId, project, null)
                 }
                 className="shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-content/70 hover:bg-content/10 hover:text-content disabled:opacity-50"
-              >
-                Reset
-              </button>
+              >{t("Reset")}</button>
             ) : null}
           </div>
         </Popover>

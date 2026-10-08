@@ -36,6 +36,13 @@ afterEach(() => {
 });
 const render = () => act(() => root.render(createElement(VillageCoffeehouseScene)));
 const enter = () => act(() => intersection([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+it("renders exactly seven characters for seven working agents", () => {
+  act(() => root.render(createElement(VillageCoffeehouseScene, {workingCount:7})));
+  enter();
+  act(() => vi.advanceTimersByTime(1500));
+  expect(state.paint.mock.calls.at(-1)?.[0]).toHaveLength(7);
+  expect(state.paint.mock.calls.at(-1)?.[1]).toHaveLength(7);
+});
 it("welcomes twelve agents from the sides and removes departing guests", () => {
   render(); enter();
   act(() => root.render(createElement(VillageCoffeehouseScene, {workingCount:12})));

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { indentWithTab, redo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { openSearchPanel } from "@codemirror/search";
@@ -89,6 +90,7 @@ export function NoteMarkdownEditor({
   viewRef: NoteEditorViewRef;
   autoFocus?: boolean;
 }) {
+  useLocale();
   const hostRef = useRef<HTMLDivElement>(null);
   const scheme = useColorScheme();
   const schemeConfig = useRef(new Compartment());
@@ -226,18 +228,18 @@ const TOOLBAR: {
   label: string;
   icon: IconComponent;
 }[] = [
-  { command: "bold", label: `Bold (${MOD}B)`, icon: Bold },
-  { command: "italic", label: `Italic (${MOD}I)`, icon: Italic },
-  { command: "strike", label: "Strikethrough", icon: Strikethrough },
-  { command: "heading", label: "Heading", icon: Heading },
-  { command: "bullet", label: "Bullet list", icon: ListBullet },
-  { command: "numbered", label: "Numbered list", icon: ListNumbered },
-  { command: "checklist", label: "Checklist", icon: CheckList },
-  { command: "quote", label: "Quote", icon: BlockQuote },
-  { command: "code", label: "Code block", icon: CodeBlock },
-  { command: "link", label: "Link", icon: Link },
-  { command: "table", label: "Table", icon: Table },
-  { command: "rule", label: "Divider", icon: Minus },
+  { command: "bold", get label() { return t("Bold ({p0}B)", { p0: MOD }); }, icon: Bold },
+  { command: "italic", get label() { return t("Italic ({p0}I)", { p0: MOD }); }, icon: Italic },
+  { command: "strike", get label() { return t("Strikethrough"); }, icon: Strikethrough },
+  { command: "heading", get label() { return t("Heading"); }, icon: Heading },
+  { command: "bullet", get label() { return t("Bullet list"); }, icon: ListBullet },
+  { command: "numbered", get label() { return t("Numbered list"); }, icon: ListNumbered },
+  { command: "checklist", get label() { return t("Checklist"); }, icon: CheckList },
+  { command: "quote", get label() { return t("Quote"); }, icon: BlockQuote },
+  { command: "code", get label() { return t("Code block"); }, icon: CodeBlock },
+  { command: "link", get label() { return t("Link"); }, icon: Link },
+  { command: "table", get label() { return t("Table"); }, icon: Table },
+  { command: "rule", get label() { return t("Divider"); }, icon: Minus },
 ];
 
 const TOOLBAR_BUTTON =
@@ -255,6 +257,7 @@ export function NoteMarkdownToolbar({
   imageBusy?: boolean;
   onInsertImage: () => void;
 }) {
+  useLocale();
   const run = (action: (view: EditorView) => void) => {
     const view = viewRef.current;
     if (view) action(view);
@@ -262,15 +265,15 @@ export function NoteMarkdownToolbar({
   return (
     <div
       role="toolbar"
-      aria-label="Markdown formatting"
+      aria-label={t("Markdown formatting")}
       className="ml-auto flex min-w-0 items-center gap-0.5"
       // Keep the selection in the editor while a button is pressed.
       onMouseDown={(event) => event.preventDefault()}
     >
       <button
         type="button"
-        title={`Insert image · or paste (${MOD}V) / drop one`}
-        aria-label="Insert image"
+        title={t("Insert image · or paste ({p0}V) / drop one", { p0: MOD })}
+        aria-label={t("Insert image")}
         disabled={imageBusy}
         onClick={onInsertImage}
         className={`${TOOLBAR_BUTTON} disabled:opacity-40`}
@@ -297,8 +300,8 @@ export function NoteMarkdownToolbar({
           <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-content/10" />
           <button
             type="button"
-            title={`Find (${MOD}F) · Replace (${MOD}H)`}
-            aria-label="Find and replace"
+            title={t("Find ({p0}F) · Replace ({p1}H)", { p0: MOD, p1: MOD })}
+            aria-label={t("Find and replace")}
             onClick={() => run(openSearchPanel)}
             className={TOOLBAR_BUTTON}
           >

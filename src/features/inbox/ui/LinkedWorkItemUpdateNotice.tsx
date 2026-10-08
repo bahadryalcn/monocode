@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import {
@@ -49,6 +50,7 @@ function entryKindLabel(entry: LinkedWorkItemActivityEntry): string {
 }
 
 function ActivityIcon({ entry }: { entry: LinkedWorkItemActivityEntry }) {
+  useLocale();
   if (entry.kind === "commit") {
     return <GitBranch className="size-3.5 shrink-0" strokeWidth={1.75} />;
   }
@@ -68,6 +70,7 @@ export function LinkedWorkItemUpdateNotice({
   onArchiveSession,
   onDeleteSession,
 }: Props) {
+  useLocale();
   const [cleanupAction, setCleanupAction] = useState<
     "archive" | "delete" | undefined
   >();
@@ -135,7 +138,7 @@ export function LinkedWorkItemUpdateNotice({
 
   return (
     <section
-      aria-label={`New activity on ${kindLabel} ${card.number}`}
+      aria-label={t("New activity on {p0} {p1}", { p0: kindLabel, p1: card.number })}
       aria-live="polite"
       className="pointer-events-auto absolute top-3 right-3 z-40 isolate w-[min(320px,calc(100%_-_24px))] overflow-hidden rounded-xl border border-content/10 text-content shadow-xl"
     >
@@ -145,14 +148,12 @@ export function LinkedWorkItemUpdateNotice({
           <div className="flex items-center gap-1.5">
             <span className="size-2 shrink-0 rounded-full bg-accent" />
             <KindIcon className="size-3.5 text-content/55" strokeWidth={1.75} />
-            <span className="min-w-0 flex-1 truncate text-[12px] font-semibold">
-              GitHub activity
-            </span>
+            <span className="min-w-0 flex-1 truncate text-[12px] font-semibold">{t("GitHub activity")}</span>
           </div>
           <button
             type="button"
-            title="Dismiss"
-            aria-label={`Dismiss updates for ${kindLabel} ${card.number}`}
+            title={t("Dismiss")}
+            aria-label={t("Dismiss updates for {p0} {p1}", { p0: kindLabel, p1: card.number })}
             onClick={dismiss}
             className="grid size-6 shrink-0 place-items-center rounded-md text-content/40 hover:bg-content/10 hover:text-content"
           >
@@ -214,7 +215,7 @@ export function LinkedWorkItemUpdateNotice({
                     </span>
                   </span>
                   <span className="mt-0.5 line-clamp-2 block text-[12px] leading-relaxed text-content/65">
-                    {entry.text || "No message"}
+                    {entry.text || t("No message")}
                   </span>
                 </span>
               </button>
@@ -236,12 +237,12 @@ export function LinkedWorkItemUpdateNotice({
               <span className="font-medium text-content/75">
                 {terminalLabel}
               </span>
-              <span className="text-content/45">Clean up this session</span>
+              <span className="text-content/45">{t("Clean up this session")}</span>
             </div>
             <div className="mt-2 flex items-center gap-1.5">
               <button
                 type="button"
-                title="Archive session"
+                title={t("Archive session")}
                 disabled={Boolean(cleanupAction) || !onArchiveSession}
                 onClick={() => void runCleanup("archive", onArchiveSession)}
                 className="inline-flex min-w-0 items-center gap-1.5 overflow-hidden rounded-md bg-content/10 px-2 py-1 text-[11px] font-medium hover:bg-content/15 disabled:opacity-40"
@@ -251,13 +252,11 @@ export function LinkedWorkItemUpdateNotice({
                 ) : (
                   <Archive className="size-3 shrink-0" strokeWidth={1.75} />
                 )}
-                <span className="min-w-0 truncate whitespace-nowrap">
-                  Archive session
-                </span>
+                <span className="min-w-0 truncate whitespace-nowrap">{t("Archive session")}</span>
               </button>
               <button
                 type="button"
-                title="Delete session"
+                title={t("Delete session")}
                 disabled={Boolean(cleanupAction) || !onDeleteSession}
                 onClick={() => void runCleanup("delete", onDeleteSession)}
                 className="inline-flex min-w-0 items-center gap-1.5 overflow-hidden rounded-md px-2 py-1 text-[11px] text-red-300/90 hover:bg-red-500/15 disabled:opacity-40"
@@ -267,9 +266,7 @@ export function LinkedWorkItemUpdateNotice({
                 ) : (
                   <Trash2 className="size-3 shrink-0" strokeWidth={1.75} />
                 )}
-                <span className="min-w-0 truncate whitespace-nowrap">
-                  Delete…
-                </span>
+                <span className="min-w-0 truncate whitespace-nowrap">{t("Delete…")}</span>
               </button>
             </div>
           </div>

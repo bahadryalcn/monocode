@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useSyncExternalStore } from "react";
 import { SplitSquare } from "../../../shared/ui/icons";
 import {
@@ -18,12 +19,13 @@ export function useDiffLayout(): DiffLayout {
 
 /** Flips every diff between one column and before | after. */
 export function DiffLayoutToggle({ className = "" }: { className?: string }) {
+  useLocale();
   const split = useDiffLayout() === "split";
   return (
     <button
       type="button"
-      title="Side-by-side view"
-      aria-label="Side-by-side view"
+      title={t("Side-by-side view")}
+      aria-label={t("Side-by-side view")}
       aria-pressed={split}
       // Keep the caret where it is when this sits next to an editor.
       onMouseDown={(event) => event.preventDefault()}

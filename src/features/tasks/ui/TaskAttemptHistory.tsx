@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { TASK_INPUT_REQUIRED, canTakeOverBlockedTask, taskRequiresInstructions, type HostTask } from "../model/hostTasks";
 
 export function repairStopLabel(task: HostTask): string | undefined {
@@ -24,69 +25,57 @@ export function TaskAttemptHistory({
   task: HostTask;
   onOpenSession: (sessionId: string) => void;
 }) {
+  useLocale();
   const stop = repairStopLabel(task);
   if (!stop && !task.attemptHistory?.length) return null;
   return (
     <section
-      aria-label="Attempt history"
+      aria-label={t("Attempt history")}
       className="space-y-2 border-t border-stroke pt-3"
     >
       {stop ? (
         <div className="space-y-1 text-[12px] text-amber-400">
           <p className="font-medium">{stop}</p>
           <p className="whitespace-pre-wrap break-words">
-            {canTakeOverBlockedTask(task) ? "A fresh AI session will inspect the previous attempts and continue the retained work automatically when capacity is available." : task.blockedTakeover && task.status !== "blocked" ? "The recovery agent must pass the original checks and review before delivery." : task.repairStop?.message ??
-              "Inspect the previous worker and review before retrying."}
+            {canTakeOverBlockedTask(task) ? t("A fresh AI session will inspect the previous attempts and continue the retained work automatically when capacity is available.") : task.blockedTakeover && task.status !== "blocked" ? t("The recovery agent must pass the original checks and review before delivery.") : task.repairStop?.message ??
+              t("Inspect the previous worker and review before retrying.")}
           </p>
           <p className="text-content/55">
-            {taskRequiresInstructions(task) ? `${TASK_INPUT_REQUIRED} ` : ""}
-            Dependent tasks stay queued until this task passes its checks and is
-            delivered. Independent queued tasks can continue.
-          </p>
+            {taskRequiresInstructions(task) ? `${TASK_INPUT_REQUIRED} ` : ""}{t("Dependent tasks stay queued until this task passes its checks and is delivered. Independent queued tasks can continue.")}</p>
         </div>
       ) : null}
       {task.attemptHistory?.length ? (
         <>
-          <h3 className="text-[12px] font-medium text-content/80">
-            Attempt outcomes
-          </h3>
-          <p className="text-[11px] text-content/45">
-            Worker summaries describe what the agent reported. The review below
-            records verification.
-          </p>
+          <h3 className="text-[12px] font-medium text-content/80">{t("Attempt outcomes")}</h3>
+          <p className="text-[11px] text-content/45">{t("Worker summaries describe what the agent reported. The review below records verification.")}</p>
           {[...task.attemptHistory].reverse().map((entry) => (
             <details
               key={entry.reviewerSessionId}
               className="rounded-md border border-content/10 p-2 text-[12px]"
             >
               <summary className="cursor-pointer text-content/80">
-                {entry.reviewOnly ? "Review recheck" : entry.attempt
-                  ? `Correction ${entry.attempt}`
-                  : "Initial attempt"}{" "}
-                · {entry.verdict === "pass" ? "Review passed" : "Review failed"}{" "}
-                · {new Date(entry.at).toLocaleString()}
+                {entry.reviewOnly ? t("Review recheck") : entry.attempt
+                  ? t("Correction {p0}", { p0: entry.attempt })
+                  : t("Initial attempt")}{" "}
+                · {entry.verdict === "pass" ? t("Review passed") : t("Review failed")}{" "}
+                · {new Date(entry.at).toLocaleString(getLocale())}
               </summary>
               <p className="mt-2 whitespace-pre-wrap break-words text-content/70">
                 {entry.workerSummary}
               </p>
-              <p className="mt-2 whitespace-pre-wrap break-words text-content/70">
-                Review: {entry.note}
+              <p className="mt-2 whitespace-pre-wrap break-words text-content/70">{t("Review: ")}{entry.note}
               </p>
               <div className="mt-2 flex gap-3 text-[11px] text-sky-400">
                 {entry.workerSessionId ? (
                   <button
                     type="button"
                     onClick={() => onOpenSession(entry.workerSessionId!)}
-                  >
-                    Open worker
-                  </button>
+                  >{t("Open worker")}</button>
                 ) : null}
                 <button
                   type="button"
                   onClick={() => onOpenSession(entry.reviewerSessionId)}
-                >
-                  Open review
-                </button>
+                >{t("Open review")}</button>
               </div>
             </details>
           ))}

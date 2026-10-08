@@ -10,8 +10,13 @@ const { limits } = vi.hoisted(() => ({
     monthly: null,
   },
 }));
-vi.mock("../../providers/model/providerAccounts", () => ({
-  providerAccounts: () => [{ id: "default", label: "Default account" }],
+vi.mock("../../providers/model/providerAccounts", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../providers/model/providerAccounts")
+  >()),
+  providerAccounts: (provider: string) => [
+    { id: "default", provider, label: "Default account", color: "pink" },
+  ],
   subscribeProviderAccounts: () => () => {},
 }));
 vi.mock("../../providers/model/rateLimitsCache", () => ({
@@ -19,6 +24,9 @@ vi.mock("../../providers/model/rateLimitsCache", () => ({
   loadRateLimits: vi.fn(),
 }));
 vi.mock("./UsageOverview", () => ({ UsageOverview: () => null }));
+vi.mock("../../settings/ui/ProviderUsageSettings", () => ({
+  ProviderUsageSettings: () => null,
+}));
 import { UsagePage } from "./UsagePage";
 
 it("shows remaining quota and does not invent reset times", () => {
@@ -34,4 +42,11 @@ it("keeps known quota visible when refresh fails", () => {
   expect(markup).toContain("58%");
   expect(markup).toContain("Could not refresh limits");
   limits.error = null;
+});
+
+it("uses account colors for limits and exposes usage preferences", () => {
+  const markup = renderToStaticMarkup(createElement(UsagePage));
+  expect(markup).toContain("hsl(330 70% 62%)");
+  expect(markup).toContain("Color for Default account: Pink");
+  expect(markup).toContain("Show remaining usage");
 });

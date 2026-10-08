@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Modal } from "../../../shared/ui/Modal";
 import {
@@ -71,6 +72,7 @@ export function PasswordPromptDialog({
   onDone,
   onClose,
 }: Props) {
+  useLocale();
   const input = useRef<HTMLInputElement>(null);
   const alive = useRef(true);
   const [busy, setBusy] = useState(false);
@@ -113,7 +115,7 @@ export function PasswordPromptDialog({
     <Modal title={title} description={description} size="sm" onClose={onClose}>
       <form onSubmit={submit} className="flex flex-col gap-3 p-4">
         <PasswordField
-          label="Lock password"
+          label={t("Lock password")}
           ref={input}
           autoFocus
           invalid={message != null}
@@ -133,9 +135,7 @@ export function PasswordPromptDialog({
             type="button"
             onClick={onClose}
             className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
-          >
-            Cancel
-          </button>
+          >{t("Cancel")}</button>
           <button
             type="submit"
             disabled={busy || cooldown.remainingMs > 0}

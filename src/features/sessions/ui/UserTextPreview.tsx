@@ -1,3 +1,4 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { Modal } from "../../../shared/ui/Modal";
 import { Popover } from "../../../shared/ui/Popover";
@@ -17,6 +18,7 @@ function TextCard({
   messageId: string;
   attachments?: Attachment[];
 }) {
+  useLocale();
   const trigger = useRef<HTMLButtonElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hovered, setHovered] = useState(false);
@@ -51,7 +53,7 @@ function TextCard({
       <button
         ref={trigger}
         type="button"
-        aria-label={`Show full ${label.toLowerCase()}`}
+        aria-label={t("Show full {p0}", { p0: label.toLowerCase() })}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-describedby={hovered && !open ? previewId : undefined}
@@ -65,17 +67,14 @@ function TextCard({
         <span className="flex items-center justify-between gap-6 text-xs">
           <span className="font-medium text-content/80">{label}</span>
           <span className="text-content/45">
-            {part.text.length.toLocaleString()} characters
-          </span>
+            {part.text.length.toLocaleString(getLocale())}{t(" characters")}</span>
         </span>
         <span
           className={`mt-1 block whitespace-pre-wrap break-words text-xs text-content/60 ${part.kind === "json" ? "font-mono" : "font-sans"}`}
         >
           {boundedTextPreview(part.text, 160, 2)}
         </span>
-        <span className="mt-1.5 block text-xs text-content/65">
-          Show full content ↗
-        </span>
+        <span className="mt-1.5 block text-xs text-content/65">{t("Show full content ↗")}</span>
       </button>
       {hovered && !open ? (
         <Popover
@@ -93,8 +92,7 @@ function TextCard({
         >
           <div id={previewId} className="p-3">
             <div className="mb-2 text-xs font-medium text-content/70">
-              {label} preview
-            </div>
+              {label}{t(" preview")}</div>
             <pre
               className={`max-h-56 overflow-auto whitespace-pre-wrap break-words text-xs text-content/80 ${part.kind === "json" ? "font-mono" : "font-sans"}`}
             >
@@ -104,9 +102,7 @@ function TextCard({
               type="button"
               onClick={showFull}
               className="mt-2 rounded px-2 py-1 text-xs text-content/70 hover:bg-content/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              Show full content
-            </button>
+            >{t("Show full content")}</button>
           </div>
         </Popover>
       ) : null}
@@ -141,6 +137,7 @@ export const UserTextPreview = memo(function UserTextPreview({
   messageId: string;
   attachments?: Attachment[];
 }) {
+  useLocale();
   return (
     <div className="min-w-0 text-sm">
       {parts.map((part, index) =>

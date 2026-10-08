@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   ArrowUp,
@@ -391,6 +392,7 @@ function ToolButton({
   onClick?: () => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -433,6 +435,7 @@ function MessageQueue({
   onSteer?: (messageId: string) => void;
   onResume?: () => void;
 }) {
+  useLocale();
   const sortable = useAnimatedReorder(
     messages.map((message) => message.id),
     (ids) => onReorder?.(ids),
@@ -502,17 +505,13 @@ function MessageQueue({
         {paused ? (
           <div className="flex h-7 items-center gap-2 border-b border-stroke text-[12px]">
             <Pause className="size-3.5" />
-            <span className="min-w-0 flex-1 truncate">
-              Queue paused because you interrupted
-            </span>
+            <span className="min-w-0 flex-1 truncate">{t("Queue paused because you interrupted")}</span>
             <button
               type="button"
               onClick={onResume}
               className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content"
             >
-              <Play className="size-3.5" />
-              Resume
-            </button>
+              <Play className="size-3.5" />{t("Resume")}</button>
           </div>
         ) : null}
         {restored ? (
@@ -520,8 +519,8 @@ function MessageQueue({
             <Pause className="size-3.5" />
             <span className="min-w-0 flex-1 truncate">
               {messages.length === 1
-                ? "1 queued message restored"
-                : `${messages.length} queued messages restored`}
+                ? t("1 queued message restored")
+                : t("{p0} queued messages restored", { p0: messages.length })}
             </span>
             <button
               type="button"
@@ -529,9 +528,7 @@ function MessageQueue({
               onClick={() => onSteer?.(messages[0].id)}
               className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content disabled:opacity-30"
             >
-              <Play className="size-3.5" />
-              Send next
-            </button>
+              <Play className="size-3.5" />{t("Send next")}</button>
           </div>
         ) : null}
         {messages.map((message, index) => {
@@ -551,8 +548,8 @@ function MessageQueue({
                 <button
                   type="button"
                   data-queue-handle={message.id}
-                  title="Drag to reorder"
-                  aria-label="Reorder queued message"
+                  title={t("Drag to reorder")}
+                  aria-label={t("Reorder queued message")}
                   aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
                   onPointerDown={(event) =>
                     sortable.onItemPointerDown(message.id, event)
@@ -571,10 +568,8 @@ function MessageQueue({
               {attachmentGone ? (
                 <span
                   className="shrink-0 text-amber-400"
-                  title="An attached file is gone. Edit this message to drop it, or remove the message."
-                >
-                  Attachment missing
-                </span>
+                  title={t("An attached file is gone. Edit this message to drop it, or remove the message.")}
+                >{t("Attachment missing")}</span>
               ) : null}
               {remote ? null : (
                 <button
@@ -583,14 +578,12 @@ function MessageQueue({
                   onClick={() => onSteer?.(message.id)}
                   className="flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 hover:bg-content/10 hover:text-content disabled:opacity-30"
                 >
-                  <CornerDownRight className="size-3.5" />
-                  Steer
-                </button>
+                  <CornerDownRight className="size-3.5" />{t("Steer")}</button>
               )}
               <button
                 type="button"
-                title="Edit queued message"
-                aria-label="Edit queued message"
+                title={t("Edit queued message")}
+                aria-label={t("Edit queued message")}
                 onClick={() => startEdit(message)}
                 className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
               >
@@ -598,8 +591,8 @@ function MessageQueue({
               </button>
               <button
                 type="button"
-                title="Remove queued message"
-                aria-label="Remove queued message"
+                title={t("Remove queued message")}
+                aria-label={t("Remove queued message")}
                 onClick={() => onDelete?.(message.id)}
                 className="grid size-6 shrink-0 place-items-center rounded-md hover:bg-content/10 hover:text-content"
               >
@@ -610,7 +603,7 @@ function MessageQueue({
         })}
         {remote ? (
           <div className="border-t border-stroke py-1 text-[11px] text-content/40">
-            {`Sent one at a time when the host finishes this turn, while ${PRODUCT_IDENTITY.displayName} is open.`}
+            {t("Sent one at a time when the host finishes this turn, while {p0} is open.", { p0: PRODUCT_IDENTITY.displayName })}
           </div>
         ) : null}
       </div>
@@ -723,6 +716,7 @@ export const Composer = memo(function Composer({
   onEditingLastTurnChange,
   children,
 }: Props) {
+  useLocale();
   const ref = useRef<HTMLTextAreaElement>(null);
   const [inputResize] = useState(createComposerResizeFrame);
   const [modelPickerRequest, setModelPickerRequest] = useState(0);
@@ -754,6 +748,9 @@ export const Composer = memo(function Composer({
   /** Set while the text is an unedited entry recalled with Up/Down. */
   const historyRef = useRef<HistoryBrowse | null>(null);
   const [draft, setDraft] = useState(initialDraft ?? "");
+  // Updating defaultValue rewrites WebKit's text node and commits an active IME.
+  // Apply later external drafts through the existing synchronization effect.
+  const [mountDraft] = useState(initialDraft);
   const { branches: draftBranches } = useProjectBranchesState(
     executionCwd,
     draftWorkspace && enabled && !busy,
@@ -2744,9 +2741,7 @@ export const Composer = memo(function Composer({
           }`}
         >
           {fileDrag ? (
-            <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-lg bg-accent/8 text-[12px] text-content/70">
-              Drop files to attach
-            </div>
+            <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-lg bg-accent/8 text-[12px] text-content/70">{t("Drop files to attach")}</div>
           ) : null}
           {hideTopBar ? null : (
             <div className="flex min-w-0 items-center gap-2.5 overflow-hidden px-3 pt-2.5">
@@ -2834,20 +2829,20 @@ export const Composer = memo(function Composer({
               style={{ textIndent: modeIndent }}
               rows={1}
               spellCheck={false}
-              defaultValue={initialDraft}
+              defaultValue={mountDraft}
               placeholder={
                 worktreeRemoved
-                  ? "Select a branch or worktree to continue…"
+                  ? t("Select a branch or worktree to continue…")
                   : inboxCard
-                    ? "Add a note, or send to start…"
+                    ? t("Add a note, or send to start…")
                     : noteCard
-                      ? "Add a message, or send…"
+                      ? t("Add a message, or send…")
                       : handoffCard
-                        ? "Add context, or send to continue…"
+                        ? t("Add context, or send to continue…")
                         : (placeholder ??
                           (harness === "codex"
-                            ? "Ask, build, / for commands, $ for skills, @ for references..."
-                            : "Ask, build, / for commands and skills, @ for references, ! to run a command... "))
+                            ? t("Ask, build, / for commands, $ for skills, @ for references...")
+                            : t("Ask, build, / for commands and skills, @ for references, ! to run a command... ")))
               }
               aria-label={inputAriaLabel}
               disabled={disabled}
@@ -2908,7 +2903,7 @@ export const Composer = memo(function Composer({
               className={compact ? "hidden" : "relative shrink-0"}
             >
               <ToolButton
-                label="Add files or choose a mode"
+                label={t("Add files or choose a mode")}
                 active={plusOpen}
                 onClick={() => setPlusOpen((open) => !open)}
               >
@@ -2924,9 +2919,7 @@ export const Composer = memo(function Composer({
                   data-composer-plus
                   className="p-1.5"
                 >
-                  <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-content/40">
-                    Add to message
-                  </p>
+                  <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-content/40">{t("Add to message")}</p>
                   <button
                     type="button"
                     disabled={!attachmentsSupported}
@@ -2939,13 +2932,13 @@ export const Composer = memo(function Composer({
                   >
                     <FilePlus className="mt-0.5 size-4 shrink-0" />
                     <span className="min-w-0">
-                      <span className="block text-[13px]">Upload file</span>
+                      <span className="block text-[13px]">{t("Upload file")}</span>
                       <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
                         {attachmentsSupported
-                          ? "Attach files or images"
+                          ? t("Attach files or images")
                           : remote && !remoteFeatures?.attachments
-                            ? "Update this machine’s host to attach files"
-                            : `${HARNESS_TITLE[harness]} does not support attachments`}
+                            ? t("Update this machine’s host to attach files")
+                            : t("{p0} does not support attachments", { p0: HARNESS_TITLE[harness] })}
                       </span>
                     </span>
                   </button>
@@ -2980,11 +2973,11 @@ export const Composer = memo(function Composer({
                     >
                       <CursorMagicSelection className="mt-0.5 size-4 shrink-0 text-content/70" />
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[13px]">Skills</span>
+                        <span className="block text-[13px]">{t("Skills")}</span>
                         <span className="block text-[11px] leading-4 text-content/45">
                           {harness === "codex"
-                            ? "Choose a skill or type $name"
-                            : "Choose a skill or type /name"}
+                            ? t("Choose a skill or type $name")
+                            : t("Choose a skill or type /name")}
                         </span>
                       </span>
                     </button>
@@ -3009,11 +3002,11 @@ export const Composer = memo(function Composer({
                     >
                       <AiIdea className="mt-0.5 size-4 shrink-0 text-yellow-300/80" />
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[13px]">Plan mode</span>
+                        <span className="block text-[13px]">{t("Plan mode")}</span>
                         <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
                           {planUnavailableReason(harness)
-                            ? `Unavailable: ${planUnavailableReason(harness)}`
-                            : "Review a plan before building"}
+                            ? t("Unavailable: {p0}", { p0: planUnavailableReason(harness) })
+                            : t("Review a plan before building")}
                         </span>
                       </span>
                       {planActive ? (
@@ -3041,9 +3034,8 @@ export const Composer = memo(function Composer({
                     >
                       <CursorMagicSelection className="mt-0.5 size-4 shrink-0 text-sky-300/80" />
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[13px]">Operator</span>
-                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                          Give this thread access to{" "}
+                        <span className="block text-[13px]">{t("Operator")}</span>
+                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">{t("Give this thread access to")}{" "}
                           {PRODUCT_IDENTITY.displayName}
                         </span>
                       </span>
@@ -3073,14 +3065,12 @@ export const Composer = memo(function Composer({
                       <Share className="mt-0.5 size-4 shrink-0 text-fuchsia-300/65" />
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-1.5">
-                          <span className="text-[13px]">Orchestrator</span>
+                          <span className="text-[13px]">{t("Orchestrator")}</span>
                           <span className="rounded-full bg-fuchsia-300/10 px-1.5 py-0.5 text-[9px] font-medium leading-none tracking-wide text-fuchsia-200/55 mb-px">
                             v1
                           </span>
                         </span>
-                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                          Plan and coordinate agent work
-                        </span>
+                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">{t("Plan and coordinate agent work")}</span>
                       </span>
                       {orchestrationActive && (
                         <Check className="mt-0.5 size-3.5 shrink-0 text-fuchsia-300/80" />
@@ -3105,10 +3095,8 @@ export const Composer = memo(function Composer({
                     >
                       <CircleDashed className="mt-0.5 size-4 shrink-0 text-content/60" />
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[13px]">Draft</span>
-                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                          Save this message without starting the agent
-                        </span>
+                        <span className="block text-[13px]">{t("Draft")}</span>
+                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">{t("Save this message without starting the agent")}</span>
                       </span>
                       {draftActive ? (
                         <Check className="mt-0.5 size-3.5 shrink-0 text-accent" />
@@ -3240,14 +3228,14 @@ export const Composer = memo(function Composer({
             {resendEdited ? (
               <button
                 type="button"
-                title="Stop editing last message"
-                aria-label="Stop editing last message"
+                title={t("Stop editing last message")}
+                aria-label={t("Stop editing last message")}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={exitEditMode}
                 className="edit-last-turn-button flex h-6.5 shrink-0 items-center gap-1 rounded-md border border-current/20 px-2 text-[11px] font-medium transition-[background-color,color,border-color] hover:border-current/35 hover:bg-content/15 hover:text-content focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
               >
                 <X className="size-3" strokeWidth={1.8} />
-                <span>Cancel edit</span>
+                <span>{t("Cancel edit")}</span>
               </button>
             ) : null}
             <div className="flex shrink-0 items-center gap-1">
@@ -3256,7 +3244,7 @@ export const Composer = memo(function Composer({
                 disabled={disabled}
                 hasValue={hasValue && !worktreeRemoved}
                 allowBusySubmit={allowBusySubmit}
-                label={draftActive ? "Save draft" : "Send"}
+                label={draftActive ? t("Save draft") : t("Send")}
                 blockedReason={sendHeldReason ?? sendBlockedReason}
                 onSend={() => submit(ref.current?.value ?? "")}
                 onQueue={
@@ -3286,7 +3274,7 @@ export const Composer = memo(function Composer({
           <div
             data-composer-workspace
             role="group"
-            aria-label="Chat workspace"
+            aria-label={t("Chat workspace")}
             className="mx-3 flex min-w-0 items-center gap-2 rounded-b-xl border border-t-0 border-content/10 bg-content/2 px-3 pb-1.5 pt-2"
           >
             {draftWorkspace && onWorkspaceModeChange && onWorktreeBaseChange ? (
@@ -3364,6 +3352,7 @@ function ComposerHighlight({
   mentions: ReadonlyMap<string, ProjectFile>;
   mcpTags: McpTag[];
 }) {
+  useLocale();
   const rest = mode ? text.slice(mode.end) : text;
   const parts = skillTextParts(rest, names);
   return (
@@ -3399,6 +3388,7 @@ function MentionRuns({
   mentions: ReadonlyMap<string, ProjectFile>;
   mcpTags: McpTag[];
 }) {
+  useLocale();
   return (
     <>
       {mcpTagParts(text, mcpTags).map((part, index) =>
@@ -3425,6 +3415,7 @@ function FileMentionRuns({
   text: string;
   mentions: ReadonlyMap<string, ProjectFile>;
 }) {
+  useLocale();
   const parts = fileMentionParts(text, mentions);
   return (
     <>
@@ -3464,7 +3455,7 @@ export function ComposerAction({
   disabled = false,
   hasValue,
   allowBusySubmit = true,
-  label = "Send",
+  label = t("Send"),
   blockedReason,
   onSend,
   onQueue,
@@ -3484,6 +3475,7 @@ export function ComposerAction({
   queueShortcut?: string | null;
   onStop: () => void;
 }) {
+  useLocale();
   if (disabled) {
     return (
       <button
@@ -3505,10 +3497,10 @@ export function ComposerAction({
             type="button"
             title={
               queueShortcut
-                ? `Queue message for when this turn finishes (${queueShortcut})`
-                : "Queue message for when this turn finishes"
+                ? t("Queue message for when this turn finishes ({p0})", { p0: queueShortcut })
+                : t("Queue message for when this turn finishes")
             }
-            aria-label="Queue message"
+            aria-label={t("Queue message")}
             onClick={onQueue}
             className="grid size-6.5 place-items-center rounded-md bg-selection text-content hover:bg-selection-hover"
           >
@@ -3519,7 +3511,7 @@ export function ComposerAction({
           type="button"
           title={
             onQueue && queueShortcut
-              ? `${label} (${queueShortcut} queues instead)`
+              ? t("{p0} ({p1} queues instead)", { p0: label, p1: queueShortcut })
               : label
           }
           aria-label={label}
@@ -3532,8 +3524,8 @@ export function ComposerAction({
     ) : (
       <button
         type="button"
-        title="Stop"
-        aria-label="Stop"
+        title={t("Stop")}
+        aria-label={t("Stop")}
         onClick={onStop}
         className="grid size-6.5 place-items-center rounded-md bg-white text-black hover:bg-white/90"
       >

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   ChevronDown,
   File,
@@ -19,6 +20,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { SessionHostTools } from "../../host-tools/SessionHostTools";
+import { ProjectQuickActions } from "../../projects/ui/ProjectQuickActions";
+import type { ProjectAction } from "../../projects/model/projectActions";
 import type { OpenFileFn } from "../../search/model/search";
 import {
   sessionProviderAccountId,
@@ -263,6 +267,7 @@ export type SessionPaneProps = {
     modelSettings: Record<string, string>,
   ) => void;
   onNewTerminal: (sessionId: string) => void;
+  onRunProjectAction?: (sessionId: string, action: ProjectAction) => void;
 
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
@@ -304,6 +309,7 @@ function sameRemoteFeatures(
 }
 
 export const SessionPane = memo(function SessionPane(props: SessionPaneProps) {
+  useLocale();
   // The shell hands down sessions that lag behind by streamed text; the store
   // holds the live one, and this subscription is what repaints the stream.
   const live = useSession(props.session.id) ?? props.session;
@@ -395,6 +401,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onBtwStop,
   onBtwModelChange,
   onNewTerminal,
+  onRunProjectAction,
   onPaneDragStart,
   transcriptPool,
   remoteHistoryHasMore = false,
@@ -403,6 +410,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onLoadRemoteHistory,
   onLoadRemoteBlock,
 }: Props) {
+  useLocale();
   const orchestrationRuns = useSyncExternalStore(
     orchestrator.subscribe,
     orchestrator.snapshot,
@@ -1024,13 +1032,23 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
 
   const hasPaneHeader = inSplit || Boolean(onPaneDragStart);
+  const projectActions = visible ? (
+    <ProjectQuickActions
+      cwd={workCwd}
+      actionsCwd={session.cwd}
+      shortcutsEnabled={focused}
+      onRun={onRunProjectAction && !session.worktreeRemoved
+        ? (action) => onRunProjectAction(session.id, action)
+        : undefined}
+    />
+  ) : null;
   const notesShortcut = keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`);
   const notesButton =
     notesEnabled && visible && focused && !showNotesPanel ? (
       <button
         type="button"
-        title={`Notes${notesShortcut ? ` (${notesShortcut})` : ""}`}
-        aria-label="Open notes panel"
+        title={t("Notes{p0}", { p0: notesShortcut ? ` (${notesShortcut})` : "" })}
+        aria-label={t("Open notes panel")}
         data-no-drag
         onPointerDown={(event) => event.stopPropagation()}
         onMouseDown={(event) => event.stopPropagation()}
@@ -1098,11 +1116,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             {title}
           </span>
+          {projectActions}
           {notesButton}
           <button
             type="button"
-            title={`Close Pane (${MOD}W)`}
-            aria-label="Close pane"
+            title={t("Close Pane ({p0}W)", { p0: MOD })}
+            aria-label={t("Close pane")}
             data-no-drag
             className="grid size-5 shrink-0 place-items-center rounded text-content/50 hover:bg-content/10 hover:text-content"
             onPointerDown={(e) => e.stopPropagation()}
@@ -1161,9 +1180,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                 className="size-4 shrink-0 animate-spin"
                 strokeWidth={1.75}
                 aria-hidden
-              />
-              Loading conversation…
-            </div>
+              />{t("Loading conversation…")}</div>
           ) : isEmpty ? (
             session.inboxAsk ? (
               <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
@@ -1329,8 +1346,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                 <div className="pointer-events-none absolute inset-x-0 bottom-2 z-30 flex justify-center">
                   <button
                     type="button"
-                    title="Jump to latest"
-                    aria-label="Jump to latest"
+                    title={t("Jump to latest")}
+                    aria-label={t("Jump to latest")}
                     data-jump-to-bottom
                     onClick={() => jumpToBottomRef.current?.()}
                     className="pointer-events-auto grid size-6 place-items-center rounded-md border border-content/15 bg-content/10 text-content shadow-md hover:bg-content/5 backdrop-blur-md"
@@ -1352,6 +1369,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
             {composer}
           </div>
         ) : null}
+        {visible && focused && !session.cwd.startsWith("remote://") ? <SessionHostTools key={`${session.cwd}:${session.id}`} cwd={session.cwd} sessionId={session.id} title={sessionDisplayTitle(session.title, session.harness)} /> : null}
         <BtwSheet
           btw={btw}
           cwd={workCwd}
@@ -1391,6 +1409,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
   return (
     <div className="relative flex h-full min-h-0 min-w-0 flex-1">
       {pane}
+      {!hasPaneHeader ? (
+        <div className="absolute right-10 top-1.5 z-10">{projectActions}</div>
+      ) : null}
       {showNotesPanel ? (
         <SessionNotesPanel sessionId={session.id} cwd={session.cwd} />
       ) : !hasPaneHeader ? (

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import {
   useEffect,
   useMemo,
@@ -40,12 +41,13 @@ export function SectionMenuButton({
   label: string;
   onOpen: (x: number, y: number) => void;
 }) {
+  useLocale();
   return (
     <button
       type="button"
       data-no-drag
-      title="Section options"
-      aria-label={`${label} section options`}
+      title={t("Section options")}
+      aria-label={t("{p0} section options", { p0: label })}
       aria-haspopup="menu"
       onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
@@ -182,20 +184,20 @@ export function useRailSections(shown: ReadonlySet<RailSectionId>) {
         {
           kind: "item",
           id: "up",
-          label: "Move section up",
+          get label() { return t("Move section up"); },
           disabled: position <= 0,
         },
         {
           kind: "item",
           id: "down",
-          label: "Move section down",
+          get label() { return t("Move section down"); },
           disabled: position < 0 || position >= shownOrder.length - 1,
         },
         { kind: "sep" },
         {
           kind: "item",
           id: "reset",
-          label: "Reset rail order",
+          get label() { return t("Reset rail order"); },
           disabled: isDefaultRailSectionOrder(order),
         },
       ]}

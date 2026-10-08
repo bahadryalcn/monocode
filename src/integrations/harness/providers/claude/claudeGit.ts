@@ -1,3 +1,4 @@
+import { defaultProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import {
   gitRangeContext,
   gitStagedContext,
@@ -25,6 +26,7 @@ export async function generateClaudeCommitMessage(
   signal?.throwIfAborted();
   const output = await runClaudeTextPrompt({
     cwd,
+    providerAccountId: defaultProviderAccountId("claude"),
     prompt: buildCommitMessagePrompt({
       branch: context.branch,
       stagedSummary: context.summary,

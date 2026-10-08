@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { ToolPreview } from "../model/session";
 import { FilePreview } from "../../files/ui/FilePreview";
@@ -26,6 +27,7 @@ export function ToolDiffPreview({
   className,
   children,
 }: Props) {
+  useLocale();
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const surface = useRef<HTMLDivElement>(null);
@@ -84,8 +86,8 @@ export function ToolDiffPreview({
         className={`${className ?? ""} focus-visible:outline-2 focus-visible:outline-sky-400/60`}
         aria-label={
           onOpen
-            ? `Open ${label}`
-            : `Preview ${preview.contentOnly ? "written content" : "changes"}: ${label}`
+            ? t("Open {p0}", { p0: label })
+            : t((preview.contentOnly ? "Preview written content: {p1}" : "Preview changes: {p1}"), { p1: label })
         }
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -158,7 +160,7 @@ export function ToolDiffPreview({
             <span className="min-w-0 flex-1">{description}</span>
             <button
               type="button"
-              aria-label="Close preview"
+              aria-label={t("Close preview")}
               className="shrink-0 rounded p-0.5 hover:bg-content/8 hover:text-content"
               onClick={() => dismiss(true)}
             >

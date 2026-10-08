@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -17,6 +18,7 @@ export function AntigravityAccountSettings({
 }: {
   embedded?: boolean;
 }) {
+  useLocale();
   useSyncExternalStore(
     subscribeHarnessAvailability,
     getHarnessAvailabilitySnapshot,
@@ -67,50 +69,30 @@ export function AntigravityAccountSettings({
     <div className="space-y-3 px-4 py-4 text-[12px] text-content/60">
       <p>
         {available
-          ? "Antigravity is installed."
-          : "Install Antigravity CLI on the computer running your sessions."}
+          ? t("Antigravity is installed.")
+          : t("Install Antigravity CLI on the computer running your sessions.")}
       </p>
       {!available && (
         <>
-          <p>Windows (PowerShell)</p>
-          <code className="block select-text rounded-md bg-content/5 px-3 py-2 text-content">
-            irm https://antigravity.google/cli/install.ps1 | iex
-          </code>
-          <p>macOS / Linux</p>
-          <code className="block select-text rounded-md bg-content/5 px-3 py-2 text-content">
-            curl -fsSL https://antigravity.google/cli/install.sh | bash
-          </code>
+          <p>{t("Windows (PowerShell)")}</p>
+          <code className="block select-text rounded-md bg-content/5 px-3 py-2 text-content">{"irm https://antigravity.google/cli/install.ps1 | iex"}</code>
+          <p>{t("macOS / Linux")}</p>
+          <code className="block select-text rounded-md bg-content/5 px-3 py-2 text-content">{"curl -fsSL https://antigravity.google/cli/install.sh | bash"}</code>
         </>
       )}
+      <p>{t("Run ")}<code className="select-text text-content">{"agy"}</code>{t(" in a terminal on that computer and complete Google sign-in in your browser. Then check again here. Installation and model discovery do not confirm account sign-in.")}</p>
       <p>
-        Run <code className="select-text text-content">agy</code> in a terminal
-        on that computer and complete Google sign-in in your browser. Then check
-        again here. Installation and model discovery do not confirm account
-        sign-in.
-      </p>
-      <p>
-        {PRODUCT_IDENTITY.displayName} uses the shared Antigravity CLI account on this computer.
-        Separate named Antigravity accounts cannot currently be added here. To
-        change the shared account, run <code>/logout</code> inside agy and
-        complete sign-in again. This affects other Antigravity sessions on the
-        same computer.
-      </p>
-      <p>
-        For a Gemini API key, set <code>modelProvider</code> to{" "}
-        <code>gemini</code> in{" "}
-        <code>~/.gemini/antigravity-cli/settings.json</code> and provide{" "}
-        <code>GEMINI_API_KEY</code> in the CLI environment.
-      </p>
-      <p>
-        Gemini CLI remains available for enterprise Gemini Code Assist licenses
-        and supported API keys. Existing Gemini sessions and CLI paths are
-        preserved.
-      </p>
+        {PRODUCT_IDENTITY.displayName}{t(" uses the shared Antigravity CLI account on this computer. Separate named Antigravity accounts cannot currently be added here. To change the shared account, run ")}<code>{"/logout"}</code>{t(" inside agy and complete sign-in again. This affects other Antigravity sessions on the same computer.")}</p>
+      <p>{t("For a Gemini API key, set ")}<code>{"modelProvider"}</code>{t(" to")}{" "}
+        <code>{"gemini"}</code>{t(" in")}{" "}
+        <code>{"~/.gemini/antigravity-cli/settings.json"}</code>{t(" and provide")}{" "}
+        <code>{"GEMINI_API_KEY"}</code>{t(" in the CLI environment.")}</p>
+      <p>{t("Gemini CLI remains available for enterprise Gemini Code Assist licenses and supported API keys. Existing Gemini sessions and CLI paths are preserved.")}</p>
       <SecondaryButton
         disabled={checking}
         onClick={() => void checkInstallation()}
       >
-        {checking ? "Checking…" : "Check installation and models"}
+        {checking ? t("Checking…") : t("Check installation and models")}
       </SecondaryButton>
       {status && <p role="status">{status}</p>}
       {error && (
@@ -129,12 +111,8 @@ export function AntigravityAccountSettings({
               <HarnessIcon harness="antigravity" className="size-4" />
             </span>
             <div className="min-w-0">
-              <p className="text-[12px] font-medium text-content">
-                Antigravity CLI account
-              </p>
-              <p className="text-[11px] text-content/50">
-                Shared CLI account · separate profiles unavailable
-              </p>
+              <p className="text-[12px] font-medium text-content">{t("Antigravity CLI account")}</p>
+              <p className="text-[11px] text-content/50">{t("Shared CLI account · separate profiles unavailable")}</p>
             </div>
           </div>
           <button
@@ -144,7 +122,7 @@ export function AntigravityAccountSettings({
             onClick={() => setExpanded((value) => !value)}
             className="rounded-md border border-content/10 px-3 py-1.5 text-[11px] text-content/70 hover:bg-content/5"
           >
-            {expanded ? "Hide account setup" : "Set up account"}
+            {expanded ? t("Hide account setup") : t("Set up account")}
           </button>
         </div>
         <div
@@ -159,8 +137,8 @@ export function AntigravityAccountSettings({
   return (
     <Group
       id="antigravity-account"
-      title="Antigravity CLI account"
-      description="Google's terminal experience for individual accounts has moved from Gemini CLI to Antigravity CLI. Choose Antigravity in the model picker."
+      title={t("Antigravity CLI account")}
+      description={t("Google's terminal experience for individual accounts has moved from Gemini CLI to Antigravity CLI. Choose Antigravity in the model picker.")}
     >
       {instructions}
     </Group>

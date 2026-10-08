@@ -13,7 +13,7 @@ import {
   pathKey,
   resolveWorkspacePath,
 } from "../../../shared/lib/paths";
-import { INTERRUPT_MESSAGE } from "./inFlight";
+import { isTurnInterruptMessage } from "./inFlight";
 import type { AgentStep, Block, ToolPreview } from "./session";
 import { allModels } from "./models";
 import { monoCodeWorkSummary } from "./monocodeToolCall";
@@ -152,7 +152,7 @@ export function isHiddenTool(block: Block): boolean {
 export function isNoticeBlock(block: Block): boolean {
   return (
     block.role === "system" &&
-    (!!block.notice || block.text === INTERRUPT_MESSAGE)
+    (!!block.notice || isTurnInterruptMessage(block.text))
   );
 }
 

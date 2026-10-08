@@ -1,3 +1,5 @@
+import { INTERRUPT_MESSAGE, isTurnInterruptMessage } from "../model/inFlight";
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import {
   ArrowUp,
@@ -74,6 +76,7 @@ import { playCue } from "../../settings/model/sounds";
 import { legacyTaskListFromText } from "../model/taskList";
 import { resolveModel } from "../model/models";
 import { harnessesForTurns } from "../model/secondOpinion";
+import { TranscriptTurnCache } from "../model/transcriptTurnCache";
 import { Shimmer } from "../../../shared/ui/Shimmer";
 import {
   hasPendingApproval,
@@ -113,8 +116,6 @@ import {
   firstFoldableIndex,
   foldableWork,
   foldedBlocks,
-  groupTurnItems,
-  groupTurnsStable,
   initialThinkingIndex,
   isIncompleteTool,
   isSubagentBlock,
@@ -159,6 +160,7 @@ import {
 } from "../model/transcriptHighlights";
 
 const NEAR_BOTTOM_PX = 16;
+const WHEEL_HOLD_MS = 150;
 /*
  * Tool calls often land in a burst. Each arrival waits for the one before it
  * to finish its whole entrance — rail, branch, row — before starting its own.
@@ -276,6 +278,7 @@ function AgentTranscriptComponent({
   onScrollerChange,
   managed = false,
 }: Props) {
+  useLocale();
   const blocks = useMemo(() => {
     if (!harness || !supportsHarnessLogin(harness)) return sourceBlocks;
     const visibleBlocks = sourceBlocks.filter(
@@ -299,6 +302,7 @@ function AgentTranscriptComponent({
   const stickToBottom = useRef(true);
   const showJumpRef = useRef(false);
   const distanceFromBottom = useRef(0);
+  const wheelHold = useRef(0);
   const scrollGeometry = useRef<{
     el: HTMLElement;
     top: number;
@@ -453,20 +457,35 @@ function AgentTranscriptComponent({
     const onScroll = () => {
       if (scrollerEl.isConnected && scrollerEl.clientHeight > 0) syncPinned(scrollerEl);
     };
+    let release: ReturnType<typeof setTimeout> | undefined;
     const onWheel = (e: WheelEvent) => {
       if (innerScrollerTakes(scrollerEl, e)) return;
       if (e.deltaY < 0) {
         stickToBottom.current = false;
         setShowJump(true);
+      } else if (e.deltaY === 0) {
+        // A directionless trackpad event can precede an off-thread scroll.
+        // Wait for its direction before following new output.
+        wheelHold.current = performance.now() + WHEEL_HOLD_MS;
+        clearTimeout(release);
+        release = setTimeout(() => {
+          if (!scrollerEl.isConnected) return;
+          syncPinned(scrollerEl);
+          if (stickToBottom.current) {
+            pinToBottom(scrollerEl);
+            rememberScroll(scrollerEl);
+          }
+        }, WHEEL_HOLD_MS);
       }
     };
     scrollerEl.addEventListener("scroll", onScroll, { passive: true });
     scrollerEl.addEventListener("wheel", onWheel, { passive: true });
     return () => {
+      clearTimeout(release);
       scrollerEl.removeEventListener("scroll", onScroll);
       scrollerEl.removeEventListener("wheel", onWheel);
     };
-  }, [scrollerEl, setShowJump, syncPinned, visible]);
+  }, [rememberScroll, scrollerEl, setShowJump, syncPinned, visible]);
 
   useLayoutEffect(() => {
     stickToBottom.current = true;
@@ -513,13 +532,16 @@ function AgentTranscriptComponent({
       stickToBottom.current = true;
       setShowJump(false);
       pinToBottom(el);
-    } else if (restore && !stickToBottom.current) {
+    } else if (restore && stickToBottom.current) {
+      pinToBottom(el);
+      rememberScroll(el);
+    } else if (restore) {
       el.scrollTop = Math.max(
         0,
         el.scrollHeight - el.clientHeight - distanceFromBottom.current,
       );
     }
-  }, [visible, setShowJump]);
+  }, [rememberScroll, visible, setShowJump]);
 
   // The one place that follows streamed content to the bottom. Observer
   // callbacks run after layout and before paint, so the pin lands in the same
@@ -539,6 +561,7 @@ function AgentTranscriptComponent({
       );
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       if (stickToBottom.current) {
+        if (performance.now() < wheelHold.current) return;
         pinToBottom(el);
         distanceFromBottom.current = 0;
         rememberScroll(el);
@@ -557,9 +580,8 @@ function AgentTranscriptComponent({
 
   useTurnScrollAnchor(scrollerEl, visible, stickToBottom, rememberScroll);
 
-  const previousTurns = useRef<Block[][]>([]);
-  const turns = groupTurnsStable(blocks, managed, previousTurns.current);
-  previousTurns.current = turns;
+  const [turnCache] = useState(() => new TranscriptTurnCache());
+  const turns = turnCache.group(blocks, managed);
   const firstVisibleTurn = Math.max(0, turns.length - visibleTurnCount);
   const visibleTurns = turns.slice(firstVisibleTurn);
   const turnHarnesses = harness
@@ -759,7 +781,7 @@ function AgentTranscriptComponent({
       className="agent-transcript h-full overflow-y-auto overscroll-none [overflow-anchor:none] font-mono text-[13px] leading-5"
     >
       <div data-transcript-content className="mx-auto flex w-full min-w-0 max-w-4xl flex-col gap-1 pb-8">
-        {historyLoading ? <div role="status" className="px-4 py-3 font-sans text-xs text-content/60">Loading earlier messages…</div> : null}
+        {historyLoading ? <div role="status" className="px-4 py-3 font-sans text-xs text-content/60">{t("Loading earlier messages…")}</div> : null}
         {historyLoadError ? <div role="alert" className="px-4 py-3 font-sans text-xs text-danger">{historyLoadError}</div> : null}
         {remoteHistoryError ? <div role="alert" className="px-4 py-2 font-sans text-xs text-danger">{remoteHistoryError}</div> : null}
         {firstVisibleTurn > 0 || remoteHistoryHasMore ? (
@@ -770,7 +792,7 @@ function AgentTranscriptComponent({
               className="rounded-md bg-content/8 px-2.5 py-1.5 font-sans text-[12px] text-content/60 hover:bg-content/12 hover:text-content"
               onClick={() => void loadEarlier()}
             >
-              {remoteHistoryLoading ? "Loading earlier messages…" : "Load earlier messages"}
+              {remoteHistoryLoading ? t("Loading earlier messages…") : t("Load earlier messages")}
             </button>
           </div>
         ) : null}
@@ -952,15 +974,14 @@ const Turn = memo(function Turn({
   onHandoff,
   onEditLastTurn,
 }: TurnProps) {
+  useLocale();
   const userBlock = turnUserBlock(turn, managed);
   const durationMs = userBlock?.durationMs;
   const proposals = turn.filter((block) => block.orchestration);
   // Proposals are turn results, like the changes card. Keep them out
   // of the live work and append them after all of the lead's output.
-  const items = groupTurnItems(
-    turn.filter((block) => !block.orchestration),
-    { settled },
-  );
+  const [itemCache] = useState(() => new TranscriptTurnCache());
+  const items = itemCache.turnItems(turn, settled);
   // Earlier activity groups have already been followed by prose or
   // more work. Only the last one can still be the live group.
   const foldedAt = lastActivityIndex(items);
@@ -1063,9 +1084,7 @@ const Turn = memo(function Turn({
       <div key={item.block.id}>
       {item.block.remoteContent && onLoadRemoteBlock ? (
         <div className="mx-4 mb-1 flex items-center gap-2">
-          <button type="button" className="rounded-md bg-content/8 px-2 py-1 font-sans text-[11px] text-content/65 hover:bg-content/12 hover:text-content" onClick={() => void onLoadRemoteBlock(item.block.id, item.block.remoteContent!.revision)}>
-            Load full output ({Math.max(1, Math.ceil(item.block.remoteContent.bytes / 1024))} KB)
-          </button>
+          <button type="button" className="rounded-md bg-content/8 px-2 py-1 font-sans text-[11px] text-content/65 hover:bg-content/12 hover:text-content" onClick={() => void onLoadRemoteBlock(item.block.id, item.block.remoteContent!.revision)}>{t("Load full output (")}{Math.max(1, Math.ceil(item.block.remoteContent.bytes / 1024))}{t(" KB)")}</button>
         </div>
       ) : null}
       <TranscriptBlock
@@ -1278,11 +1297,12 @@ function InitialThinking({
   live: boolean;
   embedded?: boolean;
 }) {
+  useLocale();
   return (
     <div
       className={`min-w-0 pt-3 pb-1 font-sans text-sm text-content/50 ${embedded ? "" : "px-4"}`}
     >
-      {live ? <Shimmer duration={1.6}>Thinking…</Shimmer> : "Thinking…"}
+      {live ? <Shimmer duration={1.6}>{t("Thinking…")}</Shimmer> : t("Thinking…")}
     </div>
   );
 }
@@ -1308,6 +1328,7 @@ function LiveFoldTitle({
   backgroundAgents?: number;
   modelName?: string;
 }) {
+  useLocale();
   const elapsedMs = useElapsedFrom(startedAt, paused);
   // Only commands are left (a dev server, a watcher): the agent is done, so
   // the line stops shimmering and counting rather than looking busy forever.
@@ -1318,8 +1339,8 @@ function LiveFoldTitle({
         title={background.join("\n")}
       >
         {background.length === 1
-          ? "Finished · 1 command running in background"
-          : `Finished · ${background.length} commands running in background`}
+          ? t("Finished · 1 command running in background")
+          : t("Finished · {p0} commands running in background", { p0: background.length })}
       </span>
     );
   }
@@ -1385,6 +1406,7 @@ function TurnDuration({
   onSecondOpinion?: (target: ModelTarget) => void;
   onHandoff?: (target: ModelTarget) => void;
 }) {
+  useLocale();
   const label = formatWorkingDuration(elapsedMs, modelName, true);
   const hasOutput = hasTurnCopyText(turn);
   const getText = useCallback(() => turnCopyText(turn), [turn]);
@@ -1456,6 +1478,7 @@ function TurnMetricsBadge({
   metrics?: TurnMetrics;
   elapsedMs: number | null;
 }) {
+  useLocale();
   const root = useRef<HTMLDivElement>(null);
   const [hovered, setHovered] = useState(false);
   if (!metrics || !hasTurnMetrics(metrics)) return null;
@@ -1502,8 +1525,8 @@ function TurnMetricsBadge({
       <span
         role="img"
         tabIndex={0}
-        aria-label={`Turn metrics: ${label}`}
-        title="Turn metrics"
+        aria-label={t("Turn metrics: {p0}", { p0: label })}
+        title={t("Turn metrics")}
         className="grid rounded-md p-1 text-content/40 outline-none hover:bg-content/8 hover:text-content/70 focus-visible:ring-1 focus-visible:ring-accent"
       >
         <ChartBreakoutSquare className="size-3.5" strokeWidth={1.75} />
@@ -1546,7 +1569,7 @@ function formatMetricCount(value: number): string {
 
 /** Wall-clock stamp for a finished turn, in the reader's own locale. */
 function formatClockTime(epochMs: number): string {
-  return new Date(epochMs).toLocaleTimeString(undefined, {
+  return new Date(epochMs).toLocaleTimeString(getLocale(), {
     hour: "numeric",
     minute: "2-digit",
   });
@@ -1564,6 +1587,7 @@ function CopyTurnButton({
   attachments?: Attachment[];
   label?: string;
 }) {
+  useLocale();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -1582,8 +1606,8 @@ function CopyTurnButton({
       <button
         type="button"
         disabled={pending}
-        title={copied ? "Copied" : label}
-        aria-label={copied ? "Copied" : label}
+        title={copied ? t("Copied") : label}
+        aria-label={copied ? t("Copied") : label}
         className="-ml-1 rounded-md p-1 text-content/40 hover:bg-content/8 hover:text-content/70"
         onClick={(event) => {
           event.stopPropagation();
@@ -1612,8 +1636,7 @@ function CopyTurnButton({
         )}
       </button>
       {error && (
-        <span role="alert" className="max-w-xs text-xs text-content/70">
-          Copy failed. {error}
+        <span role="alert" className="max-w-xs text-xs text-content/70">{t("Copy failed. ")}{error}
         </span>
       )}
     </>
@@ -1629,6 +1652,7 @@ function SaveNoteButton({
   getText?: () => string;
   onSave: (text: string) => void | Promise<void>;
 }) {
+  useLocale();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -1647,8 +1671,8 @@ function SaveNoteButton({
       <button
         type="button"
         disabled={pending}
-        title={saved ? "Saved to Notes" : "Save as note"}
-        aria-label={saved ? "Saved to Notes" : "Save as note"}
+        title={saved ? t("Saved to Notes") : t("Save as note")}
+        aria-label={saved ? t("Saved to Notes") : t("Save as note")}
         className="rounded-md p-1 text-content/40 hover:bg-content/8 hover:text-content/70"
         onClick={async () => {
           setError(null);
@@ -1674,8 +1698,7 @@ function SaveNoteButton({
         )}
       </button>
       {error && (
-        <span role="alert" className="max-w-xs text-xs text-content/70">
-          Could not save note. {error}
+        <span role="alert" className="max-w-xs text-xs text-content/70">{t("Could not save note. ")}{error}
         </span>
       )}
     </>
@@ -1689,6 +1712,7 @@ function EditLastTurnButton({
   onEdit: () => void;
   editing?: boolean;
 }) {
+  useLocale();
   const label = editing ? "Cancel edit" : "Edit and resend";
   return (
     <button
@@ -1760,6 +1784,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   onEditLastTurn?: () => void;
   editing?: boolean;
 }) {
+  useLocale();
   if (block.role === "user") {
     return (
       <UserMessageBlock
@@ -1857,6 +1882,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   }
 
   if (block.role === "system") {
+    const text = isTurnInterruptMessage(block.text) ? INTERRUPT_MESSAGE : block.text;
     if (block.interjection) {
       return <InterjectionDivider block={block} />;
     }
@@ -1864,9 +1890,11 @@ const TranscriptBlock = memo(function TranscriptBlock({
       return <ShellRunCard run={block.shell} embedded={embedded} />;
     }
     return (
-      <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>
+      <div
+        className={`${embedded ? "" : "px-4"} py-2 ${block.notice === "interrupt" ? "font-bold text-red-400" : "text-content/50"}`}
+      >
         <pre className="min-w-0 whitespace-pre-wrap break-words">
-          {block.text}
+          {text}
         </pre>
       </div>
     );
@@ -1898,6 +1926,7 @@ function ShellRunCard({
   run: ShellRun;
   embedded?: boolean;
 }) {
+  useLocale();
   const status = run.running
     ? null
     : run.timedOut
@@ -1967,6 +1996,7 @@ function UserMessageBlock({
   onSendDraft?: (block: Block) => boolean | void;
   onRemoveDraft?: (block: Block) => boolean | void;
 }) {
+  useLocale();
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const [singleLine, setSingleLine] = useState(false);
@@ -2143,7 +2173,7 @@ function UserMessageBlock({
               className="mt-1 rounded px-1 py-0.5 text-xs text-content/60 hover:bg-content/8 hover:text-content"
               onClick={toggle}
             >
-              {expanded ? "Show less" : "Show more"}
+              {expanded ? t("Show less") : t("Show more")}
             </button>
           ) : null}
           {block.ciContext ? (
@@ -2153,11 +2183,9 @@ function UserMessageBlock({
             >
               <summary className="flex w-fit cursor-pointer list-none items-center gap-1.5 rounded text-xs text-content/50 transition-colors hover:text-content/80 focus-visible:outline focus-visible:outline-1 focus-visible:outline-content/40 [&::-webkit-details-marker]:hidden">
                 <ChevronRight className="size-3 shrink-0 transition-transform group-open/ci:rotate-90" />
-                <span>CI context</span>
+                <span>{t("CI context")}</span>
               </summary>
-              <p className="mt-2 text-xs text-content/50">
-                CI instructions and failure details included with this request.
-              </p>
+              <p className="mt-2 text-xs text-content/50">{t("CI instructions and failure details included with this request.")}</p>
               <pre className="mt-2 max-h-72 min-w-0 overflow-auto overscroll-contain rounded-md bg-content/5 p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words text-content/70">
                 {block.ciContext}
               </pre>
@@ -2166,29 +2194,23 @@ function UserMessageBlock({
           {block.draft ? (
             <div className="mt-2 flex items-center justify-between gap-4 border-t border-dashed border-content/20 pt-2">
               <span className="flex items-center gap-1.5 text-xs text-content/50">
-                <CircleDashed className="size-3.5" strokeWidth={1.75} />
-                Draft
-              </span>
+                <CircleDashed className="size-3.5" strokeWidth={1.75} />{t("Draft")}</span>
               <span className="flex items-center gap-1">
                 <button
                   type="button"
-                  title="Remove draft"
-                  aria-label="Remove draft"
+                  title={t("Remove draft")}
+                  aria-label={t("Remove draft")}
                   onClick={() => onRemoveDraft?.(block)}
                   className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-content/55 hover:bg-content/10 hover:text-content"
                 >
-                  <Trash2 className="size-3.5" strokeWidth={1.75} />
-                  Remove
-                </button>
+                  <Trash2 className="size-3.5" strokeWidth={1.75} />{t("Remove")}</button>
                 <button
                   type="button"
-                  title="Send draft"
-                  aria-label="Send draft"
+                  title={t("Send draft")}
+                  aria-label={t("Send draft")}
                   onClick={() => onSendDraft?.(block)}
                   className="primary-action flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-transform duration-150 active:scale-[0.97]"
-                >
-                  Send
-                  <ArrowUp className="size-3.5" strokeWidth={2.25} />
+                >{t("Send")}<ArrowUp className="size-3.5" strokeWidth={2.25} />
                 </button>
               </span>
             </div>
@@ -2213,7 +2235,7 @@ function UserMessageBlock({
               <CopyTurnButton
                 text={text}
                 attachments={block.attachments}
-                label="Copy message"
+                label={t("Copy message")}
               />
             ) : null}
             {onEdit ? (
@@ -2225,7 +2247,7 @@ function UserMessageBlock({
             {block.startedAt != null ? (
               <time
                 dateTime={new Date(block.startedAt).toISOString()}
-                title={new Date(block.startedAt).toLocaleString()}
+                title={new Date(block.startedAt).toLocaleString(getLocale())}
                 className="ml-1 font-sans text-xs text-content/40"
               >
                 {formatClockTime(block.startedAt)}
@@ -2250,6 +2272,7 @@ function TurnRow({
   folded: boolean;
   children: ReactNode | (() => ReactNode);
 }) {
+  useLocale();
   const [foldState, setFoldState] = useState<
     "open" | "opening" | "closing" | "closed"
   >(folded ? "closed" : "open");
@@ -2326,6 +2349,7 @@ function WorkFoldLine({
   open: boolean;
   onToggle: () => void;
 }) {
+  useLocale();
   const icon = (
     <span className="relative flex size-3.5 shrink-0 items-center justify-center">
       {open ? (
@@ -2387,7 +2411,7 @@ function WorkFoldLine({
     <button
       type="button"
       aria-expanded={open}
-      aria-label={open ? "Hide the work" : "Show the work"}
+      aria-label={open ? t("Hide the work") : t("Show the work")}
       aria-live={live ? "polite" : undefined}
       onClick={onToggle}
       className={`group ${row}`}
@@ -2424,6 +2448,7 @@ export const ActivityPhases = memo(function ActivityPhases({
   onOpenFile,
   onOpenDiff,
 }: ActivityPhasesProps) {
+  useLocale();
   const phases = useMemo(() => buildActivityPhases(blocks), [blocks]);
 
   return (
@@ -2618,6 +2643,7 @@ function ActivityPhaseGroup({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   const [override, setOverride] = useState<boolean | null>(null);
   const waiting = phase.steps.some(needsApproval);
   const open = waiting || (override ?? active);
@@ -2692,7 +2718,7 @@ function ActivityPhaseGroup({
         type="button"
         aria-expanded={open}
         aria-label={
-          open ? `Hide the steps for ${title}` : `Show the steps for ${title}`
+          open ? t("Hide the steps for {p0}", { p0: title }) : t("Show the steps for {p0}", { p0: title })
         }
         onClick={() => setOverride(!open)}
         className="group flex w-full min-w-0 items-center gap-1.5 py-1 text-left"
@@ -2815,6 +2841,7 @@ function PhaseStep({
   turn?: StepTurn;
   children: ReactNode;
 }) {
+  useLocale();
   const [turn] = useState(arrival);
   const [stage, setStage] = useState<"waiting" | "entering" | "settled">(() =>
     !turn ? "settled" : turn.wait > 0 ? "waiting" : "entering",
@@ -2876,6 +2903,7 @@ function SubagentStack({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   return (
     <div className={`flex min-w-0 flex-col ${embedded ? "" : "px-4"}`}>
       {blocks.map((block) => (
@@ -2912,6 +2940,7 @@ function SubagentRow({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   const [override, setOverride] = useState<boolean | null>(null);
   const open = override ?? toolCallState(block) === "rejected";
   // The composer's activity dock opens a run from outside the transcript. The
@@ -2960,6 +2989,7 @@ function SubagentPanel({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   const name = subagentName(block);
   const brief = subagentBrief(block);
   const model = subagentModelName(block);
@@ -2999,7 +3029,7 @@ function SubagentPanel({
       {model || status || block.agentRun?.startedAt !== undefined ? (
         <span className="flex min-w-0 max-w-[55%] shrink-0 items-baseline gap-2 font-sans text-[12px] text-content/40">
           {model ? (
-            <span className="truncate" title={`Model: ${model}`}>
+            <span className="truncate" title={t("Model: {p0}", { p0: model })}>
               {model}
             </span>
           ) : null}
@@ -3019,7 +3049,7 @@ function SubagentPanel({
   if (steps.length === 0 && !report) {
     return (
       <div
-        aria-label={`Subagent: ${name}`}
+        aria-label={t("Subagent: {p0}", { p0: name })}
         title={brief}
         className="-mx-1.5 flex min-w-0 items-center gap-2 px-1.5 py-1"
       >
@@ -3036,7 +3066,7 @@ function SubagentPanel({
         <button
           type="button"
           aria-expanded={open}
-          aria-label={open ? `Hide ${name}'s work` : `Show ${name}'s work`}
+          aria-label={open ? t("Hide {p0}'s work", { p0: name }) : t("Show {p0}'s work", { p0: name })}
           title={brief}
           onClick={onToggle}
           // An open row keeps the wash it lit up under the cursor, so the panel
@@ -3056,8 +3086,8 @@ function SubagentPanel({
         </button>
         <button
           type="button"
-          aria-label={`Open ${name} in its own panel`}
-          title="Open in panel"
+          aria-label={t("Open {p0} in its own panel", { p0: name })}
+          title={t("Open in panel")}
           onClick={() => requestViewSubagent(block.id)}
           className="grid size-6 shrink-0 place-items-center rounded-md text-content/35 transition-colors hover:bg-content/8 hover:text-content/70 focus-visible:outline-2 focus-visible:outline-accent"
         >
@@ -3117,6 +3147,7 @@ function SubagentMascot({
   state: ToolCallState;
   active?: boolean;
 }) {
+  useLocale();
   return (
     <ProjectMascot
       project={name}
@@ -3175,6 +3206,7 @@ function ActivityPhaseIcon({
   kind: ActivityPhaseKind;
   className?: string;
 }) {
+  useLocale();
   const props = {
     className: `size-3.5 shrink-0 text-content/45 ${className}`,
     strokeWidth: 1.75,
@@ -3208,6 +3240,7 @@ export function ActivityRow({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   if (isThinkingBlock(block)) {
     return (
       <ActivityThinkingRow
@@ -3265,11 +3298,12 @@ export function ActivityRow({
 
 /** A status row folded into the trail: one muted line, nothing to open. */
 function ActivityStatusRow({ block }: { block: Block }) {
+  useLocale();
   return (
     <div className="flex min-w-0 items-center gap-1.5 py-1">
       <span
         title={block.text}
-        className="min-w-0 flex-1 truncate font-sans text-sm text-content/50"
+        className={`min-w-0 flex-1 truncate font-sans text-sm ${block.notice === "interrupt" ? "font-bold text-red-400" : "text-content/50"}`}
       >
         {block.text.trim()}
       </span>
@@ -3283,6 +3317,7 @@ function ActivityStatusRow({ block }: { block: Block }) {
  * you a note you wanted to read.
  */
 function ActivityInterjectionRow({ block }: { block: Block }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const meta = block.interjection;
   if (!meta) return null;
@@ -3309,7 +3344,7 @@ function ActivityInterjectionRow({ block }: { block: Block }) {
   if (!block.text.trim()) {
     return (
       <div
-        aria-label={`${chrome.label} note`}
+        aria-label={t("{p0} note", { p0: chrome.label })}
         className="flex min-w-0 items-center gap-1.5 py-1"
       >
         {label}
@@ -3323,7 +3358,7 @@ function ActivityInterjectionRow({ block }: { block: Block }) {
         type="button"
         aria-expanded={open}
         aria-label={
-          open ? `Hide the ${chrome.label} note` : `${chrome.label}: ${summary}`
+          open ? t("Hide the {p0} note", { p0: chrome.label }) : `${chrome.label}: ${summary}`
         }
         onClick={() => setOpen((value) => !value)}
         className="group flex min-w-0 items-center gap-1.5 py-1 text-left"
@@ -3357,6 +3392,7 @@ function ActivityThinkingRow({
   bare?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const text = proseSummary(block.text) || "Thinking";
   // In a group the rail is the bullet, so there is nothing to breathe while
@@ -3381,7 +3417,7 @@ function ActivityThinkingRow({
   if (!expandable) {
     return (
       <div
-        aria-label={`Thinking: ${text}`}
+        aria-label={t("Thinking: {p0}", { p0: text })}
         className="flex min-w-0 items-center gap-1.5 py-1"
       >
         {icon}
@@ -3395,7 +3431,7 @@ function ActivityThinkingRow({
       <button
         type="button"
         aria-expanded={open}
-        aria-label={open ? "Hide thinking" : `Show thinking: ${text}`}
+        aria-label={open ? t("Hide thinking") : t("Show thinking: {p0}", { p0: text })}
         onClick={() => setOpen((value) => !value)}
         className="group flex min-w-0 items-center gap-1.5 py-1 text-left"
       >
@@ -3439,6 +3475,7 @@ function ActivityNoteRow({
   expandable?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const text = proseSummary(block.text);
   const icon = bare ? null : (
@@ -3448,7 +3485,7 @@ function ActivityNoteRow({
   if (!expandable) {
     return (
       <div
-        aria-label={`Agent said: ${text}`}
+        aria-label={t("Agent said: {p0}", { p0: text })}
         className="flex min-w-0 items-center gap-1.5 py-1"
       >
         {icon}
@@ -3464,7 +3501,7 @@ function ActivityNoteRow({
       <button
         type="button"
         aria-expanded={open}
-        aria-label={open ? "Hide the full note" : `Agent said: ${text}`}
+        aria-label={open ? t("Hide the full note") : t("Agent said: {p0}", { p0: text })}
         onClick={() => setOpen((value) => !value)}
         className="group flex min-w-0 items-center gap-1.5 py-1 text-left"
       >
@@ -3499,6 +3536,7 @@ function ActivityToolRow({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   const [errorOpen, setErrorOpen] = useState(false);
   const appCall = monoCodeToolCall(block);
   if (appCall) {
@@ -3561,7 +3599,7 @@ function ActivityToolRow({
           <button
             type="button"
             aria-expanded={errorOpen}
-            aria-label={`${errorOpen ? "Hide" : "Show"} ${errorDetail ? "error details" : "output"} for ${label}`}
+            aria-label={t((errorOpen ? (errorDetail ? "Hide error details for {p2}" : "Hide output for {p2}") : (errorDetail ? "Show error details for {p2}" : "Show output for {p2}")), { p2: label })}
             onClick={() => setErrorOpen((value) => !value)}
             className="-m-1 shrink-0 rounded p-1"
           >
@@ -3575,7 +3613,7 @@ function ActivityToolRow({
         </div>
       ) : (
         <div
-          aria-label={`Tool call: ${label}`}
+          aria-label={t("Tool call: {p0}", { p0: label })}
           className="flex min-w-0 items-center gap-1.5 py-1"
         >
           {bare ? null : <ActivityToolIcon state={state} live={live} />}
@@ -3603,9 +3641,7 @@ function ActivityToolRow({
             {resultText}
           </pre>
           {outputTruncated && output ? (
-            <p className="pt-1 font-sans text-[11px] text-content/40">
-              Output shortened to keep this run small.
-            </p>
+            <p className="pt-1 font-sans text-[11px] text-content/40">{t("Output shortened to keep this run small.")}</p>
           ) : null}
         </div>
       ) : null}
@@ -3614,6 +3650,7 @@ function ActivityToolRow({
 }
 
 function MonoCodeMark({ className = "size-4" }: { className?: string }) {
+  useLocale();
   return <img src={PRODUCT_IDENTITY.logoSrc} alt="" className={`shrink-0 ${className}`} />;
 }
 
@@ -3627,12 +3664,13 @@ function MonoCodeCallRow({
   call: MonoCodeToolCall;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
 }) {
+  useLocale();
   const state = toolCallState(block);
   const output = block.tool?.detail?.trim() || block.tool?.preview?.output?.trim();
   const [errorOpen, setErrorOpen] = useState(false);
   const hasError = state === "rejected" && !!output;
   const pendingApproval = needsApproval(block);
-  const command = `monocode app ${call.action}`;
+  const command = `${PRODUCT_IDENTITY.displayName} app ${call.action}`;
   const verb = pendingApproval
     ? "Run"
     : state === "pending"
@@ -3667,7 +3705,7 @@ function MonoCodeCallRow({
         <button
           type="button"
           aria-expanded={errorOpen}
-          aria-label={`${errorOpen ? "Hide" : "Show"} error details for ${PRODUCT_IDENTITY.displayName}: ${call.label}`}
+          aria-label={t((errorOpen ? "Hide error details for {p1}: {p2}" : "Show error details for {p1}: {p2}"), { p1: PRODUCT_IDENTITY.displayName, p2: call.label })}
           onClick={() => setErrorOpen((value) => !value)}
           className="flex w-full min-w-0 items-center gap-1.5 py-1 text-left"
         >
@@ -3700,6 +3738,7 @@ function ActivityToolIcon({
   state: ToolCallState;
   live?: boolean;
 }) {
+  useLocale();
   if (state === "pending") {
     return (
       <CircleDashed
@@ -3716,6 +3755,7 @@ function ActivityToolIcon({
 
 /** Failure stays marked. Running and success do not get a trailing icon. */
 function ToolCallStatusIcon({ state }: { state: ToolCallState }) {
+  useLocale();
   if (state === "rejected") {
     return <X className="size-3.5 shrink-0 text-red-400" strokeWidth={2} />;
   }
@@ -3752,6 +3792,7 @@ function ToolCall({
   onOpenDiff?: (path: string) => void;
   embedded?: boolean;
 }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const preview = block.tool?.preview;
   const label = toolCallLabel(block, cwd);
@@ -3826,7 +3867,7 @@ function ToolCall({
         <button
           type="button"
           aria-expanded={open}
-          aria-label={`${stateLabel} tool call: ${label}`}
+          aria-label={t("{p0} tool call: {p1}", { p0: stateLabel, p1: label })}
           onClick={() => setOpen((value) => !value)}
           className="flex w-full min-w-0 items-center gap-2 rounded-lg py-1.5 text-left"
         >
@@ -3845,7 +3886,7 @@ function ToolCall({
         </button>
       ) : (
         <div
-          aria-label={`${stateLabel} tool call: ${label}`}
+          aria-label={t("{p0} tool call: {p1}", { p0: stateLabel, p1: label })}
           className="flex w-full min-w-0 items-center gap-2"
         >
           <ToolCallIcon state={state} />
@@ -3890,6 +3931,7 @@ function ToolCallSummary({
   failed?: boolean;
   status?: ToolCallState;
 }) {
+  useLocale();
   const { action, target, fileName, filePath, isFile, previewMatchesFile } =
     resolveToolCallDisplay(label, preview, cwd);
   if (!action || !target) {
@@ -3988,6 +4030,7 @@ function ToolCallSummary({
 }
 
 function ToolCallIcon({ state }: { state: ToolCallState }) {
+  useLocale();
   if (state === "rejected") {
     return <X className="size-3.5 shrink-0 text-red-400" strokeWidth={2} />;
   }
@@ -4009,6 +4052,7 @@ function ApprovalControls({
   block: Block;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
 }) {
+  useLocale();
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
   return (
@@ -4017,21 +4061,18 @@ function ApprovalControls({
         type="button"
         className="rounded-md bg-content px-2.5 py-0.5 text-[11px] hover:bg-content/80     text-background-base"
         onClick={() => onApproval(approval.requestId, "allow")}
-      >
-        Allow
-      </button>
+      >{t("Allow")}</button>
       <button
         type="button"
         className="rounded-md bg-content/10 px-2.5 py-0.5 text-[11px] text-content/70 hover:bg-content/20"
         onClick={() => onApproval(approval.requestId, "deny")}
-      >
-        Deny
-      </button>
+      >{t("Deny")}</button>
     </div>
   );
 }
 
 function HandoffDivider({ block }: { block: Block }) {
+  useLocale();
   const meta = block.handoff;
   if (!meta) return null;
 
@@ -4046,8 +4087,8 @@ function HandoffDivider({ block }: { block: Block }) {
           role="separator"
           aria-label={
             preparing
-              ? `Preparing a handoff to ${HARNESS_TITLE[meta.to]}`
-              : `Continued with ${label}`
+              ? t("Preparing a handoff to {p0}", { p0: HARNESS_TITLE[meta.to] })
+              : t("Continued with {p0}", { p0: label })
           }
           className="flex max-w-[min(100%,20rem)] items-center gap-1.5 px-1.5 font-sans text-[12px] text-content/55"
         >
@@ -4104,6 +4145,7 @@ const INTERJECTION_BODY =
 /** A mid-turn interjection, e.g. OMP advisor notes: a labeled boundary with
  * a collapsible advisory body below it. */
 function InterjectionDivider({ block }: { block: Block }) {
+  useLocale();
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const textRef = useRef<HTMLPreElement>(null);
@@ -4134,7 +4176,7 @@ function InterjectionDivider({ block }: { block: Block }) {
         <div className="h-px min-w-4 flex-1 bg-content/12" />
         <div
           role="separator"
-          aria-label={`Interjection: ${label}`}
+          aria-label={t("Interjection: {p0}", { p0: label })}
           className="flex items-center gap-2 px-1.5 font-sans text-[12px] text-content/55"
         >
           <span>{label}</span>
@@ -4161,7 +4203,7 @@ function InterjectionDivider({ block }: { block: Block }) {
               onClick={() => setExpanded((value) => !value)}
               className="mt-1 py-1 font-sans text-xs text-content/55 hover:text-content"
             >
-              {expanded ? "Show less" : "Show more"}
+              {expanded ? t("Show less") : t("Show more")}
             </button>
           ) : null}
         </div>

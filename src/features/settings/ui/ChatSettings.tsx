@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useEffect, useState } from "react";
 
@@ -33,6 +34,7 @@ import {
 import { Group, Row, Segmented, Toggle } from "./settingsControls";
 
 export function ChatPage() {
+  useLocale();
   const [transcriptLayout, setTranscriptLayout] =
     useState<TranscriptLayout>(loadTranscriptLayout);
   const [transcriptAnchor, setTranscriptAnchor] =
@@ -107,31 +109,31 @@ export function ChatPage() {
   return (
     <>
       <Group
-        title="Transcript"
-        description="How a conversation reads as it grows."
+        title={t("Transcript")}
+        description={t("How a conversation reads as it grows.")}
       >
         <Row
           id="transcript-layout"
-          label="Transcript layout"
-          description="Full width keeps user prompts as a spanning card. Chat aligns them to the right with a max width, like a messaging app."
+          label={t("Transcript layout")}
+          description={t("Full width keeps user prompts as a spanning card. Chat aligns them to the right with a max width, like a messaging app.")}
         >
           <Segmented
-            label="Transcript layout"
+            label={t("Transcript layout")}
             value={transcriptLayout}
             options={[
-              { value: "full", label: "Full width" },
-              { value: "chat", label: "Chat" },
+              { value: "full", get label() { return t("Full width"); } },
+              { value: "chat", get label() { return t("Chat"); } },
             ]}
             onChange={onTranscriptLayout}
           />
         </Row>
         <Row
           id="anchor-prompts"
-          label="Anchor prompts to top"
-          description="When you send, the new prompt sits at the top of the transcript and the reply grows into the space below. Turn this off to keep the classic layout, with the latest message resting on the composer."
+          label={t("Anchor prompts to top")}
+          description={t("When you send, the new prompt sits at the top of the transcript and the reply grows into the space below. Turn this off to keep the classic layout, with the latest message resting on the composer.")}
         >
           <Toggle
-            label="Anchor prompts to top"
+            label={t("Anchor prompts to top")}
             on={transcriptAnchor}
             onChange={onTranscriptAnchor}
           />
@@ -139,57 +141,57 @@ export function ChatPage() {
       </Group>
 
       <Group
-        title="Composer"
-        description="What the composer does with what you type."
+        title={t("Composer")}
+        description={t("What the composer does with what you type.")}
       >
         <Row
           id="follow-up"
-          label="Follow-up behavior"
-          description="Queue follow-ups until the active turn finishes, or steer the active turn immediately."
+          label={t("Follow-up behavior")}
+          description={t("Queue follow-ups until the active turn finishes, or steer the active turn immediately.")}
         >
           <Segmented
-            label="Follow-up behavior"
+            label={t("Follow-up behavior")}
             value={followUpBehavior}
             options={[
-              { value: "queue", label: "Queue" },
-              { value: "steer", label: "Steer" },
+              { value: "queue", get label() { return t("Queue"); } },
+              { value: "steer", get label() { return t("Steer"); } },
             ]}
             onChange={onFollowUpBehavior}
           />
         </Row>
         <Row
           id="resume-at-reset"
-          label="Resume at reset"
-          description="When a provider stops a turn at its usage limit, continue the session automatically once the limit resets. You can still cancel it from the notice above the composer."
+          label={t("Resume at reset")}
+          description={t("When a provider stops a turn at its usage limit, continue the session automatically once the limit resets. You can still cancel it from the notice above the composer.")}
         >
           <Toggle
-            label="Resume at reset"
+            label={t("Resume at reset")}
             on={resumeAtReset}
             onChange={onResumeAtReset}
           />
         </Row>
         <Row
           id="auto-continue-interrupted"
-          label="Automatically continue interrupted turns"
-          description={`When ${PRODUCT_IDENTITY.displayName} quit in the middle of a turn and the transcript shows it was cut off, send Continue at the next launch. Turns that finished or are still running are never continued, and nothing is sent when you have queued messages. When off, the chat shows an Interrupted - Continue action instead.`}
+          label={t("Automatically continue interrupted turns")}
+          description={t("When {p0} quit in the middle of a turn and the transcript shows it was cut off, send Continue at the next launch. Turns that finished or are still running are never continued, and nothing is sent when you have queued messages. When off, the chat shows an Interrupted - Continue action instead.", { p0: PRODUCT_IDENTITY.displayName })}
         >
           <Toggle
-            label="Automatically continue interrupted turns"
+            label={t("Automatically continue interrupted turns")}
             on={autoContinue}
             onChange={onAutoContinue}
           />
         </Row>
         <Row
           id="model-controls"
-          label="Model controls"
-          description="Show model options beside the picker instead of inside the model menu."
+          label={t("Model controls")}
+          description={t("Show model options beside the picker instead of inside the model menu.")}
         >
           <Segmented
-            label="Model controls"
+            label={t("Model controls")}
             value={modelControls}
             options={[
-              { value: "menu", label: "Menu" },
-              { value: "beside", label: "Beside" },
+              { value: "menu", get label() { return t("Menu"); } },
+              { value: "beside", get label() { return t("Beside"); } },
             ]}
             onChange={onModelControls}
           />
@@ -197,16 +199,16 @@ export function ChatPage() {
       </Group>
 
       <Group
-        title="Editor"
-        description="What happens when you save a file in the workspace editor."
+        title={t("Editor")}
+        description={t("What happens when you save a file in the workspace editor.")}
       >
         <Row
           id="format-on-save"
-          label="Format on save"
-          description="Run Prettier on supported files before writing. Off keeps the text you typed, including quote style."
+          label={t("Format on save")}
+          description={t("Run Prettier on supported files before writing. Off keeps the text you typed, including quote style.")}
         >
           <Toggle
-            label="Format on save"
+            label={t("Format on save")}
             on={formatOnSave}
             onChange={onFormatOnSave}
           />
@@ -214,20 +216,20 @@ export function ChatPage() {
       </Group>
 
       <Group
-        title="Code review"
-        description="Where a turn's changes open when you go to read them."
+        title={t("Code review")}
+        description={t("Where a turn's changes open when you go to read them.")}
       >
         <Row
           id="diff-view"
-          label="Diff view"
-          description="Editor keeps working-tree changes in the file. Unified stacks every changed file in one review, with sticky headers and collapsed unchanged lines."
+          label={t("Diff view")}
+          description={t("Editor keeps working-tree changes in the file. Unified stacks every changed file in one review, with sticky headers and collapsed unchanged lines.")}
         >
           <Segmented
-            label="Diff view"
+            label={t("Diff view")}
             value={diffViewer}
             options={[
-              { value: "editor", label: "Editor" },
-              { value: "unified", label: "Unified" },
+              { value: "editor", get label() { return t("Editor"); } },
+              { value: "unified", get label() { return t("Unified"); } },
             ]}
             onChange={onDiffViewer}
           />
@@ -235,16 +237,16 @@ export function ChatPage() {
       </Group>
 
       <Group
-        title="Extras"
-        description="Monochrome code art in new tasks and behind conversations."
+        title={t("Extras")}
+        description={t("Monochrome code art in new tasks and behind conversations.")}
       >
         <Row
           id="coffeehouse-scene"
-          label="Village coffeehouse"
-          description="Show six coffeehouse regulars holding tea beside a backgammon table. Decorative animations controls their occasional tea sips."
+          label={t("Village coffeehouse")}
+          description={t("Show six coffeehouse regulars holding tea beside a backgammon table. Decorative animations controls their occasional tea sips.")}
         >
           <Toggle
-            label="Village coffeehouse"
+            label={t("Village coffeehouse")}
             on={coffeehouseSceneEnabled}
             onChange={onCoffeehouseSceneEnabled}
           />

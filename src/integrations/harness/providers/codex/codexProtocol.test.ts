@@ -15,6 +15,14 @@ import {
 } from "./codexProtocol";
 import { parseCodexModelList } from "./codexCatalog";
 
+it.each([undefined, "", "   "])("keeps the native thread model when no model is selected (%s)", (model) => {
+  const turn = buildTurnStartParams({
+    threadId: "native-model", runtimeMode: "supervised", model, prompt: "Continue",
+  });
+  expect(turn).not.toHaveProperty("collaborationMode");
+  expect(turn).not.toHaveProperty("model");
+});
+
 describe("Codex skill mentions", () => {
   const skills = new Map([
     ["imagegen", "/home/u/.codex/skills/.system/imagegen/SKILL.md"],

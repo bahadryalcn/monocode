@@ -247,6 +247,17 @@ describe("workspaceFromResumed", () => {
 });
 
 describe("canAutoContinue", () => {
+  it("resumes legacy interrupted sessions without adding a duplicate notice", () => {
+    const legacy = chat("/tmp/a", {
+      providerSessionId: "p1",
+      blocks: [
+        { id: "u1", role: "user", text: "hello" },
+        { id: "old", role: "system", text: "Turn interrupted when MonoCode quit." },
+      ],
+    });
+    expect(canAutoContinue(legacy)).toBe(true);
+    expect(markTurnInterrupted(legacy).blocks).toEqual(legacy.blocks);
+  });
   it("needs a provider thread and an interrupt note as the last block", () => {
     const interrupted = markTurnInterrupted(
       chat("/tmp/a", { busy: true, providerSessionId: "p1" }),

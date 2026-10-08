@@ -177,7 +177,7 @@ export class DesktopLive {
   ): void {
     if (this.commands.length >= MAX_COMMANDS)
       throw new Error(
-        "Too many commands waiting for the MonoCode app on that computer",
+        "Too many commands waiting for the imc code app on that computer",
       );
     this.commands.push({
       id: randomUUID(),

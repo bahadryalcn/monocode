@@ -23,6 +23,7 @@ const binaryNames: Record<RemoteProvider, string[]> = {
   hermes: ["hermes"],
   antigravity: ["agy_acp_server.par"],
   gemini: ["gemini"],
+  acp: [],
 };
 
 const providerDirectories = (provider: RemoteProvider): string[] => {

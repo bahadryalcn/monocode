@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import type { CiRepairRequest } from "../model/ciRepair";
 import {
   CheckCircle,
@@ -84,6 +85,7 @@ export function InboxProjectMark({
     "name" | "logoPath" | "mascotName" | "mascotColor"
   >;
 }) {
+  useLocale();
   if (project.logoPath) {
     return (
       <ProjectLogoIcon
@@ -164,6 +166,7 @@ export function InboxPerson({
   size?: number;
   className?: string;
 }) {
+  useLocale();
   const [failed, setFailed] = useState(!avatarUrl);
   const initial = name.trim().charAt(0).toUpperCase() || "?";
 
@@ -212,6 +215,7 @@ export function InboxProjectPicker({
   value: string;
   onChange: (path: string) => void;
 }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -253,7 +257,7 @@ export function InboxProjectPicker({
       >
         {selected ? <InboxProjectMark project={selected} /> : null}
         <span className="min-w-0 truncate">
-          {selected?.name ?? "Choose project"}
+          {selected?.name ?? t("Choose project")}
         </span>
         <ChevronDown
           className="size-3 shrink-0 text-content/45"
@@ -304,6 +308,7 @@ export function InboxLabel({
   label: GithubLabel;
   compact?: boolean;
 }) {
+  useLocale();
   const color = labelColor(label.color);
   return (
     <span

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../i18n";
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { LAYER } from "../lib/layers";
@@ -10,6 +11,7 @@ type Props = {
 };
 
 export function ImageLightbox({ src, alt, onClose }: Props) {
+  useLocale();
   const closeRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -36,7 +38,7 @@ export function ImageLightbox({ src, alt, onClose }: Props) {
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={`Image preview: ${alt}`}
+      aria-label={t("Image preview: {p0}", { p0: alt })}
       className="fixed inset-0 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm"
       style={{ zIndex: LAYER.dialog }}
       onMouseDown={(event) => {
@@ -54,8 +56,8 @@ export function ImageLightbox({ src, alt, onClose }: Props) {
       <button
         ref={closeRef}
         type="button"
-        aria-label="Close image preview"
-        title="Close"
+        aria-label={t("Close image preview")}
+        title={t("Close")}
         onClick={onClose}
         className="absolute right-4 top-4 grid size-9 place-items-center rounded-full border border-white/15 bg-black/45 text-white/80 shadow-lg backdrop-blur-md hover:bg-black/65 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
       >

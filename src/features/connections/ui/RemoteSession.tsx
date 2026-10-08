@@ -1,9 +1,11 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { RemoteOutboxNotice } from "./RemoteOutboxNotice";
 import { RemoteDataStatus } from "./RemoteDataStatus";
 import type { RemoteDataState } from "../model/remoteDataState";
 import { remoteCommandNeedsVerification, useRemoteOutboxIssues } from "../model/remoteOutbox";
 import type { SessionPaneProps } from "../../sessions/ui/SessionPane";
+import { SessionHostTools } from "../../host-tools/SessionHostTools";
 import type {
   Attachment,
   Block,
@@ -217,6 +219,7 @@ export function RemoteSession({
   onOpenPlan: SessionPaneProps["onOpenPlan"];
   render: (overrides: RemoteSessionOverrides) => ReactNode;
 }) {
+  useLocale();
   const project = remoteProjectFor(shell.cwd);
   const { machines, loaded } = useRemoteMachines(!!project);
   const machine = project
@@ -227,10 +230,10 @@ export function RemoteSession({
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
         <p className="text-[13px] text-content/60">
           {!project
-            ? "This project’s machine details are missing. Add the project again from the project rail."
+            ? t("This project’s machine details are missing. Add the project again from the project rail.")
             : loaded
-              ? "The machine for this project isn’t connected on this computer."
-              : "Connecting to the machine…"}
+              ? t("The machine for this project isn’t connected on this computer.")
+              : t("Connecting to the machine…")}
         </p>
         {project && loaded ? (
           <button
@@ -239,9 +242,7 @@ export function RemoteSession({
             onClick={() =>
               window.dispatchEvent(new Event(OPEN_CONNECTIONS_EVENT))
             }
-          >
-            Manage machines
-          </button>
+          >{t("Manage machines")}</button>
         ) : null}
       </div>
     );
@@ -282,6 +283,7 @@ function ConnectedRemoteSession({
   project: RemoteProject;
   render: (overrides: RemoteSessionOverrides) => ReactNode;
 }) {
+  useLocale();
   const [descriptor, setDescriptor] = useState<HostDescriptor | undefined>(() =>
     cachedDescriptors.get(machine.id),
   );
@@ -1798,14 +1800,14 @@ function ConnectedRemoteSession({
       ? {
           text: "Waiting for the host to confirm your request.",
           detail: error,
-          action: { label: "Retry", run: () => void retryPending() },
+          action: { get label() { return t("Retry"); }, run: () => void retryPending() },
         }
       : starting?.failed
         ? {
             text: `Couldn’t ${starting.draft ? "save the draft" : "send the message"} on ${machine.name}.`,
             detail: error,
             action: {
-              label: "Try again",
+              get label() { return t("Try again"); },
               run: () => {
                 const turn = { ...starting, failed: false };
                 setStarting(turn);
@@ -1832,14 +1834,14 @@ function ConnectedRemoteSession({
         : error
           ? {
               text: error,
-              action: { label: "Dismiss", run: () => setError("") },
+              action: { get label() { return t("Dismiss"); }, run: () => setError("") },
             }
           : catalogProblem
             ? {
                 text: `Couldn’t load models from ${machine.name}.`,
                 detail: catalogProblem,
                 action: {
-                  label: "Retry",
+                  get label() { return t("Retry"); },
                   run: () => setCatalogRefresh((value) => value + 1),
                 },
               }
@@ -2167,21 +2169,21 @@ function ConnectedRemoteSession({
   return (
     <ModelSourceContext.Provider value={modelSource}>
       <div className="relative flex h-full min-h-0 flex-col">
-        {uploadProgress ? <div role="status" className="shrink-0 px-4 py-2 text-xs text-content/65">Uploading attachment: {Math.round(uploadProgress.size ? uploadProgress.offset / uploadProgress.size * 100 : 100)}%</div> : null}
-        {snapshot?.historyLoading ? <div role="status" className="shrink-0 px-4 py-2 text-xs text-content/65">Loading earlier messages…</div> : null}
+        {uploadProgress ? <div role="status" className="shrink-0 px-4 py-2 text-xs text-content/65">{t("Uploading attachment: ")}{Math.round(uploadProgress.size ? uploadProgress.offset / uploadProgress.size * 100 : 100)}%</div> : null}
+        {snapshot?.historyLoading ? <div role="status" className="shrink-0 px-4 py-2 text-xs text-content/65">{t("Loading earlier messages…")}</div> : null}
         <RemoteConnectionBanner cwd={project.key} stale={!!hostSession} />
         <RemoteDataStatus
           state={remoteDataState}
           onRefresh={refreshOwnerContent}
-          label="conversation"
+          label={t("conversation")}
           disabled={remoteDeleted}
+          connectionIssueHandled={connection.status !== "connected" && (connection.status !== "connecting" || connection.reconnecting)}
         />
         {online && hostSession && snapshot?.status === "running" ? (
           <div
             role="status"
             className="shrink-0 border-b border-accent/20 bg-accent/5 px-4 py-2 text-xs text-content/80"
-          >
-            Working on {machine.name}.
+          >{t("Working on ")}{machine.name}.
           </div>
         ) : null}
         <RemoteOutboxNotice
@@ -2212,6 +2214,7 @@ function ConnectedRemoteSession({
           </div>
         ) : null}
         <div className="min-h-0 flex-1">{render(overrides)}</div>
+        {visible && hostSession ? <SessionHostTools key={`${project.key}:${hostSession.id}`} cwd={project.key} sessionId={hostSession.id} title={hostSession.title ?? t("Remote conversation")} /> : null}
       </div>
     </ModelSourceContext.Provider>
   );

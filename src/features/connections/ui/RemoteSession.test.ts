@@ -1257,6 +1257,8 @@ it("explains a dropped connection above the session and reconnects from there", 
   await render();
   expect(container.textContent).toContain("Can’t reach Home server");
   expect(container.textContent).toContain("The machine did not answer");
+  expect(container.querySelector("details")?.open).toBe(false);
+  expect(container.querySelector("[data-remote-data-state]")).toBeNull();
   expect(container.querySelector("textarea")).not.toBeNull();
   const reconnect = [...container.querySelectorAll("button")].find(
     (button) => button.textContent === "Reconnect",
@@ -1522,19 +1524,20 @@ it("shows loading until the initial owner tail is verified", async () => {
   expect(container.querySelector('[data-remote-data-state] [title^="Last verified"]')).not.toBeNull();
 });
 
-it("keeps last loaded transcript visible on read failure and retries to verified empty", async () => {
+it("keeps the transcript on disconnect, shows one connection notice and reconnects to verified empty", async () => {
   lazyHistorySupported = true;
   openExistingChat();
   await render();
   await vi.waitFor(() => expect(remoteDataPhase()).toBe("ready"));
   machineDown = unreachable;
   await act(async () => byLabel("Refresh conversation")!.click());
-  await vi.waitFor(() => expect(remoteDataPhase()).toBe("error"));
+  await vi.waitFor(() => expect(container.textContent).toContain("Can’t reach Home server"));
   expect(container.textContent).toContain("Earlier reply");
-  expect(container.querySelector("[data-remote-data-state]")?.textContent).toContain("Showing last loaded data.");
+  expect(container.querySelector("[data-remote-data-state]")).toBeNull();
+  expect(container.textContent).not.toContain("Couldn’t refresh conversation");
   machineDown = undefined;
   host = { ...host!, revision: host!.revision + 1, session: { ...host!.session, blocks: [] } };
-  await act(async () => byLabel("Retry loading conversation")!.click());
+  await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Reconnect")!.click());
   await vi.waitFor(() => expect(remoteDataPhase()).toBe("empty"));
   expect(container.textContent).not.toContain("Earlier reply");
 });
@@ -1883,7 +1886,7 @@ slow(
     await settle();
     expect(commands).toHaveLength(0);
     expect(queueCard()?.textContent).toContain("Also update the docs");
-    expect(queueCard()?.textContent).toContain("while imc is open");
+    expect(queueCard()?.textContent).toContain("while imc code is open");
     // A host turn cannot be steered.
     expect(queueCard()?.textContent).not.toContain("Steer");
     expect(container.querySelector("textarea")!.value).toBe("");

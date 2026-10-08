@@ -143,6 +143,17 @@ it("refreshes within the cache TTL, retains rows on failure and retries to a ver
   expect(container.textContent).not.toContain("permission denied");
 });
 
+it("retains cached sessions without repeating the shared connection warning", async () => {
+  const project = rememberRemoteProject("env-mac", { id: "p1", cwd: "/Users/me/clinic", name: "clinic" });
+  localStorage.setItem(`monocode.remote-history.v2:${project.key}`, JSON.stringify([freshSession]));
+  await renderRemoteProject();
+  await act(async () => refuse(new Error("SSH connection failed (exit 255, host unreachable): connection timed out")));
+  expect(container.textContent).toContain("Current conversation");
+  expect(container.querySelector("[data-remote-data-state]")).toBeNull();
+  expect(container.textContent).not.toContain("connection timed out");
+  expect(container.textContent).not.toContain("Couldn’t refresh sessions");
+});
+
 it("labels cached rows as unverified while the initial owner read is pending", async () => {
   const project = rememberRemoteProject("env-mac", { id: "p1", cwd: "/Users/me/clinic", name: "clinic" });
   localStorage.setItem(`monocode.remote-history.v2:${project.key}`, JSON.stringify([freshSession]));

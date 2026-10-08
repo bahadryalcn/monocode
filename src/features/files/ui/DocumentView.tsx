@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   Suspense,
   lazy,
@@ -41,6 +42,7 @@ type LoadState =
  * the image viewer does, then hands them to a lazily loaded format viewer.
  */
 export function DocumentView({ path, cwd }: Props) {
+  useLocale();
   const kind = documentKind(path);
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [reloadKey, setReloadKey] = useState(0);
@@ -95,24 +97,19 @@ export function DocumentView({ path, cwd }: Props) {
   let body: ReactNode;
   if (kind === "doc") {
     body = (
-      <DocumentMessage title={`${name} can’t be previewed`}>
-        Legacy .doc files aren’t supported. Convert it to .docx, or open it in
-        the default app.
-        {detail}
+      <DocumentMessage title={t("{p0} can’t be previewed", { p0: name })}>{t("Legacy .doc files aren’t supported. Convert it to .docx, or open it in the default app.")}{detail}
       </DocumentMessage>
     );
   } else if (state.status === "error") {
     body = (
-      <DocumentMessage title={`Couldn’t open ${name}`} error>
+      <DocumentMessage title={t("Couldn’t open {p0}", { p0: name })} error>
         {state.message}
         {detail}
         <button
           type="button"
           onClick={reload}
           className="mt-3 h-7 rounded-md bg-content/10 px-2.5 text-[12px] text-content hover:bg-content/15"
-        >
-          Retry
-        </button>
+        >{t("Retry")}</button>
       </DocumentMessage>
     );
   } else if (state.status === "loading") {
@@ -139,13 +136,11 @@ export function DocumentView({ path, cwd }: Props) {
         {remote ? null : (
           <button
             type="button"
-            title="Open in default app"
+            title={t("Open in default app")}
             onClick={() => void openPathWithDefaultApp(path).catch(() => {})}
             className="flex h-5 items-center gap-1.5 rounded px-1.5 hover:bg-content/10 hover:text-content"
           >
-            <ExternalLink className="size-3" strokeWidth={1.75} />
-            Open in default app
-          </button>
+            <ExternalLink className="size-3" strokeWidth={1.75} />{t("Open in default app")}</button>
         )}
       </footer>
     </div>
@@ -159,15 +154,16 @@ function FormatViewer({
   kind: DocumentKind;
   bytes: Uint8Array;
 }) {
+  useLocale();
   if (kind === "pdf") return <PdfViewer bytes={bytes} />;
   if (kind === "docx") return <DocxViewer bytes={bytes} />;
   return <SheetViewer bytes={bytes} />;
 }
 
 function Loading({ name }: { name: string }) {
+  useLocale();
   return (
-    <div className="grid h-full place-items-center text-[12px] text-content/45">
-      Opening {name}…
+    <div className="grid h-full place-items-center text-[12px] text-content/45">{t("Opening ")}{name}…
     </div>
   );
 }

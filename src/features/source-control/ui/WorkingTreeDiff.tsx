@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Loader } from "../../../shared/ui/icons";
 import {
@@ -111,6 +112,7 @@ export function WorkingTreeDiff({
   focusKind,
   focusRequest,
 }: Props) {
+  useLocale();
   const [files, setFiles] = useState<GitChangedFile[] | null>(null);
   const [diffs, setDiffs] = useState<Map<string, LoadedDiff>>(new Map());
   const [error, setError] = useState<string | null>(null);
@@ -484,24 +486,20 @@ export function WorkingTreeDiff({
 
   if (!cwd || cwd === "~") {
     return (
-      <p className="grid h-full place-items-center text-[13px] text-content/45">
-        No project folder
-      </p>
+      <p className="grid h-full place-items-center text-[13px] text-content/45">{t("No project folder")}</p>
     );
   }
   if (error) {
     return (
       <div className="grid h-full place-items-center p-6 text-center">
         <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
-        <p className="text-[13px] text-content">Couldn’t load changes</p>
+        <p className="text-[13px] text-content">{t("Couldn’t load changes")}</p>
         <p className="mt-1 text-[12px] text-content/50">{error}</p>
         <button
           type="button"
           onClick={() => setRetry((value) => value + 1)}
           className="mt-3 text-[13px] text-content"
-        >
-          Retry
-        </button>
+        >{t("Retry")}</button>
       </div>
     );
   }

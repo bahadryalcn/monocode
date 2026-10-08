@@ -119,11 +119,11 @@ describe("task board", () => {
     const machines = [mac, local];
     expect(todoUnsupportedMessage(machines, [local], "G:/app")).toBeUndefined();
     expect(todoUnsupportedMessage(machines, [], "G:/app")).toBe(
-      "Update imc Host on this computer to add to-do items",
+      "Update imc code Host on this computer to add to-do items",
     );
     expect(
       todoUnsupportedMessage(machines, [local], "remote://env-mac/Users/me/app"),
-    ).toBe("Update imc Host on MacBook to add to-do items");
+    ).toBe("Update imc code Host on MacBook to add to-do items");
     // No machine at all has its own message.
     expect(todoUnsupportedMessage([], [], "G:/app")).toBeUndefined();
   });
@@ -321,7 +321,7 @@ describe("missing machines notice", () => {
         unreachable: ["MacBook", "Mini"],
       }),
     ).toBe(
-      "MacBook, Mini aren’t reachable right now, so their tasks aren’t shown. Update imc Host on this computer to see its tasks.",
+      "MacBook, Mini aren’t reachable right now, so their tasks aren’t shown. Update imc code Host on this computer to see its tasks.",
     );
   });
 });

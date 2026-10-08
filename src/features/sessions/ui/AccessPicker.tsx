@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   ChevronDown,
   Lock,
@@ -44,6 +45,7 @@ export function AccessPicker({
   busy = false,
   unavailable,
 }: Props) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(() =>
     Math.max(0, RUNTIME_MODES.indexOf(value)),
@@ -142,7 +144,7 @@ export function AccessPicker({
           autoFocus
           onDismiss={(reason) => dismiss(reason === "escape")}
           role="listbox"
-          aria-label="Access"
+          aria-label={t("Access")}
           data-access-picker
           tabIndex={-1}
           onKeyDown={onMenuKey}
@@ -183,17 +185,14 @@ export function AccessPicker({
                     {RUNTIME_MODE_LABEL[mode]}
                   </span>
                   <span className="mt-0.5 block text-[11px] leading-4 text-content/50">
-                    {reason ? `Unavailable: ${reason}` : RUNTIME_MODE_HINT[mode]}
+                    {reason ? t("Unavailable: {p0}", { p0: reason }) : RUNTIME_MODE_HINT[mode]}
                   </span>
                 </span>
               </button>
             );
           })}
           {busy ? (
-            <p className="px-2 py-1.5 text-[11px] leading-4 text-content/50">
-              Access changes apply to the next turn. Stop and resend to apply
-              them now.
-            </p>
+            <p className="px-2 py-1.5 text-[11px] leading-4 text-content/50">{t("Access changes apply to the next turn. Stop and resend to apply them now.")}</p>
           ) : null}
         </Popover>
       ) : null}

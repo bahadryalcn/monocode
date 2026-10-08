@@ -1,7 +1,7 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Check, Loader, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
+import { Loader, Pencil, Plus, Trash2 } from "../../../shared/ui/icons";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Popover } from "../../../shared/ui/Popover";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 
 import { loginHarness } from "../../../integrations/harness/core/auth";
@@ -15,13 +15,9 @@ import {
   removeProviderAccount,
   renameProviderAccount,
   setDefaultProviderAccount,
-  setProviderAccountColor,
-  providerAccountColor,
-  PROVIDER_ACCOUNT_COLORS,
   DEFAULT_PROVIDER_ACCOUNT_ID,
   subscribeProviderAccounts,
   type ProviderAccount,
-  type ProviderAccountColor,
   type ProviderAccountProvider,
 } from "../../providers/model/providerAccounts";
 import {
@@ -39,7 +35,7 @@ import {
   useProviderAccountIdentities,
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
-import { AccountColorDot } from "../../providers/ui/AccountColorDot";
+import { AccountColorPicker } from "../../providers/ui/AccountColorPicker";
 
 import {
   accountStatus,
@@ -54,7 +50,6 @@ import {
 } from "../../providers/model/rateLimitsCache";
 import {
   AccountStatusLabel,
-  AccountUsageMeters,
   AccountUsageRefresh,
 } from "../../providers/ui/ProviderAccountUsage";
 
@@ -68,6 +63,7 @@ export type AccountEditor = {
 };
 
 export function ProviderAccountsSettings() {
+  useLocale();
   const [version, setVersion] = useState(0);
   const [editor, setEditor] = useState<AccountEditor | null>(null);
   const [working, setWorking] = useState<string | null>(null);
@@ -189,10 +185,10 @@ export function ProviderAccountsSettings() {
           ? `Remove “${account.label}”? This signs out of the shared ${HARNESS_TITLE[account.provider]} CLI profile and stops its running turns. CLI settings and conversation history stay on disk.`
           : `Remove “${account.label}”? Its stored credentials will be deleted and any running turns for this account will stop. Existing conversations stay in history, but cannot continue until you switch accounts.`,
         {
-          title: `Remove ${HARNESS_TITLE[account.provider]} account`,
+          get title() { return t("Remove {p0} account", { p0: HARNESS_TITLE[account.provider] }); },
           kind: "warning",
           okLabel: "Remove account",
-          cancelLabel: "Cancel",
+          get cancelLabel() { return t("Cancel"); },
         },
       );
       if (!confirmed) return;
@@ -241,8 +237,8 @@ export function ProviderAccountsSettings() {
   return (
     <Group
       id="provider-accounts"
-      title="Accounts"
-      description="Separate sign-ins per provider. New conversations use the default account; each conversation can pick its own account from the composer."
+      title={t("Accounts")}
+      description={t("Separate sign-ins per provider. New conversations use the default account; each conversation can pick its own account from the composer.")}
       action={
         <AccountUsageRefresh
           usage={{
@@ -280,7 +276,7 @@ export function ProviderAccountsSettings() {
                     </div>
                     <div className="mt-0.5 text-[11px] text-content/40">
                       {accounts.length}{" "}
-                      {accounts.length === 1 ? "account" : "accounts"}
+                      {accounts.length === 1 ? t("account") : t("accounts")}
                     </div>
                   </div>
                 </div>
@@ -290,9 +286,7 @@ export function ProviderAccountsSettings() {
                   onClick={() => startAdd(provider)}
                   className="flex shrink-0 items-center gap-1.5 rounded-md border border-content/10 px-2.5 py-1 text-[12px] text-content/70 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:cursor-default disabled:opacity-40"
                 >
-                  <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
-                  Add account
-                </button>
+                  <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />{t("Add account")}</button>
               </div>
               <div className="border-t border-content/5 bg-content/[0.015] pl-10">
                 {accounts.map((account) => {
@@ -336,9 +330,7 @@ export function ProviderAccountsSettings() {
                             {account.label}
                           </span>
                           {account.isDefault ? (
-                            <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium uppercase leading-4 tracking-wide text-accent">
-                              Default
-                            </span>
+                            <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] font-medium uppercase leading-4 tracking-wide text-accent">{t("Default")}</span>
                           ) : null}
                           {orgTag ? (
                             <span className="max-w-[8rem] shrink-0 truncate rounded bg-content/[0.07] px-1 text-[9px] leading-4 text-content/50">
@@ -352,9 +344,7 @@ export function ProviderAccountsSettings() {
                               <span
                                 className="size-1.5 rounded-full bg-amber-400"
                                 aria-hidden
-                              />
-                              Signed out
-                            </span>
+                              />{t("Signed out")}</span>
                           ) : (
                             <AccountStatusLabel
                               status={accountStatus(limits, usage.now)}
@@ -375,19 +365,15 @@ export function ProviderAccountsSettings() {
                           <p
                             className="mt-1 truncate text-[10px] leading-4 text-amber-600 dark:text-amber-300"
                             role="note"
-                          >
-                            Same sign-in as {duplicateOf.label}. Remove this
-                            account if you do not need it separately.
-                          </p>
+                          >{t("Same sign-in as ")}{duplicateOf.label}{t(". Remove this account if you do not need it separately.")}</p>
                         ) : null}
                       </div>
-                      <AccountUsageMeters limits={limits} now={usage.now} />
                       <div className="flex min-w-24 shrink-0 items-center justify-end gap-1">
                         {signingIn || !limits || canSignIn(limits) ? (
                           <button
                             type="button"
                             disabled={Boolean(working)}
-                            aria-label={`Sign in to ${account.label}`}
+                            aria-label={t("Sign in to {p0}", { p0: account.label })}
                             onClick={() => void signInAccount(account)}
                             className={`mr-1 flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[11px] transition-transform duration-150 active:scale-[0.97] disabled:cursor-default disabled:opacity-40 ${
                               signedOut
@@ -401,25 +387,23 @@ export function ProviderAccountsSettings() {
                                 aria-hidden
                               />
                             ) : null}
-                            {signingIn ? "Signing in…" : "Sign in"}
+                            {signingIn ? t("Signing in…") : t("Sign in")}
                           </button>
                         ) : null}
                         {account.isDefault ? null : (
                           <button
                             type="button"
                             disabled={Boolean(working)}
-                            aria-label={`Use ${account.label} by default`}
+                            aria-label={t("Use {p0} by default", { p0: account.label })}
                             onClick={() => makeDefault(account)}
                             className="rounded-md border border-content/10 px-2 py-1 text-[11px] text-content/60 hover:bg-content/10 hover:text-content disabled:opacity-35"
-                          >
-                            Make default
-                          </button>
+                          >{t("Make default")}</button>
                         )}
                         <button
                           type="button"
                           disabled={Boolean(working)}
-                          aria-label={`Rename ${account.label}`}
-                          title="Rename account"
+                          aria-label={t("Rename {p0}", { p0: account.label })}
+                          title={t("Rename account")}
                           onClick={() => startRename(account)}
                           className="grid size-7 place-items-center rounded-md text-content/40 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.96] disabled:opacity-35"
                         >
@@ -429,8 +413,8 @@ export function ProviderAccountsSettings() {
                           <button
                             type="button"
                             disabled={Boolean(working)}
-                            aria-label={`Remove ${account.label}`}
-                            title="Remove account"
+                            aria-label={t("Remove {p0}", { p0: account.label })}
+                            title={t("Remove account")}
                             onClick={() => void removeAccount(account)}
                             className="grid size-7 place-items-center rounded-md text-content/35 transition-transform duration-150 hover:bg-red-400/10 hover:text-red-400 active:scale-[0.96] disabled:opacity-35"
                           >
@@ -446,9 +430,7 @@ export function ProviderAccountsSettings() {
                   );
                 })}
                 {accounts.length === 0 ? (
-                  <p className="px-4 py-3 text-[12px] text-content/50">
-                    No accounts. Add an account to sign in.
-                  </p>
+                  <p className="px-4 py-3 text-[12px] text-content/50">{t("No accounts. Add an account to sign in.")}</p>
                 ) : null}
                 {adding && editor ? (
                   <ProviderAccountEditor
@@ -489,94 +471,6 @@ export function canSignIn(limits: ProviderRateLimits): boolean {
   );
 }
 
-/** Dot that opens a swatch popover to colour one account. */
-function AccountColorPicker({
-  account,
-  disabled,
-}: {
-  account: ProviderAccount;
-  disabled: boolean;
-}) {
-  const trigger = useRef<HTMLButtonElement>(null);
-  const [open, setOpen] = useState(false);
-  const current = providerAccountColor(account);
-  const pick = (color: ProviderAccountColor | undefined) => {
-    setProviderAccountColor(account.provider, account.id, color);
-    setOpen(false);
-  };
-  return (
-    <>
-      <button
-        ref={trigger}
-        type="button"
-        disabled={disabled}
-        title="Account color"
-        aria-label={`Color for ${account.label}: ${current.label}`}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        onClick={() => setOpen((value) => !value)}
-        className="grid size-5 shrink-0 place-items-center rounded-full hover:bg-content/10 disabled:opacity-40"
-      >
-        <AccountColorDot account={account} className="size-2.5" />
-      </button>
-      {open ? (
-        <Popover
-          anchor={trigger}
-          side="bottom"
-          align="start"
-          autoFocus
-          onDismiss={() => setOpen(false)}
-          role="dialog"
-          aria-label={`Color for ${account.label}`}
-          tabIndex={-1}
-          className="p-2"
-        >
-          <div className="flex items-center gap-1">
-            {PROVIDER_ACCOUNT_COLORS.map((color) => {
-              const selected = current.id === color.id;
-              return (
-                <button
-                  key={color.id}
-                  type="button"
-                  title={color.label}
-                  aria-label={color.label}
-                  aria-pressed={selected}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => pick(color.id)}
-                  className="grid size-6 place-items-center rounded-full hover:bg-content/10"
-                >
-                  <span
-                    className="grid size-4 place-items-center rounded-full"
-                    style={{ background: color.value }}
-                  >
-                    {selected ? (
-                      <Check
-                        className="size-2.5 text-white"
-                        strokeWidth={3}
-                        aria-hidden
-                      />
-                    ) : null}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-          {account.color ? (
-            <button
-              type="button"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => pick(undefined)}
-              className="mt-1.5 w-full rounded-md px-2 py-1 text-left text-[11px] text-content/55 hover:bg-content/10 hover:text-content"
-            >
-              Use automatic color
-            </button>
-          ) : null}
-        </Popover>
-      ) : null}
-    </>
-  );
-}
-
 export function ProviderAccountEditor({
   editor,
   working,
@@ -590,6 +484,7 @@ export function ProviderAccountEditor({
   onCancel: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  useLocale();
   const adding = !editor.accountId;
   return (
     <form
@@ -601,15 +496,15 @@ export function ProviderAccountEditor({
         className="flex items-center pr-1 h-8 min-w-0 flex-1 overflow-hidden rounded-md border border-content/10 bg-content/[0.04] focus-within:border-accent/45"
       >
         <label className="h-full min-w-0 flex-1">
-          <span className="sr-only">Account name</span>
+          <span className="sr-only">{t("Account name")}</span>
           <input
             autoFocus
             type="text"
             maxLength={48}
             value={editor.label}
             disabled={working}
-            placeholder="Work or Personal"
-            aria-label={`${adding ? "New" : "Rename"} ${HARNESS_TITLE[editor.provider]} account`}
+            placeholder={t("Work or Personal")}
+            aria-label={t((adding ? "New {p1} account" : "Rename {p1} account"), { p1: HARNESS_TITLE[editor.provider] })}
             onChange={(event) => onLabel(event.target.value)}
             className="h-full w-full bg-transparent px-2.5 text-[12px] text-content outline-none placeholder:text-content/25 disabled:opacity-50"
           />
@@ -619,9 +514,7 @@ export function ProviderAccountEditor({
           disabled={working}
           onClick={onCancel}
           className="flex h-6 shrink-0 items-center rounded-[4.5px] bg-content/[0.05] px-2.5 text-[11px] text-content/45 transition-transform duration-150 hover:bg-content/10 hover:text-content active:scale-[0.97] disabled:opacity-40"
-        >
-          Cancel
-        </button>
+        >{t("Cancel")}</button>
         <button
           type="submit"
           disabled={working || !editor.label.trim()}
@@ -630,9 +523,9 @@ export function ProviderAccountEditor({
           {working ? <Loader className="size-3 animate-spin" /> : null}
           {adding
             ? working
-              ? "Waiting for browser…"
-              : "Sign in and add"
-            : "Save"}
+              ? t("Waiting for browser…")
+              : t("Sign in and add")
+            : t("Save")}
         </button>
       </div>
     </form>

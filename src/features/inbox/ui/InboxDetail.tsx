@@ -1,4 +1,6 @@
+import { t, useLocale, getLocale } from "../../../shared/i18n";
 import { useGithubPrChecks } from "../hooks/useGithubPrChecks";
+import { PrWatchPanel } from "./PrWatchPanel";
 import { summarizePrChecks } from "../model/githubPrChecks";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -72,6 +74,7 @@ export function InboxDetailTab({
   selected: boolean;
   onSelect: () => void;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -125,6 +128,7 @@ export function InboxDetail({
   onOpenSession?: (sessionId: string) => void | Promise<void>;
   onItemChange?: (item: InboxItem) => void;
 }) {
+  useLocale();
   const detailLock = useLockOverscroll<HTMLDivElement>();
   const panel = mode === "panel";
   const [diffFocusPath, setDiffFocusPath] = useState<string | undefined>();
@@ -328,9 +332,9 @@ export function InboxDetail({
       <span className="shrink-0">
         {item.kind === "pr"
           ? gitlab
-            ? "Merge request"
-            : "Pull request"
-          : "Issue"}
+            ? t("Merge request")
+            : t("Pull request")
+          : t("Issue")}
       </span>
       <span className="shrink-0 tabular-nums">{inboxItemRef(item)}</span>
       <span
@@ -346,7 +350,7 @@ export function InboxDetail({
       {panel ? (
         <button
           type="button"
-          title={item.url ? externalActionLabel : "No link available"}
+          title={item.url ? externalActionLabel : t("No link available")}
           aria-label={externalActionLabel}
           disabled={!item.url}
           onClick={() => void openUrl(item.url)}
@@ -425,7 +429,7 @@ export function InboxDetail({
                         ))}
                       </span>
                     ) : (
-                      <span>Unassigned</span>
+                      <span>{t("Unassigned")}</span>
                     )}
                   </>
                 ) : null}
@@ -434,16 +438,15 @@ export function InboxDetail({
                     <span aria-hidden>·</span>
                     <time
                       dateTime={item.createdAt}
-                      title={new Date(item.createdAt).toLocaleString()}
-                    >
-                      Created {formatRelativeTime(item.createdAt)}
+                      title={new Date(item.createdAt).toLocaleString(getLocale())}
+                    >{t("Created ")}{formatRelativeTime(item.createdAt)}
                     </time>
                   </>
                 ) : null}
                 {formatRelativeTime(item.updatedAt) ? (
                   <>
                     <span aria-hidden>·</span>
-                    <span>Updated {formatRelativeTime(item.updatedAt)}</span>
+                    <span>{t("Updated ")}{formatRelativeTime(item.updatedAt)}</span>
                   </>
                 ) : null}
                 {baseRef && headRef ? (
@@ -468,12 +471,14 @@ export function InboxDetail({
                   </>
                 ) : null}
               </div>
+              {item.provider === "github" && item.kind === "pr" ? (
+                <PrWatchPanel cwd={cwd} repo={item.repo} number={item.number} targets={relatedSessions.map((session) => ({ id: session.id, title: sessionDisplayTitle(session.title, session.harness) }))} />
+              ) : null}
               {!panel && relatedSessions.length > 0 ? (
                 <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
                   <span className="mr-0.5 inline-flex shrink-0 items-center gap-1 text-[11px] text-content/45">
-                    <MessageMultiple className="size-3.5" strokeWidth={1.75} />
-                    Related{" "}
-                    {relatedSessions.length === 1 ? "thread" : "threads"}
+                    <MessageMultiple className="size-3.5" strokeWidth={1.75} />{t("Related")}{" "}
+                    {relatedSessions.length === 1 ? t("thread") : t("threads")}
                   </span>
                   {relatedSessions.map((session) => {
                     const title = sessionDisplayTitle(
@@ -484,15 +489,13 @@ export function InboxDetail({
                       <button
                         key={session.id}
                         type="button"
-                        title={`Open thread: ${title}`}
+                        title={t("Open thread: {p0}", { p0: title })}
                         onClick={() => void onOpenSession?.(session.id)}
                         className="inline-flex min-w-0 max-w-64 items-center gap-1 rounded-md bg-content/5 px-2 py-1 text-[11px] text-content/70 hover:bg-content/10 hover:text-content"
                       >
                         <span className="truncate">{title}</span>
                         {session.archived ? (
-                          <span className="shrink-0 text-content/40">
-                            Archived
-                          </span>
+                          <span className="shrink-0 text-content/40">{t("Archived")}</span>
                         ) : null}
                       </button>
                     );
@@ -534,7 +537,7 @@ export function InboxDetail({
                       }}
                       className={`${ACTION_FILLED} disabled:cursor-default disabled:opacity-40`}
                     >
-                      {starting ? "Sending..." : "Send to agent"}
+                      {starting ? t("Sending...") : t("Send to agent")}
                     </button>
                     {chooseStartProject ? (
                       <InboxProjectPicker
@@ -559,14 +562,12 @@ export function InboxDetail({
                     onClick={onDiscuss}
                     className={ACTION_OUTLINE}
                   >
-                    <MessageSquare className="size-3.5" strokeWidth={1.75} />{" "}
-                    Ask
-                  </button>
+                    <MessageSquare className="size-3.5" strokeWidth={1.75} />{" "}{t("Ask")}</button>
                 ) : null}
                 {panel ? null : (
                   <button
                     type="button"
-                    title={item.url ? externalActionLabel : "No link available"}
+                    title={item.url ? externalActionLabel : t("No link available")}
                     disabled={!item.url}
                     onClick={() => void openUrl(item.url)}
                     className={`${ACTION_GHOST} disabled:opacity-40`}
@@ -585,17 +586,17 @@ export function InboxDetail({
                 <div
                   role="tablist"
                   aria-label={
-                    gitlab ? "Merge request sections" : "Pull request sections"
+                    gitlab ? t("Merge request sections") : t("Pull request sections")
                   }
                   className="flex items-stretch gap-4"
                 >
                   <InboxDetailTab
-                    label="Summary"
+                    label={t("Summary")}
                     selected={tab === "summary"}
                     onSelect={() => setTab("summary")}
                   />
                   <InboxDetailTab
-                    label="Code"
+                    label={t("Code")}
                     count={panel ? prDiff?.files.length : undefined}
                     selected={tab === "code"}
                     onSelect={() => { setDiffFocusPath(undefined); setTab("code"); }}
@@ -611,7 +612,7 @@ export function InboxDetail({
                 {tab === "code" && inboxShowsFullFileDiff(item) ? (
                   <div
                     role="group"
-                    aria-label="Diff context"
+                    aria-label={t("Diff context")}
                     className="ml-auto flex items-center self-center rounded-md border border-content/10 bg-content/[0.03] p-0.5"
                   >
                     <button
@@ -623,9 +624,7 @@ export function InboxDetail({
                           ? "bg-selection text-content"
                           : "text-content/45 hover:text-content/70"
                       }`}
-                    >
-                      Hunks
-                    </button>
+                    >{t("Hunks")}</button>
                     <button
                       type="button"
                       aria-pressed={diffMode === "full"}
@@ -635,9 +634,7 @@ export function InboxDetail({
                           ? "bg-selection text-content"
                           : "text-content/45 hover:text-content/70"
                       }`}
-                    >
-                      Full file
-                    </button>
+                    >{t("Full file")}</button>
                   </div>
                 ) : null}
               </div>
@@ -683,7 +680,7 @@ export function InboxDetail({
                   focusPath={diffFocusPath}
                 />
               ) : (
-                <p className="text-[13px] text-content/45">No file changes</p>
+                <p className="text-[13px] text-content/45">{t("No file changes")}</p>
               )
             ) : isPr && tab === "checks" ? (
               <InboxPrChecks
@@ -728,7 +725,7 @@ export function InboxDetail({
                     allowRemoteMedia
                   />
                 ) : (
-                  <p className="text-[13px] text-content/45">No description</p>
+                  <p className="text-[13px] text-content/45">{t("No description")}</p>
                 )}
                 {panel && isPr ? (<InboxPrChangesGlance diff={prDiff} loading={diffLoading} error={diffError} onOpenFile={(path) => { setDiffFocusPath(path); setTab("code"); }} />) : null}
                 <InboxComments
@@ -766,6 +763,7 @@ export function InboxDetail({
 }
 
 export function CopyBranchNameButton({ branch }: { branch: string }) {
+  useLocale();
   const [copied, setCopied] = useState(false);
   const timer = useRef<number | null>(null);
 
@@ -779,8 +777,8 @@ export function CopyBranchNameButton({ branch }: { branch: string }) {
   return (
     <button
       type="button"
-      title={copied ? "Copied" : "Copy branch name"}
-      aria-label={copied ? "Copied" : "Copy branch name"}
+      title={copied ? t("Copied") : t("Copy branch name")}
+      aria-label={copied ? t("Copied") : t("Copy branch name")}
       className="shrink-0 rounded p-0.5 text-content/40 hover:bg-content/8 hover:text-content/70"
       onClick={() => {
         void copyText(branch).then(

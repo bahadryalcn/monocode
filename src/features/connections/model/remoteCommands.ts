@@ -107,11 +107,11 @@ const ENTRY_RESULTS = new Set([
 
 const UNAVAILABLE = "This isn’t available for projects on another machine yet.";
 const OUTDATED =
-  "Update imc Host in Connections settings to use this project’s files.";
+  "Update imc code Host in Connections settings to use this project’s files.";
 const OUTDATED_SKILLS =
-  "The other machine’s imc Host needs updating to copy skills. Update it in Connections settings.";
+  "The other machine’s imc code Host needs updating to copy skills. Update it in Connections settings.";
 const OUTDATED_SKILL_DELETE =
-  "The other machine’s imc Host needs updating to delete skills. Update it in Connections settings.";
+  "The other machine’s imc code Host needs updating to delete skills. Update it in Connections settings.";
 
 /** Runs a file command whose paths are `remote://` paths on the machine that
  * owns them, translating paths both ways so callers never see host paths. */

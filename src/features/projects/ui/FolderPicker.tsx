@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   createPath,
@@ -33,6 +34,7 @@ const actionClass =
   "flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] text-content/65 hover:bg-content/5 hover:text-content disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
 export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
+  useLocale();
   const [directory, setDirectory] = useState("");
   const [home, setHome] = useState("");
   const [pathInput, setPathInput] = useState("");
@@ -162,8 +164,8 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
         <div className="flex items-center gap-2 border-b border-stroke p-3 pr-12">
           <button
             type="button"
-            aria-label="Parent folder"
-            title="Parent folder (Backspace)"
+            aria-label={t("Parent folder")}
+            title={t("Parent folder (Backspace)")}
             disabled={
               busy || !directory || pathKey(parent) === pathKey(directory)
             }
@@ -186,35 +188,34 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
             }}
           >
             <input
-              aria-label="Folder path"
+              aria-label={t("Folder path")}
               title={directory}
               value={pathInput}
               onChange={(event) => setPathInput(event.target.value)}
-              placeholder="Folder path…"
+              placeholder={t("Folder path…")}
               disabled={busy}
               className="w-full rounded-md bg-transparent px-1 py-1.5 font-mono text-[13px] outline-none focus:bg-content/5 focus:ring-1 focus:ring-accent"
             />
           </form>
           <button
             type="button"
-            title={`Add folder (${MOD}Enter)`}
+            title={t("Add folder ({p0}Enter)", { p0: MOD })}
             disabled={busy || loading || !directory || loadFailed}
             onClick={pick}
             className={`${actionClass} border border-stroke text-content`}
-          >
-            Add{selected.length ? ` (${selected.length})` : ""}
+          >{t("Add")}{selected.length ? ` (${selected.length})` : ""}
           </button>
         </div>
         <div
           ref={listRef}
           role="listbox"
-          aria-label="Folders"
+          aria-label={t("Folders")}
           aria-multiselectable={multiple || undefined}
           tabIndex={0}
           aria-activedescendant={
             entries[active] ? `folder-picker-${active}` : undefined
           }
-          title="↑ ↓ Navigate · Enter Open folder · Backspace Parent folder · Esc Close"
+          title={t("↑ ↓ Navigate · Enter Open folder · Backspace Parent folder · Esc Close")}
           className="h-[min(340px,50vh)] overflow-y-auto overscroll-none p-1.5 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent"
           onKeyDown={(event) => {
             if (busy || loading) return;
@@ -251,11 +252,9 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
           }}
         >
           {loading ? (
-            <p role="status" className="p-3 text-[13px] text-content/50">
-              Loading folders…
-            </p>
+            <p role="status" className="p-3 text-[13px] text-content/50">{t("Loading folders…")}</p>
           ) : entries.length === 0 && !error ? (
-            <p className="p-3 text-[13px] text-content/50">No subfolders</p>
+            <p className="p-3 text-[13px] text-content/50">{t("No subfolders")}</p>
           ) : null}
           {entries.map((entry, index) => (
             <div
@@ -275,7 +274,7 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
               {multiple ? (
                 <input
                   type="checkbox"
-                  aria-label={`Select ${entry.name}`}
+                  aria-label={t("Select {p0}", { p0: entry.name })}
                   checked={selected.some(
                     (path) => pathKey(path) === pathKey(entry.path),
                   )}
@@ -295,7 +294,7 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
               <button
                 type="button"
                 tabIndex={-1}
-                title={`${entry.path}\nOpen folder (Enter)`}
+                title={t("{p0}\nOpen folder (Enter)", { p0: entry.path })}
                 disabled={busy}
                 onMouseEnter={() => setActive(index)}
                 onClick={() => navigate(entry.path)}
@@ -318,16 +317,14 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
             <FolderPlus className="size-4 shrink-0 text-content/50" />
             <input
               autoFocus
-              aria-label="New folder name"
-              placeholder="Folder name…"
+              aria-label={t("New folder name")}
+              placeholder={t("Folder name…")}
               value={newName}
               onChange={(event) => setNewName(event.target.value)}
               disabled={busy}
               className="min-w-0 flex-1 rounded-md border border-stroke bg-transparent px-2 py-1.5 text-[13px] outline-none focus:border-accent"
             />
-            <button type="submit" disabled={busy} className={actionClass}>
-              Create
-            </button>
+            <button type="submit" disabled={busy} className={actionClass}>{t("Create")}</button>
             <button
               type="button"
               disabled={busy}
@@ -337,9 +334,7 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
                 setError(undefined);
                 listRef.current?.focus();
               }}
-            >
-              Cancel
-            </button>
+            >{t("Cancel")}</button>
           </form>
         ) : null}
         {error ? (
@@ -355,15 +350,13 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
               className={actionClass}
               disabled={busy}
               onClick={() => setRevision((value) => value + 1)}
-            >
-              Retry
-            </button>
+            >{t("Retry")}</button>
           </div>
         ) : null}
         <div className="flex flex-wrap items-center justify-between gap-1 border-t border-stroke px-2 py-2">
           <button
             type="button"
-            title="Create a folder in the current directory"
+            title={t("Create a folder in the current directory")}
             disabled={busy || loading || !directory}
             className={actionClass}
             onClick={() => {
@@ -371,12 +364,10 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
               setError(undefined);
             }}
           >
-            <FolderPlus className="size-3.5" />
-            New folder
-          </button>
+            <FolderPlus className="size-3.5" />{t("New folder")}</button>
           <button
             type="button"
-            title="Choose a drive, network location or folders using the system picker"
+            title={t("Choose a drive, network location or folders using the system picker")}
             disabled={busy}
             className={actionClass}
             onClick={() =>
@@ -385,9 +376,7 @@ export function FolderPicker({ title, multiple, onPick, onClose }: Props) {
                 if (paths.length && mounted.current) onPick(paths);
               })
             }
-          >
-            Browse…
-          </button>
+          >{t("Browse…")}</button>
           <button
             type="button"
             title={`${managerLabel}\n${prettyCwd(directory)}`}

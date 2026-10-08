@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  identity: { displayName: "imc", repositoryUrl: null as string | null },
+  identity: { displayName: "imc code", repositoryUrl: null as string | null },
   openUrl: vi.fn(), star: vi.fn(), starStatus: vi.fn(),
 }));
 vi.mock("../../shared/lib/productIdentity", () => ({ PRODUCT_IDENTITY: mocks.identity }));
@@ -41,7 +41,7 @@ it("renders nothing and performs no upstream action without a configured reposit
 it("opens only the configured repository without starring through an account", async () => {
   mocks.identity.repositoryUrl = "https://github.com/example/imece";
   await act(async () => root.render(createElement(GithubStarPrompt)));
-  const button = container.querySelector<HTMLButtonElement>('[aria-label="View imc on GitHub"]');
+  const button = container.querySelector<HTMLButtonElement>('[aria-label="View imc code on GitHub"]');
   expect(button).not.toBeNull();
   await act(async () => button?.click());
   expect(mocks.openUrl).toHaveBeenCalledWith("https://github.com/example/imece");

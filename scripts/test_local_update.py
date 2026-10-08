@@ -10,12 +10,27 @@ import time
 import unittest
 from unittest.mock import patch
 
-from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, validate_product_identity, finish_build, host_key, install_job_active
+from local_update import dependency_action, dependency_key, fingerprint, sync_source, queue_install, validate_versions, validate_product_identity, finish_build, host_key, install_job_active, snapshot
 from local_update_lib import backup, count, safe_child, write_json, read_json, alive, digest, windows_binary_digest, PRODUCT_IDENTITY, package_identity
 from local_install import wait_idle, stop_windows_host, host_install
 from local_install import app_install
 
 class LocalUpdateTests(unittest.TestCase):
+    def test_selected_overlay_preserves_unselected_verified_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            original = {'owned.ts': b'old', 'other.ts': b'verified'}
+            with patch('local_update.inputs', return_value=original):
+                archive, source = snapshot(root, root/'state')
+            request = {'archive': str(archive), 'archiveHash': digest(archive), 'source': source}
+            with patch('local_update.inputs', return_value={'owned.ts': b'fixed', 'other.ts': b'incomplete'}):
+                updated, _ = snapshot(root, root/'state', request, ['owned.ts'])
+                with self.assertRaises(ValueError):
+                    snapshot(root, root/'state', request, ['../escape.ts'])
+            with tarfile.open(updated) as tar:
+                self.assertEqual(tar.extractfile('owned.ts').read(), b'fixed')
+                self.assertEqual(tar.extractfile('other.ts').read(), b'verified')
+
     @unittest.skipUnless(__import__('os').name == 'nt', 'Windows installer regression')
     def test_first_install_with_imported_database_waits_and_backs_up(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -37,7 +52,7 @@ class LocalUpdateTests(unittest.TestCase):
             snapshot.assert_called_once_with(db, release / 'rollback-app/desktop.db')
 
     def test_product_identity_is_independent_from_upstream(self):
-        self.assertEqual(PRODUCT_IDENTITY['productName'], 'imc')
+        self.assertEqual(PRODUCT_IDENTITY['productName'], 'imc code')
         self.assertEqual(PRODUCT_IDENTITY['binaryName'], 'imc')
         self.assertEqual(PRODUCT_IDENTITY['bundleIdentifier'], 'com.imece.desktop')
         self.assertEqual(PRODUCT_IDENTITY['hostDirectory'], '.imece-host')
@@ -50,7 +65,7 @@ class LocalUpdateTests(unittest.TestCase):
                 package_identity(manifest)
 
     def test_frozen_native_identity_and_updater_match_coordinator(self):
-        config = {'productName': 'imc', 'mainBinaryName': 'imc', 'identifier': 'com.imece.desktop',
+        config = {'productName': 'imc code', 'mainBinaryName': 'imc', 'identifier': 'com.imece.desktop',
                   'plugins': {'updater': {'endpoints': []}}, 'bundle': {'createUpdaterArtifacts': False}}
         files = {name: json.dumps(config).encode() for name in
                  ('src-tauri/tauri.conf.json', 'src-tauri/tauri.fork.conf.json', 'src-tauri/tauri.fork.macos.conf.json')}
@@ -131,7 +146,23 @@ class LocalUpdateTests(unittest.TestCase):
         release = pathlib.Path('verified-package')
         with patch('local_update.queue_install') as install:
             finish_build(release)
-        install.assert_called_once_with(release)
+        install.assert_called_once_with(release, ('host', 'app'))
+
+    def test_host_only_leaves_other_pending_app_package_untouched(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            release = root/'release'
+            release.mkdir()
+            write_json(release/'manifest.json', {'id': 'new', 'identity': dict(PRODUCT_IDENTITY)})
+            base = root/'.imece-host/update-jobs'
+            write_json(base/'host.json', {'id': 'new', 'pid': 123, 'state': 'waiting'})
+            app = {'id': 'old', 'pid': 456, 'state': 'waiting'}
+            write_json(base/'app.json', app)
+            with patch('local_update.pathlib.Path.home', return_value=root), patch('local_update.alive', return_value=True), patch('local_update.subprocess.Popen') as spawn:
+                queue_install(release, ('host',))
+            spawn.assert_not_called()
+            self.assertEqual(read_json(base/'app.json'), app)
+            self.assertEqual(set(read_json(release/'install-jobs.json')), {'host'})
 
     def test_nsis_bundle_marker_is_the_only_normalized_executable_difference(self):
         with tempfile.TemporaryDirectory() as folder:

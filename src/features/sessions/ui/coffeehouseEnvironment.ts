@@ -1,4 +1,4 @@
-/** Integer-pixel scenery for the miniature imc coffeehouse. No character layer. */
+/** Integer-pixel scenery for the miniature imc code coffeehouse. No character layer. */
 export const SCENE_WIDTH = 1040;
 export const SCENE_HEIGHT = 340;
 

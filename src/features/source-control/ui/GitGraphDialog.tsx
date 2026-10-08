@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   useEffect,
   useId,
@@ -29,6 +30,7 @@ const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), [tabindex]:not
  * (`LAYER.dialog`) still open above both.
  */
 export function GitGraphDialog({ title, toolbar, onClose, children }: Props) {
+  useLocale();
   const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
@@ -101,8 +103,8 @@ export function GitGraphDialog({ title, toolbar, onClose, children }: Props) {
               <button
                 ref={closeRef}
                 type="button"
-                aria-label="Close"
-                title="Close"
+                aria-label={t("Close")}
+                title={t("Close")}
                 onClick={onClose}
                 className="grid size-7 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/8 hover:text-content focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               >

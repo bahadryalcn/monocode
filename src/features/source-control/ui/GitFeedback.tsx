@@ -1,6 +1,8 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { Loader } from "../../../shared/ui/icons";
 
 export function GitLoading({ text }: { text: string }) {
+  useLocale();
   return (
     <p
       role="status"
@@ -27,6 +29,7 @@ export function GitFeedback({
   onRetry?: () => void;
   onDismiss?: () => void;
 }) {
+  useLocale();
   return (
     <div
       role={kind === "error" ? "alert" : "status"}
@@ -44,11 +47,11 @@ export function GitFeedback({
         {title}
       </p>
       {stale ? (
-        <p className="mt-1 text-content/55">Showing what was last loaded.</p>
+        <p className="mt-1 text-content/55">{t("Showing what was last loaded.")}</p>
       ) : null}
       {detail ? (
         <details className="mt-1 text-content/60">
-          <summary className="cursor-pointer">Details</summary>
+          <summary className="cursor-pointer">{t("Details")}</summary>
           <p className="mt-1 break-words whitespace-pre-wrap">{detail}</p>
         </details>
       ) : null}
@@ -59,18 +62,14 @@ export function GitFeedback({
               type="button"
               className="rounded bg-content/10 px-2 py-0.5 hover:bg-content/15"
               onClick={onRetry}
-            >
-              Retry
-            </button>
+            >{t("Retry")}</button>
           ) : null}
           {onDismiss ? (
             <button
               type="button"
               className="rounded px-2 py-0.5 text-content/60 hover:bg-content/10"
               onClick={onDismiss}
-            >
-              Dismiss
-            </button>
+            >{t("Dismiss")}</button>
           ) : null}
         </div>
       ) : null}

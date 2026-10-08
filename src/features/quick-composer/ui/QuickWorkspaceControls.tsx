@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -28,6 +29,7 @@ export function QuickWorkspaceControls({
   onClose: () => void;
   onError?: (error: string) => void;
 }) {
+  useLocale();
   const [ready, setReady] = useState(false);
   const [open, setOpen] = useState<QuickGitKind | null>(null);
   const activeKind = useRef<QuickGitKind | null>(null);
@@ -149,7 +151,7 @@ export function QuickWorkspaceControls({
       <button
         type="button"
         disabled={disabled}
-        aria-label={`Workspace ${label}`}
+        aria-label={t("Workspace {p0}", { p0: label })}
         aria-haspopup="dialog"
         aria-expanded={open === "workspace"}
         onMouseDown={(event) => {
@@ -165,13 +167,13 @@ export function QuickWorkspaceControls({
       <GitPickerTrigger
         label={
           value.mode === "worktree"
-            ? `From ${base}`
-            : branches?.current || (settled ? "No repo" : "Loading…")
+            ? t("From {p0}", { p0: base })
+            : branches?.current || (settled ? t("No repo") : t("Loading…"))
         }
         aria-label={
           value.mode === "worktree"
-            ? `Create worktree from ${base}`
-            : "Choose branch"
+            ? t("Create worktree from {p0}", { p0: base })
+            : t("Choose branch")
         }
         aria-haspopup="dialog"
         aria-expanded={open === "branch" || open === "base"}

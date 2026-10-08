@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../../shared/lib/productIdentity";
 import { useState, type FormEvent } from "react";
 import { Modal } from "../../../shared/ui/Modal";
@@ -15,6 +16,7 @@ type Props = {
  * safeguard is a deliberate confirmation phrase.
  */
 export function ForgotLockPasswordDialog({ onClose }: Props) {
+  useLocale();
   const [typed, setTyped] = useState("");
   const confirmed = typed.trim().toLowerCase() === PHRASE;
 
@@ -27,25 +29,17 @@ export function ForgotLockPasswordDialog({ onClose }: Props) {
 
   return (
     <Modal
-      title="Reset lock password"
-      description="Removes the password and every group lock."
+      title={t("Reset lock password")}
+      description={t("Removes the password and every group lock.")}
       size="sm"
       fitViewport
       onClose={onClose}
     >
       <form onSubmit={submit} className="flex flex-col gap-3 p-4">
-        <p className="text-[12px] leading-snug text-content/70">
-          The password cannot be recovered. Resetting removes it and unlocks all
-          groups. Their projects stay in the groups and nothing is deleted. You
-          can set a new password afterwards and lock groups again.
-        </p>
+        <p className="text-[12px] leading-snug text-content/70">{t("The password cannot be recovered. Resetting removes it and unlocks all groups. Their projects stay in the groups and nothing is deleted. You can set a new password afterwards and lock groups again.")}</p>
         <p className="text-[12px] leading-snug text-amber-400">
-          {PRODUCT_IDENTITY.displayName} cannot check who you are, so anyone using this computer can
-          do this. The lock is a privacy screen, not a security boundary.
-        </p>
-        <label className="flex flex-col gap-1 text-[12px] text-content/60">
-          Type &ldquo;{PHRASE}&rdquo; to confirm
-          <input
+          {PRODUCT_IDENTITY.displayName}{t(" cannot check who you are, so anyone using this computer can do this. The lock is a privacy screen, not a security boundary.")}</p>
+        <label className="flex flex-col gap-1 text-[12px] text-content/60">{t("Type “")}{PHRASE}{t("” to confirm")}<input
             value={typed}
             onChange={(event) => setTyped(event.target.value)}
             autoComplete="off"
@@ -59,16 +53,12 @@ export function ForgotLockPasswordDialog({ onClose }: Props) {
             type="button"
             onClick={onClose}
             className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content"
-          >
-            Cancel
-          </button>
+          >{t("Cancel")}</button>
           <button
             type="submit"
             disabled={!confirmed}
             className="rounded-md bg-red-500/20 px-3 py-1.5 text-[12px] font-medium text-red-300 hover:bg-red-500/30 disabled:opacity-40"
-          >
-            Reset lock
-          </button>
+          >{t("Reset lock")}</button>
         </div>
       </form>
     </Modal>

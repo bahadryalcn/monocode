@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   useEffect,
@@ -125,6 +126,7 @@ export function InboxComments({
   replyMode,
   onReply,
 }: Props) {
+  useLocale();
   const commitCount = thread?.commits?.length ?? 0;
   if (
     thread &&
@@ -168,7 +170,7 @@ export function InboxComments({
       <div className="flex items-center gap-2 text-[12px] text-content/50">
         {thread.commits ? (
           <>
-            <h2 className="text-content/70">Activity</h2>
+            <h2 className="text-content/70">{t("Activity")}</h2>
             <span>
               {label}
               {commitCount > 0 ? ` · ${commitLabel}` : ""}
@@ -178,7 +180,7 @@ export function InboxComments({
           <h2 className="text-content/70">{label}</h2>
         )}
         {thread.truncated ? (
-          <span>Latest comments · more on {moreOn}</span>
+          <span>{t("Latest comments · more on ")}{moreOn}</span>
         ) : null}
         {loading ? (
           <LoaderCircle
@@ -246,6 +248,7 @@ export function InboxCommentForm({
   onCancelReply: () => void;
   onSubmit: (body: string) => Promise<void>;
 }) {
+  useLocale();
   const [draft, setDraft] = useState("");
   const field = useRef<HTMLTextAreaElement>(null);
   const canPost = draft.trim().length > 0 && !posting;
@@ -291,13 +294,12 @@ export function InboxCommentForm({
     >
       {replyTo ? (
         <div className="flex items-center gap-2 text-[12px] text-content/50">
-          <span className="min-w-0 truncate">
-            Replying to {replyTo.author || "comment"}
+          <span className="min-w-0 truncate">{t("Replying to ")}{replyTo.author || t("comment")}
           </span>
           <button
             type="button"
-            title="Cancel reply"
-            aria-label="Cancel reply"
+            title={t("Cancel reply")}
+            aria-label={t("Cancel reply")}
             onClick={onCancelReply}
             className="grid size-5 shrink-0 place-items-center rounded-md text-content/45 hover:bg-content/10 hover:text-content"
           >
@@ -312,7 +314,7 @@ export function InboxCommentForm({
           value={draft}
           disabled={posting}
           placeholder={
-            replyTo ? `Write a reply (${MOD}↩)` : `Leave a comment (${MOD}↩)`
+            replyTo ? t("Write a reply ({p0}↩)", { p0: MOD }) : t("Leave a comment ({p0}↩)", { p0: MOD })
           }
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
@@ -324,7 +326,7 @@ export function InboxCommentForm({
             disabled={!canPost}
             className="inline-flex h-7 items-center rounded-md bg-content px-3 text-[12px] text-background-base hover:bg-content/80 disabled:cursor-default disabled:opacity-40"
           >
-            {posting ? "Posting..." : replyTo ? "Reply" : "Comment"}
+            {posting ? t("Posting...") : replyTo ? t("Reply") : t("Comment")}
           </button>
         </div>
       </div>
@@ -334,11 +336,10 @@ export function InboxCommentForm({
 }
 
 function CommentsPending() {
+  useLocale();
   return (
     <div className="flex items-center gap-2 border-t border-stroke pt-5 text-[12px] text-content/45">
-      <LoaderCircle className="size-3.5 animate-spin" strokeWidth={1.75} />
-      Loading comments
-    </div>
+      <LoaderCircle className="size-3.5 animate-spin" strokeWidth={1.75} />{t("Loading comments")}</div>
   );
 }
 
@@ -360,6 +361,7 @@ function InboxComment({
   replyMode?: "thread" | "parent";
   onReply?: (target: InboxReplyTarget) => void;
 }) {
+  useLocale();
   const time = formatRelativeTime(comment.createdAt);
   const review = githubReviewStateLabel(comment.state);
   const location = commentLocation(comment);
@@ -403,14 +405,14 @@ function InboxComment({
                 type="button"
                 title={
                   provider === "linear"
-                    ? "Open in Linear"
+                    ? t("Open in Linear")
                     : provider === "jira"
-                      ? "Open in Jira"
+                      ? t("Open in Jira")
                       : provider === "gitlab"
-                        ? "Open on GitLab"
+                        ? t("Open on GitLab")
                         : provider === "azuredevops"
-                          ? "Open on ADO"
-                          : "Open on GitHub"
+                          ? t("Open on ADO")
+                          : t("Open on GitHub")
                 }
                 onClick={() => void openUrl(comment.url)}
                 className="hover:text-content"
@@ -447,9 +449,7 @@ function InboxComment({
                 })
               }
               className="hover:text-content"
-            >
-              Reply
-            </button>
+            >{t("Reply")}</button>
           </span>
         ) : null}
       </header>
@@ -508,6 +508,7 @@ const CLAMPED_BODY_PX = 180;
 
 /** Bot reviews and long write-ups start clamped so the timeline stays scannable. */
 function CollapsibleBody({ children }: { children: ReactNode }) {
+  useLocale();
   const inner = useRef<HTMLDivElement>(null);
   const [overflows, setOverflows] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -544,7 +545,7 @@ function CollapsibleBody({ children }: { children: ReactNode }) {
           onClick={() => setExpanded((current) => !current)}
           className="mt-1.5 text-[12px] text-content/50 hover:text-content"
         >
-          {expanded ? "Show less" : "Show more"}
+          {expanded ? t("Show less") : t("Show more")}
         </button>
       ) : null}
     </>
@@ -578,6 +579,7 @@ function TimelineStop({
   card?: boolean;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <li className="flex gap-3">
       <TimelineRail first={first} last={last} lead={card ? "h-2" : "h-0"}>
@@ -605,6 +607,7 @@ function TimelineRail({
   lead: string;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <div aria-hidden className="flex w-5 shrink-0 flex-col items-center">
       <span
@@ -635,6 +638,7 @@ function InboxTimelineComment({
   first: boolean;
   last: boolean;
 }) {
+  useLocale();
   const author = comment.author || "ghost";
   const state = comment.state.trim().toUpperCase();
   if (isReviewEvent(comment)) {
@@ -716,6 +720,7 @@ function InboxCommitRun({
   first: boolean;
   last: boolean;
 }) {
+  useLocale();
   const name = author || "ghost";
   const time = formatRelativeTime(commits[commits.length - 1].committedDate);
   return (
@@ -759,6 +764,7 @@ function TimelineEventLine({
   action: string;
   time: string;
 }) {
+  useLocale();
   return (
     <p className="flex h-5 min-w-0 items-center gap-1.5 text-[12px] text-content/50">
       <span className="min-w-0 truncate font-medium text-content">{name}</span>
@@ -780,6 +786,7 @@ function InboxCommitStop({
   commit: InboxCommit;
   last: boolean;
 }) {
+  useLocale();
   return (
     <li className="flex gap-3">
       {/* The rail runs through commit dots, so a push reads as one stretch. */}
@@ -791,7 +798,7 @@ function InboxCommitStop({
       <div className={`min-w-0 flex-1 ${last ? "" : TIMELINE_GAP}`}>
         <button
           type="button"
-          title={commit.url ? "Open commit" : commit.messageHeadline}
+          title={commit.url ? t("Open commit") : commit.messageHeadline}
           disabled={!commit.url}
           onClick={() => void openUrl(commit.url)}
           className="group flex h-5 w-full min-w-0 items-center gap-3 text-left text-[12px]"
@@ -824,6 +831,7 @@ function InboxCommentPerson({
   avatarUrl: string;
   avatar?: boolean;
 }) {
+  useLocale();
   if (!avatar) {
     return (
       <span className="min-w-0 truncate font-medium text-content">{name}</span>
@@ -838,6 +846,7 @@ function InboxCommentPerson({
 }
 
 function InboxAvatar({ name, avatarUrl }: { name: string; avatarUrl: string }) {
+  useLocale();
   const [failed, setFailed] = useState(!avatarUrl);
   const initial = name.trim().charAt(0).toUpperCase() || "?";
 

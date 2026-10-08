@@ -28,6 +28,7 @@ mod macos;
 mod macos_background;
 mod mcp;
 mod menu;
+mod native_language;
 mod notes;
 mod notifications;
 mod pasteboard;
@@ -42,6 +43,8 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod search;
+mod generic_acp;
+mod handoff_history;
 mod session_import;
 mod session_store;
 mod session_transfer;
@@ -59,7 +62,7 @@ mod windows;
 mod worktree_lifecycle;
 mod worktrees;
 
-// Phase 1 seam: spawn / kill harness children per MonoCode thread.
+// Phase 1 seam: spawn / kill harness children per imc code thread.
 // Adapters own the protocol; this host only supervises processes.
 
 /// Project directory for new sessions — prefer cwd, else home.
@@ -314,6 +317,14 @@ pub fn run() {
             remote::remote_machines,
             remote::remote_connect,
             local_host::local_host_connect,
+            generic_acp::generic_acp_list,
+            generic_acp::generic_acp_save,
+            generic_acp::generic_acp_remove,
+            generic_acp::generic_acp_registry,
+            generic_acp::generic_acp_install,
+            generic_acp::generic_acp_cancel_install,
+            handoff_history::handoff_history_save,
+            handoff_history::handoff_history_read,
             remote::remote_disconnect,
             remote::remote_request,
             remote::remote_ssh_begin,
@@ -598,6 +609,7 @@ pub fn run() {
             notes::notes_list,
             notes::notes_get,
             notes::notes_upsert,
+            notes::notes_link_session,
             notes::notes_delete,
             notes::notes_save_image,
             notes::notes_image_path,
@@ -616,6 +628,7 @@ pub fn run() {
             set_dock_badge,
             #[cfg(target_os = "macos")]
             menu::keybindings_set_overrides,
+            native_language::native_language_set,
             #[cfg(target_os = "macos")]
             menu::autosave_set_enabled,
             open_new_window,
@@ -666,7 +679,7 @@ pub fn run() {
             project_logo::forget_logo_file,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building MonoCode");
+        .expect("error while building imc code");
 
     app.run(|handle, event| match event {
         #[cfg(target_os = "macos")]

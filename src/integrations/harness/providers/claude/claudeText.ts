@@ -37,6 +37,7 @@ const REQUEST_TIMEOUT_MS = 45_000;
 const TEXT_MODEL = "claude-haiku-4-5";
 
 type TextSettings = {
+  advisor?: string;
   key: string;
   launchModel: string;
   effort?: string;
@@ -83,12 +84,14 @@ function textSettings(
   const thinking = modelSettings?.thinking === "true";
   const fast = modelSettings?.fast === "true";
   const readOnly = intent === "plan";
+  const advisor = modelSettings?.advisor;
   const settings: Record<string, boolean> = {};
   if (thinking) settings.alwaysThinkingEnabled = true;
   if (fast) settings.fastMode = true;
   if (isClaudeUltracodeEffort(effort)) settings.ultracode = true;
   return {
-    key: JSON.stringify({ effort, context, thinking, fast, readOnly }),
+    key: JSON.stringify({ effort, context, thinking, fast, readOnly, advisor }),
+    advisor,
     launchModel: resolveClaudeApiModelId(model, context),
     effort: normalizeClaudeCliEffort(effort, model),
     promptEffort: effort,
@@ -294,6 +297,7 @@ async function startLive(
       buildClaudeSpawnArgs({
         isolated: true,
         model: settings.launchModel,
+        advisor: settings.advisor,
         effort: settings.effort,
         settings: settings.settings,
         permissionMode: settings.permissionMode,

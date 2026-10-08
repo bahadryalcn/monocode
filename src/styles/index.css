@@ -681,8 +681,9 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
 }
 
 .transcript-turn {
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 240px;
+  /* History is paged. Estimated offscreen heights change the scroll range
+     during a gesture; loaded turns must keep their real layout height. */
+  content-visibility: visible;
 }
 
 ::highlight(monocode-transcript-search-match) {

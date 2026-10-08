@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -182,7 +183,7 @@ export async function askQuitConfirmation(
       confirmed = await ask(quitWhileBusyMessage(inFlight), {
         title: appName(),
         kind: "warning",
-        okLabel: "Quit",
+        get okLabel() { return t("Quit"); },
       });
     } catch {
       confirmed = false;
@@ -501,10 +502,10 @@ export async function confirmReload(
   hasUnsavedFiles: boolean,
 ): Promise<boolean> {
   if (!hasUnsavedFiles) return true;
-  return ask(`Reload ${PRODUCT_IDENTITY.displayName} and discard unsaved changes?`, {
+  return ask(t("Reload {p0} and discard unsaved changes?", { p0: PRODUCT_IDENTITY.displayName }), {
     title: appName(),
     kind: "warning",
-    okLabel: "Reload",
+    get okLabel() { return t("Reload"); },
   });
 }
 
@@ -620,8 +621,8 @@ async function confirmAndCloseWindow(
     const refs = inFlightRefs(sessions, tabs);
     if (refs.length > 0) {
       const ok = await ask(
-        "Close this window and stop its running chats? Other windows will stay open.",
-        { title: appName(), kind: "warning", okLabel: "Close window" },
+        t("Close this window and stop its running chats? Other windows will stay open."),
+        { title: appName(), kind: "warning", get okLabel() { return t("Close window"); } },
       );
       if (!ok) return;
     }

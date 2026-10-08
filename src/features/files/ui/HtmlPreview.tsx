@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 
@@ -11,6 +12,7 @@ export function HtmlPreview({
   source: string;
   active: boolean;
 }) {
+  useLocale();
   const [state, setState] = useState<{ url?: string; error?: string }>({});
   const [reload, setReload] = useState(0);
   useEffect(() => {
@@ -50,20 +52,18 @@ export function HtmlPreview({
           type="button"
           onClick={() => setReload((value) => value + 1)}
           className="text-[12px] text-content/70 hover:text-content"
-        >
-          Reload preview
-        </button>
+        >{t("Reload preview")}</button>
       </div>
       {state.url ? (
         <iframe
-          title="HTML live preview"
+          title={t("HTML live preview")}
           src={state.url}
           sandbox="allow-scripts allow-forms"
           referrerPolicy="no-referrer"
           className="min-h-0 w-full flex-1 border-0"
         />
       ) : (
-        <p className="p-6 text-[12px] text-gray-500">Opening preview…</p>
+        <p className="p-6 text-[12px] text-gray-500">{t("Opening preview…")}</p>
       )}
     </div>
   );

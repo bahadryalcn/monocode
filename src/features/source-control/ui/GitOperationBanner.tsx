@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
   useGitPanelState,
@@ -41,6 +42,7 @@ export function GitOperationBanner({
   conflictCount,
   onChanged,
 }: Props) {
+  useLocale();
   const [busy] = useGitPanelState(cwd, "busy");
   const label = operationLabel(operation);
 
@@ -49,12 +51,12 @@ export function GitOperationBanner({
       await withGitOperation(cwd, `Updating ${label.toLowerCase()}…`, work);
       setGitFeedback(cwd, {
         kind: "success",
-        title: `${label} operation complete`,
+        get title() { return t("{p0} operation complete", { p0: label }); },
       });
     } catch (error) {
       setGitFeedback(cwd, {
         kind: "error",
-        title: `Couldn’t update ${label.toLowerCase()}`,
+        get title() { return t("Couldn’t update {p0}", { p0: label.toLowerCase() }); },
         detail: errorText(error),
       });
     } finally {
@@ -83,23 +85,19 @@ export function GitOperationBanner({
         disabled={!!busy || conflictCount > 0}
         title={
           conflictCount > 0
-            ? "Resolve every conflict first"
-            : `Continue the ${label.toLowerCase()}`
+            ? t("Resolve every conflict first")
+            : t("Continue the {p0}", { p0: label.toLowerCase() })
         }
         onClick={() => void run(() => gitOperationContinue(cwd))}
         className={ACTION}
-      >
-        Continue
-      </button>
+      >{t("Continue")}</button>
       <button
         type="button"
         disabled={!!busy}
-        title={`Abort the ${label.toLowerCase()}`}
+        title={t("Abort the {p0}", { p0: label.toLowerCase() })}
         onClick={() => void abort()}
         className={ACTION}
-      >
-        Abort
-      </button>
+      >{t("Abort")}</button>
     </div>
   );
 }

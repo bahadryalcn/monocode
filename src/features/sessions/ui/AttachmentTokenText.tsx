@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { Fragment, useState } from "react";
 import { attachmentPreviewSrc } from "../model/attachments";
 import { splitAttachmentTokens } from "../model/attachmentTokens";
@@ -15,6 +16,7 @@ const PILL_CLASS =
 
 /** A token as a pill. It keeps its brackets in the DOM so selecting and copying give the text back. */
 function TokenPill({ token, label, attachment }: PillProps) {
+  useLocale();
   const [previewOpen, setPreviewOpen] = useState(false);
   const preview = attachmentPreviewSrc(attachment);
   const body = (
@@ -35,8 +37,8 @@ function TokenPill({ token, label, attachment }: PillProps) {
     <>
       <button
         type="button"
-        title={`Open ${attachment.name} full screen`}
-        aria-label={`Open ${token} (${attachment.name}) full screen`}
+        title={t("Open {p0} full screen", { p0: attachment.name })}
+        aria-label={t("Open {p0} ({p1}) full screen", { p0: token, p1: attachment.name })}
         onClick={(event) => {
           event.stopPropagation();
           setPreviewOpen(true);
@@ -64,6 +66,7 @@ export function AttachmentTokenText({
   text: string;
   attachments: Attachment[] | undefined;
 }) {
+  useLocale();
   if (!attachments?.length) return <>{text}</>;
   const segments = splitAttachmentTokens(text, attachments);
   return (

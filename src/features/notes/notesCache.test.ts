@@ -4,6 +4,8 @@ import {
   loadNotes,
   peekNotes,
   upsertNote,
+  deleteNote,
+  linkNoteToSession,
   type Note,
 } from "./notes";
 
@@ -28,6 +30,25 @@ function deferred<T>() {
 beforeEach(() => {
   invoke.mockReset();
   invalidateNotes();
+});
+
+it("updates the cached list after edits, links and deletions without a full reload", async () => {
+  invoke.mockResolvedValueOnce([note]);
+  await loadNotes();
+  const saved = { ...note, body: "Latest draft" };
+  invoke.mockResolvedValueOnce(saved);
+  await upsertNote(saved);
+  expect(await loadNotes()).toEqual([saved]);
+  const linked = { ...saved, sourceSessionId: "session-1" };
+  invoke.mockResolvedValueOnce(linked);
+  await linkNoteToSession(note.id, "session-1");
+  expect(await loadNotes()).toEqual([linked]);
+  invoke.mockResolvedValueOnce(undefined);
+  await deleteNote(note.id);
+  expect(await loadNotes()).toEqual([]);
+  expect(
+    invoke.mock.calls.filter(([command]) => command === "notes_list"),
+  ).toHaveLength(1);
 });
 
 it("reports a refresh failure and retains previously loaded notes", async () => {

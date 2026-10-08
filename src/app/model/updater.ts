@@ -1,3 +1,4 @@
+import { t } from "../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import { getIdentifier, getVersion } from "@tauri-apps/api/app";
 import { ask, message } from "@tauri-apps/plugin-dialog";
@@ -86,7 +87,7 @@ export async function runUpdateFlow(
       const current: UpdaterSnapshot = { phase: "current", currentVersion };
       onProgress?.(current);
       if (manual) {
-        await message("You're on the latest version.", { title: appName() });
+        await message(t("You're on the latest version."), { title: appName() });
       }
       return current;
     }
@@ -105,8 +106,8 @@ export async function runUpdateFlow(
     const notes = update.body?.trim();
     const detail = notes ? `\n\n${notes}` : "";
     const yes = await ask(
-      `${PRODUCT_IDENTITY.displayName} ${update.version} is available (you have ${currentVersion}).${detail}\n\nInstall now?`,
-      { title: "Update available", kind: "info" },
+      t("{p0} {p1} is available (you have {p2}).{p3}\n\nInstall now?", { p0: PRODUCT_IDENTITY.displayName, p1: update.version, p2: currentVersion, p3: detail }),
+      { get title() { return t("Update available"); }, kind: "info" },
     );
     if (!yes) return available;
 
@@ -131,7 +132,7 @@ export async function runUpdateFlow(
     const failed: UpdaterSnapshot = { phase: "error", currentVersion, error };
     onProgress?.(failed);
     if (manual) {
-      await message(`Couldn't check for updates.\n\n${error}`, {
+      await message(t("Couldn't check for updates.\n\n{p0}", { p0: error }), {
         title: appName(),
       });
     }
@@ -199,7 +200,7 @@ export async function installPendingUpdate(
       error,
     };
     onProgress?.(failed);
-    await message(`Couldn't install the update.\n\n${error}`, {
+    await message(t("Couldn't install the update.\n\n{p0}", { p0: error }), {
       title: appName(),
     });
     return failed;

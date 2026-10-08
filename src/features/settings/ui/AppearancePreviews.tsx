@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import type { CSSProperties } from "react";
 import {
   Group,
@@ -15,7 +16,7 @@ import "./AppearancePreviews.css";
 
 const presets = [
   {
-    name: "imc",
+    name: "imc code",
     note: "Cool silver, quiet surfaces",
     hue: 216,
     saturation: 24,
@@ -69,6 +70,7 @@ export function AppearanceStudio({
 }: {
   appearance: AppearanceSettings;
 }) {
+  useLocale();
   const scheme = useColorScheme();
   const light = scheme === "light";
   const selected = presets.find(
@@ -97,23 +99,23 @@ export function AppearanceStudio({
     <div className="appearance-studio">
       <div className="appearance-studio-heading">
         <div>
-          <span className="appearance-eyebrow">THE WORKSPACE ATELIER</span>
-          <h2>A place to think.</h2>
-          <p>Shape the light, the ink and the space around your work.</p>
+          <span className="appearance-eyebrow">{t("THE WORKSPACE ATELIER")}</span>
+          <h2>{t("A place to think.")}</h2>
+          <p>{t("Shape the light, the ink and the space around your work.")}</p>
         </div>
         <div
           id="setting-theme"
           data-setting-id="theme"
           className="appearance-scheme-control"
         >
-          <span>Color mode</span>
+          <span>{t("Color mode")}</span>
           <Segmented
-            label="Color scheme"
+            label={t("Color scheme")}
             value={a.themePreference}
             options={[
-              { value: "system", label: "System" },
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
+              { value: "system", get label() { return t("System"); } },
+              { value: "light", get label() { return t("Light"); } },
+              { value: "dark", get label() { return t("Dark"); } },
             ]}
             onChange={a.onThemePreference}
           />
@@ -124,68 +126,53 @@ export function AppearanceStudio({
           className="appearance-desk"
           style={workspaceStyle}
           role="region"
-          aria-label="Live workspace preview"
+          aria-label={t("Live workspace preview")}
         >
           <div className="appearance-desk-top">
             <span>
-              <img src={PRODUCT_IDENTITY.logoSrc} alt="" />
-              imc
-            </span>
-            <span className="appearance-desk-tab">studio / welcome</span>
+              <img src={PRODUCT_IDENTITY.logoSrc} alt="" />{t("imc code")}</span>
+            <span className="appearance-desk-tab">{t("studio / welcome")}</span>
             <span className="appearance-live-label">
-              <i />
-              Live preview
-            </span>
+              <i />{t("Live preview")}</span>
           </div>
           <div className="appearance-desk-content">
             <aside
               className="appearance-desk-sidebar"
-              aria-label="Sidebar preview"
+              aria-label={t("Sidebar preview")}
             >
-              <span className="appearance-desk-caption">YOUR CORNER</span>
+              <span className="appearance-desk-caption">{t("YOUR CORNER")}</span>
               <strong>
-                <span>▱</span> Studio
-              </strong>
-              <div className="appearance-desk-current">Welcome home</div>
-              <div>Small ideas</div>
-              <div>Next steps</div>
-              <span className="appearance-desk-caption appearance-desk-later">
-                RECENT FILES
-              </span>
-              <div className="appearance-desk-file">↳ welcome.ts</div>
-              <div className="appearance-desk-file">↳ notes.md</div>
-              <div className="appearance-desk-sidebar-bottom">
-                All the room you need.
-              </div>
+                <span>▱</span>{t(" Studio")}</strong>
+              <div className="appearance-desk-current">{t("Welcome home")}</div>
+              <div>{t("Small ideas")}</div>
+              <div>{t("Next steps")}</div>
+              <span className="appearance-desk-caption appearance-desk-later">{t("RECENT FILES")}</span>
+              <div className="appearance-desk-file">{t("↳ welcome.ts")}</div>
+              <div className="appearance-desk-file">{t("↳ notes.md")}</div>
+              <div className="appearance-desk-sidebar-bottom">{t("All the room you need.")}</div>
             </aside>
             <div className="appearance-desk-chat">
               <div className="appearance-desk-conversation">
-                <div className="appearance-desk-user">
-                  Let’s make something good together.
-                </div>
+                <div className="appearance-desk-user">{t("Let’s make something good together.")}</div>
                 <div className="appearance-desk-response">
-                  <span className="appearance-desk-caption">İMECE</span>
-                  <h3>Good work starts with a little clarity.</h3>
-                  <p>
-                    Your ideas, a quiet workspace, and room for the next step.
-                  </p>
+                  <span className="appearance-desk-caption">{t("İMECE")}</span>
+                  <h3>{t("Good work starts with a little clarity.")}</h3>
+                  <p>{t("Your ideas, a quiet workspace, and room for the next step.")}</p>
                 </div>
                 <div
                   className="appearance-desk-code"
-                  aria-label="Code and diff preview"
+                  aria-label={t("Code and diff preview")}
                 >
                   <div>
-                    <span>▧ welcome.ts</span>
+                    <span>{t("▧ welcome.ts")}</span>
                     <span className="appearance-desk-caption">−1 +1</span>
                   </div>
                   <pre>
                     <code>
-                      <span className="appearance-code-keyword">
-                        export function
-                      </span>
+                      <span className="appearance-code-keyword">{"export function"}</span>
                       {" welcome(name: string) {\n"}
                       <span className="appearance-deletion">
-                        {'−  return "Hello " + name;\n'}
+                        {"−  return \"Hello \" + name;\n"}
                       </span>
                       <span className="appearance-addition">
                         {
@@ -197,11 +184,11 @@ export function AppearanceStudio({
                   </pre>
                 </div>
                 <div className="appearance-desk-terminal">
-                  <span>✓</span> Workspace ready{" "}
+                  <span>✓</span>{t(" Workspace ready")}{" "}
                   <span className="appearance-desk-terminal-cursor">▎</span>
                 </div>
                 <div className="appearance-desk-composer">
-                  <span>What shall we work on?</span>
+                  <span>{t("What shall we work on?")}</span>
                   <span>↗</span>
                 </div>
               </div>
@@ -209,20 +196,20 @@ export function AppearanceStudio({
           </div>
           <div className="appearance-desk-footer">
             <span>
-              {selected?.name ?? "Custom palette"} /{" "}
-              {light ? "daylight" : "after hours"}
+              {selected?.name ?? t("Custom palette")} /{" "}
+              {light ? t("daylight") : t("after hours")}
             </span>
             <span>
-              {a.preferences.codeSize}px · {a.preferences.chatWidth}
+              {a.preferences.codeSize}{t("px · ")}{a.preferences.chatWidth}
             </span>
           </div>
         </div>
         <div className="appearance-material-library">
           <div className="appearance-library-heading">
-            <h3>Choose your materials</h3>
-            <p>Surface · ink · accent</p>
+            <h3>{t("Choose your materials")}</h3>
+            <p>{t("Surface · ink · accent")}</p>
           </div>
-          <div role="group" aria-label="Theme palettes">
+          <div role="group" aria-label={t("Theme palettes")}>
             {presets.map((p) => (
               <button
                 type="button"
@@ -259,17 +246,14 @@ export function AppearanceStudio({
           </div>
           <p className="appearance-library-note">
             {selected
-              ? `${selected.name} is selected. One palette, in daylight or after hours.`
-              : "Your custom colors are active. Adjust them in Advanced."}
+              ? t("{p0} is selected. One palette, in daylight or after hours.", { p0: selected.name })
+              : t("Your custom colors are active. Adjust them in Advanced.")}
           </p>
         </div>
       </div>
       <div className="appearance-studio-caption">
-        <span>Make it yours.</span>
-        <p>
-          This is an example workspace. Your choices apply throughout the app
-          and are saved automatically.
-        </p>
+        <span>{t("Make it yours.")}</span>
+        <p>{t("This is an example workspace. Your choices apply throughout the app and are saved automatically.")}</p>
       </div>
     </div>
   );
@@ -280,19 +264,20 @@ export function AppearanceInterface({
 }: {
   appearance: AppearanceSettings;
 }) {
+  useLocale();
   const p = a.preferences;
   return (
     <Group
-      title="Reading & space"
-      description="Give your conversations room to breathe."
+      title={t("Reading & space")}
+      description={t("Give your conversations room to breathe.")}
     >
       <Row
         id="interface-contrast"
-        label="Contrast"
-        description="Make structural borders and secondary text softer or stronger."
+        label={t("Contrast")}
+        description={t("Make structural borders and secondary text softer or stronger.")}
       >
         <Slider
-          label="Contrast"
+          label={t("Contrast")}
           value={p.contrast}
           display={`${p.contrast}%`}
           min={75}
@@ -302,16 +287,16 @@ export function AppearanceInterface({
       </Row>
       <Row
         id="diff-colors"
-        label="Diff colors"
-        description="Choose how added (+) and removed (−) lines are highlighted."
+        label={t("Diff colors")}
+        description={t("Choose how added (+) and removed (−) lines are highlighted.")}
       >
         <Select
-          label="Diff colors"
+          label={t("Diff colors")}
           value={a.diffPalette}
           options={[
-            { value: "default", label: "Red & green" },
-            { value: "colorblind", label: "Blue & orange" },
-            { value: "high-contrast", label: "Blue & orange · stronger" },
+            { value: "default", get label() { return t("Red & green"); } },
+            { value: "colorblind", get label() { return t("Blue & orange"); } },
+            { value: "high-contrast", get label() { return t("Blue & orange · stronger"); } },
           ]}
           onChange={(value) =>
             a.onDiffPalette(
@@ -324,16 +309,16 @@ export function AppearanceInterface({
       </Row>
       <Row
         id="chat-width"
-        label="Chat width"
-        description="Limit message width on large screens. Full width uses all available space."
+        label={t("Chat width")}
+        description={t("Limit message width on large screens. Full width uses all available space.")}
       >
         <Select
-          label="Chat width"
+          label={t("Chat width")}
           value={p.chatWidth}
           options={[
-            { value: "comfortable", label: "Comfortable" },
-            { value: "wide", label: "Wide" },
-            { value: "full", label: "Full width" },
+            { value: "comfortable", get label() { return t("Comfortable"); } },
+            { value: "wide", get label() { return t("Wide"); } },
+            { value: "full", get label() { return t("Full width"); } },
           ]}
           onChange={(value) =>
             a.onPreferences({
@@ -353,6 +338,7 @@ export function AppearanceTypography({
 }: {
   appearance: AppearanceSettings;
 }) {
+  useLocale();
   const p = a.preferences;
   const fontOptions = (fonts: readonly string[]) =>
     fonts.map((value) => ({
@@ -361,16 +347,16 @@ export function AppearanceTypography({
     }));
   return (
     <Group
-      title="Letterforms"
-      description="Try your fonts in the workspace above. Unavailable fonts fall back to your device’s default."
+      title={t("Letterforms")}
+      description={t("Try your fonts in the workspace above. Unavailable fonts fall back to your device’s default.")}
     >
       <Row
         id="interface-font"
-        label="Interface font"
-        description="Navigation, messages, buttons and settings."
+        label={t("Interface font")}
+        description={t("Navigation, messages, buttons and settings.")}
       >
         <Select
-          label="Interface font"
+          label={t("Interface font")}
           value={p.interfaceFont}
           options={fontOptions(INTERFACE_FONTS)}
           onChange={(interfaceFont) => a.onPreferences({ ...p, interfaceFont })}
@@ -378,21 +364,21 @@ export function AppearanceTypography({
       </Row>
       <Row
         id="monospace-font"
-        label="Monospace font"
-        description="Code blocks, file editors, diffs and the terminal."
+        label={t("Monospace font")}
+        description={t("Code blocks, file editors, diffs and the terminal.")}
       >
         <Select
-          label="Monospace font"
+          label={t("Monospace font")}
           value={p.codeFont}
           options={fontOptions(CODE_FONTS)}
           onChange={(codeFont) => a.onPreferences({ ...p, codeFont })}
         />
         <Select
-          label="Code font size"
+          label={t("Code font size")}
           value={String(p.codeSize)}
           options={[11, 12, 13, 14, 15, 16, 17, 18].map((value) => ({
             value: String(value),
-            label: `${value} px`,
+            get label() { return t("{p0} px", { p0: value }); },
           }))}
           onChange={(value) =>
             a.onPreferences({ ...p, codeSize: Number(value) })
@@ -401,11 +387,11 @@ export function AppearanceTypography({
       </Row>
       <Row
         id="code-word-wrap"
-        label="Word wrap"
-        description="Wrap long lines in chat code blocks. File editors keep their own wrap control."
+        label={t("Word wrap")}
+        description={t("Wrap long lines in chat code blocks. File editors keep their own wrap control.")}
       >
         <Toggle
-          label="Word wrap"
+          label={t("Word wrap")}
           on={p.wordWrap}
           onChange={(wordWrap) => a.onPreferences({ ...p, wordWrap })}
         />

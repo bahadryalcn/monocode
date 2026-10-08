@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { ChevronDown, ChevronRight, FileDiff } from "../../../shared/ui/icons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -36,6 +37,7 @@ export function SessionReview({
   onOpenFile,
   onOpenDiff,
 }: Props) {
+  useLocale();
   const [files, setFiles] = useState<CheckpointFile[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [acting, setActing] = useState<"keep" | "undo" | null>(null);
@@ -137,8 +139,7 @@ export function SessionReview({
             <FileDiff className="size-4" strokeWidth={1.75} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[12px] font-medium text-content/80">
-              Changed {files.length} {files.length === 1 ? "file" : "files"}
+            <div className="truncate text-[12px] font-medium text-content/80">{t("Changed ")}{files.length} {files.length === 1 ? t("file") : t("files")}
             </div>
             <div className="flex items-center gap-1.5 font-sans text-[11px] font-semibold tabular-nums -mt-0.5">
               <span className="text-diff-add-fg">
@@ -154,34 +155,28 @@ export function SessionReview({
               type="button"
               title={
                 canUndoAll
-                  ? "Undo all session changes"
+                  ? t("Undo all session changes")
                   : undoLocked
-                    ? "Undo is unavailable while another session is running in this project"
-                    : "Undo is unavailable because a file changed outside this session"
+                    ? t("Undo is unavailable while another session is running in this project")
+                    : t("Undo is unavailable because a file changed outside this session")
               }
               disabled={disabled || !canUndoAll}
               onClick={() => run("undo")}
               className="h-7 rounded-md px-2.5 text-[11px] text-content/50 hover:bg-content/8 hover:text-content disabled:opacity-35"
-            >
-              Undo
-            </button>
+            >{t("Undo")}</button>
             <button
               type="button"
-              title="Keep all session changes and dismiss this card"
+              title={t("Keep all session changes and dismiss this card")}
               disabled={disabled}
               onClick={() => run("keep")}
               className="h-7 rounded-md px-2.5 text-[11px] text-content/50 hover:bg-content/8 hover:text-content disabled:opacity-35"
-            >
-              Keep
-            </button>
+            >{t("Keep")}</button>
             <button
               type="button"
-              title="Review changes"
+              title={t("Review changes")}
               onClick={() => onOpenDiff(undefined, { sessionId, cwd })}
               className="h-7 rounded-md border border-content/12 bg-content/8 px-2.5 text-[11px] font-medium text-content/75 hover:bg-content/12 hover:text-content"
-            >
-              Review
-            </button>
+            >{t("Review")}</button>
           </div>
         </div>
         <ul
@@ -215,8 +210,8 @@ export function SessionReview({
             )}
             <span>
               {expanded
-                ? "Show fewer files"
-                : `Show ${hiddenFileCount} more ${hiddenFileCount === 1 ? "file" : "files"}`}
+                ? t("Show fewer files")
+                : t((hiddenFileCount === 1 ? "Show {p0} more file" : "Show {p0} more files"), { p0: hiddenFileCount })}
             </span>
           </button>
         ) : null}
@@ -241,6 +236,7 @@ function FileRow({
     session?: { sessionId: string; cwd: string },
   ) => void;
 }) {
+  useLocale();
   const name = basename(file.relative);
   const { menu, ...menuHandlers } = useChangedFileMenu({
     path: file.path,
@@ -270,11 +266,10 @@ function FileRow({
 }
 
 function DiffCounts({ file }: { file: CheckpointFile }) {
+  useLocale();
   if (!file.exact) {
     return (
-      <span className="shrink-0 text-[11px] font-medium text-amber-300/80">
-        Mixed changes
-      </span>
+      <span className="shrink-0 text-[11px] font-medium text-amber-300/80">{t("Mixed changes")}</span>
     );
   }
   return (

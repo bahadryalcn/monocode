@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Modal } from "../../../shared/ui/Modal";
 
@@ -28,6 +29,7 @@ export function GitPickDialog({
   onPick,
   onCancel,
 }: Props) {
+  useLocale();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const list = useRef<HTMLUListElement>(null);
@@ -80,7 +82,7 @@ export function GitPickDialog({
         />
         {shown.length === 0 ? (
           <p className="px-1 py-2 text-[12px] text-content/45">
-            {items.length === 0 ? emptyText : "Nothing matches"}
+            {items.length === 0 ? emptyText : t("Nothing matches")}
           </p>
         ) : (
           <ul ref={list} role="listbox" className="max-h-72 overflow-y-auto">

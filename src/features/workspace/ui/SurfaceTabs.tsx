@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   GitCompare,
   GripVertical,
@@ -86,12 +87,12 @@ export function surfaceTabMenuItems(
   const close: ExplorerMenuItem = {
     kind: "item",
     id: "close",
-    label: "Close",
+    get label() { return t("Close"); },
   };
   const closeOthers: ExplorerMenuItem = {
     kind: "item",
     id: "close-others",
-    label: "Close Others",
+    get label() { return t("Close Others"); },
     disabled: !canCloseOthers,
   };
   if (!isFilesystemTab(file) || isChangesTab(file)) {
@@ -104,23 +105,23 @@ export function surfaceTabMenuItems(
           {
             kind: "item" as const,
             id: "new-window",
-            label: "Open in New Window",
+            get label() { return t("Open in New Window"); },
             disabled: newWindow.dirty,
             description: newWindow.dirty ? "Save the file first" : undefined,
           },
           { kind: "sep" as const },
         ]
       : []),
-    { kind: "item", id: "open-default", label: "Open in Default App" },
+    { kind: "item", id: "open-default", get label() { return t("Open in Default App"); } },
     { kind: "item", id: "reveal", label: REVEAL_LABEL },
     { kind: "sep" },
-    { kind: "item", id: "copy-path", label: "Copy Path" },
+    { kind: "item", id: "copy-path", get label() { return t("Copy Path"); } },
     {
       kind: "item",
       id: "copy-relative-path",
-      label: "Copy Relative Path",
+      get label() { return t("Copy Relative Path"); },
     },
-    { kind: "item", id: "copy-name", label: "Copy File Name" },
+    { kind: "item", id: "copy-name", get label() { return t("Copy File Name"); } },
     { kind: "sep" },
     close,
     closeOthers,
@@ -153,9 +154,9 @@ export function surfaceTabPresentation(
   if (isSessionChangesTab(file)) {
     return {
       name: "Session Changes",
-      label: "Session Changes",
+      get label() { return t("Session Changes"); },
       iconName: "CHANGES",
-      tooltip: "Changes captured for this session only",
+      get tooltip() { return t("Changes captured for this session only"); },
     };
   }
 
@@ -165,7 +166,7 @@ export function surfaceTabPresentation(
       name,
       label: name,
       iconName: "AGENT",
-      tooltip: `${name} — orchestration agent`,
+      get tooltip() { return t("{p0} — orchestration agent", { p0: name }); },
     };
   }
 
@@ -221,6 +222,7 @@ export function SurfaceTabs({
   label = "Open files",
   trailing,
 }: Props) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeTabRef = useRef<HTMLDivElement | null>(null);
   const [menu, setMenu] = useState<SurfaceTabMenu | null>(null);
@@ -297,8 +299,8 @@ export function SurfaceTabs({
         {onPaneDragStart ? (
           <div
             role="button"
-            title="Drag to reorder pane"
-            aria-label="Drag to reorder pane"
+            title={t("Drag to reorder pane")}
+            aria-label={t("Drag to reorder pane")}
             tabIndex={-1}
             className="grid h-7.5 w-5 shrink-0 cursor-grab place-items-center rounded-md text-content/35 hover:bg-content/5 hover:text-content/70 active:cursor-grabbing touch-none"
             onPointerDown={(event) => {
@@ -418,15 +420,15 @@ export function SurfaceTabs({
                 {dirty ? (
                   <span
                     className="size-1.5 shrink-0 rounded-full bg-content/70"
-                    title="Unsaved changes"
-                    aria-label="Unsaved changes"
+                    title={t("Unsaved changes")}
+                    aria-label={t("Unsaved changes")}
                   />
                 ) : null}
               </button>
               <button
                 type="button"
-                title={`Close ${label}`}
-                aria-label={`Close ${label}`}
+                title={t("Close {p0}", { p0: label })}
+                aria-label={t("Close {p0}", { p0: label })}
                 data-no-drag
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {

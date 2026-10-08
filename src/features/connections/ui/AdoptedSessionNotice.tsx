@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useRef, useState } from "react";
 import type { Session } from "../../sessions/model/session";
 import {
@@ -14,6 +15,7 @@ export function AdoptedSessionNotice({
   session: Session;
   onRefresh?: RefreshAdoptedSession;
 }) {
+  useLocale();
   const pending = useRef(false);
   const [refreshing, setRefreshing] = useState(false);
   const [feedback, setFeedback] = useState<{ error: boolean; text: string }>();
@@ -57,7 +59,7 @@ export function AdoptedSessionNotice({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0 flex-1 space-y-1">
           {session.continuingElsewhere ? (
-            <div role="status">Working on host. {ADOPTED_RUNNING_REASON}</div>
+            <div role="status">{t("Working on host. ")}{ADOPTED_RUNNING_REASON}</div>
           ) : null}
           {session.adoptedSyncConflict ? (
             <div role="alert">{ADOPTED_CONFLICT_MESSAGE}</div>
@@ -76,16 +78,16 @@ export function AdoptedSessionNotice({
             aria-busy={refreshing}
             title={
               session.adoptedSyncConflict
-                ? "Save a separate local copy, then load the latest host conversation."
-                : "Load the latest conversation and status from the host."
+                ? t("Save a separate local copy, then load the latest host conversation.")
+                : t("Load the latest conversation and status from the host.")
             }
             className="shrink-0 rounded border border-stroke px-2.5 py-1.5 font-medium hover:bg-selection-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-50"
           >
             {refreshing
-              ? "Refreshing…"
+              ? t("Refreshing…")
               : feedback?.error
-                ? "Retry refresh"
-                : "Refresh from host"}
+                ? t("Retry refresh")
+                : t("Refresh from host")}
           </button>
         ) : null}
       </div>

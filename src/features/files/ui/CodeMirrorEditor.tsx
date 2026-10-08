@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { indentLess, indentMore } from "@codemirror/commands";
 import {
@@ -160,6 +161,7 @@ export function CodeMirrorEditor({
   onOpenFile?: (path: string) => void;
   formatOnSave?: boolean;
 }) {
+  useLocale();
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const leftViewRef = useRef<EditorView | null>(null);
@@ -884,8 +886,7 @@ export function CodeMirrorEditor({
             role="status"
             className="shrink-0 truncate border-b border-stroke px-3 py-1 text-[11px] text-content/45"
             title={blameError}
-          >
-            Blame unavailable: {blameError}
+          >{t("Blame unavailable: ")}{blameError}
           </p>
         ) : null}
         <div ref={hostRef} className="relative min-h-0 flex-1" />
@@ -961,19 +962,20 @@ function DiffChunkNav({
   onPrev: () => void;
   onNext: () => void;
 }) {
+  useLocale();
   return (
     <header
       className="flex h-8 shrink-0 items-center justify-between gap-3 border-b border-stroke px-3 pr-1"
       role="toolbar"
-      aria-label="Jump between changes"
+      aria-label={t("Jump between changes")}
     >
       <DiffChunkStat additions={additions} deletions={deletions} />
       <div className="flex items-center gap-0.5">
         <DiffLayoutToggle className="mr-1" />
         <button
           type="button"
-          title="Previous change"
-          aria-label="Previous change"
+          title={t("Previous change")}
+          aria-label={t("Previous change")}
           disabled={total === 0 || index <= 0}
           onMouseDown={(event) => event.preventDefault()}
           onClick={onPrev}
@@ -986,8 +988,8 @@ function DiffChunkNav({
         </span>
         <button
           type="button"
-          title="Next change"
-          aria-label="Next change"
+          title={t("Next change")}
+          aria-label={t("Next change")}
           disabled={total === 0 || index >= total - 1}
           onMouseDown={(event) => event.preventDefault()}
           onClick={onNext}
@@ -1007,6 +1009,7 @@ function DiffChunkStat({
   additions: number;
   deletions: number;
 }) {
+  useLocale();
   if (additions <= 0 && deletions <= 0) {
     return <span className="min-w-0 flex-1" />;
   }

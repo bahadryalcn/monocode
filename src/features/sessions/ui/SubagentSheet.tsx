@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   memo,
   useCallback,
@@ -106,11 +107,11 @@ function blockForStep(step: AgentStep): Block {
 }
 
 function runLabel(block: Block, busy: boolean): string {
-  if (isStoppedBlock(block)) return "Stopped by you";
+  if (isStoppedBlock(block)) return t("Stopped by you");
   const state = toolCallState(block);
-  if (state === "rejected") return "Failed";
-  if (state === "pending") return busy ? "Running" : "Stopped";
-  return "Done";
+  if (state === "rejected") return t("Failed");
+  if (state === "pending") return busy ? t("Running") : t("Stopped");
+  return t("Done");
 }
 
 /** Steps shown at first, and added by each "Show earlier steps". */
@@ -145,6 +146,7 @@ export function SubagentSheet({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   const sheetRef = useRef<HTMLElement>(null);
   const name = subagentName(block);
   const model = subagentModelName(block);
@@ -194,7 +196,7 @@ export function SubagentSheet({
       <section
         ref={sheetRef}
         role="dialog"
-        aria-label={`Subagent: ${name}`}
+        aria-label={t("Subagent: {p0}", { p0: name })}
         tabIndex={-1}
         className="subagent-sheet absolute inset-y-0 right-0 isolate w-[min(34rem,94%)] outline-none"
       >
@@ -218,8 +220,8 @@ export function SubagentSheet({
                   disabled={stopping}
                   title={
                     stops.failed.has(stopKey)
-                      ? "Could not stop it. Try again."
-                      : "Stop this subagent"
+                      ? t("Could not stop it. Try again.")
+                      : t("Stop this subagent")
                   }
                   onClick={() => stops.request(stopKey, onStop)}
                   className={`flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent disabled:pointer-events-none ${
@@ -229,22 +231,20 @@ export function SubagentSheet({
                   }`}
                 >
                   <Square className="size-3.5" strokeWidth={1.75} />
-                  {stopping ? "Stopping…" : "Stop"}
+                  {stopping ? t("Stopping…") : t("Stop")}
                 </button>
               ) : null}
               <button
                 type="button"
                 onClick={() => onShowInTranscript(block.id)}
-                title="Scroll to this agent in the transcript"
+                title={t("Scroll to this agent in the transcript")}
                 className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-content/55 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
               >
-                <CornerDownRight className="size-3.5" strokeWidth={1.75} />
-                Show in transcript
-              </button>
+                <CornerDownRight className="size-3.5" strokeWidth={1.75} />{t("Show in transcript")}</button>
               <button
                 type="button"
-                aria-label="Close agent panel"
-                title="Close (Esc)"
+                aria-label={t("Close agent panel")}
+                title={t("Close (Esc)")}
                 onClick={onClose}
                 className="grid size-7 shrink-0 place-items-center rounded-md text-content/45 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
               >
@@ -264,7 +264,7 @@ export function SubagentSheet({
                 {runLabel(block, busy)}
               </span>
               {run?.agentType ? <span>{run.agentType}</span> : null}
-              {model ? <span title={`Model: ${model}`}>{model}</span> : null}
+              {model ? <span title={t("Model: {p0}", { p0: model })}>{model}</span> : null}
               {summary && state !== "rejected" ? <span>{summary}</span> : null}
               <AgentClock
                 startedAt={run?.startedAt}
@@ -282,9 +282,7 @@ export function SubagentSheet({
             onOpenFile={onOpenFile}
             onOpenDiff={onOpenDiff}
           />
-          <p className="shrink-0 border-t border-content/8 px-4 py-2 text-xs text-content/40">
-            Read-only. Subagents cannot be messaged.
-          </p>
+          <p className="shrink-0 border-t border-content/8 px-4 py-2 text-xs text-content/40">{t("Read-only. Subagents cannot be messaged.")}</p>
         </div>
       </section>
     </div>
@@ -299,6 +297,7 @@ function CopyTranscriptButton({
   block: Block;
   status: string;
 }) {
+  useLocale();
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<number | null>(null);
   useEffect(
@@ -327,7 +326,7 @@ function CopyTranscriptButton({
     <button
       type="button"
       onClick={copy}
-      title={`${label} (Markdown)`}
+      title={t("{p0} (Markdown)", { p0: label })}
       aria-label={label}
       className={`grid size-7 shrink-0 place-items-center rounded-md transition-colors hover:bg-content/8 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent ${
         state === "failed"
@@ -346,16 +345,15 @@ function CopyTranscriptButton({
 
 /** What the subagent was asked, clamped until the reader opens it. */
 function PromptCard({ prompt }: { prompt: string }) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const long = prompt.length > 360 || prompt.split("\n").length > 6;
   return (
     <section
-      aria-label="Prompt"
+      aria-label={t("Prompt")}
       className="rounded-lg bg-content/6 px-3 py-2 text-[13px] leading-5"
     >
-      <h3 className="pb-0.5 text-[11px] font-medium tracking-wide text-content/40 uppercase">
-        Prompt
-      </h3>
+      <h3 className="pb-0.5 text-[11px] font-medium tracking-wide text-content/40 uppercase">{t("Prompt")}</h3>
       <p
         className={`min-w-0 whitespace-pre-wrap break-words text-content/80 ${
           open || !long ? "" : "line-clamp-6"
@@ -370,7 +368,7 @@ function PromptCard({ prompt }: { prompt: string }) {
           onClick={() => setOpen((value) => !value)}
           className="pt-1 text-xs text-content/50 hover:text-content focus-visible:outline-2 focus-visible:outline-accent"
         >
-          {open ? "Show less" : "Show full prompt"}
+          {open ? t("Show less") : t("Show full prompt")}
         </button>
       ) : null}
     </section>
@@ -394,6 +392,7 @@ const SheetStep = memo(function SheetStep({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   if (step.kind === "message") {
     return (
       <div className="min-w-0 py-1">
@@ -428,6 +427,7 @@ function SubagentTrail({
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
 }) {
+  useLocale();
   const scroller = useRef<HTMLDivElement>(null);
   // Follow the newest step until the reader scrolls up; scrolling back to the
   // end picks the follow up again.
@@ -481,8 +481,8 @@ function SubagentTrail({
         {visible.length === 0 && !report ? (
           <p className="pt-1 text-xs text-content/45">
             {running
-              ? "Waiting for the first step."
-              : "This agent did not report any steps."}
+              ? t("Waiting for the first step.")
+              : t("This agent did not report any steps.")}
           </p>
         ) : null}
         {hidden > 0 ? (
@@ -493,8 +493,7 @@ function SubagentTrail({
               setShown((count) => count + STEP_PAGE);
             }}
             className="self-start rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/60 hover:bg-content/12 hover:text-content focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            Show earlier steps ({hidden})
+          >{t("Show earlier steps (")}{hidden})
           </button>
         ) : null}
         {visible.map((step) => (
@@ -509,7 +508,7 @@ function SubagentTrail({
         ))}
         {report ? (
           <section
-            aria-label={failed ? "Failure" : "Report"}
+            aria-label={failed ? t("Failure") : t("Report")}
             className="mt-1 border-t border-content/8 pt-2"
           >
             {failed ? (

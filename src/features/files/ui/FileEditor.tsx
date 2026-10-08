@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { AlertCircle, Folder, RotateCcw } from "../../../shared/ui/icons";
 import { IS_MAC, IS_WIN } from "../../../platform/tauri/platform";
 import { isRemoteProjectPath } from "../../projects/model/recents";
@@ -85,6 +86,7 @@ export function FileEditor({
   onErrorCountChange,
   onOpenFile,
 }: Props) {
+  useLocale();
   // The path whose "before" side has been looked up, found or not. Until then
   // the editor is not drawn: showing it plain first means tearing it down and
   // building the side-by-side pair a moment later.
@@ -455,8 +457,7 @@ export function FileEditor({
 
   if (loadState.status === "loading" || diffPending) {
     return (
-      <div className="grid h-full place-items-center text-[12px] text-content/45">
-        Opening {basename(path)}…
+      <div className="grid h-full place-items-center text-[12px] text-content/45">{t("Opening ")}{basename(path)}…
       </div>
     );
   }
@@ -466,8 +467,7 @@ export function FileEditor({
       <div className="grid h-full place-items-center p-6">
         <div className="max-w-md text-center">
           <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
-          <p className="text-[13px] text-content">
-            Couldn’t open {basename(path)}
+          <p className="text-[13px] text-content">{t("Couldn’t open ")}{basename(path)}
           </p>
           <p className="mt-1 text-[12px] leading-5 text-content/50">
             {loadState.message}
@@ -477,9 +477,7 @@ export function FileEditor({
             onClick={() => setReloadKey((value) => value + 1)}
             className="mx-auto mt-4 flex h-7 items-center gap-1.5 rounded-md bg-content/10 px-2.5 text-[12px] text-content hover:bg-content/15"
           >
-            <RotateCcw className="size-3" strokeWidth={1.75} />
-            Retry
-          </button>
+            <RotateCcw className="size-3" strokeWidth={1.75} />{t("Retry")}</button>
           {isRemoteProjectPath(path) ? null : (
             <button
               type="button"
@@ -502,9 +500,7 @@ export function FileEditor({
           role="status"
           className="shrink-0 border-b border-stroke px-3 py-1 text-[12px] text-content/60"
         >
-          {gitDiff.kind === "staged" ? "Staged" : "Unstaged"} line-ending
-          changes. Line breaks are normalized in this view.
-        </p>
+          {gitDiff.kind === "staged" ? t("Staged") : t("Unstaged")}{t(" line-ending changes. Line breaks are normalized in this view.")}</p>
       )}
       {markdown || svg || html ? (
         <MarkdownViewShell
@@ -619,25 +615,24 @@ export function FileEditor({
             onClick={() => void goLive()}
             title={
               isRemoteProjectPath(path)
-                ? "Go Live is available for local HTML files."
-                : "Save and open this HTML file in Google Chrome"
+                ? t("Go Live is available for local HTML files.")
+                : t("Save and open this HTML file in Google Chrome")
             }
             className="mr-2 shrink-0 rounded px-1.5 py-0.5 font-sans text-[11px] text-content/75 hover:bg-content/10 hover:text-content disabled:opacity-40"
           >
-            {openingChrome ? "Opening…" : "Go Live"}
+            {openingChrome ? t("Opening…") : t("Go Live")}
           </button>
         ) : null}
         <InlineBlameToggle reason={footerBlameReason} />
         {saveState.status === "saving" ? (
-          <span>Saving…</span>
+          <span>{t("Saving…")}</span>
         ) : saveState.status === "saved" ? (
-          <span>Saved</span>
+          <span>{t("Saved")}</span>
         ) : saveState.status === "error" ? (
           <span
             className="max-w-64 truncate text-red-400"
             title={saveState.message}
-          >
-            Save failed: {saveState.message}
+          >{t("Save failed: ")}{saveState.message}
           </span>
         ) : null}
       </footer>
@@ -652,6 +647,7 @@ export function FileEditor({
  * safe to preview a file the agent may have just written.
  */
 function SvgPreview({ source }: { source: string }) {
+  useLocale();
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {

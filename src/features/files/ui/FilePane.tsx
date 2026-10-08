@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { lazySurface } from "../../../shared/ui/lazySurface";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { memo, useSyncExternalStore } from "react";
@@ -111,6 +112,7 @@ function FilePaneComponent({
   onPaneDragStart,
   onTerminalMetaChange,
 }: Props) {
+  useLocale();
   const diffViewer = useSyncExternalStore(
     subscribeDiffViewer,
     loadDiffViewer,
@@ -311,6 +313,7 @@ function PlanSurface({
     target?: PlanBuildTarget,
   ) => void;
 }) {
+  useLocale();
   const plan = file.plan;
   const [mode, setMode] = useMarkdownMode(file.path);
   // A streaming plan's text lives only in the store; the `sessions` prop lags.
@@ -326,9 +329,7 @@ function PlanSurface({
   if (!block || !plan) {
     return (
       <div className="grid h-full place-items-center p-6 text-center">
-        <p className="text-[13px] text-content/70">
-          This plan is no longer in the session.
-        </p>
+        <p className="text-[13px] text-content/70">{t("This plan is no longer in the session.")}</p>
       </div>
     );
   }
@@ -387,7 +388,7 @@ function PlanSurface({
         }
         source={
           <textarea
-            aria-label="Plan markdown"
+            aria-label={t("Plan markdown")}
             spellCheck={false}
             value={block.text}
             disabled={

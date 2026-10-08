@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useContext } from "react";
 import { NativePopupHost } from "../../../shared/ui/NativePopupHost";
 import type { ComponentPropsWithoutRef } from "react";
@@ -21,6 +22,7 @@ export function GitPickerTrigger({
   dimWhenDisabled = true,
   ...props
 }: Props) {
+  useLocale();
   const host = useContext(NativePopupHost);
   if (host) return null;
   const Icon = worktree ? FolderTree : GitBranch;
@@ -35,7 +37,7 @@ export function GitPickerTrigger({
         {loading ? (
           <>
             {/* Reserve the same line box while the current branch loads. */}
-            <span className="invisible">main</span>
+            <span className="invisible">{t("main")}</span>
             <span className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-current opacity-50" />
           </>
         ) : (
@@ -43,9 +45,7 @@ export function GitPickerTrigger({
         )}
       </span>
       {worktree && (
-        <span className="shrink-0 rounded bg-content/8 px-1 text-[10px] text-content/45">
-          Worktree
-        </span>
+        <span className="shrink-0 rounded bg-content/8 px-1 text-[10px] text-content/45">{t("Worktree")}</span>
       )}
       <ChevronDown className="size-3 shrink-0 text-content/40" />
     </button>

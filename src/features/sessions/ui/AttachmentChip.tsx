@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useState } from "react";
 import { X } from "../../../shared/ui/icons";
 import { attachmentPreviewSrc, isAttachmentFolder } from "../model/attachments";
@@ -21,6 +22,7 @@ export function AttachmentChip({
   token,
   onInsertToken,
 }: Props) {
+  useLocale();
   const [previewOpen, setPreviewOpen] = useState(false);
   const [loadedPreview, setLoadedPreview] = useState<string>();
   const [loading, setLoading] = useState(false);
@@ -53,8 +55,8 @@ export function AttachmentChip({
     label && onInsertToken ? (
       <button
         type="button"
-        title={`Insert ${token} into the message`}
-        aria-label={`Insert ${token} into the message`}
+        title={t("Insert {p0} into the message", { p0: token })}
+        aria-label={t("Insert {p0} into the message", { p0: token })}
         // Keeps focus, and so the caret, in the message box.
         onMouseDown={(event) => event.preventDefault()}
         onClick={(event) => {
@@ -81,8 +83,8 @@ export function AttachmentChip({
           <span className="relative shrink-0">
             <button
               type="button"
-              aria-label={`Open ${attachment.name} full screen`}
-              title={`Open ${attachment.name} full screen`}
+              aria-label={t("Open {p0} full screen", { p0: attachment.name })}
+              title={t("Open {p0} full screen", { p0: attachment.name })}
               onClick={(event) => {
                 event.stopPropagation();
                 setPreviewOpen(true);
@@ -113,36 +115,32 @@ export function AttachmentChip({
                 <button
                   type="button"
                   disabled={loading}
-              aria-label={`Open ${attachment.name} full screen`}
+              aria-label={t("Open {p0} full screen", { p0: attachment.name })}
                   onClick={(event) => {
                 event.stopPropagation();
                     void loadPreview();
                   }}
                   className="cursor-zoom-in hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                 >
-                  {loading ? "Loading…" : attachment.name}
+                  {loading ? t("Loading…") : attachment.name}
                 </button>
               ) : (
                 attachment.name
               )}
             </span>
             {previewError ? (
-              <span role="alert" className="text-[10px] text-amber-400">
-                Preview unavailable. Try again.
-              </span>
+              <span role="alert" className="text-[10px] text-amber-400">{t("Preview unavailable. Try again.")}</span>
             ) : null}
             {attachment.missing ? (
-              <span className="shrink-0 text-[10px] leading-none text-amber-400">
-                missing
-              </span>
+              <span className="shrink-0 text-[10px] leading-none text-amber-400">{t("missing")}</span>
             ) : null}
           </>
         )}
         {onRemove ? (
           <button
             type="button"
-            title="Remove"
-            aria-label={`Remove ${attachment.name}`}
+            title={t("Remove")}
+            aria-label={t("Remove {p0}", { p0: attachment.name })}
             onClick={(event) => {
               event.stopPropagation();
               onRemove();

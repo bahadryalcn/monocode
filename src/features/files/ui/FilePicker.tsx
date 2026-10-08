@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { RefreshCw, Search } from "../../../shared/ui/icons";
 import { appName } from "../../../shared/lib/appName";
 import {
@@ -51,7 +52,7 @@ export const LAYOUT_ACTION_PREFIX = "layout-";
 export function layoutPaletteActions(): Action[] {
   return LAYOUT_PRESETS.map((preset) => ({
     id: `${LAYOUT_ACTION_PREFIX}${preset.id}`,
-    label: `Layout: ${preset.label}`,
+    get label() { return t("Layout: {p0}", { p0: preset.label }); },
   }));
 }
 
@@ -64,7 +65,7 @@ function paletteActions(
     ? [
         {
           id: "toggle-notes",
-          label: "Toggle Notes Panel",
+          get label() { return t("Toggle Notes Panel"); },
           hint:
             keybindingShortcutLabel(NOTES_PANEL_COMMAND, `${MOD}N`) ??
             undefined,
@@ -72,17 +73,17 @@ function paletteActions(
       ]
     : [];
   return [
-    { id: "reload", label: `Reload ${appName()}`, hint: reloadActionHint() },
+    { id: "reload", get label() { return t("Reload {p0}", { p0: appName() }); }, hint: reloadActionHint() },
     ...(stopBackgroundWork
       ? [
           {
             id: "stop-background",
-            label: "Stop Background Work in This Session",
+            get label() { return t("Stop Background Work in This Session"); },
           },
         ]
       : []),
     ...(isRemoteProjectPath(cwd)
-      ? [{ id: "reconnect-remote", label: "Reconnect Remote Machine" }]
+      ? [{ id: "reconnect-remote", get label() { return t("Reconnect Remote Machine"); } }]
       : []),
     ...notes,
     ...(arrangeLayout ? layoutPaletteActions() : []),
@@ -114,6 +115,7 @@ export function FilePicker({
   onRunAction,
   onClose,
 }: Props) {
+  useLocale();
   const peekFiles = () => peekProjectFiles(cwd);
   const search = useRef<HTMLInputElement>(null);
   const onCloseRef = useRef(onClose);
@@ -279,7 +281,7 @@ export function FilePicker({
       <div className="absolute inset-0" onMouseDown={onClose} />
       <div
         role="dialog"
-        aria-label={paletteMode ? "Command Palette" : "Go to File"}
+        aria-label={paletteMode ? t("Command Palette") : t("Go to File")}
         data-file-picker
         onMouseDown={(e) => e.stopPropagation()}
         className="absolute left-1/2 top-[12%] flex w-[min(560px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-lg border border-content/10 bg-content/5 backdrop-blur-xl"
@@ -291,8 +293,8 @@ export function FilePicker({
               ref={search}
               type="text"
               value={query}
-              placeholder="Go to File (type > for commands)"
-              aria-label={paletteMode ? "Command Palette" : "Go to File"}
+              placeholder={t("Go to File (type > for commands)")}
+              aria-label={paletteMode ? t("Command Palette") : t("Go to File")}
               spellCheck={false}
               autoComplete="off"
               autoCorrect="off"
@@ -374,6 +376,7 @@ function ActionList({
   onActive: (index: number) => void;
   onRun: (action: RankedAction) => void;
 }) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeRef = useRef<HTMLButtonElement>(null);
 
@@ -385,7 +388,7 @@ function ActionList({
     <div
       ref={lockOverscroll}
       role="listbox"
-      aria-label="Commands"
+      aria-label={t("Commands")}
       className="max-h-[min(380px,50vh)] overflow-y-auto overscroll-none px-1.5 pb-1.5"
     >
       {actions.map((action, index) => {
@@ -439,6 +442,7 @@ function FileList({
   onActive: (index: number) => void;
   onPick: (file: RankedFile) => void;
 }) {
+  useLocale();
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeRef = useRef<HTMLButtonElement>(null);
   const pointer = useRef({ x: Number.NaN, y: Number.NaN, allow: false });
@@ -474,7 +478,7 @@ function FileList({
     <div
       ref={lockOverscroll}
       role="listbox"
-      aria-label="Files"
+      aria-label={t("Files")}
       onMouseMove={onListMouseMove}
       className="max-h-[min(380px,50vh)] overflow-y-auto overscroll-none px-1.5 pb-1.5"
     >

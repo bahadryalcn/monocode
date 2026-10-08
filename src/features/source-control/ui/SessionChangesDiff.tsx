@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Loader } from "../../../shared/ui/icons";
 import {
@@ -27,6 +28,7 @@ const DIFF_LOAD_CONCURRENCY = 4;
 
 /** Read-only review of the exact before/after snapshots owned by one session. */
 export function SessionChangesDiff({ cwd, sessionId, focusPath }: Props) {
+  useLocale();
   const [files, setFiles] = useState<CheckpointFile[] | null>(null);
   const [diffs, setDiffs] = useState<Map<string, LoadedDiff>>(new Map());
   const [error, setError] = useState<string | null>(null);
@@ -159,26 +161,20 @@ export function SessionChangesDiff({ cwd, sessionId, focusPath }: Props) {
 
   if (!cwd || cwd === "~") {
     return (
-      <p className="grid h-full place-items-center text-[13px] text-content/45">
-        No project folder
-      </p>
+      <p className="grid h-full place-items-center text-[13px] text-content/45">{t("No project folder")}</p>
     );
   }
   if (error) {
     return (
       <div className="grid h-full place-items-center p-6 text-center">
         <AlertCircle className="mx-auto mb-3 size-5 text-red-400" />
-        <p className="text-[13px] text-content">
-          Couldn’t load session changes
-        </p>
+        <p className="text-[13px] text-content">{t("Couldn’t load session changes")}</p>
         <p className="mt-1 text-[12px] text-content/50">{error}</p>
         <button
           type="button"
           onClick={() => setRetry((value) => value + 1)}
           className="mt-3 text-[13px] text-content"
-        >
-          Retry
-        </button>
+        >{t("Retry")}</button>
       </div>
     );
   }
@@ -191,9 +187,7 @@ export function SessionChangesDiff({ cwd, sessionId, focusPath }: Props) {
   }
   if (files.length === 0) {
     return (
-      <p className="grid h-full place-items-center text-[13px] text-content/45">
-        No session changes
-      </p>
+      <p className="grid h-full place-items-center text-[13px] text-content/45">{t("No session changes")}</p>
     );
   }
 

@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import { PRODUCT_IDENTITY } from "../../shared/lib/productIdentity";
 import { prefetchGithubWorkItem } from "../../features/inbox/model/githubTasks";
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
@@ -76,6 +77,8 @@ import { IS_MAC, MOD } from "../../platform/tauri/platform";
 import { copyText } from "../../platform/tauri/clipboard";
 import { forgetRemoteQueue } from "../../features/connections/model/useRemoteQueue";
 import { RemoteDataStatus } from "../../features/connections/ui/RemoteDataStatus";
+import { useRemoteConnection } from "../../features/connections/model/useRemoteConnection";
+import { classifyRemoteError, isConnectionFailure } from "../../features/connections/model/remoteFailure";
 import { resolveModel } from "../../features/sessions/model/models";
 import type { OpenFileFn } from "../../features/search/model/search";
 import { sessionDisplayTitle } from "../../features/sessions/model/session";
@@ -494,9 +497,14 @@ function SidebarComponent({
   onOpenWhatsNew,
   onDismissUpdate,
 }: Props) {
+  useLocale();
   const remoteProject = isRemoteProjectPath(cwd);
   const tab: SidebarTabId = requestedTab;
   const remote = useRemoteProjectSessions(cwd, remoteProject);
+  const remoteConnection = useRemoteConnection(remoteProject ? cwd : undefined);
+  const remoteConnectionIssue = (remoteConnection.status !== "connected" &&
+    (remoteConnection.status !== "connecting" || remoteConnection.reconnecting)) ||
+    (!!remote.dataState.error && isConnectionFailure(classifyRemoteError(remote.dataState.error)));
   const hostProject = remoteProject ? remoteProjectFor(cwd) : undefined;
   const remoteChange = async (
     sessionId: string,
@@ -668,8 +676,8 @@ function SidebarComponent({
       <span
         data-workspace-working-count
         aria-live="polite"
-        aria-label={`${workingSessionCount} working ${workingSessionCount === 1 ? "session" : "sessions"}`}
-        title={`${workingSessionCount} working ${workingSessionCount === 1 ? "session" : "sessions"}`}
+        aria-label={t((workingSessionCount === 1 ? "{p0} working session" : "{p0} working sessions"), { p0: workingSessionCount })}
+        title={t((workingSessionCount === 1 ? "{p0} working session" : "{p0} working sessions"), { p0: workingSessionCount })}
         className="ml-2 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-accent/15 px-1.5 text-[11px] font-semibold tabular-nums leading-none text-accent"
       >
         {workingSessionCount}
@@ -1298,9 +1306,9 @@ function SidebarComponent({
     ? sessionFolders.find((folder) => folder.id === folderMenu.folderId)
     : undefined;
   const folderMenuItems: ExplorerMenuItem[] = [
-    { kind: "item", id: "rename", label: "Rename", shortcut: "F2" },
+    { kind: "item", id: "rename", get label() { return t("Rename"); }, shortcut: "F2" },
     { kind: "sep" },
-    { kind: "item", id: "ungroup", label: "Ungroup" },
+    { kind: "item", id: "ungroup", get label() { return t("Ungroup"); } },
   ];
   const sessionMenuItems: ExplorerMenuItem[] = [
     ...(onCancelReminders && menuReminderTimes.length > 0
@@ -1308,7 +1316,7 @@ function SidebarComponent({
           {
             kind: "item" as const,
             id: "reminder:cancel",
-            label: "Cancel reminder",
+            get label() { return t("Cancel reminder"); },
             description:
               menuReminderTimes.length === 1
                 ? formatReminderTime(menuReminderTimes[0])
@@ -1331,7 +1339,7 @@ function SidebarComponent({
           {
             kind: "item" as const,
             id: "side-by-side",
-            label: "Open Side by Side",
+            get label() { return t("Open Side by Side"); },
           },
         ]
       : []),
@@ -1340,7 +1348,7 @@ function SidebarComponent({
           {
             kind: "item" as const,
             id: "rename",
-            label: "Rename",
+            get label() { return t("Rename"); },
             shortcut: "F2",
           },
         ]
@@ -1350,18 +1358,18 @@ function SidebarComponent({
           {
             kind: "item" as const,
             id: "copy-session-id",
-            label: "Copy session ID",
+            get label() { return t("Copy session ID"); },
             submenu: [
               {
                 kind: "item" as const,
                 id: "copy-harness-session-id",
-                label: "Harness session ID",
+                get label() { return t("Harness session ID"); },
                 disabled: !menuSessions[0]?.providerSessionId,
               },
               {
                 kind: "item" as const,
                 id: "copy-monocode-session-id",
-                label: `${PRODUCT_IDENTITY.displayName} session ID`,
+                get label() { return t("{p0} session ID", { p0: PRODUCT_IDENTITY.displayName }); },
               },
             ],
           },
@@ -1381,20 +1389,20 @@ function SidebarComponent({
     {
       kind: "item",
       id: "reminder",
-      label: "Remind me",
+      get label() { return t("Remind me"); },
       disabled: !onSetReminders,
       submenu: sessionReminderPresets(),
     },
     ...(!multipleMenuSessions && !selectionMode
-      ? [{ kind: "item" as const, id: "select", label: "Select" }]
+      ? [{ kind: "item" as const, id: "select", get label() { return t("Select"); } }]
       : []),
     { kind: "sep" as const },
-    { kind: "item" as const, id: "folder-new", label: "New folder" },
+    { kind: "item" as const, id: "folder-new", get label() { return t("New folder"); } },
     ...(sessionFolders.length > 0 ? [{ kind: "sep" as const }] : []),
     ...sessionFolders.map((folder) => ({
       kind: "item" as const,
       id: `folder-add:${folder.id}`,
-      label: `Add to ${folder.name}`,
+      get label() { return t("Add to {p0}", { p0: folder.name }); },
       checked:
         menuSessionIds.length > 0 &&
         menuSessionIds.every((sessionId) =>
@@ -1432,7 +1440,7 @@ function SidebarComponent({
                 {
                   kind: "item" as const,
                   id: "delete",
-                  label: "Delete",
+                  get label() { return t("Delete"); },
                   shortcut: "⌫",
                   danger: true,
                 },
@@ -1965,8 +1973,8 @@ function SidebarComponent({
       ref={searchInputRef}
       type="text"
       value={searchQuery}
-      placeholder="Search conversations..."
-      aria-label="Search conversations"
+      placeholder={t("Search conversations...")}
+      aria-label={t("Search conversations")}
       spellCheck={false}
       autoComplete="off"
       autoCorrect="off"
@@ -2064,9 +2072,7 @@ function SidebarComponent({
             switchError={workspaceSwitchError}
           />
         ) : (
-          <span className="min-w-0 truncate text-sm font-medium leading-tight">
-            Workspace
-          </span>
+          <span className="min-w-0 truncate text-sm font-medium leading-tight">{t("Workspace")}</span>
         )}
       </div>
       {workingSessionsBadge}
@@ -2084,7 +2090,7 @@ function SidebarComponent({
           {workspaceHeader}
           <div
             role="tablist"
-            aria-label="Workspace"
+            aria-label={t("Workspace")}
             className="imece-workspace-tabs flex shrink-0 items-center gap-px border-b border-stroke"
           >
             {workspaceTabItems}
@@ -2137,7 +2143,7 @@ function SidebarComponent({
           {!compactRailVisible ? (
             <div
               role="tablist"
-              aria-label="Workspace"
+              aria-label={t("Workspace")}
               className="imece-workspace-tabs flex shrink-0 items-center gap-px overflow-visible border-b border-stroke"
             >
               {workspaceTabItems}
@@ -2173,9 +2179,7 @@ function SidebarComponent({
               />
             </div>
           ) : (
-            <p className="px-3 py-2 text-[12px] text-content/50">
-              No project folder
-            </p>
+            <p className="px-3 py-2 text-[12px] text-content/50">{t("No project folder")}</p>
           )}
         </div>
         {tab === "sessions" && cwd && cwd !== "~" ? (
@@ -2190,7 +2194,7 @@ function SidebarComponent({
             <span data-session-selection-keep className="contents">
               <SessionsHeaderButton
                 label={
-                  selectionMode ? "Stop selecting" : "Select conversations"
+                  selectionMode ? t("Stop selecting") : t("Select conversations")
                 }
                 active={selectionMode}
                 onClick={() => {
@@ -2207,7 +2211,7 @@ function SidebarComponent({
               </SessionsHeaderButton>
             </span>
             <SessionsHeaderButton
-              label="Filter sessions"
+              label={t("Filter sessions")}
               active={filtersActive}
               open={!!filterMenu}
               hasPopup
@@ -2220,14 +2224,13 @@ function SidebarComponent({
         {tab === "sessions" && cwd && cwd !== "~" && showBulkBar ? (
           <div
             role="toolbar"
-            aria-label="Selected conversations"
+            aria-label={t("Selected conversations")}
             data-session-bulk-bar
             data-session-selection-keep
             className="flex min-h-8 shrink-0 flex-wrap items-center gap-x-1 gap-y-0.5 border-b border-stroke bg-content/5 px-2 py-1 text-[11px] text-content/70"
           >
             <span className="mr-auto shrink-0 pl-0.5 tabular-nums text-content">
-              {selectedSessionIds.size} selected
-            </span>
+              {selectedSessionIds.size}{t(" selected")}</span>
             <button
               type="button"
               disabled={
@@ -2236,21 +2239,19 @@ function SidebarComponent({
               }
               onClick={selectAllListedSessions}
               className="rounded-md px-1.5 py-0.5 hover:bg-content/10 hover:text-content disabled:pointer-events-none disabled:opacity-40"
-            >
-              Select all
-            </button>
+            >{t("Select all")}</button>
             <button
               type="button"
               onClick={clearSessionSelection}
               className="rounded-md px-1.5 py-0.5 hover:bg-content/10 hover:text-content"
             >
-              {selectedSessionIds.size > 0 ? "Clear" : "Done"}
+              {selectedSessionIds.size > 0 ? t("Clear") : t("Done")}
             </button>
             {selectedSessionIds.size > 0 ? (
               <span className="flex shrink-0 items-center gap-px">
                 {onOpenSessionsSideBySide && selectedOrderedIds.length > 1 ? (
                   <BulkBarAction
-                    label="Open Side by Side"
+                    label={t("Open Side by Side")}
                     onClick={() => {
                       onOpenSessionsSideBySide(selectedOrderedIds);
                       clearSessionSelection();
@@ -2261,7 +2262,7 @@ function SidebarComponent({
                 ) : null}
                 {onPinSession || onPinSessions ? (
                   <BulkBarAction
-                    label={allSelectedPinned ? "Unpin" : "Pin"}
+                    label={allSelectedPinned ? t("Unpin") : t("Pin")}
                     disabled={deleting}
                     onClick={() =>
                       pinSessions(selectedOrderedIds, !allSelectedPinned)
@@ -2272,7 +2273,7 @@ function SidebarComponent({
                 ) : null}
                 {onArchiveSession || onArchiveSessions ? (
                   <BulkBarAction
-                    label={allSelectedArchived ? "Unarchive" : "Archive"}
+                    label={allSelectedArchived ? t("Unarchive") : t("Archive")}
                     disabled={deleting}
                     onClick={() =>
                       archiveSessions(selectedOrderedIds, !allSelectedArchived)
@@ -2283,7 +2284,7 @@ function SidebarComponent({
                 ) : null}
                 {onDeleteSession || onDeleteSessions ? (
                   <BulkBarAction
-                    label={deleting ? "Deleting…" : "Delete"}
+                    label={deleting ? t("Deleting…") : t("Delete")}
                     disabled={deleting}
                     danger
                     onClick={() => void bulkDeleteSessions(selectedOrderedIds)}
@@ -2325,24 +2326,23 @@ function SidebarComponent({
             )}
             <span className="min-w-0 flex-1 break-words">
               {deleteProgress
-                ? `Deleting conversations… ${deleteProgress.completed}/${deleteProgress.total} completed`
+                ? t("Deleting conversations… {p0}/{p1} completed", { p0: deleteProgress.completed, p1: deleteProgress.total })
                 : bulkNotice}
             </span>
             {!deleteProgress ? (
               <button
                 type="button"
                 onClick={dismissBulkNotice}
-                aria-label="Dismiss deletion result"
+                aria-label={t("Dismiss deletion result")}
                 className="shrink-0 text-content/50 hover:text-content"
-              >
-                Dismiss
-              </button>
+              >{t("Dismiss")}</button>
             ) : null}
           </div>
         ) : null}
         {tab === "sessions" && remoteProject ? (
           <RemoteDataStatus state={remote.dataState}
-            label={remote.machine ? `sessions from ${remote.machine.name}` : "sessions"}
+            connectionIssueHandled={remoteConnectionIssue}
+            label={remote.machine ? t("sessions from {p0}", { p0: remote.machine.name }) : t("sessions")}
             onRefresh={remote.refresh} disabled={!remote.machine && !remote.dataState.error} />
         ) : null}
         <div
@@ -2356,9 +2356,7 @@ function SidebarComponent({
           }`}
         >
           {!cwd || cwd === "~" ? (
-            <p className="px-3 py-2 text-[12px] text-content/50">
-              No project folder
-            </p>
+            <p className="px-3 py-2 text-[12px] text-content/50">{t("No project folder")}</p>
           ) : (
             <div>
               {/* Loading and errors precede empty results, so an unfinished
@@ -2376,9 +2374,9 @@ function SidebarComponent({
                   />
                   {remoteLoading
                     ? remote.machine
-                      ? `Loading sessions from ${remote.machine.name}…`
-                      : "Connecting to this project’s machine…"
-                    : "Loading conversations…"}
+                      ? t("Loading sessions from {p0}…", { p0: remote.machine.name })
+                      : t("Connecting to this project’s machine…")
+                    : t("Loading conversations…")}
                 </p>
               ) : remoteProject &&
                 remote.failed &&
@@ -2389,24 +2387,20 @@ function SidebarComponent({
                 >
                   <p>
                     {remote.machine
-                      ? `Couldn’t reach ${remote.machine.name}. Trying again…`
-                      : "Couldn’t load sessions"}
+                      ? t("Couldn’t reach {p0}. Trying again…", { p0: remote.machine.name })
+                      : t("Couldn’t load sessions")}
                   </p>
                   <button
                     type="button"
                     onClick={refreshRemoteProjectSessions}
                     className="mt-2 rounded-md bg-content/8 px-2 py-1 text-content/80 hover:bg-content/15"
-                  >
-                    Retry
-                  </button>
+                  >{t("Retry")}</button>
                 </div>
               ) : status === "error" && projectSessions.length === 0 ? (
                 <p
                   role="alert"
                   className="px-3 py-2 text-[12px] text-content/50"
-                >
-                  Couldn’t load sessions
-                </p>
+                >{t("Couldn’t load sessions")}</p>
               ) : visibleSessions.length === 0 ? (
                 // A narrowed-down result is a transient answer to what the user
                 // just typed, so it stays a quiet line of text. Only the genuine
@@ -2415,8 +2409,8 @@ function SidebarComponent({
                   <div className="flex flex-col items-start gap-1.5 px-3 py-2 text-[12px] text-content/50">
                     <p>
                       {searchNarrowed
-                        ? "No matching sessions"
-                        : "No sessions match these filters"}
+                        ? t("No matching sessions")
+                        : t("No sessions match these filters")}
                     </p>
                     {filtersActive && listedSessions.length > 0 ? (
                       <button
@@ -2427,17 +2421,12 @@ function SidebarComponent({
                             DEFAULT_SESSION_SIDEBAR_FILTERS,
                           )
                         }
-                      >
-                        Clear filters ({listedSessions.length}{" "}
-                        {listedSessions.length === 1 ? "session" : "sessions"}{" "}
-                        hidden)
-                      </button>
+                      >{t("Clear filters (")}{listedSessions.length}{" "}
+                        {listedSessions.length === 1 ? t("session") : t("sessions")}{" "}{t("hidden)")}</button>
                     ) : null}
                   </div>
                 ) : remoteProject && !remote.machine ? (
-                  <p className="px-3 py-2 text-[12px] text-content/45">
-                    This project’s machine isn’t connected on this computer.
-                  </p>
+                  <p className="px-3 py-2 text-[12px] text-content/45">{t("This project’s machine isn’t connected on this computer.")}</p>
                 ) : (
                   <SessionsEmpty message="Sessions you start will show up here" />
                 )
@@ -2655,8 +2644,8 @@ function SidebarComponent({
                                       type="button"
                                       data-no-drag
                                       data-tauri-drag-region="false"
-                                      title="New session"
-                                      aria-label="New session"
+                                      title={t("New session")}
+                                      aria-label={t("New session")}
                                       onClick={() =>
                                         onNewInFolder(entry.folder.id)
                                       }
@@ -2666,9 +2655,7 @@ function SidebarComponent({
                                         className="size-3 shrink-0"
                                         strokeWidth={1.75}
                                       />
-                                      <span className="text-[13px] font-semibold leading-snug">
-                                        New session
-                                      </span>
+                                      <span className="text-[13px] font-semibold leading-snug">{t("New session")}</span>
                                     </button>
                                   </div>
                                 ) : null}
@@ -2739,7 +2726,7 @@ function SidebarComponent({
               <GithubStarPrompt />
               {!compactProjectRail ? (
                 <RailAction
-                  label="Settings"
+                  label={t("Settings")}
                   icon={Settings}
                   onClick={onOpenSettings}
                   shortcut={`${MOD},`}
@@ -2810,7 +2797,7 @@ function SidebarComponent({
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize sidebar"
+        aria-label={t("Resize sidebar")}
         aria-valuenow={resize.width}
         aria-valuemin={MIN_WIDTH}
         aria-valuemax={MAX_WIDTH}
@@ -2939,6 +2926,7 @@ function SearchableProjectPickerWithMenu({
   onRemoveProject?: Props["onRemoveProject"];
   onOpenNotificationSettings?: (projectPath?: string) => void;
 }) {
+  useLocale();
   const projectMenu = useProjectMenu({
     onRemoveProject,
     onOpenNotificationSettings,
@@ -2996,6 +2984,7 @@ function SidebarProjectPicker({
   tasksActive?: boolean;
   inboxUnseen?: boolean;
 }) {
+  useLocale();
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -3017,13 +3006,13 @@ function SidebarProjectPicker({
       />
       <div className="ml-auto flex shrink-0 items-center">
         {onNew ? (
-          <IconButton label={`New tab (${MOD}T)`} onClick={onNew}>
+          <IconButton label={t("New tab ({p0}T)", { p0: MOD })} onClick={onNew}>
             <Plus className="size-3.5" strokeWidth={1.75} />
           </IconButton>
         ) : null}
         {onSearch ? (
           <IconButton
-            label={`Search (${MOD}K)`}
+            label={t("Search ({p0}K)", { p0: MOD })}
             active={searchActive}
             onClick={onSearch}
           >
@@ -3032,7 +3021,7 @@ function SidebarProjectPicker({
         ) : null}
         {onOpenInbox ? (
           <IconButton
-            label={inboxUnseen ? "Inbox, new items" : "Inbox"}
+            label={inboxUnseen ? t("Inbox, new items") : t("Inbox")}
             active={inboxActive}
             onClick={onOpenInbox}
             onOpenContextMenu={(x, y) => {
@@ -3057,7 +3046,7 @@ function SidebarProjectPicker({
         {onOpenNotes ? (
           <span className="contents @max-[230px]/picker:hidden">
             <IconButton
-              label="Notes"
+              label={t("Notes")}
               active={notesActive}
               onClick={onOpenNotes}
             >
@@ -3068,7 +3057,7 @@ function SidebarProjectPicker({
         {onOpenAutomations ? (
           <span className="contents @max-[260px]/picker:hidden">
             <IconButton
-              label="Automations"
+              label={t("Automations")}
               active={automationsActive}
               onClick={onOpenAutomations}
             >
@@ -3079,7 +3068,7 @@ function SidebarProjectPicker({
         {onOpenTasks ? (
           <span className="contents @max-[290px]/picker:hidden">
             <IconButton
-              label="Tasks"
+              label={t("Tasks")}
               active={tasksActive}
               onClick={onOpenTasks}
             >
@@ -3170,6 +3159,7 @@ function CompactProjectRail({
   activeSessionId?: string;
   onSelectAgent?: (sessionId: string) => void;
 }) {
+  useLocale();
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -3189,7 +3179,7 @@ function CompactProjectRail({
 
   return (
     <nav
-      aria-label="Project shortcuts"
+      aria-label={t("Project shortcuts")}
       data-compact-project-rail
       className="sidebar-glass relative flex h-full w-12 shrink-0 flex-col items-center"
     >
@@ -3211,7 +3201,7 @@ function CompactProjectRail({
         className="flex w-full shrink-0 flex-col items-center gap-1.5 py-1.5"
       >
         <CompactRailAction
-          label="Expand projects"
+          label={t("Expand projects")}
           icon={PanelLeft}
           onClick={onTogglePanel}
         />
@@ -3241,7 +3231,7 @@ function CompactProjectRail({
         ) : null}
         <div
           role="tablist"
-          aria-label="Workspace"
+          aria-label={t("Workspace")}
           aria-orientation="vertical"
           className="flex flex-col items-center gap-1.5"
         >
@@ -3259,13 +3249,13 @@ function CompactProjectRail({
           ))}
         </div>
         <CompactRailAction
-          label={`Search (${MOD}K)`}
+          label={t("Search ({p0}K)", { p0: MOD })}
           icon={Search}
           active={searchActive}
           onClick={action(searchActive, onSearch)}
         />
         <CompactRailAction
-          label={inboxUnseen ? "Inbox, new items" : "Inbox"}
+          label={inboxUnseen ? t("Inbox, new items") : t("Inbox")}
           icon={Inbox}
           active={inboxActive}
           dot={inboxUnseen}
@@ -3280,20 +3270,20 @@ function CompactProjectRail({
         />
         {onOpenNotes ? (
           <CompactRailAction
-            label="Notes"
+            label={t("Notes")}
             icon={StickyNote}
             active={notesActive}
             onClick={action(notesActive, onOpenNotes)}
           />
         ) : null}
         <CompactRailAction
-          label="Automations"
+          label={t("Automations")}
           icon={Zap}
           active={automationsActive}
           onClick={action(automationsActive, onOpenAutomations)}
         />
         <CompactRailAction
-          label="Tasks"
+          label={t("Tasks")}
           icon={DashboardSquare}
           active={tasksActive}
           onClick={action(tasksActive, onOpenTasks)}
@@ -3302,7 +3292,7 @@ function CompactProjectRail({
       <div className="min-h-2 flex-1" />
       <div className="flex w-full flex-col items-center gap-1 py-1.5">
         <CompactRailAction
-          label={`Settings (${MOD},)`}
+          label={t("Settings ({p0},)", { p0: MOD })}
           icon={Settings}
           onClick={onOpenSettings}
         />
@@ -3343,6 +3333,7 @@ function CompactRailAction({
   onOpenContextMenu?: (x: number, y: number) => void;
   ref?: Ref<HTMLButtonElement>;
 }) {
+  useLocale();
   return (
     <button
       ref={ref}
@@ -3423,6 +3414,7 @@ function CompactLastSessionsAction({
   onOpenSession?: (sessionId: string) => void;
   onOpenProject: (path: string) => void;
 }) {
+  useLocale();
   const projectKeys = useMemo(
     () => new Set(collectRailProjects(recents, cwd).keys()),
     [recents, cwd],
@@ -3445,7 +3437,7 @@ function CompactLastSessionsAction({
     <>
       <CompactRailAction
         ref={anchor}
-        label="Last sessions"
+        label={t("Last sessions")}
         icon={Clock}
         active={open}
         onClick={() => setOpen((value) => !value)}
@@ -3458,7 +3450,7 @@ function CompactLastSessionsAction({
           width={280}
           onDismiss={() => setOpen(false)}
           role="menu"
-          aria-label="Last sessions"
+          aria-label={t("Last sessions")}
           className="p-1"
         >
           <LastSessionsRows
@@ -3494,6 +3486,7 @@ function WorkspaceTitleActions({
   onSearch?: () => void;
   onNew?: () => void;
 }) {
+  useLocale();
   if (!onSearch && !onNew) return null;
   return (
     <div
@@ -3501,12 +3494,12 @@ function WorkspaceTitleActions({
       data-tauri-drag-region="false"
     >
       {onSearch ? (
-        <IconButton label={`Go to File (${MOD}P)`} onClick={onSearch}>
+        <IconButton label={t("Go to File ({p0}P)", { p0: MOD })} onClick={onSearch}>
           <Search className="size-3.5" strokeWidth={1.75} />
         </IconButton>
       ) : null}
       {onNew ? (
-        <IconButton label={`New session (${MOD}T)`} onClick={onNew}>
+        <IconButton label={t("New session ({p0}T)", { p0: MOD })} onClick={onNew}>
           <Plus className="size-3.5" strokeWidth={1.75} />
         </IconButton>
       ) : null}
@@ -3527,11 +3520,12 @@ function BulkBarAction({
   onClick: () => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"
-      title={`${label} selected`}
-      aria-label={`${label} selected`}
+      title={t("{p0} selected", { p0: label })}
+      aria-label={t("{p0} selected", { p0: label })}
       disabled={disabled}
       onClick={onClick}
       className={`grid size-6 place-items-center rounded-md text-content/60 hover:bg-content/10 disabled:pointer-events-none disabled:opacity-40 ${
@@ -3558,6 +3552,7 @@ function SessionsHeaderButton({
   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   children: ReactNode;
 }) {
+  useLocale();
   return (
     <button
       type="button"
@@ -3608,6 +3603,7 @@ function FolderColorSwatches({
   onChange: (index: number | null) => void;
   onCustomChange: (color: string) => void;
 }) {
+  useLocale();
   const paletteColor =
     colorIndex != null ? TAB_GROUP_COLORS[colorIndex] : TAB_GROUP_COLORS[0];
   const pickerValue =
@@ -3654,6 +3650,7 @@ function FolderRow({
   onContextMenu?: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   onRename?: () => void;
 }) {
+  useLocale();
   const count = sessions.length;
   const accent = folderAccent(folder.colorIndex, folder.customColor);
   return (
@@ -3748,6 +3745,7 @@ function FolderRenameRow({
   onCommit: (name: string) => void;
   onCancel: () => void;
 }) {
+  useLocale();
   const inputRef = useRef<HTMLInputElement>(null);
   const finished = useRef(false);
   const [value, setValue] = useState(folder.name);
@@ -3830,6 +3828,7 @@ function SessionListItem({
   motion: RefObject<SessionInsertMotion>;
   children: ReactNode;
 }) {
+  useLocale();
   const ref = useRef<HTMLLIElement>(null);
   // Decided once per row: effects can replay (StrictMode, reordering), and a
   // row that already slid in must not do it again.
@@ -3954,6 +3953,7 @@ const SessionCard = memo(function SessionCard({
   onRename?: (sessionId: string) => void;
   onDelete?: (sessionId: string) => void;
 }) {
+  useLocale();
   const skipClickUntil = useRef(0);
   const cancelSessionDrag = useRef<(() => void) | null>(null);
   useEffect(() => () => cancelSessionDrag.current?.(), []);
@@ -3995,12 +3995,12 @@ const SessionCard = memo(function SessionCard({
       {needsApproval ? (
         <>
           <CircleAlert className="size-3" strokeWidth={1.75} />
-          <span>{orchestration ? "Needs input" : "Need approval"}</span>
+          <span>{orchestration ? t("Needs input") : t("Need approval")}</span>
         </>
       ) : busy ? (
         <>
           <TerminalSpinner className="inline-block w-3 select-none text-center text-[11px] leading-none text-accent" />
-          <span>Working...</span>
+          <span>{t("Working...")}</span>
         </>
       ) : opening ? (
         <>
@@ -4009,17 +4009,17 @@ const SessionCard = memo(function SessionCard({
             strokeWidth={1.75}
             aria-hidden
           />
-          <span>Opening…</span>
+          <span>{t("Opening…")}</span>
         </>
       ) : done ? (
         <>
           <Check className="size-3" strokeWidth={2.25} />
-          <span>Done</span>
+          <span>{t("Done")}</span>
         </>
       ) : draft ? (
         <>
           <CircleDashed className="size-3" strokeWidth={1.75} />
-          <span>Draft</span>
+          <span>{t("Draft")}</span>
         </>
       ) : (
         <span>{time}</span>
@@ -4030,8 +4030,8 @@ const SessionCard = memo(function SessionCard({
   const linkedWorkItem = session.linkedWorkItem;
   const linkedUpdateDot = linkedUpdate ? (
     <span
-      title={`Linked ${linkedWorkItem?.kind === "pr" ? "PR" : "issue"} updated since this session`}
-      aria-label="Linked work item updated"
+      title={t((linkedWorkItem?.kind === "pr" ? "Linked PR updated since this session" : "Linked issue updated since this session"))}
+      aria-label={t("Linked work item updated")}
       className="size-1.5 shrink-0 rounded-full bg-accent"
     />
   ) : null;
@@ -4040,8 +4040,8 @@ const SessionCard = memo(function SessionCard({
       type="button"
       data-no-drag
       data-tauri-drag-region="false"
-      title={`Open ${linkedWorkItem.kind === "pr" ? "PR" : "issue"} #${linkedWorkItem.number} beside this session (${MOD}-click for GitHub)`}
-      aria-label={`Open ${linkedWorkItem.kind === "pr" ? "PR" : "issue"} #${linkedWorkItem.number}`}
+      title={t((linkedWorkItem.kind === "pr" ? "Open PR #{p1} beside this session ({p2}-click for GitHub)" : "Open issue #{p1} beside this session ({p2}-click for GitHub)"), { p1: linkedWorkItem.number, p2: MOD })}
+      aria-label={t((linkedWorkItem.kind === "pr" ? "Open PR #{p1}" : "Open issue #{p1}"), { p1: linkedWorkItem.number })}
       onMouseEnter={() => { if (onOpenWorkItem) prefetchGithubWorkItem(session.cwd, linkedWorkItem); }}
       onFocus={() => { if (onOpenWorkItem) prefetchGithubWorkItem(session.cwd, linkedWorkItem); }}
       onPointerDown={(event) => event.stopPropagation()}
@@ -4453,8 +4453,8 @@ const SessionCard = memo(function SessionCard({
               <span
                 data-automation-icon
                 role="img"
-                title="Started by an automation"
-                aria-label="Started by an automation"
+                title={t("Started by an automation")}
+                aria-label={t("Started by an automation")}
                 className="grid size-5 -mr-1 shrink-0 place-items-center text-amber-400"
               >
                 <Zap className="size-3" strokeWidth={1.75} />
@@ -4472,9 +4472,7 @@ const SessionCard = memo(function SessionCard({
                   data-no-drag
                   data-tauri-drag-region="false"
                   data-orchestration-icon
-                  aria-label={`Orchestrator, ${orchestration.tasks.length} ${
-                    orchestration.tasks.length === 1 ? "subagent" : "subagents"
-                  }, ${orchestrationDone} done`}
+                  aria-label={t((orchestration.tasks.length === 1 ? "Orchestrator, {p0} subagent, {p2} done" : "Orchestrator, {p0} subagents, {p2} done"), { p0: orchestration.tasks.length, p2: orchestrationDone })}
                   aria-describedby={
                     orchestrationTooltipOpen
                       ? orchestrationTooltipId
@@ -4509,12 +4507,9 @@ const SessionCard = memo(function SessionCard({
           className="pointer-events-none overflow-y-auto p-2.5"
         >
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[11px] font-semibold text-content/85">
-              Subagents
-            </span>
+            <span className="text-[11px] font-semibold text-content/85">{t("Subagents")}</span>
             <span className="shrink-0 text-[10px] tabular-nums text-content/45">
-              {orchestrationDone}/{orchestration.tasks.length} done
-            </span>
+              {orchestrationDone}/{orchestration.tasks.length}{t(" done")}</span>
           </div>
           <div className="mt-1.5 flex flex-col gap-0.5">
             {orchestration.tasks.map((task) => {
@@ -4570,6 +4565,7 @@ function SessionRenameRow({
   onCommit: (title: string) => void;
   onCancel: () => void;
 }) {
+  useLocale();
   const inputRef = useRef<HTMLInputElement>(null);
   const finished = useRef(false);
   const [value, setValue] = useState(() =>
@@ -4640,6 +4636,7 @@ function DiffStat({
   additions: number;
   deletions: number;
 }) {
+  useLocale();
   const containerRef = useRef<HTMLSpanElement>(null);
   const contentRef = useRef<HTMLSpanElement>(null);
 
@@ -4690,7 +4687,7 @@ function DiffStat({
   return (
     <span
       ref={containerRef}
-      title={`${label} uncommitted`}
+      title={t("{p0} uncommitted", { p0: label })}
       className="flex h-full w-full min-w-0 items-center justify-center overflow-hidden"
     >
       <span
@@ -4713,6 +4710,7 @@ function DiffStat({
 }
 
 function TightDiffNumber({ value }: { value: number }) {
+  useLocale();
   const [first, ...rest] = formatInteger(value).split(",");
   return (
     <>

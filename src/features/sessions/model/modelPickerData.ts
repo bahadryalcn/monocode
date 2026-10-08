@@ -21,6 +21,7 @@ const SETTING_ORDER = [
   "variant",
   "agent",
   "context",
+  "advisor",
 ];
 
 /** Toolbar pill order: reasoning level first, then the remaining controls. */
@@ -33,6 +34,7 @@ const PILL_ORDER = [
   "thinking",
   "serviceTier",
   "context",
+  "advisor",
 ];
 
 export function isEffortSetting(setting: ModelSetting): boolean {

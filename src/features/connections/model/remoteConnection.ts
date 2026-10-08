@@ -55,9 +55,9 @@ export function sanitizeConnectionError(text: string): string {
 
 /** A short reason for a status, for banners and tooltips. */
 export function connectionReason(status: RemoteConnectionStatus, raw: string): string {
-  if (status === "outdated-host") return "MonoCode Host on the machine needs an update.";
+  if (status === "outdated-host") return "imc code Host on the machine needs an update.";
   if (status === "host-not-running")
-    return "The machine is reachable, but MonoCode Host is not running there. Start it, then reconnect.";
+    return "The machine is reachable, but imc code Host is not running there. Start it, then reconnect.";
   if (/Machine is unreachable/i.test(raw)) return "The machine did not answer. It may be off, asleep or offline.";
   if (/no longer connected|isn.t connected on this computer|Connect this project.s machine/i.test(raw))
     return "This machine is not connected on this computer.";

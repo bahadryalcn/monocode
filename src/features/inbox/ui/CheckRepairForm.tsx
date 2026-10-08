@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import {
   buildCiRepairRequest,
   type CiRepairEvidence,
@@ -50,6 +51,7 @@ export function CheckRepairForm({
   blocked?: boolean;
   onClose: () => void;
 }) {
+  useLocale();
   const [sessionId, setSessionId] = useState("");
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -57,7 +59,7 @@ export function CheckRepairForm({
   const listRef = useRef<HTMLDivElement>(null);
   const listId = useId();
   const choices = [
-    { id: "", title: "New project chat" },
+    { id: "", get title() { return t("New project chat"); } },
     ...repair.sessions.filter((session) =>
       (session.title || "Untitled chat")
         .toLocaleLowerCase()
@@ -155,7 +157,7 @@ export function CheckRepairForm({
       width={320}
       maxHeight={460}
       role="dialog"
-      aria-label="Fix checks with AI"
+      aria-label={t("Fix checks with AI")}
       onDismiss={(reason) => dismiss(reason === "escape")}
       className="flex min-h-0 flex-col overflow-hidden"
     >
@@ -165,22 +167,19 @@ export function CheckRepairForm({
           strokeWidth={1.75}
         />
         <div className="min-w-0 flex-1">
-          <p className="text-[13px] font-medium leading-5 text-content">
-            Fix with AI
-          </p>
+          <p className="text-[13px] font-medium leading-5 text-content">{t("Fix with AI")}</p>
           <p
             title={checks.map((check) => check.name).join(", ")}
             className="mt-0.5 truncate text-[11px] leading-4 text-content/45"
           >
             {checks.length === 1
               ? checks[0].name
-              : `${checks.length} failed checks`}{" "}
-            · PR #{repair.number}
+              : t("{p0} failed checks", { p0: checks.length })}{" "}{t("· PR #")}{repair.number}
           </p>
         </div>
         <button
           type="button"
-          aria-label="Close fix picker"
+          aria-label={t("Close fix picker")}
           onClick={() => dismiss()}
           className="grid size-6 shrink-0 place-items-center rounded-md text-content/40 hover:bg-content/10 hover:text-content"
         >
@@ -194,12 +193,12 @@ export function CheckRepairForm({
           value={query}
           disabled={busy}
           role="combobox"
-          aria-label="Search project chats"
+          aria-label={t("Search project chats")}
           aria-expanded={true}
           aria-controls={listId}
           aria-autocomplete="list"
           aria-activedescendant={`${listId}-${active}`}
-          placeholder="Search chats..."
+          placeholder={t("Search chats...")}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -223,7 +222,7 @@ export function CheckRepairForm({
         ref={listRef}
         id={listId}
         role="listbox"
-        aria-label="Project chats"
+        aria-label={t("Project chats")}
         className="my-1.5 min-h-0 max-h-56 overflow-y-auto overscroll-none px-1.5"
       >
         {choices.map((session, index) => {
@@ -235,7 +234,7 @@ export function CheckRepairForm({
               id={`${listId}-${index}`}
               type="button"
               role="option"
-              aria-label={session.title || "Untitled chat"}
+              aria-label={session.title || t("Untitled chat")}
               aria-selected={selected}
               disabled={busy}
               data-active={index === active}
@@ -250,9 +249,9 @@ export function CheckRepairForm({
               />
               <span
                 className="min-w-0 flex-1 truncate"
-                title={session.title || "Untitled chat"}
+                title={session.title || t("Untitled chat")}
               >
-                {session.title || "Untitled chat"}
+                {session.title || t("Untitled chat")}
               </span>
               {selected ? (
                 <Check
@@ -264,9 +263,7 @@ export function CheckRepairForm({
           );
         })}
         {choices.length === 1 && query.trim() ? (
-          <p className="px-2.5 py-3 text-[12px] text-content/45">
-            No matching chats
-          </p>
+          <p className="px-2.5 py-3 text-[12px] text-content/45">{t("No matching chats")}</p>
         ) : null}
       </div>
       {error ? (
@@ -278,16 +275,14 @@ export function CheckRepairForm({
         </p>
       ) : null}
       {blocked && !busy ? (
-        <p role="status" className="px-3.5 pb-3 text-[12px] leading-4 text-content/55">
-          Wait for the latest checks before starting a fix.
-        </p>
+        <p role="status" className="px-3.5 pb-3 text-[12px] leading-4 text-content/55">{t("Wait for the latest checks before starting a fix.")}</p>
       ) : null}
       <div className="flex shrink-0 items-center gap-3 border-t border-stroke px-3 py-2.5">
         <div className="min-w-0 flex-1 text-[11px] leading-4">
           <p className="truncate text-content/65" title={selectedTitle}>
             {selectedTitle}
           </p>
-          <p className="text-content/35">CI details included</p>
+          <p className="text-content/35">{t("CI details included")}</p>
         </div>
         <button
           type="button"
@@ -301,7 +296,7 @@ export function CheckRepairForm({
               strokeWidth={1.75}
             />
           ) : null}
-          {busy ? "Preparing..." : "Start fix"}
+          {busy ? t("Preparing...") : t("Start fix")}
           {!busy ? (
             <ChevronRight className="size-3" strokeWidth={1.75} />
           ) : null}

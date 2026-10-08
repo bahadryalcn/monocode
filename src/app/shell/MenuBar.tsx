@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../shared/i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -67,6 +68,7 @@ export const MenuBar = memo(function MenuBar({
   onZoomReset,
   layout,
 }: Props) {
+  useLocale();
   const [open, setOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<MenuKey | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(
@@ -259,77 +261,77 @@ export const MenuBar = memo(function MenuBar({
           {
             kind: "item",
             id: "new_tab",
-            label: "New Tab",
+            get label() { return t("New Tab"); },
             shortcut: shortcut("Tab: New", `${MOD}T`),
           },
           {
             kind: "item",
             id: "new_terminal",
-            label: "New Terminal",
+            get label() { return t("New Terminal"); },
             shortcut: shortcut("Terminal: New", `${MOD}\``),
           },
           {
             kind: "item",
             id: "new_window",
-            label: "New Window",
+            get label() { return t("New Window"); },
             shortcut: shortcut("App: New Window", `${MOD}${SHIFT}N`),
           },
           { kind: "sep" },
           {
             kind: "item",
             id: "toggle_autosave",
-            label: "Autosave",
+            get label() { return t("Autosave"); },
             checked: autosave,
           },
           { kind: "sep" },
           {
             kind: "item",
             id: "open_project",
-            label: "Open Project…",
+            get label() { return t("Open Project…"); },
             shortcut: shortcut("App: Open Project", `${MOD}O`),
           },
           {
             kind: "item",
             id: "open_search",
-            label: "Search…",
+            get label() { return t("Search…"); },
             shortcut: shortcut("App: Search", `${MOD}K`),
           },
           {
             kind: "item",
             id: "go_to_file",
-            label: "Go to File…",
+            get label() { return t("Go to File…"); },
             shortcut: shortcut("App: Go to File", `${MOD}P`),
           },
           {
             kind: "item",
             id: "find_in_project",
-            label: "Find in Files…",
+            get label() { return t("Find in Files…"); },
             shortcut: shortcut("App: Find in Files", `${MOD}${SHIFT}F`),
           },
           { kind: "sep" },
           {
             kind: "item",
             id: "close_tab",
-            label: "Close Pane",
+            get label() { return t("Close Pane"); },
             shortcut: shortcut("Pane: Close", `${MOD}W`),
           },
           {
             kind: "item",
             id: "close_other_tabs",
-            label: "Close Other Tabs",
+            get label() { return t("Close Other Tabs"); },
             shortcut: shortcut("Tab: Close Others", `${MOD}${ALT}T`),
           },
           {
             kind: "item",
             id: "close_all_tabs",
-            label: "Close All Tabs",
+            get label() { return t("Close All Tabs"); },
             shortcut: shortcut("Tab: Close All", `${MOD}${SHIFT}W`),
           },
           { kind: "sep" },
           {
             kind: "item",
             id: "check_for_updates",
-            label: "Check for Updates…",
+            get label() { return t("Check for Updates…"); },
           },
         ];
       case "view":
@@ -337,41 +339,41 @@ export const MenuBar = memo(function MenuBar({
           {
             kind: "item",
             id: "toggle_sidebar",
-            label: "Toggle Sidebar",
+            get label() { return t("Toggle Sidebar"); },
             shortcut: shortcut("App: Toggle Sidebar", `${MOD}B`),
           },
           {
             kind: "item",
             id: "toggle_session_sidebar",
-            label: "Toggle Session Sidebar",
+            get label() { return t("Toggle Session Sidebar"); },
             shortcut: shortcut(
               "App: Toggle Session Sidebar",
               `${MOD}${SHIFT}B`,
             ),
           },
-          { kind: "item", id: "open_inbox", label: "Inbox" },
+          { kind: "item", id: "open_inbox", get label() { return t("Inbox"); } },
           ...(onOpenNotes
-            ? [{ kind: "item" as const, id: "open_notes", label: "Notes" }]
+            ? [{ kind: "item" as const, id: "open_notes", get label() { return t("Notes"); } }]
             : []),
           {
             kind: "item",
             id: "toggle_terminal",
-            label: "Toggle Terminal",
+            get label() { return t("Toggle Terminal"); },
             shortcut: shortcut("Terminal: Toggle Dock", `${MOD}J`),
           },
           {
             kind: "item",
             id: "open_model_picker",
-            label: "Switch Model…",
+            get label() { return t("Switch Model…"); },
             shortcut: shortcut("App: Switch Model", `${MOD}.`),
           },
-          { kind: "item", id: "toggle_diff", label: "Toggle Changes" },
+          { kind: "item", id: "toggle_diff", get label() { return t("Toggle Changes"); } },
           ...(layout
             ? [
                 {
                   kind: "item" as const,
                   id: "layout_menu",
-                  label: "Layout",
+                  get label() { return t("Layout"); },
                   submenu: buildLayoutMenuItems({
                     current: layout.current,
                     canArrange: layout.canArrange,
@@ -391,19 +393,19 @@ export const MenuBar = memo(function MenuBar({
           {
             kind: "item",
             id: "zoom_in",
-            label: "Zoom In",
+            get label() { return t("Zoom In"); },
             shortcut: shortcut("View: Zoom In", `${MOD}+`),
           },
           {
             kind: "item",
             id: "zoom_out",
-            label: "Zoom Out",
+            get label() { return t("Zoom Out"); },
             shortcut: shortcut("View: Zoom Out", `${MOD}-`),
           },
           {
             kind: "item",
             id: "zoom_reset",
-            label: "Reset Zoom",
+            get label() { return t("Reset Zoom"); },
             shortcut: shortcut("View: Reset Zoom", `${MOD}0`),
           },
         ];
@@ -412,13 +414,13 @@ export const MenuBar = memo(function MenuBar({
           {
             kind: "item",
             id: "new_terminal",
-            label: "New Terminal",
+            get label() { return t("New Terminal"); },
             shortcut: shortcut("Terminal: New", `${MOD}\``),
           },
           {
             kind: "item",
             id: "toggle_terminal",
-            label: "Toggle Terminal",
+            get label() { return t("Toggle Terminal"); },
             shortcut: shortcut("Terminal: Toggle Dock", `${MOD}J`),
           },
         ];
@@ -430,9 +432,9 @@ export const MenuBar = memo(function MenuBar({
   }
 
   const MENUS: { key: MenuKey; label: string }[] = [
-    { key: "file", label: "File" },
-    { key: "view", label: "View" },
-    { key: "terminal", label: "Terminal" },
+    { key: "file", get label() { return t("File"); } },
+    { key: "view", get label() { return t("View"); } },
+    { key: "terminal", get label() { return t("Terminal"); } },
   ];
 
   return (

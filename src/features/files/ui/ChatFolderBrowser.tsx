@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useEffect, useRef, useState } from "react";
 import {
   listDir,
@@ -32,6 +33,7 @@ export function ChatFolderBrowser({
   onClose: () => void;
   revealOnOpen?: boolean;
 }) {
+  useLocale();
   const [directory, setDirectory] = useState(path);
   const [entries, setEntries] = useState<FsEntry[] | null>(null);
   const [error, setError] = useState<string>();
@@ -103,7 +105,7 @@ export function ChatFolderBrowser({
 
   return (
     <Modal
-      title="Folder on connected machine"
+      title={t("Folder on connected machine")}
       onClose={onClose}
       size="md"
       fitViewport
@@ -111,8 +113,8 @@ export function ChatFolderBrowser({
       <div className="flex min-w-0 items-center gap-2 border-b border-stroke pb-2">
         <button
           type="button"
-          aria-label="Parent folder"
-          title="Parent folder"
+          aria-label={t("Parent folder")}
+          title={t("Parent folder")}
           className="grid size-7 shrink-0 place-items-center rounded hover:bg-content/10"
           disabled={parent === directory}
           onClick={() => setDirectory(parent)}
@@ -136,9 +138,7 @@ export function ChatFolderBrowser({
           type="button"
           className="rounded px-2 py-1 text-sm text-content/60 hover:bg-content/10"
           onClick={configureMapping}
-        >
-          Shared folder settings
-        </button>
+        >{t("Shared folder settings")}</button>
       </div>
       {editingMapping ? (
         <form
@@ -158,26 +158,19 @@ export function ChatFolderBrowser({
             }
           }}
         >
-          <p>
-            Enter the shared folder path you can open on this computer. This
-            mapping also applies to its files and subfolders.
-          </p>
-          <label className="grid gap-1">
-            Folder on connected machine
-            <input
+          <p>{t("Enter the shared folder path you can open on this computer. This mapping also applies to its files and subfolders.")}</p>
+          <label className="grid gap-1">{t("Folder on connected machine")}<input
               className="rounded border border-stroke bg-transparent px-2 py-1 font-mono"
               value={remoteRoot}
               onChange={(event) => setRemoteRoot(event.target.value)}
               required
             />
           </label>
-          <label className="grid gap-1">
-            Same folder on this computer
-            <input
+          <label className="grid gap-1">{t("Same folder on this computer")}<input
               className="rounded border border-stroke bg-transparent px-2 py-1 font-mono"
               placeholder={
                 IS_WIN
-                  ? "\\\\MacBook\\share\\projects"
+                  ? t("\\\\MacBook\\share\\projects")
                   : "/Volumes/share/projects"
               }
               value={localRoot}
@@ -189,18 +182,13 @@ export function ChatFolderBrowser({
             <button
               type="submit"
               className="rounded px-2 py-1 hover:bg-content/10"
-            >
-              Save and open
-            </button>
-            <button type="button" onClick={() => setEditingMapping(false)}>
-              Cancel
-            </button>
+            >{t("Save and open")}</button>
+            <button type="button" onClick={() => setEditingMapping(false)}>{t("Cancel")}</button>
           </div>
         </form>
       ) : null}
       {actionError ? (
-        <p role="alert" className="py-2 text-sm text-red-400">
-          Could not open the shared folder: {actionError}
+        <p role="alert" className="py-2 text-sm text-red-400">{t("Could not open the shared folder: ")}{actionError}
         </p>
       ) : null}
       {error ? (
@@ -208,14 +196,12 @@ export function ChatFolderBrowser({
           {error}
         </p>
       ) : !entries ? (
-        <p role="status" className="py-3 text-sm text-content/60">
-          Loading folder…
-        </p>
+        <p role="status" className="py-3 text-sm text-content/60">{t("Loading folder…")}</p>
       ) : entries.length === 0 ? (
-        <p className="py-3 text-sm text-content/60">This folder is empty.</p>
+        <p className="py-3 text-sm text-content/60">{t("This folder is empty.")}</p>
       ) : (
         <ul
-          aria-label="Folder contents"
+          aria-label={t("Folder contents")}
           className="max-h-80 overflow-auto py-2"
         >
           {[...entries]

@@ -89,6 +89,15 @@ describe("AgentTranscript collapsed work", () => {
     expect(legacy).not.toContain("/monocode");
   });
 
+  it("shows imc code for a saved legacy interruption notice", () => {
+    const markup = render([
+      { id: "user", role: "user", text: "Continue working" },
+      { id: "notice", role: "system", text: "Turn interrupted when MonoCode quit." },
+    ]);
+    expect(markup).toContain("Turn interrupted when imc code quit.");
+    expect(markup).not.toContain("Turn interrupted when MonoCode quit.");
+  });
+
   it("shows MonoCode CLI actions instead of their long shell commands", () => {
     const command =
       "/repo/target/debug/MonoCode.app/Contents/MacOS/monocode";
@@ -110,15 +119,15 @@ describe("AgentTranscript collapsed work", () => {
       ],
       true,
     );
-    expect(markup).toContain("Using imc");
+    expect(markup).toContain("Using imc code");
     expect(markup).toContain('data-monocode-tool-call="--help"');
     expect(markup).toContain('data-monocode-tool-call="notes.list"');
-    expect(markup).toContain("monocode app --help");
-    expect(markup).toContain("monocode app notes.list");
+    expect(markup).toContain("imc code app --help");
+    expect(markup).toContain("imc code app notes.list");
     expect(markup).toContain("Ran");
     expect(markup).toContain("Running");
     expect(markup).not.toContain("Contents/MacOS/monocode");
-    expect(markup).not.toContain("Show error details for imc");
+    expect(markup).not.toContain("Show error details for imc code");
   });
 
   it("shows the full command before approving a MonoCode CLI call", () => {
@@ -176,8 +185,8 @@ describe("AgentTranscript collapsed work", () => {
     ]);
     expect(markup).toContain('data-monocode-tool-call="notes.list"');
     expect(markup).toContain("Ran");
-    expect(markup).toContain("monocode app notes.list");
-    expect(markup).toContain("Show error details for imc: List notes");
+    expect(markup).toContain("imc code app notes.list");
+    expect(markup).toContain("Show error details for imc code: List notes");
     expect(markup).not.toContain("Connection refused");
   });
 

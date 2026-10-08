@@ -1,3 +1,4 @@
+import { t, useLocale } from "../../../shared/i18n";
 import { useSyncExternalStore } from "react";
 import { isRemoteProjectPath } from "../../projects/model/recents";
 import {
@@ -52,12 +53,13 @@ export function useInlineBlameUnavailableReason(cwd: string, path: string): stri
 
 /** Turns the editor's per-line blame gutter on and off. */
 export function InlineBlameToggle({ reason }: { reason: string | null }) {
+  useLocale();
   const on = useInlineBlame() && !reason;
   return (
     <button
       type="button"
-      title={reason ?? "Show git blame for each line"}
-      aria-label="Git blame"
+      title={reason ?? t("Show git blame for each line")}
+      aria-label={t("Git blame")}
       aria-pressed={on}
       disabled={reason !== null}
       // Keep the caret where it is in the editor.
@@ -66,8 +68,6 @@ export function InlineBlameToggle({ reason }: { reason: string | null }) {
       className={`ml-2 h-4 shrink-0 rounded px-1.5 font-sans text-[10.5px] hover:bg-content/10 hover:text-content disabled:opacity-35 disabled:hover:bg-transparent ${
         on ? "bg-content/10 text-content/80" : "text-content/45"
       }`}
-    >
-      Blame
-    </button>
+    >{t("Blame")}</button>
   );
 }

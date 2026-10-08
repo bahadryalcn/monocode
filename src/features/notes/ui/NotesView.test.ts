@@ -682,6 +682,33 @@ async function editTitle(value: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
+
+it("keeps a focused empty title draft until blur", async () => {
+  vi.useFakeTimers();
+  await render();
+  const title = container.querySelector<HTMLInputElement>('[aria-label="Note title"]')!;
+  await act(async () => title.focus());
+  await editTitle("   ");
+  await act(async () => vi.advanceTimersByTime(450));
+  expect(title.value).toBe("   ");
+  expect(stored.title).toBe("Plan");
+  await act(async () => title.blur());
+  expect(title.value.trim()).not.toBe("");
+});
+
+it("finalizes only a pending slug after title blur", async () => {
+  vi.useFakeTimers();
+  stored = { ...stored, slug: "untitled", slugPending: true };
+  await render();
+  const title = container.querySelector<HTMLInputElement>('[aria-label="Note title"]')!;
+  await act(async () => title.focus());
+  await editTitle("Completed report");
+  await act(async () => vi.advanceTimersByTime(450));
+  const saves = () => invoke.mock.calls.filter(([command]) => command === "notes_upsert");
+  expect(saves().some(([, args]) => args.note.finalizeSlug)).toBe(false);
+  await act(async () => title.blur());
+  expect(saves().some(([, args]) => args.note.finalizeSlug && args.note.title === "Completed report")).toBe(true);
+});
 function button(label: string) {
   return [...document.querySelectorAll<HTMLButtonElement>("button")].find(
     (item) => item.textContent?.trim() === label,
